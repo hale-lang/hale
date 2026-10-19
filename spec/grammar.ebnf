@@ -456,7 +456,11 @@ via_clause        = "via" , "{" , via_relation ,
                     { "," , via_relation } , [ "," ] , "}" ;
 via_relation      = "calls" | "bus" ;
 during_clause     = "during" , IDENTIFIER ;
-avoiding_clause   = "avoiding" , IDENTIFIER ;
+(* `avoiding std::log::*` names a stdlib module inline: the implicit
+   group of that one member (spec/verification.md § Claims). *)
+avoiding_clause   = "avoiding" , ( IDENTIFIER
+                                 | "std" , "::" , IDENTIFIER ,
+                                   { "::" , IDENTIFIER } , "::" , "*" ) ;
 only_edges_form   = "only" , "edges" , IDENTIFIER , "->" ,
                     IDENTIFIER , "{" , { edge_grant } , "}" ;
 edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;

@@ -307,6 +307,19 @@ pub fn judge_forbid_reaches(
             group_fns.entry(GroupId(gi as u32)).or_default();
         }
     }
+    // Group → the stdlib declarations its `std::…::*` members name:
+    // absorbed interiors, which a walk masks or stops at by
+    // `AbsorbedNode::decl`.
+    let mut group_std: BTreeMap<GroupId, BTreeSet<&'static str>> = BTreeMap::new();
+    for gs in &r.group_selectors {
+        if let hale_model::SelectorForm::StdModule { module, .. } = &gs.selector {
+            if let Some(decls) = crate::stdlib_modules::module_decls(module) {
+                group_std.entry(gs.group).or_default().extend(decls.iter().map(String::as_str));
+            }
+        }
+    }
+    let no_std: BTreeSet<&'static str> = BTreeSet::new();
+    let std_of = |g: GroupId| group_std.get(&g).unwrap_or(&no_std);
     // The evaluator iterates fn sets in FnKey order — free fns
     // (locus: None) BEFORE methods — and search halts at the first
     // hole, so seeding order is verdict-relevant.
@@ -826,20 +839,25 @@ pub fn judge_forbid_reaches(
         let mask: Option<&BTreeSet<FunctionId>> = avoiding
             .as_ref()
             .and_then(|a| a.group.map(|g| &group_fns[&g]));
+        let mask_std: &BTreeSet<&'static str> = avoiding
+            .as_ref()
+            .and_then(|a| a.group)
+            .map_or(&no_std, std_of);
         enum DstIr<'x> {
-            Group(&'x BTreeSet<FunctionId>),
+            Group(&'x BTreeSet<FunctionId>, &'x BTreeSet<&'static str>),
             Effects(BTreeSet<String>),
         }
         let dst_test = match dst {
-            SetIr::Group(g) => DstIr::Group(
-                &group_fns[&g.group.expect("validated above")],
-            ),
+            SetIr::Group(g) => {
+                let gid = g.group.expect("validated above");
+                DstIr::Group(&group_fns[&gid], std_of(gid))
+            }
             SetIr::EffectCarriers(c) => {
                 DstIr::Effects(class_atoms(&c.name))
             }
         };
-        if let DstIr::Group(g) = &dst_test {
-            if g.is_empty() {
+        if let DstIr::Group(g, std) = &dst_test {
+            if g.is_empty() && std.is_empty() {
                 out.push(Judged {
                     ordinal: row.ordinal,
                     verdict: Verdict::Holds,
@@ -1318,7 +1336,7 @@ pub fn judge_forbid_reaches(
             },
             |v: &V| match v {
                 V::User(f) => match &dst_test {
-                    DstIr::Group(g) => g.contains(f),
+                    DstIr::Group(g, _) => g.contains(f),
                     DstIr::Effects(atoms) => direct_of(*f)
                         .iter()
                         .any(|c| atoms.contains(c)),
@@ -1328,7 +1346,9 @@ pub fn judge_forbid_reaches(
                 // destination can be satisfied inside a stdlib body
                 // (review: stdlib effect sinks).
                 V::Interior(a, n) => match &dst_test {
-                    DstIr::Group(_) => false,
+                    DstIr::Group(_, std) => std.contains(
+                        absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                    ),
                     DstIr::Effects(atoms) => absorption[*a as usize]
                         .nodes[*n as usize]
                         .direct_effects
@@ -1338,7 +1358,9 @@ pub fn judge_forbid_reaches(
             },
             |v: &V| match v {
                 V::User(f) => mask.is_some_and(|m| m.contains(f)),
-                V::Interior(..) => false,
+                V::Interior(a, n) => mask_std.contains(
+                    absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                ),
             },
             Some(crate::callgraph::MAX_STEPS),
             HolePolicy::Halt,
@@ -2699,7 +2721,7 @@ pub fn judge_endpoints(
                             "claim `{}`: `require attributed` takes a \
                              built-in class with countable DIRECT sites — \
                              `syscall`, `block`, `publish`, `time`, \
-                             `entropy`, `env`, `alloc`, `secret_use`. `{}` \
+                             `entropy`, `env`, `alloc`, `secret_use`, `stdio`. `{}` \
                              is not one of those: a user class would be \
                              trivially true, and `ffi` / `spawn` / \
                              `recursion` are structural properties with no \
@@ -5164,10 +5186,18 @@ pub fn judge_causes_witnessed(
         for c in classes {
             allowed.extend(effect_class_atoms(e, &c.name));
         }
-        let excess: BTreeSet<String> = caused
+        // A declared `syscall` admits its sub-class `stdio`.
+        if allowed.contains("syscall") {
+            allowed.insert("stdio".to_string());
+        }
+        let mut excess: BTreeSet<String> = caused
             .into_iter()
             .filter(|c| !allowed.contains(c))
             .collect();
+        // `syscall` already says what `stdio` would.
+        if excess.contains("syscall") {
+            excess.remove("stdio");
+        }
         let verdict = if !excess.is_empty() {
             // A KNOWN excess is an answer, whatever else is unknown.
             diags.push(Diag::ty(

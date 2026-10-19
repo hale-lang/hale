@@ -805,6 +805,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
                 entry_group: None,
                 entry_provenance: hale_model::ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -856,6 +857,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
                 entry_group: Some(7),
                 entry_provenance: hale_model::ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::apply".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -908,6 +910,7 @@ fn interior_dispatch_alternatives_take_the_max() {
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![hale_model::AbsorbedNode {
+                decl: String::new(),
                 display: "std::http::Router::dispatch".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),
@@ -970,6 +973,7 @@ fn an_interior_edge_is_followed() {
             nodes: vec![
                 // node 0 calls node 1…
                 hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::outer".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -982,6 +986,7 @@ fn an_interior_edge_is_followed() {
                 },
                 // …which re-emerges at the publishing callback.
                 hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "std::x::inner".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),
@@ -1035,6 +1040,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
             entry_group: None,
             entry_provenance: hale_model::ProvenanceId(0),
             nodes: vec![hale_model::AbsorbedNode {
+                decl: String::new(),
                 display: "std::x::apply".to_string(),
                 carries: Vec::new(),
                 direct_effects: Vec::new(),

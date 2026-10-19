@@ -1849,6 +1849,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
                 entry_group: None,
                 entry_provenance: ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
+                    decl: String::new(),
                     display: "interior".to_string(),
                     carries: Vec::new(),
                     direct_effects: Vec::new(),

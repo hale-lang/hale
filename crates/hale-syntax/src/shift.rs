@@ -630,7 +630,8 @@ impl Shift for EffectClass {
             | EffectClass::Spawn
             | EffectClass::Recursion
             | EffectClass::Alloc
-            | EffectClass::SecretUse => {}
+            | EffectClass::SecretUse
+            | EffectClass::Stdio => {}
         }
     }
 }

@@ -1441,7 +1441,7 @@ impl<'a> Mangler<'a> {
     /// deliberately somebody else's: a POLICY seed's `constitution`
     /// (see `SeedBinding::declares_main`).
     fn rewrite_group_ident(&self, n: &mut String, bind: bool) {
-        if self.is_shadowed(n) {
+        if self.is_shadowed(n) || hale_syntax::ast::is_implicit_group_name(n) {
             return;
         }
         if let Some(new_name) = self.renames.get(n) {

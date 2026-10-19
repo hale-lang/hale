@@ -180,6 +180,25 @@ main locus Org {
   the **full composition** — more edges, conservative. `bus`
   composes publish sites in the visited fn's own body; the default
   (with `calls`) is the sound transitive closure.
+- **The built-in group `program`** (2026-10-19, for the
+  standard-practices pack, #1591): every fn-bearing declaration (locus,
+  free fn) of the closing entrypoint's own seed, and none of an
+  imported seed's. It needs no declaration and resolves in the world
+  that evaluates the clause, so a constitution naming it reads each
+  adopting entrypoint's own declarations. A program declaring a group
+  named `program` is an error: a second meaning under the name would
+  change every law that cites it.
+- **A stdlib module as a member** (same date): `std::m::*` names every
+  fn-bearing declaration of the stdlib seed files that declare one of
+  `std::m`'s public names, file-private helpers included (`std::log::*`
+  is the whole of `log.hl`). A namespace the stdlib does not declare in
+  Hale source is refused with a did-you-mean. Its bodies are absorbed
+  stdlib interiors of the walk, not entities, so a group holding one
+  may stand only as a `forbid reaches` target (a walk entering one of
+  its bodies hits) or an `avoiding` gate (a walk never enters one); in
+  any other position it is refused. `avoiding std::m::*` writes the gate
+  inline: the implicit group of that one member, named by its
+  spelling.
 - **`effects(<class>)`** in target position: the declared carriers
   of an effect class (an `@effects(is: {…})` frontier entry or a
   classified leaf), composed-class masks included. An undeclared
@@ -1045,7 +1064,9 @@ as if written there. Authoring is shared, evaluation is not.
 - **Cycles** in `extends`, unknown constitution names (with a
   did-you-mean), and duplicate constitution declarations are errors.
 - **Groups are not implied.** A constitution names group vocabulary,
-  and every adopting entrypoint must DECLARE those groups. An
+  and every adopting entrypoint must DECLARE those groups — but for the
+  built-in `program` and an inline `avoiding std::m::*`, which no one
+  declares (§ Claims). An
   undeclared name is an unknown-name error, not an empty set;
   `may_be_empty` applies only to a group that is declared and
   resolves to zero members. An entrypoint lacking a component
@@ -2082,7 +2103,19 @@ assume the others in a build:
   `none: {…}` forbids effect classes; `publish: {…}` declares the
   allowed publish set (exact, because the topic set is closed). The
   classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
-  `publish`, `spawn`, `recursion`.
+  `publish`, `spawn`, `recursion`, `alloc`, `secret_use` and `stdio`.
+
+  `stdio` (2026-10-19) is a write to standard output or standard error:
+  `println`, `print`, `eprintln`, `eprint`,
+  `std::io::stdout::write_bytes`, and the `std::process` residency
+  dumps, with every Hale-source stdlib body that reaches one. It is a
+  **sub-class of `syscall`**: every carrier of it carries `syscall`, so
+  `none: {syscall}` and `forbid reaches(G, effects(syscall))` see it as
+  before, and a closed set naming `syscall` (`only:`, `@phase_effects`,
+  `causes:`) admits it. `std::test`'s assertions keep their pure rows
+  (a test's verdict, not the program's output). The effects manifest
+  and the topology artifact's derived effects name it beside
+  `syscall`.
 
   The `@no_*` family is **documented sugar**, desugared at parse time
   so the checker has exactly one shape to interpret (a flag can never

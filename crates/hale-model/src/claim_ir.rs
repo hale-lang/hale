@@ -85,7 +85,7 @@ pub fn bus_topic_tail(s: &str) -> &str {
 /// lists to each other, since this crate cannot depend on the
 /// AST). `validate` holds every [`EffectClassRef::builtin`] flag to
 /// exactly this list.
-pub const BUILTIN_EFFECT_CLASSES: [&str; 11] = [
+pub const BUILTIN_EFFECT_CLASSES: [&str; 12] = [
     "syscall",
     "block",
     "time",
@@ -97,6 +97,7 @@ pub const BUILTIN_EFFECT_CLASSES: [&str; 11] = [
     "recursion",
     "alloc",
     "secret_use",
+    "stdio",
 ];
 
 /// Is `name` a language built-in effect class?

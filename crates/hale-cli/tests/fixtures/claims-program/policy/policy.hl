@@ -1,0 +1,7 @@
+// A policy seed: it closes no world, so its constitution is adopted by
+// an entrypoint and evaluated there. `program` is the built-in group,
+// so the law needs no vocabulary from the adopter: it reads the
+// adopting entrypoint's own declarations wherever it is adopted.
+constitution Logs {
+    logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+}

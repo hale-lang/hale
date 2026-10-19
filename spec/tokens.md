@@ -1021,9 +1021,12 @@ may be built-ins or other declared classes; a definition cycle is
 rejected.
 
 The built-in classes are `syscall`, `block`, `time`, `entropy`,
-`env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`, and
+`env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`,
 `secret_use` (GH #436 — a privileged operation over confined secret
-material, carried by `std::secret`'s methods). **Every built-in name
+material, carried by `std::secret`'s methods), and `stdio` (a write to
+standard output or standard error; a sub-class of `syscall`, carried
+with it by `println`, `print`, `eprintln`, `eprint` and every stdlib
+leaf writing fd 1 or 2). **Every built-in name
 is reserved**: `effect secret_use;` — or `effect syscall;` — is an
 error, because the built-in wins at every use site and the
 declaration would be a silent no-op.

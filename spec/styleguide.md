@@ -1691,7 +1691,7 @@ certify a path — plus one tier you get for free because your
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
-| **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
+| **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion, stdio})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
 | **@sealed** (opt-in) | a sealed locus's `params` are reachable only from inside its own methods — reads and writes both. The tier that makes state confinement structural; loci are otherwise not field-encapsulated. `hale check --sealable` reports what taking it would cost | build fails on violation |
 | **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
@@ -1712,6 +1712,24 @@ directly performs built-in class `C` names a user-declared purpose).
 Both cover code nobody has written yet, where a group-scoped claim
 does not. Prefer them for policy; keep `forbid reaches` for the
 specific edges a design forbids.
+
+The built-in group `program` (every locus and free fn of the
+entrypoint's own seed) gives `forbid reaches` the same reach: a law
+over `program` covers code nobody has written yet, and a policy seed
+can state it without asking an adopter for vocabulary. The one every
+served or attached program should adopt says it writes to the terminal
+only through its logger:
+
+```hale,fragment
+constitution Logs {
+    logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+}
+```
+
+So log through `std::log`, never `println`, outside a CLI's own
+output: `stdio` is the class of a write to standard output or standard
+error, and `std::log` is the gate, so a bare print anywhere in the
+program is the witness.
 
 - **In the `main locus`** — law about this application. A claim is
   evaluated in a closed world, so it belongs where the world closes.

@@ -480,6 +480,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
                 entry_group: None,
                 entry_provenance: p,
                 nodes: vec![AbsorbedNode {
+                    decl: String::new(),
                     display: "std::pay::charge".to_string(),
                     carries: vec!["money".to_string()],
                     direct_effects: Vec::new(),
@@ -970,6 +971,7 @@ fn main() {
         .expect("absorption");
     let frontier = a.nodes.len() as u32;
     a.nodes.push(hale_model::AbsorbedNode {
+        decl: String::new(),
         display: "std::deep::beyond".to_string(),
         carries: Vec::new(),
         direct_effects: Vec::new(),
@@ -1599,6 +1601,7 @@ fn main() {
     let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
     m.analyses.stdlib_absorption[0].nodes.push(
         hale_model::AbsorbedNode {
+            decl: String::new(),
             display: "std::x::Ledger::charge_a".to_string(),
             carries: Vec::new(),
             direct_effects: Vec::new(),
@@ -2697,6 +2700,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
                 entry_group: Some(7),
                 entry_provenance: p,
                 nodes: vec![AbsorbedNode {
+                    decl: String::new(),
                     display: "std::pay::charge".to_string(),
                     carries: vec!["money".to_string()],
                     direct_effects: Vec::new(),
@@ -3225,6 +3229,7 @@ fn main() {
         let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
         m.analyses.stdlib_absorption[0].nodes.push(
             hale_model::AbsorbedNode {
+                decl: String::new(),
                 display: display.to_string(),
                 carries: vec!["money".to_string()],
                 direct_effects: Vec::new(),

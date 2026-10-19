@@ -359,6 +359,9 @@ pub fn derive_application_model_over(
     for p in &programs {
         walk_decls(&p.items, &mut ast);
     }
+    // The groups the clauses name without declaring (`program`, an
+    // inline `std::log::*`): the same rows law selection resolved.
+    ast.groups.extend(crate::claims::implicit_group_decls(&programs));
     let raw_loci: BTreeSet<&str> =
         ast.loci.iter().map(|l| l.name.name.as_str()).collect();
     // Raw type-name -> decl, for keyed_by field-type resolution.
@@ -1927,11 +1930,53 @@ pub fn derive_application_model_over(
     let mut group_selectors: Vec<GroupSelector> = Vec::new();
     let mut gm_prov: BTreeMap<(GroupId, EntityRef), ProvenanceId> =
         BTreeMap::new();
+    // `program`'s members: the bundle's loci and free fns less every
+    // imported seed's.
+    let imported_decls: BTreeSet<&String> = vmodel.seeds.values().flatten().collect();
     for (gname, g) in &group_rows {
         let gid = group_id[gname];
+        if gname.as_str() == hale_syntax::ast::PROGRAM_GROUP && g.members.is_empty() {
+            let pid = intern_span(&mut records, g.span);
+            group_selectors.push(GroupSelector {
+                group: gid,
+                ordinal: 0,
+                selector: SelectorForm::Program,
+                provenance: pid,
+            });
+            for (name, id) in &locus_id {
+                if !imported_decls.contains(name) {
+                    let r = EntityRef::LocusDecl(*id);
+                    group_members.insert((gid, r));
+                    gm_prov.entry((gid, r)).or_insert(pid);
+                }
+            }
+            for (name, id) in &fn_id {
+                if !name.contains("::") && !imported_decls.contains(name) {
+                    let r = EntityRef::Function(*id);
+                    group_members.insert((gid, r));
+                    gm_prov.entry((gid, r)).or_insert(pid);
+                }
+            }
+            continue;
+        }
         for (ordinal, m) in g.members.iter().enumerate() {
             let pid = intern_span(&mut records, m.span);
-            if m.role {
+            if m.glob && m.segments.len() >= 2 && m.segments[0].name == "std" {
+                // `std::log::*`: absorbed stdlib bodies, matched by
+                // the walk through each node's `decl`.
+                let module = m
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                group_selectors.push(GroupSelector {
+                    group: gid,
+                    ordinal: ordinal as u32,
+                    selector: SelectorForm::StdModule { module, display: m.display() },
+                    provenance: pid,
+                });
+            } else if m.role {
                 // `role R`: each handler a holder of R may call, at the
                 // method grain (`Locus::method`, or the free fn).
                 let role = m.segments[0].name.clone();
@@ -2197,6 +2242,7 @@ pub fn derive_application_model_over(
             "env",
             "alloc",
             "secret_use",
+            "stdio",
         ] {
             let mask = crate::claims::attributed_mask(name)
                 .expect("builtin mask");
@@ -2947,6 +2993,7 @@ pub fn derive_application_model_over(
                 }
                 nodes.push(hale_model::AbsorbedNode {
                     display: disp(&n),
+                    decl: n.locus.clone().unwrap_or_else(|| n.fn_name.clone()),
                     direct_effects: node_direct,
                     carries,
                     events,
@@ -2963,6 +3010,7 @@ pub fn derive_application_model_over(
                 for k in order.iter().skip(nodes.len()) {
                     nodes.push(hale_model::AbsorbedNode {
                         display: disp(k),
+                        decl: k.locus.clone().unwrap_or_else(|| k.fn_name.clone()),
                         carries: Vec::new(),
                         direct_effects: Vec::new(),
                         events: vec![
@@ -3817,6 +3865,9 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 SelectorForm::SeedGlob { display, .. } =>
                     format!("{} (glob)", display),
                 SelectorForm::Role { display, .. } => display.clone(),
+                SelectorForm::StdModule { display, .. } =>
+                    format!("{} (stdlib module)", display),
+                SelectorForm::Program => "program (built-in)".to_string(),
             }
         ));
     }

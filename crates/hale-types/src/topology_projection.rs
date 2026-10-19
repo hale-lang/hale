@@ -290,6 +290,8 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             SelectorForm::Named { display, .. } => display.clone(),
             SelectorForm::SeedGlob { display, .. } => display.clone(),
             SelectorForm::Role { display, .. } => display.clone(),
+            SelectorForm::StdModule { display, .. } => display.clone(),
+            SelectorForm::Program => hale_syntax::ast::PROGRAM_GROUP.to_string(),
         };
         group_rows
             .entry(g.display.clone())

@@ -642,3 +642,188 @@ fn a_gate_on_another_method_of_the_endpoint_s_locus_is_not_refused() {
     ));
     assert!(!overlap_refused(&ds), "{ds:?}");
 }
+
+// ---- the structured-logs law: `stdio`, `program`, `std::log::*` ----
+
+/// The law a standard-practices pack adopts: nothing the program
+/// declares reaches a write to standard output or standard error except
+/// through the logger.
+const LOGS_STRUCTURED: &str =
+    "logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;";
+
+fn logging_program(body: &str, claims: &str) -> String {
+    format!(
+        r#"
+    fn report(n: Int) {{
+        BODY
+    }}
+
+    main locus App {{
+        params {{
+            sink: std::log::StdoutSink = std::log::StdoutSink {{ }};
+            log: std::log::Logger = std::log::Logger {{ name: "app" }};
+        }}
+        claims {{
+            {claims}
+        }}
+        run() {{
+            self.log.info("started");
+            report(3);
+        }}
+    }}
+"#
+    )
+    .replace("BODY", body)
+}
+
+/// Pass: the program logs through `std::log`, a sink of which prints;
+/// the module is the gate, so no path avoids it.
+#[test]
+fn a_program_that_logs_through_std_log_holds_the_law() {
+    let ds = diags(&logging_program(
+        "let c = std::log::ConsoleSink { }; c.write(\"three\");",
+        LOGS_STRUCTURED,
+    ));
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// Fail: a bare `println` the program declares is a path that avoids
+/// the module, and the witness names the fn that writes.
+#[test]
+fn a_bare_println_violates_the_law_naming_its_fn() {
+    let ds = diags(&logging_program("println(\"count \", n);", LOGS_STRUCTURED));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `logs_structured` violated"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(hit.contains("`program` reaches `effects(stdio)`"), "{hit}");
+    assert!(hit.contains("witness: `report`"), "{hit}");
+}
+
+/// Every writer of fd 1 or 2 carries `stdio`: `eprint`, and the stdlib
+/// leaf `std::io::stdout::write_bytes`, not only `println`.
+#[test]
+fn every_stdout_and_stderr_writer_carries_stdio() {
+    for body in ["eprint(\"x\");", "std::io::stdout::write_bytes(\"x\");", "print(n);", "eprintln(n);"] {
+        let ds = diags(&logging_program(body, LOGS_STRUCTURED));
+        assert!(
+            ds.iter().any(|m| m.contains("claim `logs_structured` violated")),
+            "{body}: {ds:?}"
+        );
+    }
+}
+
+/// The gate is load-bearing: without `avoiding std::log::*`, the sink
+/// the program calls is a path to the terminal, and the witness walks
+/// into the module.
+#[test]
+fn without_the_gate_the_module_s_own_write_is_a_path() {
+    let ds = diags(&logging_program(
+        "let c = std::log::ConsoleSink { }; c.write(\"three\");",
+        "c: forbid reaches(program, effects(stdio));",
+    ));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `c` violated"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(hit.contains("`report` -> `std::log::ConsoleSink::write`"), "{hit}");
+}
+
+/// `stdio` is a sub-class of `syscall`: a law over `syscall` still sees
+/// a print, a closed `only: {syscall}` still admits one, and
+/// `none: {stdio}` refuses a print while admitting another syscall.
+#[test]
+fn stdio_is_a_kind_of_syscall() {
+    let ds = diags(&logging_program(
+        "println(n);",
+        "c: forbid reaches(program, effects(syscall));",
+    ));
+    assert!(ds.iter().any(|m| m.contains("claim `c` violated")), "{ds:?}");
+
+    let only = diags(
+        r#"
+        @effects(only: {syscall})
+        fn say(n: Int) { println(n); }
+        fn main() { say(1); }
+    "#,
+    );
+    assert!(only.is_empty(), "only: {{syscall}} admits a print: {only:?}");
+
+    let none = diags(
+        r#"
+        @effects(none: {stdio})
+        fn say(n: Int) { println(n); }
+        @effects(none: {stdio})
+        fn stamp() -> Int { return std::time::now(); }
+        fn main() { say(1); let _ = stamp(); }
+    "#,
+    );
+    assert_eq!(
+        none.iter().filter(|m| m.contains("effect assertion violated")).count(),
+        1,
+        "only the print is refused: {none:?}"
+    );
+    assert!(none.iter().any(|m| m.contains("`say`")), "{none:?}");
+}
+
+/// `std::log::*` resolves to the module's declarations: as a target,
+/// the logger the program calls is reached.
+#[test]
+fn a_stdlib_module_member_resolves_to_its_declarations() {
+    let ds = diags(&logging_program(
+        "let _ = n;",
+        "c: forbid reaches(program, logging);",
+    )
+    .replace("main locus App", "group logging = { std::log::* };\n    main locus App"));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `c` violated"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(hit.contains("std::log::Logger::info"), "{hit}");
+}
+
+/// A module the stdlib does not declare in Hale source (`std::math` is
+/// lowered natively) is refused, with a did-you-mean when one is close,
+/// inline or as a member.
+#[test]
+fn an_unknown_stdlib_module_is_refused() {
+    let ds = diags(&logging_program(
+        "let _ = n;",
+        &LOGS_STRUCTURED.replace("std::log::*", "std::lgo::*"),
+    ));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("names no stdlib module"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(hit.contains("Did you mean `std::log::*`?"), "{hit}");
+
+    let ds = diags(
+        &logging_program("let _ = n;", "c: forbid reaches(program, effects(stdio)) avoiding gate;")
+            .replace("main locus App", "group gate = { std::math::* };\n    main locus App"),
+    );
+    assert!(ds.iter().any(|m| m.contains("`std::math::*` names no stdlib module")), "{ds:?}");
+}
+
+/// A stdlib module counts only where a walk reads stdlib bodies: as a
+/// source it is refused.
+#[test]
+fn a_stdlib_module_as_a_source_is_refused() {
+    let ds = diags(
+        &logging_program("let _ = n;", "c: forbid reaches(gate, effects(stdio));")
+            .replace("main locus App", "group gate = { std::log::* };\n    main locus App"),
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("group `gate` holds a stdlib module")),
+        "{ds:?}"
+    );
+}
+
+/// `program` is built in: declaring a group under the name is refused.
+#[test]
+fn declaring_a_group_named_program_is_refused() {
+    let ds = diags(
+        &logging_program("let _ = n;", LOGS_STRUCTURED)
+            .replace("main locus App", "group program = { report };\n    main locus App"),
+    );
+    assert!(ds.iter().any(|m| m.contains("`program` is the built-in group")), "{ds:?}");
+}

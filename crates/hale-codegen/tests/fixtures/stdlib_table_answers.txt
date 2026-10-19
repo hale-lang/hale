@@ -175,7 +175,7 @@ ns std::io::stdin open_prefixes=[]
   read_line syscall|block
   read_line_status syscall|block
 ns std::io::stdout open_prefixes=[]
-  write_bytes syscall
+  write_bytes syscall|stdio
 ns std::api open_prefixes=[]
   local_context alloc
   run_until_stopped syscall|block|time
@@ -403,8 +403,8 @@ ns std::process open_prefixes=[]
   __wait_pid syscall|block
   adopt syscall
   close_stdin syscall
-  dump_arena_residency syscall
-  dump_pool_residency syscall
+  dump_arena_residency syscall|stdio
+  dump_pool_residency syscall|stdio
   exit syscall
   kill syscall
   pid syscall
@@ -525,11 +525,11 @@ ns std::time open_prefixes=[]
 
 ## answers
 env::args_count | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=-
-eprint | lookup=- | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=-
-eprintln | lookup=- | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=-
+eprint | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | holds=false | unknown=-
+eprintln | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | holds=false | unknown=-
 len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=-
-print | lookup=- | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=-
-println | lookup=- | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=-
+print | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | holds=false | unknown=-
+println | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | holds=false | unknown=-
 std | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::api::BearerSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::BearerSource` | suggest=-
 std::api::Context | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Context` | suggest=-
@@ -804,7 +804,7 @@ std::io::stdin::read_line | lookup=io::stdin@3 | locus=false | effects=syscall|b
 std::io::stdin::read_line_status | lookup=io::stdin@3 | locus=false | effects=syscall|block | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=read_line_status
 std::io::stdout::print | lookup=io::stdout@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::stdout::print` is not a stdlib function; writing to stdout is the builtin `print(x)` | suggest=-
 std::io::stdout::println | lookup=io::stdout@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::io::stdout::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)` | suggest=-
-std::io::stdout::write_bytes | lookup=io::stdout@3 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=write_bytes
+std::io::stdout::write_bytes | lookup=io::stdout@3 | locus=false | effects=syscall|stdio | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=write_bytes
 std::io::tcp::Accepted | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::Acceptor | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::ConnHandler | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -1012,8 +1012,8 @@ std::process::__wait_deadline | lookup=process@2 | locus=false | effects=syscall
 std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
 std::process::adopt | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=adopt
 std::process::close_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=close_stdin
-std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_arena_residency
-std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency
+std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=syscall|stdio | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_arena_residency
+std::process::dump_pool_residency | lookup=process@2 | locus=false | effects=syscall|stdio | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_pool_residency
 std::process::exit | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=exit
 std::process::kill | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=kill
 std::process::pid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-

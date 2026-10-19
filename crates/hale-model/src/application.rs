@@ -257,6 +257,11 @@ pub struct AbsorbedNode {
     /// e.g. `std::io::tcp::Stream::send` (demangled like every
     /// witness spelling).
     pub display: String,
+    /// The stdlib declaration the fn belongs to, in the stdlib's own
+    /// spelling: its locus (`__StdLogStdoutSink`) for a method, else
+    /// the fn (`__log_clock`). What a `std::log::*` group member
+    /// matches ([`crate::SelectorForm::StdModule`]).
+    pub decl: String,
     /// The stdlib fn's declared carrier classes (rendered) — the
     /// `bound` count's per-node contribution (GH #476 Change 5d;
     /// `std::secret` bodies carry `secret_use`).
@@ -1990,7 +1995,9 @@ impl ApplicationModel {
                 SelectorForm::SeedGlob { seed, .. } => {
                     seed.index() < seeds
                 }
-                SelectorForm::Role { .. } => true,
+                SelectorForm::Role { .. }
+                | SelectorForm::StdModule { .. }
+                | SelectorForm::Program => true,
             };
             if x.group.index() >= groups_len || !sel_ok {
                 return Err(ModelError::DanglingId {

@@ -45,7 +45,7 @@ enforces it across everything reachable from it:
 
 `none: {…}` forbids effect classes — `syscall`, `block`, `time`,
 `entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`,
-`secret_use`.
+`secret_use`, `stdio`.
 `publish: {…}` declares which topics a fn may publish to (exact,
 because Hale's topic set is closed).
 
@@ -306,6 +306,7 @@ says nothing at all.
 | `recursion` | a cycle in the call graph | a fn that reaches itself |
 | `alloc` | arena allocation — also the class `@phase_effects` budgets by phase | `Buf { n: 1 }` |
 | `secret_use` | a privileged operation over confined secret material | `std::secret::Signer.sign` |
+| `stdio` | writing to standard output or standard error — a kind of `syscall` | `println`, `std::io::stdout::write_bytes` |
 
 `secret_use` is **compiler-owned**: `std::secret`'s privileged methods
 carry it, and you use it without declaring it — in `none:`, `only:`,
@@ -313,6 +314,15 @@ carry it, and you use it without declaring it — in `none:`, `only:`,
 `bound secret_use <= N`. Every built-in name is reserved, so
 `effect secret_use;` (or `effect syscall;`) is an error rather than a
 silent no-op. See [Verification](./verification.md#secrets-confine-classify-claim).
+
+`stdio` is a **sub-class of `syscall`**: everything that carries it
+carries `syscall` too. A contract over `syscall` still catches a
+`println`, and `only: {syscall}` still admits one; what `stdio` adds is
+a way to single the terminal out — `@effects(none: {stdio})` refuses a
+print and admits a file write, and
+`forbid reaches(program, effects(stdio)) avoiding std::log::*` (see
+[Claims](./claims.md)) says the program writes to the terminal only
+through its logger.
 
 Two of those are worth dwelling on, because they are the ones people
 guess wrong.
