@@ -4451,6 +4451,32 @@ build.
 | `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`), and the local habitat beside it (GH #1653), after its run and prints where, instead of removing them. | remove |
 | `HALE_WARM_SKIP_IRIS` | none | `scripts/warm-dna-cache.sh` skips building the observer (`1`), for jobs that never run `hale iris`. | off |
 
+## Runtime diagnostics are records
+
+A diagnostic the runtime writes on a served path is a record in the
+format `std::log`'s sinks write (`spec/stdlib.md` § `std::log`): the
+time (RFC 3339 UTC), a level, a logger naming the runtime's part
+(`lotus.tcp`, `lotus.unix`, `lotus.udp`, `lotus.tls`, `lotus.bus`,
+`lotus.drain`), a message and named fields, in the format
+`HALE_LOG_FORMAT` names, one line on stderr, written whole:
+
+```text
+time=2026-10-19T07:31:08Z level=error logger=lotus.tcp msg="accept failed" op="lotus_tcp_accept_one: accept" errno=9 error="Bad file descriptor"
+```
+
+A failed system call carries `op` (the call and step it used to print
+as `fn: step`), `errno` and `error` (its `strerror`); a TLS failure
+carries OpenSSL's error queue as one `ssl_error` field, where it was
+printed line by line; the drain's grace report carries `signal`,
+`grace_ms` and `waiting_on`. The covered paths are the TCP, Unix and
+UDP sockets, the bus transports and their configuration, TLS, and the
+drain. The runtime's renderer (`lotus_diag_render`) and the Hale
+sinks' (`log.hl`'s `__log_render`) are held to the same bytes by a
+test that renders one event both ways in every format
+(`runtime_records`). Out-of-memory aborts, `violation:` lines, the
+structural-failure and panic lines, and the opt-in debugging counters
+(`LOTUS_BUS_*`, `LOTUS_ARENA_*`) keep their text. (GH #1592, S2.)
+
 ## Diagnostic + tuning env vars
 
 Every variable the runtime (`lotus_arena.c`, `lotus_obs.c`) and the
@@ -4513,7 +4539,7 @@ its behavior as described in this document.
 | `LOTUS_REPLAY_AT_CONSUMER=<id>` | unset | With `LOTUS_REPLAY_AT`, count the n'th consume of that consumer instead of the process-wide n'th; `--at <consumer-id>:<n>`. |
 | `LOTUS_REPLAY_FD=<fd>` | unset | An already-open, validated descriptor for the recording, passed by `hale replay` so no path is re-resolved between admission and replay. |
 | `LOTUS_API_ROLES=<table>` | the `table` param of the program's `std::api::StaticRoles` | Overrides a `StaticRoles` source's table at run time (`spec/stdlib.md` § `std::api`); with no table, every `requires` refuses until this says otherwise. |
-| `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it, and an unknown name is `logfmt`. |
+| `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`) and of the runtime's own diagnostics (§ Runtime diagnostics are records): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it for that sink, and an unknown name is `logfmt`. |
 | `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |
 | `HALE_VAULT_ADDR=<url>` | unset | When set, a `vault:` source resolves over the vault's HTTP API at `<url>/v1/secret/<name>` instead of the local directory. |

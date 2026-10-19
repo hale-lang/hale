@@ -93,6 +93,8 @@
 #include <linux/sockios.h>
 #endif
 #include <time.h>
+#include <ctype.h>
+#include <strings.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -129,6 +131,14 @@
 #include <ucontext.h>
 #endif
 #endif /* __wasm__ */
+
+/* Runtime diagnostics as records (GH #1592 S2): defined with the
+ * renderer, below lotus_io_set_nonblock. */
+void lotus_diag(int level, const char *logger, const char *msg, const char *fields);
+void lotus_diag_errno(int level, const char *logger, const char *msg, const char *op, int err,
+                      const char *extra);
+void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value);
+void lotus_diag_field_int(char *buf, size_t cap, const char *key, int64_t value);
 
 /* async_io pool backend availability. The per-pool readiness poller +
  * wake channel + ucontext coroutines exist on glibc Linux (epoll +
@@ -14943,13 +14953,22 @@ static void *lotus_drain_watcher(void *arg) {
     char waiting[768];
     waiting[0] = '\0';
     (void)lotus_drain_waiting_on(waiting, sizeof waiting);
-    dprintf(2,
-            "lotus: the drain begun by signal %d did not finish within "
-            "%lld ms (a run() that never reads self.draining?); "
-            "still waiting on: %s; "
-            "ending as the signal's default action would "
-            "(LOTUS_DRAIN_GRACE_MS sets the grace)\n",
-            (int)g_drain_signal, (long long)grace_ms, waiting);
+    {
+        /* A record (GH #1592 S2): what the drain was still waiting on, as
+         * fields beside a message that says what happens next. */
+        char f[1024];
+        f[0] = '\0';
+        lotus_diag_field_int(f, sizeof f, "signal", (int64_t)g_drain_signal);
+        lotus_diag_field_int(f, sizeof f, "grace_ms", (int64_t)grace_ms);
+        lotus_diag_field(f, sizeof f, "waiting_on", waiting);
+        char m[256];
+        snprintf(m, sizeof m,
+                 "the drain begun by signal %d did not finish within %lld ms (a run() that never reads "
+                 "self.draining?); ending as the signal's default action would (LOTUS_DRAIN_GRACE_MS "
+                 "sets the grace)",
+                 (int)g_drain_signal, (long long)grace_ms);
+        lotus_diag(2, "lotus.drain", m, f);
+    }
     lotus_drain_die_by((int)g_drain_signal);
     _exit(128 + (int)g_drain_signal);
     return NULL;
@@ -20816,14 +20835,14 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
     }
     struct sockaddr_un addr;
     if (lotus__transport_set_addr(&addr, path) != 0) {
-        perror("lotus_transport_listener_create: addr");
+        lotus_diag_errno(3, "lotus.bus", "addr failed", "lotus_transport_listener_create: addr", errno, NULL);
         return NULL;
     }
     int use_stream = lotus__transport_use_stream();
     int sock = socket(AF_UNIX,
                       use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
     if (sock < 0) {
-        perror("lotus_transport_listener_create: socket");
+        lotus_diag_errno(3, "lotus.bus", "socket failed", "lotus_transport_listener_create: socket", errno, NULL);
         return NULL;
     }
     lotus_set_cloexec(sock);
@@ -20831,7 +20850,7 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
      * after a previous run was killed without destroy(). */
     unlink(path);
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("lotus_transport_listener_create: bind");
+        lotus_diag_errno(3, "lotus.bus", "bind failed", "lotus_transport_listener_create: bind", errno, NULL);
         int save = errno;
         close(sock);
         errno = save;
@@ -20840,7 +20859,7 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
     /* F.13: several connectors may arrive together (an observer, a
      * CLI, a peer binary); the serve loop admits them all. */
     if (listen(sock, 16) < 0) {
-        perror("lotus_transport_listener_create: listen");
+        lotus_diag_errno(3, "lotus.bus", "listen failed", "lotus_transport_listener_create: listen", errno, NULL);
         int save = errno;
         close(sock);
         unlink(path);
@@ -20890,7 +20909,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
         lotus_transport_t *t = lotus_transport_listener_create(path);
         if (!t) return NULL;
         if (lotus_transport_listener_accept(t) != 0) {
-            perror("lotus_transport_create: accept");
+            lotus_diag_errno(3, "lotus.bus", "accept failed", "lotus_transport_create: accept", errno, NULL);
             lotus_transport_destroy(t);
             return NULL;
         }
@@ -20899,7 +20918,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
 
     struct sockaddr_un addr;
     if (lotus__transport_set_addr(&addr, path) != 0) {
-        perror("lotus_transport_create: addr");
+        lotus_diag_errno(3, "lotus.bus", "addr failed", "lotus_transport_create: addr", errno, NULL);
         return NULL;
     }
 
@@ -20907,7 +20926,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
     int sock = socket(AF_UNIX,
                       use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
     if (sock < 0) {
-        perror("lotus_transport_create: socket");
+        lotus_diag_errno(3, "lotus.bus", "socket failed", "lotus_transport_create: socket", errno, NULL);
         return NULL;
     }
     lotus_set_cloexec(sock);
@@ -20934,7 +20953,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
                 return t;
             }
             if (errno != ENOENT && errno != ECONNREFUSED) {
-                perror("lotus_transport_create: connect");
+                lotus_diag_errno(3, "lotus.bus", "connect failed", "lotus_transport_create: connect", errno, NULL);
                 close(sock);
                 return NULL;
             }
@@ -20944,20 +20963,18 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
             close(sock);
             sock = socket(AF_UNIX, use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
             if (sock < 0) {
-                perror("lotus_transport_create: socket");
+                lotus_diag_errno(3, "lotus.bus", "socket failed", "lotus_transport_create: socket", errno, NULL);
                 return NULL;
             }
             lotus_set_cloexec(sock);
             nanosleep(&backoff, NULL);
         }
-        fprintf(stderr,
-                "lotus_transport_create: connect to %s timed out\n",
-                path);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_transport_create: connect to %s timed out", path); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
         close(sock);
         return NULL;
     }
 
-    fprintf(stderr, "lotus_transport_create: invalid role %d\n", role);
+    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_transport_create: invalid role %d", role); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
     close(sock);
     errno = EINVAL;
     return NULL;
@@ -20990,7 +21007,7 @@ int lotus_transport_send(lotus_transport_t *t,
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
-            perror("lotus_transport_send");
+            lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
             return -1;
         }
         return 0;
@@ -21000,7 +21017,7 @@ int lotus_transport_send(lotus_transport_t *t,
         n = send(t->conn_fd, buf, len, 0);
     } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
-        perror("lotus_transport_send");
+        lotus_diag_errno(3, "lotus.bus", "send failed", "lotus_transport_send", errno, NULL);
         return -1;
     }
     return 0;
@@ -21025,16 +21042,14 @@ ssize_t lotus_transport_recv(lotus_transport_t *t,
         uint64_t seq = hdr[1] & 0xFFFFFFFFFFFFULL;
         t->recv_origin = (hdr[1] >> 48) & 0xFFFFULL;
         if (len > LOTUS_UNIX_MAX_MSG_BYTES || len > (uint64_t)cap) {
-            fprintf(stderr,
-                    "lotus_transport_recv: framed length %llu exceeds "
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_transport_recv: framed length %llu exceeds "
                     "cap (%zu) or ceiling — peer speaking a different "
                     "wire format? (SEQPACKET vs framed-STREAM ends "
-                    "must match; see LOTUS_UNIX_STREAM)\n",
-                    (unsigned long long)len, cap);
+                    "must match; see LOTUS_UNIX_STREAM)", (unsigned long long)len, cap); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
             return -1;
         }
         if (lotus__transport_read_full(t->conn_fd, buf, (size_t)len) != 0) {
-            perror("lotus_transport_recv");
+            lotus_diag_errno(3, "lotus.bus", "recv failed", "lotus_transport_recv", errno, NULL);
             return -1;
         }
         /* #236 item 1: gap accounting — the primitive that makes
@@ -21055,7 +21070,7 @@ ssize_t lotus_transport_recv(lotus_transport_t *t,
      * kernel queue still held messages. A signal is not an error;
      * retry. (The framed branch's read_full already did.) */
     if (n < 0) {
-        perror("lotus_transport_recv");
+        lotus_diag_errno(3, "lotus.bus", "recv failed", "lotus_transport_recv", errno, NULL);
         return -1;
     }
     return n;
@@ -21201,28 +21216,26 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
         if (!host) {
             addr.sin_addr.s_addr = htonl(INADDR_ANY);
         } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-            fprintf(stderr,
-                    "lotus_tcp_create: invalid listen host %s\n", host);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_create: invalid listen host %s", host); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
             errno = EINVAL;
             return NULL;
         }
     } else if (role == LOTUS_TCP_CONNECT) {
         const char *h = host ? host : "127.0.0.1";
         if (inet_pton(AF_INET, h, &addr.sin_addr) != 1) {
-            fprintf(stderr,
-                    "lotus_tcp_create: invalid connect host %s\n", h);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_create: invalid connect host %s", h); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
             errno = EINVAL;
             return NULL;
         }
     } else {
-        fprintf(stderr, "lotus_tcp_create: invalid role %d\n", role);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_create: invalid role %d", role); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
         errno = EINVAL;
         return NULL;
     }
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("lotus_tcp_create: socket");
+        lotus_diag_errno(3, "lotus.tcp", "socket failed", "lotus_tcp_create: socket", errno, NULL);
         return NULL;
     }
     lotus_set_cloexec(sock);
@@ -21231,30 +21244,30 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
         int one = 1;
         if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
                        &one, sizeof(one)) < 0) {
-            perror("lotus_tcp_create: SO_REUSEADDR");
+            lotus_diag_errno(3, "lotus.tcp", "SO_REUSEADDR failed", "lotus_tcp_create: SO_REUSEADDR", errno, NULL);
             close(sock);
             return NULL;
         }
         if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            perror("lotus_tcp_create: bind");
+            lotus_diag_errno(3, "lotus.tcp", "bind failed", "lotus_tcp_create: bind", errno, NULL);
             close(sock);
             return NULL;
         }
         /* If port=0 the OS picked one; getsockname tells us which. */
         socklen_t alen = sizeof(addr);
         if (getsockname(sock, (struct sockaddr *)&addr, &alen) < 0) {
-            perror("lotus_tcp_create: getsockname");
+            lotus_diag_errno(3, "lotus.tcp", "getsockname failed", "lotus_tcp_create: getsockname", errno, NULL);
             close(sock);
             return NULL;
         }
         if (listen(sock, 1) < 0) {
-            perror("lotus_tcp_create: listen");
+            lotus_diag_errno(3, "lotus.tcp", "listen failed", "lotus_tcp_create: listen", errno, NULL);
             close(sock);
             return NULL;
         }
         int conn = accept(sock, NULL, NULL);
         if (conn < 0) {
-            perror("lotus_tcp_create: accept");
+            lotus_diag_errno(3, "lotus.tcp", "accept failed", "lotus_tcp_create: accept", errno, NULL);
             close(sock);
             return NULL;
         }
@@ -21298,7 +21311,7 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
             return t;
         }
         if (errno != ECONNREFUSED && errno != EAGAIN) {
-            perror("lotus_tcp_create: connect");
+            lotus_diag_errno(3, "lotus.tcp", "connect failed", "lotus_tcp_create: connect", errno, NULL);
             close(sock);
             return NULL;
         }
@@ -21308,15 +21321,13 @@ lotus_tcp_t *lotus_tcp_create(const char *host, uint16_t port, int role) {
         close(sock);
         sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock < 0) {
-            perror("lotus_tcp_create: socket");
+            lotus_diag_errno(3, "lotus.tcp", "socket failed", "lotus_tcp_create: socket", errno, NULL);
             return NULL;
         }
         lotus_set_cloexec(sock);
         nanosleep(&backoff, NULL);
     }
-    fprintf(stderr,
-            "lotus_tcp_create: connect to port %u timed out\n",
-            (unsigned)port);
+    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_create: connect to port %u timed out", (unsigned)port); lotus_diag(2, "lotus.tcp", lotus_diag_m, ""); }
     close(sock);
     return NULL;
 }
@@ -21337,11 +21348,11 @@ int lotus_tcp_send(lotus_tcp_t *t, const void *buf, size_t len) {
     unsigned char header[8];
     lotus__u64_to_le((uint64_t)len, header);
     if (lotus__tcp_write_full(t->conn_fd, header, sizeof(header)) < 0) {
-        perror("lotus_tcp_send: header");
+        lotus_diag_errno(3, "lotus.tcp", "header failed", "lotus_tcp_send: header", errno, NULL);
         return -1;
     }
     if (len > 0 && lotus__tcp_write_full(t->conn_fd, buf, len) < 0) {
-        perror("lotus_tcp_send: payload");
+        lotus_diag_errno(3, "lotus.tcp", "payload failed", "lotus_tcp_send: payload", errno, NULL);
         return -1;
     }
     return 0;
@@ -21361,22 +21372,18 @@ ssize_t lotus_tcp_recv(lotus_tcp_t *t, void *buf, size_t cap) {
     }
     uint64_t len = lotus__u64_from_le(header);
     if (len > LOTUS_TCP_MAX_MSG_BYTES) {
-        fprintf(stderr,
-                "lotus_tcp_recv: framed length %llu exceeds %u\n",
-                (unsigned long long)len, LOTUS_TCP_MAX_MSG_BYTES);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_recv: framed length %llu exceeds %u", (unsigned long long)len, LOTUS_TCP_MAX_MSG_BYTES); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
         errno = EMSGSIZE;
         return -1;
     }
     if (len > (uint64_t)cap) {
-        fprintf(stderr,
-                "lotus_tcp_recv: framed length %llu exceeds caller cap %zu\n",
-                (unsigned long long)len, cap);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_recv: framed length %llu exceeds caller cap %zu", (unsigned long long)len, cap); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
         errno = EMSGSIZE;
         return -1;
     }
     if (len == 0) return 0;
     if (lotus__tcp_read_full(t->conn_fd, buf, (size_t)len) < 0) {
-        perror("lotus_tcp_recv: payload");
+        lotus_diag_errno(3, "lotus.tcp", "payload failed", "lotus_tcp_recv: payload", errno, NULL);
         return -1;
     }
     return (ssize_t)len;
@@ -21498,11 +21505,11 @@ static int lotus_inet_resolve(const char *host, uint16_t port, int socktype,
     if (gai != 0 || res == NULL) {
         if (res) freeaddrinfo(res);
         if (numeric_only) {
-            fprintf(stderr, "%s: invalid host %s\n", what, host);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "%s: invalid host %s", what, host); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
             errno = EINVAL;
             return -1;
         }
-        fprintf(stderr, "%s: resolve %s: %s\n", what, h, gai_strerror(gai));
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "%s: resolve %s: %s", what, h, gai_strerror(gai)); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
         errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
         return -1;
     }
@@ -21570,7 +21577,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * wildcard; "" was refused and still is, as no literal. */
     lotus_inet_addrs addrs;
     if (host && !*host) {
-        fprintf(stderr, "lotus_tcp_listen_socket: invalid host %s\n", host);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_tcp_listen_socket: invalid host %s", host); lotus_diag(3, "lotus.tcp", lotus_diag_m, ""); }
         errno = EINVAL;
         return -1;
     }
@@ -21580,13 +21587,13 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
     }
     int sock = socket(addrs.addr[0].ss_family, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("lotus_tcp_listen_socket: socket");
+        lotus_diag_errno(3, "lotus.tcp", "socket failed", "lotus_tcp_listen_socket: socket", errno, NULL);
         return -1;
     }
     lotus_set_cloexec(sock);
     int one = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-        perror("lotus_tcp_listen_socket: SO_REUSEADDR");
+        lotus_diag_errno(3, "lotus.tcp", "SO_REUSEADDR failed", "lotus_tcp_listen_socket: SO_REUSEADDR", errno, NULL);
         close(sock);
         return -1;
     }
@@ -21611,7 +21618,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * (`Listener { exclusive: false }` / a dedicated primitive), not
      * the default path. */
     if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
-        perror("lotus_tcp_listen_socket: bind");
+        lotus_diag_errno(3, "lotus.tcp", "bind failed", "lotus_tcp_listen_socket: bind", errno, NULL);
         close(sock);
         return -1;
     }
@@ -21625,7 +21632,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
 #define SOMAXCONN 128
 #endif
     if (listen(sock, SOMAXCONN) < 0) {
-        perror("lotus_tcp_listen_socket: listen");
+        lotus_diag_errno(3, "lotus.tcp", "listen failed", "lotus_tcp_listen_socket: listen", errno, NULL);
         close(sock);
         return -1;
     }
@@ -21673,6 +21680,305 @@ int64_t lotus_tcp_on_pool(void) {
  * on its pinned thread, publishes it via the bus, worker reads
  * on the async_io pool) and the worker can't know if the
  * upstream already set the flag. */
+#ifndef __wasm__
+/* ---- runtime diagnostics as records (GH #1592 S2) ------------------
+ *
+ * A diagnostic the runtime writes is a record in the format std::log's
+ * sinks write (crates/hale-stdlib/hl/log.hl, `__log_render`): the time
+ * (RFC 3339 UTC, to the second), the level, a logger (`lotus.<part>`),
+ * a message and logfmt fields, as logfmt by default, one JSON object
+ * under HALE_LOG_FORMAT=json, or `[LEVEL logger] msg fields` under
+ * HALE_LOG_FORMAT=text. It goes to stderr, the runtime's own stream,
+ * in one write(2). The Hale renderer and this one are held to the same
+ * bytes by a test (`runtime_records::*`), which renders one event both
+ * ways in every format. Levels are std::log's numbers: 1 INFO, 2 WARN,
+ * 3 ERROR, 4 DEBUG, 5 TRACE. */
+typedef struct { char *p; size_t len, cap; } lotus_diag_buf_t;
+
+static void lotus_diag_put(lotus_diag_buf_t *b, const char *s, size_t n) {
+    if (!b->p && b->cap == (size_t)-1) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 256;
+        while (cap < b->len + n + 1) cap *= 2;
+        char *q = realloc(b->p, cap);
+        if (!q) { free(b->p); b->p = NULL; b->cap = (size_t)-1; return; }
+        b->p = q;
+        b->cap = cap;
+    }
+    memcpy(b->p + b->len, s, n);
+    b->len += n;
+    b->p[b->len] = '\0';
+}
+
+static void lotus_diag_puts(lotus_diag_buf_t *b, const char *s) {
+    lotus_diag_put(b, s, strlen(s));
+}
+
+/* The format HALE_LOG_FORMAT names: 0 logfmt (the default, and an
+ * unknown name), 1 json, 2 text; read once. */
+static int lotus_diag_format(void) {
+    static _Atomic int fmt = -1;
+    int f = atomic_load_explicit(&fmt, memory_order_relaxed);
+    if (f >= 0) return f;
+    const char *e = getenv("HALE_LOG_FORMAT");
+    f = 0;
+    if (e && strcasecmp(e, "json") == 0) f = 1;
+    else if (e && strcasecmp(e, "text") == 0) f = 2;
+    atomic_store_explicit(&fmt, f, memory_order_relaxed);
+    return f;
+}
+
+static const char *lotus_diag_level_name(int level) {
+    switch (level) {
+    case 1: return "INFO";
+    case 2: return "WARN";
+    case 3: return "ERROR";
+    case 4: return "DEBUG";
+    case 5: return "TRACE";
+    default: return "?";
+    }
+}
+
+/* A byte a logfmt value carries bare (`__log_plain_byte`). */
+static int lotus_diag_plain(unsigned char c) {
+    return c > 32 && c != '"' && c != '=' && c != '\\' && c != 127;
+}
+
+/* `key=value` as `std::log::kv` renders it: bare when every byte is
+ * plain (an empty value too), else quoted, with `\\`, `\"`, `\n`, `\r`,
+ * `\t` and `\u00XX` for any other control byte. */
+static void lotus_diag_kv(lotus_diag_buf_t *b, const char *key, const char *v) {
+    static const char hex[] = "0123456789abcdef";
+    lotus_diag_puts(b, key);
+    lotus_diag_puts(b, "=");
+    const unsigned char *c = (const unsigned char *)v;
+    while (*c && lotus_diag_plain(*c)) c++;
+    if (!*c) { lotus_diag_puts(b, v); return; }
+    lotus_diag_puts(b, "\"");
+    for (c = (const unsigned char *)v; *c; c++) {
+        if (*c == '\\') lotus_diag_puts(b, "\\\\");
+        else if (*c == '"') lotus_diag_puts(b, "\\\"");
+        else if (*c == '\n') lotus_diag_puts(b, "\\n");
+        else if (*c == '\r') lotus_diag_puts(b, "\\r");
+        else if (*c == '\t') lotus_diag_puts(b, "\\t");
+        else if (*c < 32 || *c == 127) {
+            char u[6] = { '\\', 'u', '0', '0', hex[*c / 16], hex[*c % 16] };
+            lotus_diag_put(b, u, 6);
+        } else lotus_diag_put(b, (const char *)c, 1);
+    }
+    lotus_diag_puts(b, "\"");
+}
+
+static int lotus_diag_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+/* `std::json::escape_string`'s bytes. */
+static void lotus_diag_json_str(lotus_diag_buf_t *b, const char *s, size_t n) {
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\\') lotus_diag_puts(b, "\\\\");
+        else if (c == '"') lotus_diag_puts(b, "\\\"");
+        else if (c == 8) lotus_diag_puts(b, "\\b");
+        else if (c == 12) lotus_diag_puts(b, "\\f");
+        else if (c == 10) lotus_diag_puts(b, "\\n");
+        else if (c == 13) lotus_diag_puts(b, "\\r");
+        else if (c == 9) lotus_diag_puts(b, "\\t");
+        else if (c < 32) {
+            char u[6] = { '\\', 'u', '0', '0', hex[c / 16], hex[c % 16] };
+            lotus_diag_put(b, u, 6);
+        } else lotus_diag_put(b, (const char *)&s[i], 1);
+    }
+}
+
+/* The logfmt `fields` as JSON members, each `,"k":"v"`
+ * (`__log_fields_json`). */
+static void lotus_diag_fields_json(lotus_diag_buf_t *b, const char *f) {
+    size_t n = strlen(f), i = 0;
+    while (i < n) {
+        while (i < n && f[i] == ' ') i++;
+        if (i >= n) break;
+        size_t ks = i;
+        while (i < n && f[i] != '=' && f[i] != ' ') i++;
+        size_t ke = i;
+        lotus_diag_buf_t v = { 0 };
+        if (i < n && f[i] == '=') {
+            i++;
+            if (i < n && f[i] == '"') {
+                i++;
+                while (i < n && f[i] != '"') {
+                    if (f[i] == '\\' && i + 1 < n) {
+                        char e = f[i + 1];
+                        if (e == 'n') { lotus_diag_puts(&v, "\n"); i += 2; continue; }
+                        if (e == 'r') { lotus_diag_puts(&v, "\r"); i += 2; continue; }
+                        if (e == 't') { lotus_diag_puts(&v, "\t"); i += 2; continue; }
+                        if (e == 'u' && i + 5 < n) {
+                            char code = (char)(lotus_diag_hex(f[i + 4]) * 16 + lotus_diag_hex(f[i + 5]));
+                            if (code) lotus_diag_put(&v, &code, 1);
+                            i += 6;
+                            continue;
+                        }
+                        lotus_diag_put(&v, &e, 1);
+                        i += 2;
+                        continue;
+                    }
+                    lotus_diag_put(&v, &f[i], 1);
+                    i++;
+                }
+                i++;
+            } else {
+                size_t vs = i;
+                while (i < n && f[i] != ' ') i++;
+                lotus_diag_put(&v, &f[vs], i - vs);
+            }
+        }
+        lotus_diag_puts(b, ",\"");
+        lotus_diag_json_str(b, &f[ks], ke - ks);
+        lotus_diag_puts(b, "\":\"");
+        if (v.p) lotus_diag_json_str(b, v.p, v.len);
+        lotus_diag_puts(b, "\"");
+        free(v.p);
+    }
+}
+
+/* One record, rendered in `format` (0 logfmt, 1 json, 2 text) at unix
+ * second `ts`, into a fresh string the caller frees. */
+static char *lotus_diag_render(int format, int level, const char *logger, const char *msg,
+                               const char *fields, int64_t ts) {
+    lotus_diag_buf_t b = { 0 };
+    if (!logger) logger = "lotus";
+    if (!msg) msg = "";
+    if (!fields) fields = "";
+    char when[32];
+    time_t t = (time_t)ts;
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    char word[8];
+    const char *name = lotus_diag_level_name(level);
+    size_t k = 0;
+    for (; name[k] && k < sizeof word - 1; k++) word[k] = (char)tolower((unsigned char)name[k]);
+    word[k] = '\0';
+    if (format == 2) {
+        lotus_diag_puts(&b, "[");
+        lotus_diag_puts(&b, name);
+        lotus_diag_puts(&b, " ");
+        lotus_diag_puts(&b, logger);
+        lotus_diag_puts(&b, "] ");
+        lotus_diag_puts(&b, msg);
+        if (*fields) { lotus_diag_puts(&b, " "); lotus_diag_puts(&b, fields); }
+    } else if (format == 1) {
+        lotus_diag_puts(&b, "{\"time\":\"");
+        lotus_diag_puts(&b, when);
+        lotus_diag_puts(&b, "\",\"level\":\"");
+        lotus_diag_puts(&b, word);
+        lotus_diag_puts(&b, "\",\"logger\":\"");
+        lotus_diag_json_str(&b, logger, strlen(logger));
+        lotus_diag_puts(&b, "\",\"msg\":\"");
+        lotus_diag_json_str(&b, msg, strlen(msg));
+        lotus_diag_puts(&b, "\"");
+        lotus_diag_fields_json(&b, fields);
+        lotus_diag_puts(&b, "}");
+    } else {
+        lotus_diag_puts(&b, "time=");
+        lotus_diag_puts(&b, when);
+        lotus_diag_puts(&b, " level=");
+        lotus_diag_puts(&b, word);
+        lotus_diag_puts(&b, " ");
+        lotus_diag_kv(&b, "logger", logger);
+        lotus_diag_puts(&b, " ");
+        lotus_diag_kv(&b, "msg", msg);
+        if (*fields) { lotus_diag_puts(&b, " "); lotus_diag_puts(&b, fields); }
+    }
+    return b.p;
+}
+
+/* Write one runtime record to stderr. `fields` is logfmt text, built
+ * with `lotus_diag_field` or empty. */
+void lotus_diag(int level, const char *logger, const char *msg, const char *fields) {
+    char *line = lotus_diag_render(lotus_diag_format(), level, logger, msg, fields, (int64_t)time(NULL));
+    if (!line) return;
+    size_t n = strlen(line);
+    line[n] = '\n';   /* the buffer always holds one byte past the text */
+    ssize_t w = write(2, line, n + 1);
+    (void)w;
+    free(line);
+}
+
+/* Append ` key=value` to the logfmt fields in `buf` (of `cap` bytes),
+ * quoted as `std::log::kv` quotes it; a field that does not fit is
+ * dropped whole. */
+void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value) {
+    lotus_diag_buf_t b = { 0 };
+    if (buf[0]) lotus_diag_puts(&b, " ");
+    lotus_diag_kv(&b, key, value ? value : "");
+    size_t have = strlen(buf);
+    if (b.p && have + b.len < cap) memcpy(buf + have, b.p, b.len + 1);
+    free(b.p);
+}
+
+void lotus_diag_field_int(char *buf, size_t cap, const char *key, int64_t value) {
+    char v[32];
+    snprintf(v, sizeof v, "%lld", (long long)value);
+    lotus_diag_field(buf, cap, key, v);
+}
+
+/* A failed call's record: what failed (`op`, the C function and step
+ * it used to print as `fn: step`), its errno as `errno=<n>
+ * error="<strerror>"`, and any `extra` fields. */
+void lotus_diag_errno(int level, const char *logger, const char *msg, const char *op, int err,
+                      const char *extra) {
+    char f[512];
+    f[0] = '\0';
+    if (op) lotus_diag_field(f, sizeof f, "op", op);
+    lotus_diag_field_int(f, sizeof f, "errno", err);
+    lotus_diag_field(f, sizeof f, "error", strerror(err));
+    if (extra && *extra) {
+        size_t have = strlen(f);
+        snprintf(f + have, sizeof f - have, " %s", extra);
+    }
+    lotus_diag(level, logger, msg, f);
+}
+
+/* The renderer's test surface, reachable by `@ffi("c")`: one record at
+ * unix second `ts` in the named format ("logfmt", "json", "text"),
+ * written to stdout with a newline, for a test to hold beside the Hale
+ * sinks' output. */
+void lotus_diag_render_to_stdout(const char *format, int64_t level, const char *logger,
+                                 const char *msg, const char *fields, int64_t ts) {
+    int f = 0;
+    if (format && strcmp(format, "json") == 0) f = 1;
+    else if (format && strcmp(format, "text") == 0) f = 2;
+    char *line = lotus_diag_render(f, (int)level, logger, msg, fields, ts);
+    if (!line) return;
+    size_t n = strlen(line);
+    line[n] = '\n';
+    fflush(stdout);
+    ssize_t w = write(1, line, n + 1);
+    (void)w;
+    free(line);
+}
+
+#else /* __wasm__: no stderr to write to (fprintf is a no-op there too) */
+void lotus_diag(int level, const char *logger, const char *msg, const char *fields) {
+    (void)level; (void)logger; (void)msg; (void)fields;
+}
+void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value) {
+    (void)buf; (void)cap; (void)key; (void)value;
+}
+void lotus_diag_field_int(char *buf, size_t cap, const char *key, int64_t value) {
+    (void)buf; (void)cap; (void)key; (void)value;
+}
+void lotus_diag_errno(int level, const char *logger, const char *msg, const char *op, int err,
+                      const char *extra) {
+    (void)level; (void)logger; (void)msg; (void)op; (void)err; (void)extra;
+}
+#endif /* __wasm__ */
+
 void lotus_io_set_nonblock(int fd) {
     if (fd < 0) return;
     int flags = fcntl(fd, F_GETFL, 0);
@@ -21895,7 +22201,7 @@ int lotus_tcp_accept_one(int listen_fd) {
             }
             if (!requested) {
                 errno = err;
-                perror("lotus_tcp_accept_one: accept");
+                lotus_diag_errno(3, "lotus.tcp", "accept failed", "lotus_tcp_accept_one: accept", errno, NULL);
             }
             errno = err;
             /* -2: a failure that ends this one connection and not the
@@ -22097,7 +22403,7 @@ static int lotus_tcp_dial(const char *host, uint16_t port,
         if (!refused) {
             /* No address refused: the last failure is the answer. */
             errno = err;
-            perror("lotus_tcp_connect: connect");
+            lotus_diag_errno(3, "lotus.tcp", "connect failed", "lotus_tcp_connect: connect", errno, NULL);
             return -1;
         }
         int64_t now = lotus_now_mono_ns();
@@ -22162,7 +22468,7 @@ static int lotus_unix_addr(const char *path, struct sockaddr_un *addr) {
         return -1;
     }
     if (strlen(path) >= sizeof(addr->sun_path)) {
-        fprintf(stderr, "lotus_unix: socket path too long: %s\n", path);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_unix: socket path too long: %s", path); lotus_diag(3, "lotus.unix", lotus_diag_m, ""); }
         errno = ENAMETOOLONG;
         return -1;
     }
@@ -22265,7 +22571,7 @@ int lotus_unix_listen_socket(const char *path) {
     if (lotus_unix_addr(path, &addr) < 0) return -1;
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("lotus_unix_listen_socket: socket");
+        lotus_diag_errno(3, "lotus.unix", "socket failed", "lotus_unix_listen_socket: socket", errno, NULL);
         return -1;
     }
     lotus_set_cloexec(sock);
@@ -22278,7 +22584,7 @@ int lotus_unix_listen_socket(const char *path) {
             int held = connect(probe, (struct sockaddr *)&addr, sizeof(addr)) == 0;
             close(probe);
             if (held) {
-                fprintf(stderr, "lotus_unix_listen_socket: %s is held by a live process\n", path);
+                { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_unix_listen_socket: %s is held by a live process", path); lotus_diag(3, "lotus.unix", lotus_diag_m, ""); }
                 close(sock);
                 errno = EADDRINUSE;
                 return -1;
@@ -22288,7 +22594,7 @@ int lotus_unix_listen_socket(const char *path) {
     (void)unlink(path);
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         int err = errno;
-        perror("lotus_unix_listen_socket: bind");
+        lotus_diag_errno(3, "lotus.unix", "bind failed", "lotus_unix_listen_socket: bind", errno, NULL);
         close(sock);
         errno = err;
         return -1;
@@ -22298,7 +22604,7 @@ int lotus_unix_listen_socket(const char *path) {
      * accept loop to catch up). */
     if (listen(sock, SOMAXCONN) < 0) {
         int err = errno;
-        perror("lotus_unix_listen_socket: listen");
+        lotus_diag_errno(3, "lotus.unix", "listen failed", "lotus_unix_listen_socket: listen", errno, NULL);
         close(sock);
         (void)unlink(path);
         errno = err;
@@ -22316,7 +22622,7 @@ int lotus_unix_connect_wait(const char *path, int64_t wait_ns) {
     for (;;) {
         int sock = socket(AF_UNIX, SOCK_STREAM, 0);
         if (sock < 0) {
-            perror("lotus_unix_connect: socket");
+            lotus_diag_errno(3, "lotus.unix", "socket failed", "lotus_unix_connect: socket", errno, NULL);
             return -1;
         }
         lotus_set_cloexec(sock);
@@ -22329,7 +22635,7 @@ int lotus_unix_connect_wait(const char *path, int64_t wait_ns) {
          * same "not up yet" a refused TCP connect means. */
         if (err != ECONNREFUSED && err != ENOENT && err != EAGAIN) {
             errno = err;
-            perror("lotus_unix_connect: connect");
+            lotus_diag_errno(3, "lotus.unix", "connect failed", "lotus_unix_connect: connect", errno, NULL);
             return -1;
         }
         if (lotus_now_mono_ns() >= deadline || lotus_process_draining()) {
@@ -22611,18 +22917,18 @@ int lotus_udp_bind(const char *host, uint16_t port) {
     }
     int sock = socket(addrs.addr[0].ss_family, SOCK_DGRAM, 0);
     if (sock < 0) {
-        perror("lotus_udp_bind: socket");
+        lotus_diag_errno(3, "lotus.udp", "socket failed", "lotus_udp_bind: socket", errno, NULL);
         return -1;
     }
     lotus_set_cloexec(sock);
     int one = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-        perror("lotus_udp_bind: SO_REUSEADDR");
+        lotus_diag_errno(3, "lotus.udp", "SO_REUSEADDR failed", "lotus_udp_bind: SO_REUSEADDR", errno, NULL);
         close(sock);
         return -1;
     }
     if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
-        perror("lotus_udp_bind: bind");
+        lotus_diag_errno(3, "lotus.udp", "bind failed", "lotus_udp_bind: bind", errno, NULL);
         close(sock);
         return -1;
     }
@@ -22660,7 +22966,7 @@ int lotus_udp_sendto(int fd, const char *host, uint16_t port,
             memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
             addrs.len[0] = sizeof(struct sockaddr_in6);
         } else {
-            fprintf(stderr, "lotus_udp_sendto: %s is not an address of the socket's family\n", host);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_udp_sendto: %s is not an address of the socket's family", host); lotus_diag(3, "lotus.udp", lotus_diag_m, ""); }
             errno = EINVAL;
             return -1;
         }
@@ -23384,7 +23690,7 @@ int lotus_tcp_send_str(int fd, const char *msg) {
             if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
         lotus_io_status_set(errno ? errno : EIO);
-        perror("lotus_tcp_send_str: write");
+        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_str: write", errno, NULL);
         return -1;
     }
     return 0;
@@ -23491,7 +23797,7 @@ static int lotus_tcp_send_bytes_impl(int fd, const void *bytes_ptr, int64_t unti
             }
         }
         lotus_io_status_set(errno ? errno : EIO);
-        perror("lotus_tcp_send_bytes: write");
+        lotus_diag_errno(3, "lotus.tcp", "write failed", "lotus_tcp_send_bytes: write", errno, NULL);
         return -1;
     }
     return 0;
@@ -25269,10 +25575,8 @@ static void lotus_bus_early_buffer(lotus_bus_remote_entry_t *entry,
         entry->pend_bytes -= old->len;
         entry->ctr_dropped_early++;
         if (lotus_bus_log_deserialize_drop_enabled()) {
-            dprintf(2,
-                    "lotus_bus reader: early-ingress buffer full on "
-                    "`%s` — evicting oldest (%zu bytes)\n",
-                    entry->subject, old->len);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus reader: early-ingress buffer full on "
+                    "`%s` — evicting oldest (%zu bytes)", entry->subject, old->len); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         }
         free(old);
     }
@@ -25326,13 +25630,11 @@ static void lotus_bus_early_flush(lotus_bus_remote_entry_t *entry) {
         if (struct_size <= 0) {
             entry->ctr_dropped_early++;
             if (lotus_bus_log_deserialize_drop_enabled()) {
-                dprintf(2,
-                        "lotus_bus reader: early-ingress drop on `%s` "
-                        "(%s) — %zu-byte payload\n",
-                        entry->subject,
+                { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus reader: early-ingress drop on `%s` "
+                        "(%s) — %zu-byte payload", entry->subject,
                         deserialize ? "deserialize failed"
                                     : "no deserializer registered",
-                        m->len);
+                        m->len); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
             }
             free(m);
             continue;
@@ -25572,11 +25874,9 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                     npeers++;
                 } else {
                     if (!warned_full) {
-                        fprintf(stderr,
-                                "lotus_bus_unix_serve: %s: %d peers already "
-                                "connected; refusing another\n",
-                                entry->subject ? entry->subject : "?",
-                                LOTUS_UNIX_MAX_PEERS);
+                        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_unix_serve: %s: %d peers already "
+                                "connected; refusing another", entry->subject ? entry->subject : "?",
+                                LOTUS_UNIX_MAX_PEERS); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
                         warned_full = 1;
                     }
                     close(conn);
@@ -25802,14 +26102,12 @@ static void lotus_bus_udp_log_sendto_error(const char *subject, int err) {
         g_udp_sendto_err_seen[g_udp_sendto_err_count++] = err;
     }
     pthread_mutex_unlock(&g_udp_sendto_err_lock);
-    fprintf(stderr,
-            "[bus] udp sendto failed (subject=\"%s\", errno=%d/%s) "
+    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "[bus] udp sendto failed (subject=\"%s\", errno=%d/%s) "
             "— logged once per errno; check path MTU "
             "(EMSGSIZE → reduce payload or enable jumbo / "
             "IP_MTU_DISCOVER=IP_PMTUDISC_DONT) or kernel send "
-            "buffer (ENOBUFS → bump SO_SNDBUF)\n",
-            subject ? subject : "?", err,
-            strerror(err) ? strerror(err) : "?");
+            "buffer (ENOBUFS → bump SO_SNDBUF)", subject ? subject : "?", err,
+            strerror(err) ? strerror(err) : "?"); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
 }
 
 /* 2026-05-27: SO_RCVBUF size for UDP reader sockets. Env-
@@ -25872,14 +26170,12 @@ static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
                                         const char *host_port) {
     struct sockaddr_in dest;
     if (lotus_bus_parse_udp_addr(host_port, &dest) != 0) {
-        fprintf(stderr,
-                "lotus_bus udp listener: invalid host:port %s\n",
-                host_port);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus udp listener: invalid host:port %s", host_port); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return -1;
     }
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        perror("lotus_bus udp listener: socket");
+        lotus_diag_errno(3, "lotus.bus", "socket failed", "lotus_bus udp listener: socket", errno, NULL);
         return -1;
     }
     lotus_set_cloexec(fd);
@@ -25935,7 +26231,7 @@ static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
      * NASDAQ ITCH-Recovery client samples. */
     bind_addr.sin_addr = dest.sin_addr;
     if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        perror("lotus_bus udp listener: bind");
+        lotus_diag_errno(3, "lotus.bus", "bind failed", "lotus_bus udp listener: bind", errno, NULL);
         int save = errno;
         close(fd);
         errno = save;
@@ -25948,7 +26244,7 @@ static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
         mreq.imr_interface.s_addr = htonl(INADDR_ANY);
         if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                        &mreq, sizeof(mreq)) < 0) {
-            perror("lotus_bus udp listener: IP_ADD_MEMBERSHIP");
+            lotus_diag_errno(3, "lotus.bus", "IP_ADD_MEMBERSHIP failed", "lotus_bus udp listener: IP_ADD_MEMBERSHIP", errno, NULL);
             int save = errno;
             close(fd);
             errno = save;
@@ -26036,10 +26332,8 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
             if (lotus_bus_log_deserialize_drop_enabled()) {
-                dprintf(2,
-                        "lotus_bus udp reader: drop on `%s` "
-                        "(deserialize returned %zd) — %zd-byte wire payload\n",
-                        args->entry->subject, struct_size, n);
+                { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus udp reader: drop on `%s` "
+                        "(deserialize returned %zd) — %zd-byte wire payload", args->entry->subject, struct_size, n); lotus_diag(2, "lotus.bus", lotus_diag_m, ""); }
             }
             continue;
         }
@@ -26376,8 +26670,7 @@ int lotus_bus_register_remote(const char *subject,
                               const char *url,
                               int role) {
     if (!subject || !url) {
-        fprintf(stderr,
-                "lotus_bus_register_remote: null subject or url\n");
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_remote: null subject or url"); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return -1;
     }
     /* Recognized schemes:
@@ -26399,15 +26692,12 @@ int lotus_bus_register_remote(const char *subject,
         is_udp = 1;
         path   = url + udp_len;
     } else {
-        fprintf(stderr,
-                "lotus_bus_register_remote: unsupported URL scheme "
-                "(recognize unix:// and udp://): %s\n",
-                url);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_remote: unsupported URL scheme "
+                "(recognize unix:// and udp://): %s", url); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return -1;
     }
     if (*path == '\0') {
-        fprintf(stderr,
-                "lotus_bus_register_remote: empty path in %s\n", url);
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_remote: empty path in %s", url); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return -1;
     }
 
@@ -26461,7 +26751,7 @@ int lotus_bus_register_remote(const char *subject,
             if (pthread_create(&e->reader_thread, NULL,
                                lotus_bus_udp_reader_thread_main, args) != 0)
             {
-                perror("lotus_bus_register_remote: udp pthread_create");
+                lotus_diag_errno(3, "lotus.bus", "udp pthread_create failed", "lotus_bus_register_remote: udp pthread_create", errno, NULL);
                 free(args);
                 goto fail_close_udp;
             }
@@ -26472,14 +26762,13 @@ int lotus_bus_register_remote(const char *subject,
              * register time. Per-publish dispatch does
              * sendto(fd, payload, udp_dest). */
             if (lotus_bus_parse_udp_addr(path, &e->udp_dest) != 0) {
-                fprintf(stderr,
-                        "lotus_bus_register_remote: invalid udp:// "
-                        "host:port %s\n", path);
+                { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_remote: invalid udp:// "
+                        "host:port %s", path); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
                 goto fail_pop_entry;
             }
             int fd = socket(AF_INET, SOCK_DGRAM, 0);
             if (fd < 0) {
-                perror("lotus_bus_register_remote: udp socket");
+                lotus_diag_errno(3, "lotus.bus", "udp socket failed", "lotus_bus_register_remote: udp socket", errno, NULL);
                 goto fail_pop_entry;
             }
             lotus_set_cloexec(fd);
@@ -26492,7 +26781,7 @@ int lotus_bus_register_remote(const char *subject,
             any.sin_addr.s_addr = htonl(INADDR_ANY);
             any.sin_port        = 0;
             if (bind(fd, (struct sockaddr *)&any, sizeof(any)) < 0) {
-                perror("lotus_bus_register_remote: udp bind");
+                lotus_diag_errno(3, "lotus.bus", "udp bind failed", "lotus_bus_register_remote: udp bind", errno, NULL);
                 close(fd);
                 goto fail_pop_entry;
             }
@@ -26528,7 +26817,7 @@ int lotus_bus_register_remote(const char *subject,
         lotus_mark_multithreaded();
         if (pthread_create(&e->reader_thread, NULL,
                            lotus_bus_reader_thread_main, args) != 0) {
-            perror("lotus_bus_register_remote: pthread_create");
+            lotus_diag_errno(3, "lotus.bus", "pthread_create failed", "lotus_bus_register_remote: pthread_create", errno, NULL);
             free(args);
             lotus_transport_destroy(e->transport);
             e->transport = NULL;
@@ -26673,7 +26962,7 @@ int64_t lotus_bus_transport_spawn_server(int64_t handle) {
     lotus_mark_multithreaded();
     if (pthread_create(&e->reader_thread, NULL,
                        lotus_bus_reader_thread_main, args) != 0) {
-        perror("lotus_bus_transport_spawn_server: pthread_create");
+        lotus_diag_errno(3, "lotus.bus", "pthread_create failed", "lotus_bus_transport_spawn_server: pthread_create", errno, NULL);
         free(args);
         return -1;
     }
@@ -26856,9 +27145,8 @@ void lotus_bus_register_remote_adapter(
                     void *bytes))
 {
     if (!subject || !self_data || !send_fn) {
-        fprintf(stderr,
-                "lotus_bus_register_remote_adapter: null subject, "
-                "self_data, or send_fn\n");
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_remote_adapter: null subject, "
+                "self_data, or send_fn"); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return;
     }
     lotus_bus_remote_entry_t *e = lotus_bus_remote_entry_push(
@@ -26886,9 +27174,8 @@ void lotus_bus_register_codec(
     void *(*decode_fn)(void *self, void *bytes))
 {
     if (!subject || !codec_self || !encode_fn || !decode_fn) {
-        fprintf(stderr,
-                "lotus_bus_register_codec: null subject, codec_self, "
-                "or method pointer\n");
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_codec: null subject, codec_self, "
+                "or method pointer"); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return;
     }
     for (size_t i = 0; i < g_bus_remote_count; i++) {
@@ -26900,10 +27187,8 @@ void lotus_bus_register_codec(
         e->codec_decode_fn = decode_fn;
         return;
     }
-    fprintf(stderr,
-            "lotus_bus_register_codec: no remote binding for `%s` — "
-            "codec attachment ignored\n",
-            subject);
+    { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_register_codec: no remote binding for `%s` — "
+            "codec attachment ignored", subject); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
 }
 
 /* Trim leading + trailing whitespace in-place. Returns a pointer
@@ -26924,9 +27209,7 @@ void lotus_bus_load_config(const char *path) {
     if (!path) return;
     FILE *fp = fopen(path, "r");
     if (!fp) {
-        fprintf(stderr,
-                "lotus_bus_load_config: cannot open %s: %s\n",
-                path, strerror(errno));
+        { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_load_config: cannot open %s: %s", path, strerror(errno)); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
         return;
     }
     char line[1024];
@@ -26941,9 +27224,7 @@ void lotus_bus_load_config(const char *path) {
 
         char *eq = strchr(trimmed, '=');
         if (!eq) {
-            fprintf(stderr,
-                    "lotus_bus_load_config: %s:%d: missing '=' in '%s'\n",
-                    path, lineno, trimmed);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_load_config: %s:%d: missing '=' in '%s'", path, lineno, trimmed); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
             continue;
         }
         *eq = '\0';
@@ -26956,10 +27237,8 @@ void lotus_bus_load_config(const char *path) {
          * suffix. */
         char *colon = strrchr(rest, ':');
         if (!colon || colon == rest) {
-            fprintf(stderr,
-                    "lotus_bus_load_config: %s:%d: missing ':role' "
-                    "suffix on '%s'\n",
-                    path, lineno, rest);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_load_config: %s:%d: missing ':role' "
+                    "suffix on '%s'", path, lineno, rest); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
             continue;
         }
         *colon = '\0';
@@ -26972,10 +27251,8 @@ void lotus_bus_load_config(const char *path) {
         } else if (strcmp(role_str, "connect") == 0) {
             role_val = LOTUS_TRANSPORT_CONNECT;
         } else {
-            fprintf(stderr,
-                    "lotus_bus_load_config: %s:%d: unknown role "
-                    "'%s' (expected 'listen' or 'connect')\n",
-                    path, lineno, role_str);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_load_config: %s:%d: unknown role "
+                    "'%s' (expected 'listen' or 'connect')", path, lineno, role_str); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
             continue;
         }
         /* #227: a config-requested route that cannot be realized
@@ -26987,10 +27264,8 @@ void lotus_bus_load_config(const char *path) {
          * silent message drops, which is the failure mode this
          * check exists to kill.) */
         if (lotus_bus_register_remote(subject, url, role_val) != 0) {
-            fprintf(stderr,
-                    "lotus_bus_load_config: %s:%d: route could not "
-                    "be realized\n",
-                    path, lineno);
+            { char lotus_diag_m[1024]; snprintf(lotus_diag_m, sizeof lotus_diag_m, "lotus_bus_load_config: %s:%d: route could not "
+                    "be realized", path, lineno); lotus_diag(3, "lotus.bus", lotus_diag_m, ""); }
             fclose(fp);
             lotus_bus_binding_fail(subject, url);
         }
