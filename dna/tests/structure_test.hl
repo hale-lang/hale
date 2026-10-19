@@ -323,15 +323,15 @@ locus App {
 
         // ---- init proposes them
         self.repo = described;
-        let init = self.dna("init\n.");
-        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+        let init = dna::grafted(self.repo, ".\n--attach");
+        std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
         std::test::assert(std::str::contains(init.stdout, "; " + to_string(h.count) + " proposal(s)"), "and proposes its holes and their mandates: " + init.stdout);
 
         // ---- an application's init reads its graph too (seed/structure-2)
         let appdir = self.make_app("api", scratch);
         self.repo = appdir;
-        let appinit = self.dna("init\n.");
-        std::test::assert_eq_int(appinit.code, 0, "hale dna init on an application: " + appinit.stdout + appinit.stderr);
+        let appinit = dna::grafted(self.repo, ".\n--attach");
+        std::test::assert_eq_int(appinit.code, 0, "graft on an application: " + appinit.stdout + appinit.stderr);
         std::test::assert(std::str::contains(appinit.stdout, "graph   4 node(s), 2 edge(s):") && std::str::contains(appinit.stdout, "1 purpose") && std::str::contains(appinit.stdout, "1 seed, 2 contract") && std::str::contains(appinit.stdout, "6 proposal(s)"), "the application's graph and its holes: " + appinit.stdout);
         std::test::assert(std::str::contains(appinit.stdout, "seeded  using (7 practice(s)") && std::str::contains(appinit.stdout, "seeded  library ("), "with the using practices and the library, as before: " + appinit.stdout);
         let nodes = record_names(appdir, "graph.node");

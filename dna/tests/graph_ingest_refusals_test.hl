@@ -48,6 +48,12 @@ fn repository(root: String, files: String) -> String {
 }
 
 fn init(repo: String) -> dna::RunResult {
+    return dna::grafted(repo, ".\n--attach\n--no-library");
+}
+
+// `hale dna init .` on a repository whose birth a refusal left unfinished:
+// the record is born, so it is no graft again, and init finishes it.
+fn init_again(repo: String) -> dna::RunResult {
     return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init . --no-library\nsh\n" + repo + "\n" + toolchain());
 }
 
@@ -121,7 +127,7 @@ locus App {
         std::io::fs::write_file(refused + "/DIRECTION.md", "# Direction\n\n- `axiom` **Now it has a name.** And words after it.\n") or discard;
         let fixed = dna::run_tool("sh\n-c\ncd \"$1\" && git commit -qam named\nsh\n" + refused);
         std::test::assert_eq_int(fixed.code, 0, "committed: " + fixed.stderr);
-        let r2 = init(refused);
+        let r2 = init_again(refused);
         std::test::assert_eq_int(r2.code, 0, "init runs again: " + r2.stdout + r2.stderr);
         let rr = rows(refused);
         // ruling 11: a repository's application (its compose services) is

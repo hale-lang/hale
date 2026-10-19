@@ -4402,7 +4402,8 @@ The live half is memory's, projected from the record by the spine
   rows wait for the genesis memory confirms before they are written into
   the record.
 - **Every other organism is grafted from the habitat** (GH #1653).
-  `hale habitat graft <dir> [--attach] [--no-library]` births an
+  `hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+  [--with <pack>]` births an
   organism as the habitat's child: a new application at `<dir>`, or with
   `--attach` the application or repository already there. An attached
   application's organism is its workspace's: the manifest the birth
@@ -4518,7 +4519,11 @@ The live half is memory's, projected from the record by the spine
   `backends`), and the `standard` pack is proposed to the child's Board
   (`--no-pack` leaves it for `hale dna pack apply standard`, as
   `--no-library` leaves the library: a fixture that counts the record's
-  requests says so).
+  requests says so). `--with <pack> [--set <param>=<value>]… [--as
+  <who>]` proposes a nursery pack as well, planned on the holes the
+  birth proposed (`hale dna pack apply <pack> --on-holes`), so one
+  `review all approve` ratifies the starting organization whole; a
+  pack the holes refuse is the graft's failing exit, its organism born.
   `hale dna new` and `hale dna init` still birth an organism with no
   parent until graft replaces them.
 - **A test's organisms are grafted too** (GH #1653). A DNA fixture

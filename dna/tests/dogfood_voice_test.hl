@@ -92,7 +92,7 @@ locus App {
     // `hale dna init` in the project: the record is born in memory (GH
     // #1590), the owner's, so it keeps the owner's DSN
     fn init() -> dna::RunResult {
-        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.owner + "\n" + toolchain() + "\ndna\ninit\n.");
+        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.owner + "\n" + dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach\n--no-pack"));
     }
     // `hale dna work <args>` in the project, against the head; its exit code checked.
     fn work_argv(args: String) -> String {

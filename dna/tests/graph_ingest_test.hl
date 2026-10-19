@@ -117,8 +117,8 @@ locus App {
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
 
         // ---- init on the repository: no application at its root
-        let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
-        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+        let init = dna::grafted(repo, ".\n--attach");
+        std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
         std::test::assert(std::str::contains(init.stdout, "graph   151 node(s)"), "and says what it read: " + init.stdout);
         std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 5 process, 5 seed, 6 contract, 96 noun, 3 deployment, 7 gate, 7 document, 4 witness, 0 position, 0 work"), "by kind: " + init.stdout);
 
@@ -189,10 +189,10 @@ locus App {
         let odd = scratch + "/odd";
         let copies = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d\" && cp -r \"$3/dna/tests/onboarding/voice/.\" \"$d/\" && (cd \"$d\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice && mkdir -p dna/org) || exit 1; done && printf 'fn operational_roles() -> String {\\n    return \"support on-call support\";\\n}\\n' > \"$1/dna/org/structure.hl\" && printf 'fn operational_roles() -> String {\\n    return \"oncall\";\\n}\\n' > \"$2/dna/org/structure.hl\"\nsh\n" + opted + "\n" + odd + "\n" + source());
         std::test::assert_eq_int(copies.code, 0, "two copies with a structure policy each: " + copies.stderr);
-        let with_roles = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + opted + "\n" + toolchain());
+        let with_roles = dna::grafted(opted, ".\n--attach");
         std::test::assert_eq_int(with_roles.code, 0, "init with roles: " + with_roles.stdout + with_roles.stderr);
         std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 52 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
-        let refused = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + odd + "\n" + toolchain());
+        let refused = dna::grafted(odd, ".\n--attach");
         std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "dna/org/structure.hl names `oncall`, which is not an operational role"), "a word that is no role is refused: " + refused.stdout + refused.stderr);
         std::test::assert_eq_str(seeded(odd), "", "and nothing is seeded: the record holds its birth alone");
 
