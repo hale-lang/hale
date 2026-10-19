@@ -4479,6 +4479,70 @@ test that renders one event both ways in every format
 structural-failure and panic lines, and the opt-in debugging counters
 (`LOTUS_BUS_*`, `LOTUS_ARENA_*`) keep their text. (GH #1592, S2.)
 
+## Observe backends
+
+A `std::observe::Scrape` param of the main locus (`spec/semantics.md`
+§ "Observe backends") serves the Prometheus text exposition
+(`text/plain; version=0.0.4`) at its `path` on its own listener. A scrape renders a snapshot of one process-wide series
+table, sorted by family (namespace, then name), each family's
+`# TYPE` line once, its series in the order they registered:
+
+- **Every live `std::metrics::Registry`.** A Registry registers at
+  birth and leaves at dissolve; each handle (`Counter`, `Gauge`,
+  `Histogram`) registers its series when a factory makes it and writes
+  every update to the table as well as to the Registry's own map. The
+  table is the runtime's (`lotus_observe_*`, one lock), so a scrape on
+  the backend's thread never reaches into a locus another thread may be
+  dissolving. A series renders through `std::metrics`'s own renderers,
+  so it reads as `Registry.render()` writes it. A series id carries a
+  generation: a handle that outlives its Registry writes nothing.
+- **The runtime's own, under the `hale` namespace:**
+  `hale_process_resident_memory_bytes`, `hale_draining` (0 or 1),
+  `hale_loci_live`, `hale_restarts_total`, `hale_failures_total` (a
+  failure delivered to a handler), per cooperative pool
+  `hale_pool_queue_depth{pool}` and `hale_pool_parked_coroutines{pool}`,
+  and per program topic `hale_topic_published_total{topic}`,
+  `hale_topic_delivered_total{topic}` and
+  `hale_topic_published_bytes_total{topic}` (the runtime's own
+  `__`-prefixed plumbing topics are left out).
+
+**Counters-only mode.** The topic and locus counts are the observation
+probes' (§ "Native observation emission"). A program holding a
+scrape defines `lotus_observe_metrics` (codegen emits it), and the
+runtime, reading it in the constructor that resolves `lotus_obs_live`,
+runs the probes into a private segment: the same layout in the
+process's own memory, with no rings, no shared-memory segment, no
+registration file and no heartbeat thread, so nothing can attach and
+nothing is emitted. `LOTUS_OBS=1` still asks for the observable
+segment, which carries the same counts. A program that holds no
+scrape defines nothing, and its probes stay behind the one dormant
+branch they always were.
+
+**A program that observes nothing pays nothing.** Three things keep
+`fn main() { }` the binary it was before observe (the same `.text` and
+the same instruction count, measured on #1667):
+
+- the backends' own source (`observe.hl`, `hale_stdlib::OBSERVE_SOURCE`)
+  is appended only to a program whose main locus holds a backend
+  param, as the TCP substrate joins only a program that names it;
+- what `std::metrics` gains for the table (a Registry's birth and
+  dissolve, a handle's series id, the renderer it shares with the scrape)
+  lowers to constants in such a program, and the build's internalize and
+  dead-code pass drops whatever of `metrics.hl` it does not call, as it
+  drops any unused stdlib declaration;
+- the runtime's observe support (the series table, the
+  counters-only segment, the pools' parked counts) is compiled under
+  `LOTUS_OBSERVE`, which the build passes only for a program that
+  defines `lotus_observe_metrics`, so every other program links the
+  runtime object it linked before
+  (`observe_metrics::a_program_that_observes_nothing_links_none_of_it`).
+
+A program that holds no scrape lowers `std::observe`'s calls to
+constants (an id of `-1`, `0`, `""`), so a Registry there registers
+nothing and an update writes only its own map
+(`observe_metrics::a_registry_without_observe_registers_nothing`
+holds the IR to it). On wasm32 the table is inert. (GH #1592, S3.)
+
 ## Diagnostic + tuning env vars
 
 Every variable the runtime (`lotus_arena.c`, `lotus_obs.c`) and the

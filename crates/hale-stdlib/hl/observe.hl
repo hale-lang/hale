@@ -1,0 +1,99 @@
+// Hale stdlib — std::observe (GH #1592).
+//
+// The backends a program is observed through: params of its main
+// locus, placed by its `placement { }` as any other param.
+//
+//   main locus App {
+//       params { metrics: std::observe::Scrape { port: 9100 }; }
+//       placement { metrics: pinned; }
+//   }
+//
+// The compiler recognizes a backend param by its type, as it does a
+// hub: it numbers it (`oid`), refuses a construction that supplies it,
+// and allows one of a kind per main locus (`observe_expand`). Holding
+// one is what turns the program's observation on: every live
+// `std::metrics::Registry` registers in the process-wide series table
+// and the runtime counts in counters-only mode. A scrape renders that
+// table, the registries' series and the runtime's own, in the
+// Prometheus text exposition `Registry.render()` writes.
+
+/// The metrics backend: serves the Prometheus text exposition of every
+/// live `std::metrics::Registry` and of the runtime's own series on
+/// `host:port`, at `path`, from wherever `placement` puts it (`pinned`
+/// for a thread of its own). `port` is required (`0` binds a free one).
+/// A param of the main locus, one per program.
+locus __StdObserveScrape {
+    params {
+        host: String = "127.0.0.1";
+        port: Int;
+        path: String = "/metrics";
+        // the param's number, which the compiler writes (`observe_expand`)
+        oid: Int = 0;
+    }
+    run() {
+        std::http::Server { host: self.host, port: self.port, handler: __StdObserveScrapePage { path: self.path } };
+    }
+}
+
+/// What a scrape answers: the exposition at `path` (a query aside), 404
+/// anywhere else.
+locus __StdObserveScrapePage {
+    params {
+        path: String = "/metrics";
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let q = std::str::index_of(req.path, "?");
+        let path = if q >= 0 {
+            req.path[0..q]
+        } else {
+            req.path
+        };
+        if path != self.path {
+            return std::http::Response { status: 404, body: "not found" };
+        }
+        return std::http::Response {
+            status: 200,
+            content_type: "text/plain; version=0.0.4",
+            body: __observe_render()
+        };
+    }
+}
+
+// The exposition of the series table, through the renderer
+// `Registry.render()` uses (`__metrics_render_series`). The snapshot
+// holds a family's series together; its `# TYPE` line is written once,
+// before the first.
+fn __observe_render() -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: 8192 };
+    let n = std::observe::__snapshot();
+    let mut family = "";
+    let mut i = 0;
+    while i < n {
+        let kind = std::observe::__snap_int(i, 0);
+        let ns = std::observe::__snap_str(i, 0);
+        let name = std::observe::__snap_str(i, 1);
+        let labels = std::observe::__snap_str(i, 2);
+        let full = __metrics_full_name(ns, name);
+        let first = i == 0 || full != family;
+        family = full;
+        let mut h = __StdMetricsHistogramData { name: name, labels: labels };
+        if kind == 2 {
+            h.sum = std::observe::__snap_num(i, 1);
+            h.count = std::observe::__snap_int(i, 2);
+            let nb = std::observe::__snap_int(i, 1);
+            let mut j = 0;
+            while j < nb {
+                push(h.bounds, std::observe::__snap_num(i, 100 + j)) or discard;
+                j = j + 1;
+            }
+            let mut k = 0;
+            while k <= nb {
+                push(h.counts, std::observe::__snap_int(i, 200 + k)) or discard;
+                k = k + 1;
+            }
+        }
+        __metrics_render_series(b, first, ns, kind, name, labels, std::observe::__snap_num(i, 0), h);
+        i = i + 1;
+    }
+    return std::str::from_bytes(b.finish() or raise);
+}

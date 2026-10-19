@@ -1,0 +1,16 @@
+// Build-only call fixture (F.40 phase 4, S0): `std::observe` at statement
+// position. Never run; `stdlib_call_fixtures` builds it to IR. Without an
+// `std::observe::Scrape` param every call lowers to its constant.
+
+fn main() {
+    std::observe::__registry("ns");
+    std::observe::__drop_registry(0);
+    std::observe::__series(0, "n", "", 0, "");
+    std::observe::__add(0, 1.0);
+    std::observe::__set(0, 1.0);
+    std::observe::__observe(0, 1.0);
+    std::observe::__snapshot();
+    std::observe::__snap_str(0, 0);
+    std::observe::__snap_num(0, 0);
+    std::observe::__snap_int(0, 0);
+}

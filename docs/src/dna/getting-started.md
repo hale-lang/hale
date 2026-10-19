@@ -33,7 +33,7 @@ created demo/main.hl
 created demo/tests/main_test.hl
 created demo/.gitignore
 wrote   vendor/dna (81 file(s) written, 0 unchanged; hale.lock pins toolchain 0.21.0, embedded dna ca4012a0cda7226d)
-cut     …/demo/.hale/dna/baseline.topology (schema 1.20, shape ddd87794e8adeed5, verdict clean)
+cut     …/demo/.hale/dna/baseline.topology (schema 1.21, shape ddd87794e8adeed5, verdict clean)
 created …/demo/dna/org/purpose.hl
 created …/demo/dna/org/charter.hl
 created …/demo/dna/org/law.hl

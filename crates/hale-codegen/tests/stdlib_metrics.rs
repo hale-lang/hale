@@ -19,6 +19,8 @@ mod harness;
 mod build_opts;
 #[path = "support/child.rs"]
 mod child;
+#[path = "support/prometheus.rs"]
+mod prometheus;
 
 #[test]
 fn registry_renders_counter_gauge_histogram() {
@@ -167,4 +169,60 @@ fn endpoint_scrapes_through_server_over_tcp() {
 
     let _ = child.wait();
     let _ = std::fs::remove_file(&bin);
+}
+
+/// A family with several labelled series is written whole under one
+/// `# TYPE` line, so the page parses as Prometheus text: the renderer
+/// wrote a TYPE line per series, and the map's order scattered a
+/// family's series between others', both of which the text format
+/// refuses. `Registry.render()` and `Endpoint` share the renderer
+/// `std::observe::Scrape` uses (`__metrics_render_series`).
+#[test]
+fn a_family_of_labelled_series_renders_under_one_type_line() {
+    let src = r#"
+        fn main() {
+            let reg = std::metrics::Registry { namespace: "app" };
+            let a = std::metrics::counter(reg, "hits", std::metrics::labels_one("route", "/a"));
+            let g = std::metrics::gauge(reg, "depth", std::metrics::labels_empty());
+            let b = std::metrics::counter(reg, "hits", std::metrics::labels_one("route", "/b"));
+            let r = std::metrics::histogram(reg, "lat", "0.5 1 2", std::metrics::labels_one("op", "read"));
+            let g2 = std::metrics::gauge(reg, "temp", std::metrics::labels_two("room", "a \"b\"", "floor", "1"));
+            let w = std::metrics::histogram(reg, "lat", "0.5 1 2", std::metrics::labels_one("op", "write"));
+            let c = std::metrics::counter(reg, "hits", std::metrics::labels_one("route", "/c\\d"));
+            a.inc();
+            b.add(2.0);
+            c.add(3.0);
+            g.set(4.0);
+            g2.set(21.5);
+            r.observe(1.5);
+            w.observe(0.25);
+            w.observe(9.0);
+            print(reg.render());
+        }
+    "#;
+    let bin = harness::unique_bin("hale_metrics_families");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "exit: {:?}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let families = prometheus::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    let names: Vec<&str> = families.iter().map(|(n, _)| n.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["app_depth", "app_hits", "app_lat", "app_temp"], "{text}");
+    for (fam, kind) in [("app_hits", "counter"), ("app_lat", "histogram")] {
+        assert_eq!(text.matches(&format!("# TYPE {fam} {kind}\n")).count(), 1, "{text}");
+    }
+    assert_eq!(text.lines().filter(|l| l.starts_with("app_hits{")).count(), 3, "{text}");
+    assert!(text.contains("app_temp{room=\"a \\\"b\\\"\",floor=\"1\"} 21.5\n"), "{text}");
+    assert!(text.contains("app_lat_bucket{op=\"write\",le=\"+Inf\"} 2\n"), "{text}");
+
+    // the checker refuses what the renderer used to write
+    let old = "# TYPE app_hits counter\napp_hits{route=\"/a\"} 1\n# TYPE app_depth gauge\napp_depth 4\n\
+               # TYPE app_hits counter\napp_hits{route=\"/b\"} 2\n";
+    assert!(prometheus::parse(old).is_err(), "a second TYPE line is refused");
+    let scattered = "# TYPE app_hits counter\napp_hits{route=\"/a\"} 1\n# TYPE app_depth gauge\napp_depth 4\n\
+                     app_hits{route=\"/b\"} 2\n";
+    assert!(prometheus::parse(scattered).is_err(), "a family's series apart is refused");
 }

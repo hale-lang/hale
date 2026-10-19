@@ -4027,6 +4027,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // GH #1592: the process-wide series table a `std::observe::Scrape`
+        // scrapes (`std::observe`). Called only from such a
+        // program; every other one lowers the calls to constants.
+        {
+            let f64_t = self.context.f64_type();
+            for (name, ty) in [
+                ("lotus_observe_registry", i64_t.fn_type(&[ptr_t.into()], false)),
+                ("lotus_observe_registry_drop", i64_t.fn_type(&[i64_t.into()], false)),
+                (
+                    "lotus_observe_series",
+                    i64_t.fn_type(
+                        &[i64_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into()],
+                        false,
+                    ),
+                ),
+                ("lotus_observe_add", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_set", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_hist", i64_t.fn_type(&[i64_t.into(), f64_t.into()], false)),
+                ("lotus_observe_snapshot", i64_t.fn_type(&[], false)),
+                ("lotus_observe_snap_str", ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_snap_num", f64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_snap_int", i64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                // restarts and failures, counted in such a program only
+                ("lotus_observe_note", self.context.void_type().fn_type(&[i64_t.into()], false)),
+            ] {
+                self.module.add_function(name, ty, None);
+            }
+        }
         // GH #607: Time is i64 nanoseconds since the epoch.
         // declare i64 @lotus_time_now_ns()  — CLOCK_REALTIME, replayable
         self.module.add_function(

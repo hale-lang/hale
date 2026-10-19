@@ -1193,6 +1193,9 @@ crates/hale-codegen/tests/obs_fleet_contract.rs#8 d4d1e344f3f21d5c
 crates/hale-codegen/tests/obs_fleet_contract.rs#9 9005b6a9fafa93c0
 crates/hale-codegen/tests/obs_intra_tree_publish.rs#0 369335d3f0f02ee7
 crates/hale-codegen/tests/obs_net_seq.rs#1 304944bd620cd334
+crates/hale-codegen/tests/observe_metrics.rs#0 f9032dd0d33dcc71
+crates/hale-codegen/tests/observe_metrics.rs#1 3ce3f013e46edbd8
+crates/hale-codegen/tests/observe_metrics.rs#2 97f1847ec270f39d
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#0 424c9ae56bddaa05
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#1 424c9ae56bddaa05
 crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#2 f265f8a8fcdb213d
@@ -1443,6 +1446,7 @@ crates/hale-codegen/tests/stdlib_m79.rs#4 f21fbc665a9c2254
 crates/hale-codegen/tests/stdlib_metrics.rs#0 6b5127caf4fb3e6f
 crates/hale-codegen/tests/stdlib_metrics.rs#1 d9bd2e9ff9e85a19
 crates/hale-codegen/tests/stdlib_metrics.rs#2 d36c5bae02649c04
+crates/hale-codegen/tests/stdlib_metrics.rs#3 49656c800d5c868f
 crates/hale-codegen/tests/stdlib_name.rs#0 d4275fdcef4d5b13
 crates/hale-codegen/tests/stdlib_name.rs#1 d4275fdcef4d5b13
 crates/hale-codegen/tests/stdlib_name.rs#2 d4275fdcef4d5b13
@@ -1686,9 +1690,10 @@ crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/lang.hl cec111863280b6a7
 crates/hale-stdlib/hl/law.hl 5c26d41736ae0271
 crates/hale-stdlib/hl/log.hl f2b54955cf6b033a
-crates/hale-stdlib/hl/metrics.hl f89fe6d80b752d5d
+crates/hale-stdlib/hl/metrics.hl 0ac5b8fc1ac2e8b0
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec
+crates/hale-stdlib/hl/observe.hl fa9b369bb34f88c2
 crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
 crates/hale-stdlib/hl/secret.hl ef10cedbbe98801b

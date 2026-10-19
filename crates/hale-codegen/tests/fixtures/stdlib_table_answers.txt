@@ -388,6 +388,17 @@ ns std::math open_prefixes=[]
   tan pure
   tanh pure
   trunc pure
+ns std::observe open_prefixes=[]
+  __registry alloc
+  __drop_registry pure
+  __series alloc
+  __add pure
+  __set pure
+  __observe pure
+  __snapshot syscall|alloc
+  __snap_str alloc
+  __snap_num pure
+  __snap_int pure
 ns std::os open_prefixes=[]
   getrandom syscall|entropy
 ns std::process open_prefixes=[]
@@ -996,7 +1007,18 @@ std::metrics::labels_two | lookup=metrics@2 | locus=false | effects=pure | sig=-
 std::metrics::metric_key | lookup=metrics@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=metric_key
 std::mth::sqrt | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::mth` — did you mean `std::math`?
 std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
-std::observe::Probes | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::observe`
+std::observe::Probes | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Probes` | suggest=-
+std::observe::Scrape | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Scrape` | suggest=-
+std::observe::__add | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Float) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__add
+std::observe::__drop_registry | lookup=observe@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__drop_registry
+std::observe::__observe | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Float) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__observe
+std::observe::__registry | lookup=observe@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__registry
+std::observe::__series | lookup=observe@2 | locus=false | effects=alloc | sig=(Int, Str, Str, Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__series
+std::observe::__set | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Float) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__set
+std::observe::__snap_int | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__snap_int
+std::observe::__snap_num | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Int) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=__snap_num
+std::observe::__snap_str | lookup=observe@2 | locus=false | effects=alloc | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__snap_str
+std::observe::__snapshot | lookup=observe@2 | locus=false | effects=syscall|alloc | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__snapshot
 std::os::getrandom | lookup=os@2 | locus=false | effects=syscall|entropy | sig=(Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=getrandom
 std::process::Child | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::ProcessOutput | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-

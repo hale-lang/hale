@@ -1551,11 +1551,11 @@ The artifact is a *projection* of the compiler's canonical model —
 see [The model](./the-model.md) for what that value is and why it
 records what it could not determine.
 
-The artifact shape (schema `1.20`):
+The artifact shape (schema `1.21`):
 
 ```text
 {
-  "schema": "1.20",
+  "schema": "1.21",
   "semantics": <model semantics version>,
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
@@ -1596,6 +1596,9 @@ The artifact shape (schema `1.20`):
                   "publishes", "subscribes", "supervises",
                   "instances", "file", "span"} ],   // 1.18
   "bindings":  [ <declared bindings: topic, transport, role> ],  // 1.19
+  "observe":   [ {"param", "kind", "backend", "host", "port", "path"} ],
+                // 1.21: the main locus's observe backend params, with
+                // "param"; a computed value is null
   "claims":    [ {"name", "form", "result": <verdict>,
                   "ordinal", "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>,

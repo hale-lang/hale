@@ -70,7 +70,7 @@ fn refused(mut v: Value, message: &str) {
 #[test]
 fn placement_artifact_round_trips_with_both_groups() {
     let (path, v) = artifact("round_trip", SEPARATE);
-    assert_eq!(v["schema"], "1.20");
+    assert_eq!(v["schema"], "1.21");
     assert_eq!(v["adequacy"].as_object().unwrap().len(), 9);
     assert!(v["adequacy"].get("placement").is_some());
     let row = &v["law"]["rows"][0];

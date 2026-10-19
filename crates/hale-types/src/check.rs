@@ -12444,6 +12444,26 @@ impl<'a> Checker<'a> {
         self.check_no_member_consts(decl);
         // GH #1477 — the runtime's probes are one param of the main locus.
         self.check_probes_params(decl);
+        // GH #1592: a main locus holds at most one observe backend of a
+        // kind; each is the program's one (its numbered default,
+        // `observe_expand`).
+        if decl.is_main {
+            let mut seen: Vec<&str> = Vec::new();
+            for b in crate::observe_expand::backends(decl) {
+                if seen.contains(&b.kind) {
+                    let ty = if b.kind == "metrics" { "std::observe::Scrape" } else { "std::observe::Otlp" };
+                    self.diags.push(Diag::ty(
+                        b.span,
+                        format!(
+                            "main locus `{}`: param `{}` is a second `{ty}`; a program holds one, the backend its \
+                             observation goes to",
+                            decl.name.name, b.param
+                        ),
+                    ));
+                }
+                seen.push(b.kind);
+            }
+        }
 
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
@@ -25681,6 +25701,23 @@ impl<'a> Checker<'a> {
                         format!(
                             "locus `{}`: param `{}` is the process's probes; its default builds them, and a \
                              construction cannot supply another (set the port in the default)",
+                            name, init.name.name
+                        ),
+                    ));
+                }
+                // GH #1592: an observe backend param is numbered in its
+                // default the same way (`observe_expand`)
+                let backend = self.locus_decls.get(name).is_some_and(|l| {
+                    l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p|
+                            p.name.name == init.name.name && crate::observe_expand::is_built(&p.init)))
+                    })
+                });
+                if backend {
+                    self.diags.push(Diag::ty(
+                        init.span,
+                        format!(
+                            "locus `{}`: param `{}` is the program's observe backend; its default is the backend, and a construction cannot supply another",
                             name, init.name.name
                         ),
                     ));

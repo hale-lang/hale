@@ -638,13 +638,14 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 /// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`]);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 6] = [
+    let windows: [(u32, &'static str, &'static str); 7] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
         (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
         (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
         (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
+        (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
@@ -881,6 +882,42 @@ pub const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 /// Where `std::io::tcp::Listener` parses: past the substrate, in the same
 /// last window of the runtime's space.
 const TCP_LISTENER_BASE: u32 = TCP_SERVE_BASE + 0x0008_0000;
+
+/// Where `observe.hl` parses (GH #1592): past the Listener, at the end of
+/// the runtime's space.
+pub const OBSERVE_BASE: u32 = TCP_SERVE_BASE + 0x000C_0000;
+
+/// Whether an offset is in the observe backends' appended source.
+pub fn is_observe_pos(pos: u32) -> bool {
+    (OBSERVE_BASE..OBSERVE_BASE + hale_stdlib::OBSERVE_SOURCE.len() as u32).contains(&pos)
+}
+
+/// Whether an offset is in stdlib source appended to the program because
+/// it names it, and not in the stdlib copy: the TCP substrate's, or the
+/// observe backends'. A `std::` path to one of its loci names the
+/// program's declaration.
+pub fn is_appended_stdlib_pos(pos: u32) -> bool {
+    is_tcp_serve_pos(pos) || is_observe_pos(pos)
+}
+
+/// The backends of `std::observe`, once, for a program whose main locus
+/// holds one (`hale_stdlib::OBSERVE_SOURCE`, `observe_expand`): a program
+/// that observes nothing carries none of them.
+pub(crate) fn inject_observe(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdObserveScrape")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::OBSERVE_SOURCE, OBSERVE_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "observe_expand: the backends did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
 
 /// Whether an offset is in the TCP substrate's appended source, or the
 /// `std::io::tcp::Listener` built on it.

@@ -654,7 +654,9 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/log.hl#4469c22a
 
-== crates/hale-stdlib/hl/metrics.hl#19f66cf4
+== crates/hale-stdlib/hl/metrics.hl#f4864c90
+
+== crates/hale-stdlib/hl/observe.hl#17e645f3
 
 == crates/hale-stdlib/hl/process.hl#e44be954
 
@@ -4377,6 +4379,32 @@ domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
 row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
 
+== crates/hale-codegen/tests/observe_metrics.rs#952f6e36
+root	App	the entry
+domain	pool:jobs
+domain	pinned:App@literal1.metrics
+row	App@literal1	App	main	default
+row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	off owner
+row	App@literal1.worker	Worker	pool:jobs	entry	off owner
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+shared	App@literal1.reg	__StdMetricsRegistry #0ee61f7f
+shared	dynamic	sites in the seed #94b71fa6
+
+== crates/hale-codegen/tests/observe_metrics.rs#f65e8601
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+shared	App@literal1.reg	__StdMetricsRegistry #0ee61f7f
+
+== crates/hale-codegen/tests/observe_metrics.rs#92860dde
+root	App	the entry
+domain	pinned:App@literal1.pump
+domain	pinned:App@literal1.metrics
+row	App@literal1	App	main	default
+row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	off owner
+row	App@literal1.pump	Pump	pinned:App@literal1.pump	entry	off owner
+shared	dynamic	sites in the seed #94b71fa6
+
 == crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#b0915026
 root	App	the entry
 row	App@literal1	App	main	default
@@ -5180,6 +5208,10 @@ dynamic	__StdIoTcpConnInline	on main
 dynamic	__StdIoTcpConnections	on main
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdMetricsRegistry	on main
+
+== crates/hale-codegen/tests/stdlib_metrics.rs#66a1b4a6
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
 
 == crates/hale-codegen/tests/stdlib_name.rs#83fa822e
 row	__StdNameConvention@main1	__StdNameConvention	main	default
@@ -18789,6 +18821,15 @@ dynamic	Shared	on main
 == shared sites in the seed #8c882889
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdProcessChild	on main
+
+== shared sites in the seed #94b71fa6
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.metrics
+dynamic	__StdHttpResponder	on pinned:App@literal1.metrics
+dynamic	__StdHttpServer	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
+dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main

@@ -98,11 +98,79 @@ let l2 = std::metrics::labels_append(l, "status", "200");
 `labels_empty()` / `labels_one(k, v)` / `labels_two(...)` cover
 the common arities; `labels_append` extends any of them. The same
 name with different labels is a different series — that's the
-whole point.
+whole point. On the page they're one family: one `# TYPE` line,
+its series under it.
+
+## The program's scrape
+
+Most programs want one thing: a `/metrics` page with every series
+they keep, and the runtime's own. Hold a `std::observe::Scrape` as a
+param of the main locus and place it:
+
+```hale
+main locus App {
+    params {
+        reg: std::metrics::Registry = std::metrics::Registry { namespace: "app" };
+        metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };
+    }
+    placement { metrics: pinned; }
+    run() {
+        let hits = std::metrics::counter(self.reg, "hits",
+            std::metrics::labels_empty());
+        hits.inc();
+    }
+}
+
+fn main() { App { }; }
+```
+
+```console
+$ curl localhost:9100/metrics
+# TYPE app_hits counter
+app_hits 1
+# TYPE hale_draining gauge
+hale_draining 0
+# TYPE hale_failures_total counter
+hale_failures_total 0
+# TYPE hale_loci_live gauge
+hale_loci_live 4
+# TYPE hale_process_resident_memory_bytes gauge
+hale_process_resident_memory_bytes 10670080
+# TYPE hale_restarts_total counter
+hale_restarts_total 0
+```
+
+There's nothing to wire: every `Registry` in the program shows up
+on the page, wherever it lives, and so do the runtime's own series —
+memory, the drain, live loci, restarts and failures, each pool's
+queue depth and parked coroutines, each topic's traffic. The scrape is
+a locus like any other: `pinned` gives it a thread of its own, it
+starts with the program, and it keeps serving until a signal stops
+it. `host` (default `127.0.0.1`) and `path` (default `/metrics`) are
+there when you need them, and the values can come from another param
+or the environment:
+
+```hale,fragment
+params {
+    metrics_port: Int = std::str::parse_int(std::env::var("METRICS_PORT")) or 9100;
+    metrics: std::observe::Scrape = std::observe::Scrape { host: "0.0.0.0", port: self.metrics_port };
+}
+```
+
+A program holds one scrape, and the compiler knows it by its type: a
+second is refused, and so is a construction of the main locus that
+supplies its own. A program that holds none pays nothing for any of
+this: its registries never register anywhere, and its binary is the
+one it would be without the feature.
+
+The port is required for now. When the runtime grows health and
+readiness probes (GH #1477), `/metrics` will be served on their port,
+and `port` becomes optional.
 
 ## The /metrics endpoint
 
-`std::metrics::Endpoint` is a ready-made `std::http::Handler`
+To serve one registry on a server you already run, mount
+`std::metrics::Endpoint`, a ready-made `std::http::Handler`
 that answers every request with the current rendering:
 
 ```hale

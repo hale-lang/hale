@@ -193,7 +193,10 @@ fn __metrics_counter(reg: std::metrics::Registry, name: String, labels: std::met
             kind: 0, value: 0.0, hist_idx: -1
         });
     }
-    return std::metrics::Counter { store: reg.store, key: k };
+    return std::metrics::Counter {
+        store: reg.store, key: k,
+        obs: std::observe::__series(reg.obs, name, labels.kv, 0, "")
+    };
 }
 
 /// Register (or re-fetch) a gauge series — a value that moves
@@ -207,7 +210,10 @@ fn __metrics_gauge(reg: std::metrics::Registry, name: String, labels: std::metri
             kind: 1, value: 0.0, hist_idx: -1
         });
     }
-    return std::metrics::Gauge { store: reg.store, key: k };
+    return std::metrics::Gauge {
+        store: reg.store, key: k,
+        obs: std::observe::__series(reg.obs, name, labels.kv, 1, "")
+    };
 }
 
 // `bounds` is a space-separated ascending list of bucket upper
@@ -247,7 +253,8 @@ fn __metrics_histogram(reg: std::metrics::Registry, name: String, bounds: String
     let e = reg.store.get(k) or __StdMetricsEntry { };
     return std::metrics::Histogram {
         store: reg.store, histograms: reg.histograms,
-        key: k, hist_idx: e.hist_idx, bucket_count: nb_declared
+        key: k, hist_idx: e.hist_idx, bucket_count: nb_declared,
+        obs: std::observe::__series(reg.obs, name, labels.kv, 2, bounds)
     };
 }
 
@@ -260,6 +267,9 @@ locus __StdMetricsCounter {
     params {
         store: __StdMetricsMap;
         key: String = "";
+        // the series' row in the process-wide table a declared
+        // `std::observe::Scrape` scrapes; -1 in any other program
+        obs: Int = -1;
     }
     fn inc() {
         self.add(1.0);
@@ -272,6 +282,7 @@ locus __StdMetricsCounter {
                 kind: e.kind, value: e.value + v, hist_idx: e.hist_idx
             });
         }
+        std::observe::__add(self.obs, v);
     }
 }
 
@@ -281,6 +292,7 @@ locus __StdMetricsGauge {
     params {
         store: __StdMetricsMap;
         key: String = "";
+        obs: Int = -1;
     }
     fn set(v: Float) {
         if self.store.has(self.key) {
@@ -290,6 +302,7 @@ locus __StdMetricsGauge {
                 kind: e.kind, value: v, hist_idx: e.hist_idx
             });
         }
+        std::observe::__set(self.obs, v);
     }
     fn add(v: Float) {
         if self.store.has(self.key) {
@@ -299,6 +312,7 @@ locus __StdMetricsGauge {
                 kind: e.kind, value: e.value + v, hist_idx: e.hist_idx
             });
         }
+        std::observe::__add(self.obs, v);
     }
     fn sub(v: Float) {
         self.add(0.0 - v);
@@ -322,6 +336,7 @@ locus __StdMetricsHistogram {
         hist_idx: Int = -1;
         bucket_count: Int = 0;
         out_of_order: Int = 0;
+        obs: Int = -1;
     }
 
     // Structural invariant: cumulative bucket counts stay
@@ -334,6 +349,7 @@ locus __StdMetricsHistogram {
     }
 
     fn observe(v: Float) {
+        std::observe::__observe(self.obs, v);
         if self.hist_idx < 0 {
             return;
         }
@@ -494,6 +510,19 @@ locus __StdMetricsRegistry {
         // builder fn; explicit overrides still accepted.
         store: __StdMetricsMap = __StdMetricsMap { };
         histograms: __StdMetricsHistogramList = __StdMetricsHistogramList { };
+        // its id in the process-wide table a declared
+        // `std::observe::Scrape` scrapes; -1 in any other program, where
+        // birth and dissolve register nothing
+        obs: Int = -1;
+    }
+    birth() {
+        if self.obs < 0 {
+            self.obs = std::observe::__registry(self.namespace);
+        }
+    }
+    dissolve() {
+        std::observe::__drop_registry(self.obs);
+        self.obs = -1;
     }
 
     // Prometheus text exposition. BytesBuilder accumulation
@@ -503,20 +532,52 @@ locus __StdMetricsRegistry {
     /// `_bucket{le=...}` / `_sum` / `_count`.
     fn render() -> String {
         let b = std::bytes::BytesBuilder { initial_cap: 8192 };
+        // a family's series together, under its one TYPE line: the
+        // map keeps no order, so each family is written whole when its
+        // first series is met, and the names written are skipped after
+        let mut written = "\x1f";
         for e in self.store.entries {
-            if e.kind == 0 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "counter")));
-                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
-            } else if e.kind == 1 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "gauge")));
-                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
-            } else if e.kind == 2 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "histogram")));
-                let h = self.histograms.get(e.hist_idx) or __StdMetricsHistogramData { };
-                b.append(std::bytes::from_string(__metrics_render_histogram(self.namespace, h)));
+            let mark = e.name + "\x1f";
+            if !std::str::contains(written, "\x1f" + mark) {
+                written = written + mark;
+                let mut first = true;
+                for f in self.store.entries {
+                    if f.name == e.name {
+                        let h = if f.kind == 2 {
+                            self.histograms.get(f.hist_idx) or __StdMetricsHistogramData { }
+                        } else {
+                            __StdMetricsHistogramData { }
+                        };
+                        __metrics_render_series(b, first, self.namespace, f.kind, f.name, f.labels, f.value, h);
+                        first = false;
+                    }
+                }
             }
         }
         return std::str::from_bytes(b.finish() or raise);
+    }
+}
+
+// One series of the exposition into `b`, after its family's `# TYPE`
+// line when it is the family's `first`: the one renderer
+// `Registry.render()` and `std::observe::Scrape` share. A family is
+// written whole, its TYPE line once (the text format refuses a second
+// one); no HELP line is written, as no series carries help text.
+fn __metrics_render_series(b: std::bytes::BytesBuilder, first: Bool, ns: String, kind: Int, name: String, labels: String, value: Float, h: __StdMetricsHistogramData) {
+    let word = if kind == 0 {
+        "counter"
+    } else if kind == 1 {
+        "gauge"
+    } else {
+        "histogram"
+    };
+    if first {
+        b.append(std::bytes::from_string(__metrics_render_type_line(ns, name, word)));
+    }
+    if kind == 2 {
+        b.append(std::bytes::from_string(__metrics_render_histogram(ns, h)));
+    } else {
+        b.append(std::bytes::from_string(__metrics_render_sample(ns, name, labels, value)));
     }
 }
 
