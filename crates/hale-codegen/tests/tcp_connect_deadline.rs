@@ -556,3 +556,56 @@ fn main() {{
     let line = stdout.lines().find(|l| l.starts_with("error ")).expect("error line");
     assert!(line.contains("connect: tcp to 127.0.0.1:") && line.contains("timeout: no connection within 300 ms"), "{line:?}");
 }
+
+/// A peer that accepts a large request a slice at a time — 64 KiB every
+/// 200 ms, each slice well inside any stall window — kept a POST alive
+/// long past `timeout_ms`: the send's SO_SNDTIMEO is a stall window that
+/// restarts on every partial write, so arming it once before the send
+/// bounded each stall, not the send. The send gets the call's absolute
+/// deadline now, plain and keep-alive alike.
+#[test]
+fn the_http_client_timeout_bounds_a_post_its_peer_drains_slowly() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let port = addr.port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match conn.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => std::thread::sleep(Duration::from_millis(200)),
+                    }
+                }
+            });
+        }
+    });
+    let src = r#"
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let url = "http://127.0.0.1:" + to_string(port) + "/upload";
+            let chunk = std::bytes::from_string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+            let b = std::bytes::BytesBuilder { initial_cap: 33554432 };
+            let mut i = 0;
+            while i < 524288 { b.append(chunk); i = i + 1; }
+            let body = b.snapshot() or b"";
+            let empty = std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            let c = std::http::Client { timeout_ms: 600, max_retries: 0 };
+            let t = std::time::monotonic_ns();
+            let r = c.post(url, body, "application/octet-stream") or { println("plain kind=", err.kind, " ms=", (std::time::monotonic_ns() - t) / 1000000); empty };
+            let k = std::http::Client { timeout_ms: 600, max_retries: 0, keep_alive: true };
+            let t2 = std::time::monotonic_ns();
+            let r2 = k.post(url, body, "application/octet-stream") or { println("pooled kind=", err.kind, " ms=", (std::time::monotonic_ns() - t2) / 1000000); empty };
+            println("bytes ", len(body), " statuses ", r.status + r2.status);
+        }
+    "#;
+    let out = run("hale_http_client_slow_drain", src, &[&port.to_string()]);
+    assert!(out.contains("bytes 33554432 statuses 0"), "{out}");
+    for tag in ["plain ", "pooled "] {
+        let took = ms(&out, tag);
+        assert!((550..2000).contains(&took), "{tag}: the send must end at timeout_ms however the peer drains it; took {took} ms: {out}");
+    }
+}

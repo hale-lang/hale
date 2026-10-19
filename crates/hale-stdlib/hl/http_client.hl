@@ -273,16 +273,24 @@ fn __http_disarm(handle: Int, is_tls: Bool, deadline: Int) {
 }
 
 // A read within `deadline`: empty once it has passed, as at EOF; the
-// caller tells the two apart with `__http_expired`.
+// caller tells the two apart with `__http_expired`. A plain read is one
+// recv, which the armed SO_RCVTIMEO bounds; a TLS read may take several
+// to assemble a record, each of which a blocking socket would re-arm, so
+// it gets the deadline itself.
 fn __http_recv_within(handle: Int, is_tls: Bool, max_bytes: Int, deadline: Int) -> Bytes {
     if !__http_arm(handle, is_tls, deadline) { return b""; }
+    if is_tls { return std::io::tls::__recv_bytes_until(handle, max_bytes, deadline); }
     return __http_recv_raw(handle, is_tls, max_bytes);
 }
 
-// A write within `deadline`: -1 once it has passed.
+// A write within `deadline`: -1 once it has passed. The send gets the
+// deadline itself: SO_SNDTIMEO is a stall window that restarts on every
+// partial write, so a peer accepting a little at a time held a large
+// body past any window armed before it.
 fn __http_send_within(handle: Int, is_tls: Bool, b: Bytes, deadline: Int) -> Int {
     if !__http_arm(handle, is_tls, deadline) { return -1; }
-    return __http_send_raw(handle, is_tls, b);
+    if is_tls { return std::io::tls::__send_bytes_until(handle, b, deadline); }
+    return std::io::tcp::__send_bytes_until(handle, b, deadline);
 }
 
 // What a call its deadline ended says.

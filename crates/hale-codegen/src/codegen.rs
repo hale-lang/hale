@@ -28414,6 +28414,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTlsRecvBytes => {
                 self.lower_std_io_tls_recv_bytes(args, scope)
             }
+            // The HTTP client's call deadline: (handle, bytes|max, until_ns).
+            Id::IoTcpSendBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tcp_send_bytes_until", false),
+            Id::IoTlsSendBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tls_send_bytes_until", false),
+            Id::IoTlsRecvBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tls_recv_bytes_until", true),
             Id::IoTlsClose => {
                 self.lower_std_io_tls_close(args, scope)
             }
@@ -29312,6 +29316,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpRecvRaw
             | Id::IoTcpRecvStampedInto
             | Id::IoTcpSendBytesRaw
+            | Id::IoTcpSendBytesUntilRaw
             | Id::IoTcpSendRaw
             | Id::IoTcpSetRecvTimeoutNsRaw
             | Id::IoTcpShutdownListenSocketRaw
@@ -29319,9 +29324,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTlsLastRecvKernelNs
             | Id::IoTlsLastRecvUserNs
             | Id::IoTlsRecvBytes
+            | Id::IoTlsRecvBytesUntilRaw
             | Id::IoTlsRecvInto
             | Id::IoTlsRecvStampedInto
             | Id::IoTlsSendBytes
+            | Id::IoTlsSendBytesUntilRaw
             | Id::IoUdpClose
             | Id::IoUdpCloseRaw
             | Id::IoUdpLastSourceHost
@@ -37041,6 +37048,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(v)
     }
 
+    /// `(handle: Int, x, until_ns: Int)` into `cname(i32 handle, x, i64
+    /// until_ns)`: the deadline-bounded send (x Bytes, an i32 status widened
+    /// to Int) and read (x Int, the max, truncated to i32; a Bytes back).
+    pub(crate) fn lower_io_until_call(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        cname: &str,
+        reads: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!("{cname} takes 3 args, got {}", args.len())));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let (h, h_ty) = self.lower_expr(&args[0], scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!("{cname}: handle must be Int, got {h_ty:?}")));
+        }
+        let h = self.builder.build_int_truncate(h.into_int_value(), i32_t, "until.h").map_err(e)?;
+        let (x, x_ty) = self.lower_expr(&args[1], scope)?;
+        let x: inkwell::values::BasicMetadataValueEnum<'ctx> = if reads {
+            if x_ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!("{cname}: max must be Int, got {x_ty:?}")));
+            }
+            self.builder.build_int_truncate(x.into_int_value(), i32_t, "until.max").map_err(e)?.into()
+        } else {
+            if !matches!(x_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+                return Err(CodegenError::Unsupported(format!("{cname}: bytes must be Bytes, got {x_ty:?}")));
+            }
+            self.unpack_view_if_needed(x, &x_ty)?.into()
+        };
+        let (until, u_ty) = self.lower_expr(&args[2], scope)?;
+        if u_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!("{cname}: until must be Int, got {u_ty:?}")));
+        }
+        let f = self.module.get_function(cname).unwrap_or_else(|| panic!("{cname} declared"));
+        let ret = self
+            .builder
+            .build_call(f, &[h.into(), x, until.into()], "until.ret")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("returns a value");
+        if reads {
+            return Ok((ret, CodegenTy::Bytes));
+        }
+        let wide = self.builder.build_int_s_extend(ret.into_int_value(), i64_t, "until.i64").map_err(e)?;
+        Ok((wide.into(), CodegenTy::Int))
+    }
+
     /// Whether the drain observers' counts are emitted at all (the
     /// `DrainObserver` obligation): one read for every count site.
     fn drain_observers_emitted(&self) -> Result<bool, CodegenError> {
@@ -37076,6 +37135,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         self_ptr: PointerValue<'ctx>,
         finished: bool,
+    ) -> Result<(), CodegenError> {
+        if finished {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.drain_in_run_only", "lotus_drain_observer_finished")
+        } else {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_leave")
+        }
+    }
+
+    /// `callee(self_ptr, locus_name)` behind the private flag
+    /// `<flag>.<locus_name>` (0 until the end of `lower_program` writes
+    /// its initializer), the shape every drain observer count shares.
+    fn emit_drain_observer_call(
+        &mut self,
+        locus_name: &str,
+        self_ptr: PointerValue<'ctx>,
+        flag: &str,
+        callee: &str,
     ) -> Result<(), CodegenError> {
         if !self.drain_observers_emitted()? {
             return Ok(());
@@ -37130,23 +37206,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// Caller must already have a positioned builder (entry block
     /// of the method body, after any param/self setup) and must
-    ) -> Result<(), CodegenError> {
-        if finished {
-            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.drain_in_run_only", "lotus_drain_observer_finished")
-        } else {
-            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_leave")
-        }
-    }
-
-    /// `callee(self_ptr, locus_name)` behind the private flag
-    /// `<flag>.<locus_name>` (0 until the end of `lower_program` writes
-    /// its initializer), the shape every drain observer count shares.
-    fn emit_drain_observer_call(
-        &mut self,
-        locus_name: &str,
-        self_ptr: PointerValue<'ctx>,
-        flag: &str,
-        callee: &str,
     /// have set `current_self` to the locus self_ptr — this helper
     /// reads `self.__arena` via the same GEP pattern as
     /// `current_arena_ptr`'s fallback path. The scratch is the

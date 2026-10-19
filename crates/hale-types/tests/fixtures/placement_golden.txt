@@ -648,7 +648,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#c26666d3
+== crates/hale-stdlib/hl/http_client.hl#33aabe59
 
 == crates/hale-stdlib/hl/json.hl#c7b1b7ac
 
@@ -5299,6 +5299,12 @@ dynamic	Job	on pool:io	in the seed
 == crates/hale-codegen/tests/tcp_connect_deadline.rs#893b87b3
 row	__StdHttpClient@main1	__StdHttpClient	main	default
 row	__StdHttpClient@main2	__StdHttpClient	main	default
+shared	dynamic	sites in the stdlib #1dcc5550
+
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#eb4d5a72
+row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+row	__StdHttpClient@main2	__StdHttpClient	main	default
+row	__StdHttpClient@main3	__StdHttpClient	main	default
 shared	dynamic	sites in the stdlib #1dcc5550
 
 == crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db

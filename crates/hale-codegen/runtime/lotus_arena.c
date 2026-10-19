@@ -23342,7 +23342,51 @@ int lotus_tcp_send_str(int fd, const char *msg) {
  * NUL bytes don't truncate. write(2) loop handles partial
  * writes; returns 0 on full send, -1 on error.
  */
+/* The earlier of a send's stall deadline and its caller's absolute one
+ * (0 = none). */
+static int64_t lotus_send_wait_deadline(int64_t stall, int64_t until) {
+    if (until <= 0) return stall;
+    if (stall <= 0 || stall > until) return until;
+    return stall;
+}
+
+/* Whether `fd` is blocking; makes it non-blocking (restored by the caller
+ * through `lotus_io_restore_block`) so every wait of a send or a read
+ * under an absolute deadline goes through poll or a park and checks it:
+ * a blocking write's SO_SNDTIMEO restarts on every partial write, so a
+ * peer accepting a little at a time held it past any deadline. */
+int lotus_io_nonblock_for_deadline(int fd) {
+    if (fd < 0) return 0;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || (flags & O_NONBLOCK)) return 0;
+    (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return 1;
+}
+
+void lotus_io_restore_block(int fd, int was_blocking) {
+    if (!was_blocking || fd < 0) return;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+static int lotus_tcp_send_bytes_impl(int fd, const void *bytes_ptr, int64_t until);
+
 int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
+    return lotus_tcp_send_bytes_impl(fd, bytes_ptr, 0);
+}
+
+/* `lotus_tcp_send_bytes` that ends by the absolute CLOCK_MONOTONIC
+ * `until_ns` (0 = none), however the peer drains it: past it the send
+ * fails EAGAIN, as a send timeout does. The HTTP client's call deadline
+ * (std::http, `timeout_ms`). */
+int lotus_tcp_send_bytes_until(int fd, const void *bytes_ptr, int64_t until_ns) {
+    int was_blocking = until_ns > 0 ? lotus_io_nonblock_for_deadline(fd) : 0;
+    int r = lotus_tcp_send_bytes_impl(fd, bytes_ptr, until_ns);
+    lotus_io_restore_block(fd, was_blocking);
+    return r;
+}
+
+static int lotus_tcp_send_bytes_impl(int fd, const void *bytes_ptr, int64_t until) {
     lotus_io_status_set(0);
     if (fd < 0) {
         errno = EBADF;
@@ -23371,6 +23415,11 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
     size_t left = (size_t)total;
     int64_t stall = -1;
     while (left > 0) {
+        if (until > 0 && lotus_now_mono_ns() >= until) {
+            errno = EAGAIN;
+            lotus_io_status_set(EAGAIN);
+            return -1;
+        }
         ssize_t w = write(fd, p, left);
         if (w > 0) {
             p    += (size_t)w;
@@ -23380,7 +23429,12 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
         }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
+            int64_t dl = lotus_send_wait_deadline(lotus_send_stall_deadline(fd, &stall), until);
+            if (lotus_io_wait_writable(fd, dl) == 0) continue;
+            if (until > 0 && lotus_now_mono_ns() >= until) {
+                lotus_io_status_set(EAGAIN);
+                return -1;
+            }
         }
         lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_bytes: write");

@@ -3313,6 +3313,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i32_t.into(), i32_t.into()], false);
         self.module
             .add_function("lotus_tls_recv_bytes", tls_recv_bytes_ty, None);
+        // The HTTP client's call deadline: the send and the read bounded
+        // by an absolute CLOCK_MONOTONIC instant (i64 ns, 0 = none).
+        let i64_t_until = self.context.i64_type();
+        self.module.add_function(
+            "lotus_tls_send_bytes_until",
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t_until.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tls_recv_bytes_until",
+            ptr_t.fn_type(&[i32_t.into(), i32_t.into(), i64_t_until.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tcp_send_bytes_until",
+            i32_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t_until.into()], false),
+            None,
+        );
         // declare i32 @lotus_tls_close(i32 handle)
         let tls_close_ty = i32_t.fn_type(&[i32_t.into()], false);
         self.module
