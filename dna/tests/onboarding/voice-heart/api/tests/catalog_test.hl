@@ -1,0 +1,85 @@
+// The catalog on the admin plane: GET/POST /admin/v1/models and
+// GET/PATCH/DELETE /admin/v1/models/{model}, through the router.
+import ".." as api;
+
+fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
+    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+}
+
+fn expect(r: std::http::Response, status: Int, what: String) {
+    std::test::assert_eq_int(r.status, status, what + ": " + r.body);
+}
+
+fn field(r: std::http::Response, name: String) -> String {
+    return std::json::find_string_field(r.body, name);
+}
+
+fn code(r: std::http::Response) -> String {
+    return std::json::find_string_field(std::json::find_field_raw(r.body, "error"), "code");
+}
+
+fn main() {
+    let e = api::Endpoints { };
+
+    let empty = call(e, "GET", "/admin/v1/models", "");
+    expect(empty, 200, "an empty catalog");
+    std::test::assert_eq_str(std::str::trim(empty.body), "{\"data\": []}", "no models yet");
+
+    let made = call(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\", \"context_length\": 8192, \"max_output_tokens\": 1024, \"price\": {\"input_per_mtok_micros\": 3000000, \"output_per_mtok_micros\": 15000000}}");
+    expect(made, 201, "create");
+    std::test::assert_eq_str(field(made, "id"), "echo-1", "its id");
+    std::test::assert_eq_str(field(made, "owned_by"), "local", "owned_by defaults to local");
+    std::test::assert_eq_str(field(made, "kind"), "local", "kind defaults to local");
+    std::test::assert_eq_int(std::json::find_int_field(made.body, "context_length"), 8192, "context_length");
+    let price = std::json::find_field_raw(made.body, "price");
+    std::test::assert_eq_int(std::json::find_int_field(price, "output_per_mtok_micros"), 15000000, "the price");
+    std::test::assert_eq_str(std::json::find_string_field(price, "currency"), "USD", "currency defaults to USD");
+    std::test::assert(!std::json::find_bool_field(made.body, "available"), "no seat serves it, so it is not available");
+    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(made.body, "seats")), "[]", "no seats");
+    std::test::assert(std::str::ends_with(field(made, "created_at"), "Z"), "created_at is UTC");
+
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}"), 409, "an id is taken once");
+    let free = call(e, "POST", "/admin/v1/models", "{\"id\": \"claude-sonnet-5\", \"owned_by\": \"anthropic\", \"kind\": \"hosted\", \"price\": null}");
+    expect(free, 201, "a hosted model");
+    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(free.body, "price")), "null", "a null price is free");
+    std::test::assert(!std::str::contains(free.body, "context_length"), "an unset count is left out");
+
+    // refused bodies
+    let no_id = call(e, "POST", "/admin/v1/models", "{\"kind\": \"local\"}");
+    expect(no_id, 400, "id is required");
+    std::test::assert_eq_str(code(no_id), "invalid_request", "invalid_request");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(no_id.body, "error"), "param"), "id", "names the field");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"kind\": \"remote\"}"), 400, "kind is local or hosted");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"context_length\": 0}"), 400, "a count is at least 1");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"context_length\": 1.5}"), 400, "a count is an integer");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"price\": {\"input_per_mtok_micros\": 1}}"), 400, "a price has both rates");
+    let huge = call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"price\": {\"input_per_mtok_micros\": 99999999999999999999, \"output_per_mtok_micros\": 1}}");
+    expect(huge, 400, "an amount out of range");
+    std::test::assert(std::str::contains(huge.body, "out of range"), "says so, not zero");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"m\", \"context_length\": 99999999999999999999}"), 400, "a count out of range");
+    expect(call(e, "POST", "/admin/v1/models", "not json"), 400, "a body is one JSON object");
+
+    // read, change, remove
+    expect(call(e, "GET", "/admin/v1/models/echo-1", ""), 200, "get");
+    let missing = call(e, "GET", "/admin/v1/models/nope", "");
+    expect(missing, 404, "an unknown model");
+    std::test::assert_eq_str(code(missing), "not_found", "not_found");
+
+    let changed = call(e, "PATCH", "/admin/v1/models/echo-1", "{\"max_output_tokens\": 2048, \"price\": null}");
+    expect(changed, 200, "patch");
+    std::test::assert_eq_int(std::json::find_int_field(changed.body, "max_output_tokens"), 2048, "the field set changes");
+    std::test::assert_eq_int(std::json::find_int_field(changed.body, "context_length"), 8192, "a field not set stays");
+    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(changed.body, "price")), "null", "price set to null");
+    expect(call(e, "PATCH", "/admin/v1/models/echo-1", "{\"id\": \"echo-2\"}"), 400, "the id cannot change");
+    expect(call(e, "PATCH", "/admin/v1/models/nope", "{}"), 404, "patch an unknown model");
+
+    let listed = call(e, "GET", "/admin/v1/models", "");
+    std::test::assert(std::str::contains(listed.body, "\"echo-1\"") && std::str::contains(listed.body, "\"claude-sonnet-5\""), "both are listed");
+
+    expect(call(e, "DELETE", "/admin/v1/models/echo-1", ""), 200, "remove");
+    expect(call(e, "GET", "/admin/v1/models/echo-1", ""), 404, "a removed model is gone");
+    expect(call(e, "DELETE", "/admin/v1/models/echo-1", ""), 404, "and cannot be removed twice");
+    expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}"), 409, "its id is never reused");
+    let after = call(e, "GET", "/admin/v1/models", "");
+    std::test::assert(!std::str::contains(after.body, "\"echo-1\""), "nor listed");
+}

@@ -1,0 +1,22 @@
+# voice's attach manifest: what the application emits, for the organism
+# that attaches it (the heart protocol's manifest, hale-lang/hale#1445).
+# Its first entry is the standard pack's first clause, "Logs are
+# structured" (hale-lang/hale#1591): voice is a Hale heart, every line its
+# programs write is a record, and this says how to read one.
+#
+# The file's place and its keys follow the heart-protocol plan; they take
+# whatever names the DNA spec gives them when it does.
+
+name = "voice"
+heart = "hale"
+
+[logs]
+# every program's stdout and stderr: info and below on stdout, warnings and
+# errors on stderr, the same record on both
+source = ["stdout", "stderr"]
+# one logfmt record a line (lib/logfmt): time (RFC 3339, UTC, to the
+# second), level (trace, debug, info, warn, error), logger and msg, then
+# the event's own fields
+format = "logfmt"
+fields = ["time", "level", "logger", "msg"]
+time_format = "rfc3339"

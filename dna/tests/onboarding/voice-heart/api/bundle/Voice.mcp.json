@@ -1,0 +1,2338 @@
+{
+  "x-hale-surface": "Voice",
+  "x-hale-digest": "fnv1a64:94142dde9438f0f9",
+  "tools": [
+    {
+      "name": "Accounts__archive",
+      "description": "rpc Accounts::archive of Voice: returns Account; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Accounts__create",
+      "description": "rpc Accounts::create of Voice: returns Account; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "billing": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "subscription",
+                  "metered",
+                  "none"
+                ],
+                "x-hale-type": "Billing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Limit"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "$defs": {
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Accounts__get",
+      "description": "rpc Accounts::get of Voice: returns Account; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Accounts__list",
+      "description": "rpc Accounts::list of Voice: returns AccountList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_archived": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Accounts__update",
+      "description": "rpc Accounts::update of Voice: returns Account; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_provider": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "billing": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "subscription",
+                  "metered",
+                  "none"
+                ],
+                "x-hale-type": "Billing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Limit"
+                },
+                "maxItems": 16
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "$defs": {
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Catalog__create",
+      "description": "rpc Catalog::create of Voice: returns CatalogModel; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owned_by": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "hosted"
+                ],
+                "x-hale-type": "ModelKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_length": {
+            "type": "integer"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelPrice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "$defs": {
+          "ModelPrice": {
+            "type": "object",
+            "properties": {
+              "input_per_mtok_micros": {
+                "type": "integer"
+              },
+              "output_per_mtok_micros": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Catalog__get",
+      "description": "rpc Catalog::get of Voice: returns CatalogModel; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Catalog__list",
+      "description": "rpc Catalog::list of Voice: returns CatalogList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Catalog__remove",
+      "description": "rpc Catalog::remove of Voice: returns CatalogModel; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Catalog__update",
+      "description": "rpc Catalog::update of Voice: returns CatalogModel; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "owned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "hosted"
+                ],
+                "x-hale-type": "ModelKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_price": {
+            "type": "boolean"
+          },
+          "priced": {
+            "type": "boolean"
+          },
+          "price": {
+            "$ref": "#/$defs/ModelPrice"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "$defs": {
+          "ModelPrice": {
+            "type": "object",
+            "properties": {
+              "input_per_mtok_micros": {
+                "type": "integer"
+              },
+              "output_per_mtok_micros": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Changes__list",
+      "description": "rpc Changes::list of Voice: returns ChangeList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Inference__chat",
+      "description": "rpc Inference::chat of Voice: returns Served; its failure is the handler error ApiError. Requires caller under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "previous_response_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "type": "string"
+          },
+          "data_class": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "caller"
+      ]
+    },
+    {
+      "name": "Inference__respond",
+      "description": "rpc Inference::respond of Voice: returns Served; its failure is the handler error ApiError. Requires caller under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "previous_response_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "type": "string"
+          },
+          "data_class": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "caller"
+      ]
+    },
+    {
+      "name": "Keys__create",
+      "description": "rpc Keys::create of Voice: returns Key; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Limit"
+            },
+            "maxItems": 16
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "name"
+        ],
+        "$defs": {
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Keys__get",
+      "description": "rpc Keys::get of Voice: returns Key; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "key"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Keys__list",
+      "description": "rpc Keys::list of Voice: returns KeyList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Keys__revoke",
+      "description": "rpc Keys::revoke of Voice: returns Key; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "key"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Keys__update",
+      "description": "rpc Keys::update of Voice: returns Key; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_models": {
+            "type": "boolean"
+          },
+          "models": {
+            "$ref": "#/$defs/Restriction"
+          },
+          "set_accounts": {
+            "type": "boolean"
+          },
+          "accounts": {
+            "$ref": "#/$defs/Restriction"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Limit"
+                },
+                "maxItems": 16
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_expires": {
+            "type": "boolean"
+          },
+          "expires": {
+            "type": "boolean"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "x-hale-type": "Time"
+          }
+        },
+        "required": [
+          "project",
+          "key"
+        ],
+        "$defs": {
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "Names": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              }
+            },
+            "required": []
+          },
+          "Restriction": {
+            "type": "object",
+            "properties": {
+              "any": {
+                "type": "boolean"
+              },
+              "names": {
+                "$ref": "#/$defs/Names"
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Models__capabilities",
+      "description": "rpc Models::capabilities of Voice: returns Capabilities; its failure is the handler error ApiError. Requires caller under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": [
+        "caller"
+      ]
+    },
+    {
+      "name": "Models__get",
+      "description": "rpc Models::get of Voice: returns Model; its failure is the handler error ApiError. Requires caller under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ]
+      },
+      "x-hale-requires": [
+        "caller"
+      ]
+    },
+    {
+      "name": "Models__list",
+      "description": "rpc Models::list of Voice: returns ModelList; its failure is the handler error ApiError. Requires caller under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": [
+        "caller"
+      ]
+    },
+    {
+      "name": "NodePlane__assignment",
+      "description": "rpc NodePlane::assignment of Voice: returns Assignment; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__capabilities",
+      "description": "rpc NodePlane::capabilities of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "json": {
+            "type": "string"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__going_away",
+      "description": "rpc NodePlane::going_away of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__heartbeat",
+      "description": "rpc NodePlane::heartbeat of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "in_flight": {
+            "type": "integer"
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SeatState"
+            },
+            "maxItems": 16
+          },
+          "assignment_version": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "$defs": {
+          "SeatState": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "starting",
+                  "up",
+                  "down",
+                  "disabled",
+                  "paused",
+                  "refused"
+                ],
+                "x-hale-type": "SeatStateStatus"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "in_flight": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__local",
+      "description": "rpc NodePlane::local of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "paused": {
+            "type": "boolean"
+          },
+          "paused_seats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32
+          },
+          "max_in_flight": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "paused"
+        ]
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__quota",
+      "description": "rpc NodePlane::quota of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "seat": {
+            "type": "string"
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/QuotaWindow"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [],
+        "$defs": {
+          "QuotaWindow": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "used_percent": {
+                "type": "number"
+              },
+              "resets_at": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "x-hale-type": "Time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              "seat": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "used_percent",
+              "observed_at"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__register",
+      "description": "rpc NodePlane::register of Voice: returns Registered; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "protocol": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "string"
+          },
+          "local": {
+            "$ref": "#/$defs/LocalControls"
+          }
+        },
+        "required": [],
+        "$defs": {
+          "LocalControls": {
+            "type": "object",
+            "properties": {
+              "paused": {
+                "type": "boolean"
+              },
+              "paused_seats": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              "max_in_flight": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "paused"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "NodePlane__seat_states",
+      "description": "rpc NodePlane::seat_states of Voice: returns nothing; its failure is the handler error ApiError. Requires node under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "assignment_version": {
+            "type": "integer"
+          },
+          "seats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SeatState"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [],
+        "$defs": {
+          "SeatState": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "starting",
+                  "up",
+                  "down",
+                  "disabled",
+                  "paused",
+                  "refused"
+                ],
+                "x-hale-type": "SeatStateStatus"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "in_flight": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "node"
+      ]
+    },
+    {
+      "name": "Nodes__create",
+      "description": "rpc Nodes::create of Voice: returns Node; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "max_in_flight": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Nodes__get",
+      "description": "rpc Nodes::get of Voice: returns Node; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Nodes__list",
+      "description": "rpc Nodes::list of Voice: returns NodeList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Nodes__revoke",
+      "description": "rpc Nodes::revoke of Voice: returns Node; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Nodes__rotate_token",
+      "description": "rpc Nodes::rotate_token of Voice: returns Node; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Nodes__update",
+      "description": "rpc Nodes::update of Voice: returns Node; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_max_in_flight": {
+            "type": "boolean"
+          },
+          "max_in_flight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Probes__liveness",
+      "description": "rpc Probes::liveness of Voice: returns Health. Requires no role; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": []
+    },
+    {
+      "name": "Probes__readiness",
+      "description": "rpc Probes::readiness of Voice: returns Health. Requires no role; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "x-hale-requires": []
+    },
+    {
+      "name": "Projects__archive",
+      "description": "rpc Projects::archive of Voice: returns Project; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__budget",
+      "description": "rpc Projects::budget of Voice: returns Budget; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__create",
+      "description": "rpc Projects::create of Voice: returns Project; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32
+          },
+          "data_classes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32
+          },
+          "models": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BudgetInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Limit"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "$defs": {
+          "BudgetInput": {
+            "type": "object",
+            "properties": {
+              "allowance_micros": {
+                "type": "integer"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "period": {
+                "type": "string",
+                "enum": [
+                  "day",
+                  "week",
+                  "month",
+                  "none"
+                ],
+                "x-hale-type": "Period"
+              },
+              "period_anchor": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "x-hale-type": "Time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "allowance_micros",
+              "period"
+            ]
+          },
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__get",
+      "description": "rpc Projects::get of Voice: returns Project; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__limits",
+      "description": "rpc Projects::limits of Voice: returns LimitSet; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__list",
+      "description": "rpc Projects::list of Voice: returns ProjectList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_archived": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__set_budget",
+      "description": "rpc Projects::set_budget of Voice: returns Budget; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "allowance_micros": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "period": {
+            "type": "string",
+            "enum": [
+              "day",
+              "week",
+              "month",
+              "none"
+            ],
+            "x-hale-type": "Period"
+          },
+          "period_anchor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "allowance_micros",
+          "period"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__set_limits",
+      "description": "rpc Projects::set_limits of Voice: returns LimitSet; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Limit"
+            },
+            "maxItems": 16
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "$defs": {
+          "Limit": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "project",
+                  "key",
+                  "model",
+                  "account"
+                ],
+                "x-hale-type": "LimitScope"
+              },
+              "model": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "window_seconds": {
+                "type": "integer"
+              },
+              "requests": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "concurrent": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Projects__update",
+      "description": "rpc Projects::update of Voice: returns Project; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owners": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_classes": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "set_models": {
+            "type": "boolean"
+          },
+          "models": {
+            "$ref": "#/$defs/Restriction"
+          },
+          "set_accounts": {
+            "type": "boolean"
+          },
+          "accounts": {
+            "$ref": "#/$defs/Restriction"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "$defs": {
+          "Names": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              }
+            },
+            "required": []
+          },
+          "Restriction": {
+            "type": "object",
+            "properties": {
+              "any": {
+                "type": "boolean"
+              },
+              "names": {
+                "$ref": "#/$defs/Names"
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Seats__create",
+      "description": "rpc Seats::create of Voice: returns SeatView; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "serves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SeatModel"
+            },
+            "maxItems": 16
+          },
+          "data_classes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32
+          },
+          "concurrency": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "config": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "id",
+          "engine",
+          "account"
+        ],
+        "$defs": {
+          "SeatModel": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "as": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Seats__get",
+      "description": "rpc Seats::get of Voice: returns SeatView; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "seat"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Seats__list",
+      "description": "rpc Seats::list of Voice: returns SeatList; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Seats__remove",
+      "description": "rpc Seats::remove of Voice: returns SeatView; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "seat"
+        ]
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    },
+    {
+      "name": "Seats__update",
+      "description": "rpc Seats::update of Voice: returns SeatView; its failure is the handler error ApiError. Requires admin under the exposure's role source; the server still authorizes every request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "seat": {
+            "type": "string"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serves": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/SeatModel"
+                },
+                "maxItems": 16
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_classes": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "concurrency": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "node",
+          "seat"
+        ],
+        "$defs": {
+          "SeatModel": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "as": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "x-hale-requires": [
+        "admin"
+      ]
+    }
+  ],
+  "notes": {
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

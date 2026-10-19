@@ -1,0 +1,7 @@
+{
+  "why": "A contract field opened to several types (oneOf) must be a gap, not skipped.",
+  "side": "contract",
+  "set": ["components", "schemas", "Health", "properties", "version"],
+  "value": { "oneOf": [{ "type": "integer" }, { "type": "boolean" }] },
+  "expect": "NEW GAP Health.version open"
+}

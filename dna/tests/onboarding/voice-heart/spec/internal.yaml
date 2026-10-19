@@ -1,0 +1,119 @@
+asyncapi: 3.0.0
+info:
+  title: voice internal subjects
+  version: '1'
+  description: |
+    Voice's own NATS subjects: what crosses between the brain and the api
+    instances. Not part of the seam a node plugs into; that is
+    `protocol.yaml`. Written from an api instance's side.
+
+    The one subject today tells the api instances that the route table
+    changed. The brain computes the table from the fleet's reported state
+    (`store.md`, "The brain's read") every second and writes it to Postgres
+    (`route_table`, `store.md`, "The route table"), then publishes the new
+    version here: a few bytes, whatever the table's size, so it never meets
+    NATS's `max_payload`. An instance that sees a version newer than the
+    table it holds reads the table from Postgres; `GET /admin/v1/routes`
+    reads it there too. A lost notice costs a second, and a node accepts or
+    refuses every request regardless of what the table said.
+  contact:
+    url: https://github.com/hale-lang/voice
+
+defaultContentType: application/json
+
+servers:
+  nats:
+    host: nats:4222
+    protocol: nats
+    description: The private network's NATS, shared with the nodes.
+
+channels:
+  route:
+    address: voice.route
+    messages:
+      routeNotice: { $ref: '#/components/messages/routeNotice' }
+
+operations:
+  receiveRouteNotice:
+    action: receive
+    channel: { $ref: '#/channels/route' }
+    summary: The route table's new version, from the brain.
+
+components:
+  messages:
+    routeNotice:
+      name: route_notice
+      payload: { $ref: '#/components/schemas/RouteNotice' }
+
+  schemas:
+    RouteNotice:
+      type: object
+      description: The route table in Postgres is at `version`.
+      required: [version]
+      properties:
+        version: { type: integer }
+
+    RouteTable:
+      type: object
+      description: The route table as `route_table` holds it and `GET /admin/v1/routes` answers it.
+      required: [version, at, models]
+      properties:
+        version:
+          type: integer
+          description: |
+            Milliseconds of Postgres's clock when the table was written, and
+            always above the version before it (the stored version plus one
+            when the clock has not passed it), so it increases with every
+            write across a takeover and a clock step. An instance ignores a
+            table older than the one it holds.
+        at: { type: string, format: date-time }
+        models:
+          type: array
+          items: { $ref: '#/components/schemas/ModelRoutes' }
+
+    ModelRoutes:
+      type: object
+      required: [model, seats, exhausted]
+      properties:
+        model:
+          type: string
+          description: A catalog model id.
+        seats:
+          type: array
+          description: The seats that can serve it now, best first.
+          items: { $ref: '#/components/schemas/SeatRoute' }
+        exhausted:
+          type: array
+          description: Accounts that could serve it but have no headroom, and when they will again.
+          items:
+            type: object
+            required: [account, until]
+            properties:
+              account: { type: string }
+              until: { type: [string, 'null'], format: date-time }
+
+    SeatRoute:
+      type: object
+      required: [seat, node, account, rank, free, data_classes]
+      properties:
+        seat:
+          type: string
+          description: '`<node>/<seat>`.'
+        node: { type: string }
+        account: { type: string }
+        engine_model:
+          type: [string, 'null']
+          description: The seat's own name for the model, passed through in `serve`.
+        rank:
+          type: number
+          description: Lower is better. Account headroom first, then seat load, with a little jitter so instances spread.
+        free:
+          type: integer
+          minimum: 0
+          description: |
+            Slots the seat had free as of this table, bounded by its
+            concurrency and its node's effective cap. An instance decrements
+            its copy when it sends `serve`; the node's answer is the truth.
+        data_classes:
+          type: array
+          items: { type: string }

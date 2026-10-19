@@ -1,0 +1,248 @@
+// Accounts: what pays for serving and what has limits. Voice never holds
+// an account's credential; the engine on each seat logs in on its node.
+
+type AccountRef { account: String; }
+
+type AccountQuery { include_archived: Bool = false; }
+
+/// `AccountCreate`. With no `billing` it is `none`.
+type AccountCreate {
+    id: String;
+    name: String;
+    has_provider: Bool = false;
+    provider: String = "";
+    has_billing: Bool = false;
+    billing: Billing = Billing::none;
+    limits: bounded[st::Limit; 16];
+}
+
+/// `AccountUpdate`, for the account the path names.
+type AccountUpdate {
+    account: String;
+    has_name: Bool = false;
+    name: String = "";
+    set_provider: Bool = false;
+    provider: String = "";
+    has_billing: Bool = false;
+    billing: Billing = Billing::none;
+    has_limits: Bool = false;
+    limits: bounded[st::Limit; 16];
+}
+
+/// `Account`. `windows` are the provider windows an engine last reported.
+type Account {
+    id: String = "";
+    name: String = "";
+    has_provider: Bool = false;
+    provider: String = "";
+    billing: Billing;
+    limits: bounded[st::Limit; 16];
+    status: Lifecycle;
+    // `<node>/<seat>` of each seat that spends it
+    seats: bounded[String; 32];
+    windows: bounded[QuotaWindow; 16];
+    // nothing has exhausted it until requests are counted
+    has_exhausted_until: Bool = false;
+    exhausted_until: Time = `1970-01-01T00:00:00Z`;
+    created_at: Time = `1970-01-01T00:00:00Z`;
+    has_archived_at: Bool = false;
+    archived_at: Time = `1970-01-01T00:00:00Z`;
+}
+
+type AccountList { data: bounded[Account; 64]; }
+
+locus Accounts {
+    params { store: st::Store; }
+
+    /// `listAccounts`.
+    fn list(q: AccountQuery) -> AccountList fallible(ApiError) {
+        let rows = self.store.accounts() or fail store_failed(err);
+        let mut out = AccountList { };
+        for r in rows.rows {
+            if q.include_archived || !r.archived {
+                let v = self.view(r) or raise;
+                push(out.data, v) or discard;
+            }
+        }
+        return out;
+    }
+
+    /// `createAccount`.
+    fn create(c: AccountCreate) -> Account fallible(ApiError) {
+        if !is_slug(c.id) { fail invalid("`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63", "id"); }
+        check_name(c.name) or raise;
+        let limits = own_account_limits(c.limits, c.id) or raise;
+        check_limits(limits.items, "account", "limits") or raise;
+        let row = st::AccountRow {
+            id: c.id,
+            name: c.name,
+            provider: if c.has_provider { c.provider } else { "" },
+            billing: if c.has_billing { billing_name(c.billing) } else { "none" },
+            limits: limits,
+            created_at: now_seconds()
+        };
+        let v = self.view(row) or raise;
+        let added = self.store.insert_account(row, change("create", "accounts/" + c.id, "", account_json(v))) or fail store_failed(err);
+        if !added { fail conflict("account " + c.id + " exists; an account id is never reused"); }
+        return v;
+    }
+
+    /// `getAccount`.
+    fn get(r: AccountRef) -> Account fallible(ApiError) {
+        let row = self.known(r.account) or raise;
+        return self.view(row) or raise;
+    }
+
+    /// `updateAccount`: the fields the request sets.
+    fn update(u: AccountUpdate) -> Account fallible(ApiError) {
+        self.store.hold("accounts/" + u.account) or fail store_failed(err);
+        let out = self.update_held(u) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `update`, holding the resource from its read to its write.
+    fn update_held(u: AccountUpdate) -> Account fallible(ApiError) {
+        let mut row = self.known(u.account) or raise;
+        let before = self.view(row) or raise;
+        if u.has_name {
+            check_name(u.name) or raise;
+            row.name = u.name;
+        }
+        if u.set_provider { row.provider = u.provider; }
+        if u.has_billing { row.billing = billing_name(u.billing); }
+        if u.has_limits {
+            let limits = own_account_limits(u.limits, row.id) or raise;
+            check_limits(limits.items, "account", "limits") or raise;
+            row.limits = limits;
+        }
+        let after = self.view(row) or raise;
+        self.store.update_account(row, change("update", "accounts/" + row.id, account_json(before), account_json(after))) or fail store_failed(err);
+        return after;
+    }
+
+    /// `archiveAccount`: its seats stop serving, and keys and projects that
+    /// name it keep the name and can no longer spend it. The id stays taken;
+    /// archiving an archived account changes nothing.
+    fn archive(r: AccountRef) -> Account fallible(ApiError) {
+        self.store.hold("accounts/" + r.account) or fail store_failed(err);
+        let out = self.archive_held(r) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `archive`, holding the resource from its read to its write.
+    fn archive_held(r: AccountRef) -> Account fallible(ApiError) {
+        let mut row = self.known(r.account) or raise;
+        if row.archived { return self.view(row) or raise; }
+        let before = self.view(row) or raise;
+        row.archived = true;
+        row.archived_at = now_seconds();
+        let after = self.view(row) or raise;
+        self.store.update_account(row, change("archive", "accounts/" + row.id, account_json(before), account_json(after))) or fail store_failed(err);
+        return after;
+    }
+
+    fn known(id: String) -> st::AccountRow fallible(ApiError) {
+        let row = self.store.account(id) or fail store_failed(err);
+        if !row.present { fail not_found("no account " + id); }
+        return row;
+    }
+
+    /// The row with the seats that spend it.
+    fn view(r: st::AccountRow) -> Account fallible(ApiError) {
+        let seats = self.store.seats() or fail store_failed(err);
+        let mut v = Account {
+            id: r.id,
+            name: r.name,
+            has_provider: len(r.provider) > 0,
+            provider: r.provider,
+            billing: billing_of(r.billing),
+            status: if r.archived { Lifecycle::archived } else { Lifecycle::active },
+            created_at: r.created_at,
+            has_archived_at: r.archived,
+            archived_at: r.archived_at
+        };
+        v.limits = r.limits.items;
+        let windows = self.store.windows(r.id) or fail store_failed(err);
+        v.windows = windows_of(windows).items;
+        for s in seats.rows {
+            if s.account == r.id { push(v.seats, s.ref) or discard; }
+        }
+        return v;
+    }
+}
+
+/// `billing`, `none` when the body leaves it out.
+fn billing_field(body: String) -> Billing fallible(ApiError) {
+    let billing = string_or(body, "billing", "none") or raise;
+    if billing != "subscription" && billing != "metered" && billing != "none" {
+        fail invalid("`billing` is subscription, metered or none", "billing");
+    }
+    return billing_of(billing);
+}
+
+// ---- the wire ----------------------------------------------------------
+
+/// A string or `null` ("").
+fn nullable_string(body: String, name: String) -> String fallible(ApiError) {
+    let f = std::json::string_field(body, name);
+    if f.kind == "missing" || f.kind == "null" { return ""; }
+    if f.kind != "string" { fail invalid("`" + name + "` is a string or null", name); }
+    return f.text;
+}
+
+fn read_account_create(body: String) -> AccountCreate fallible(ApiError) {
+    object_body(body) or raise;
+    let limits = limits_field(body, "limits") or raise;
+    let mut c = AccountCreate {
+        id: required_string(body, "id") or raise,
+        name: required_string(body, "name") or raise,
+        has_provider: kind_of(body, "provider") == "string",
+        provider: nullable_string(body, "provider") or raise,
+        has_billing: sets(body, "billing"),
+        billing: billing_field(body) or raise
+    };
+    c.limits = limits.items;
+    return c;
+}
+
+fn read_account_update(body: String, account: String) -> AccountUpdate fallible(ApiError) {
+    object_body(body) or raise;
+    if sets(body, "id") { fail invalid("an account's `id` cannot change", "id"); }
+    let limits = limits_field(body, "limits") or raise;
+    let mut u = AccountUpdate {
+        account: account,
+        has_name: sets(body, "name"),
+        name: string_or(body, "name", "") or raise,
+        set_provider: sets(body, "provider"),
+        provider: nullable_string(body, "provider") or raise,
+        has_billing: sets(body, "billing"),
+        billing: billing_field(body) or raise,
+        has_limits: sets(body, "limits")
+    };
+    u.limits = limits.items;
+    return u;
+}
+
+fn account_json(a: Account) -> String {
+    return "{\"id\": " + jq(a.id) + ", \"name\": " + jq(a.name) + ", \"provider\": " + jstring_or_null(a.has_provider, a.provider)
+        + ", \"billing\": " + jq(billing_name(a.billing)) + ", \"limits\": " + limits_json(a.limits) + ", \"status\": " + jq(lifecycle_name(a.status))
+        + ", \"seats\": " + st::jnames(a.seats) + ", \"windows\": " + windows_json(a.windows) + ", \"exhausted_until\": " + jtime_or_null(a.has_exhausted_until, a.exhausted_until)
+        + ", \"created_at\": " + jtime(a.created_at) + ", \"archived_at\": " + jtime_or_null(a.has_archived_at, a.archived_at) + "}";
+}
+
+fn account_list_json(l: AccountList) -> String {
+    let entries_list = st::JsonList { };
+    for a in l.data {
+        entries_list.add(account_json(a));
+    }
+    let entries = entries_list.text();
+    return jdata(entries);
+}

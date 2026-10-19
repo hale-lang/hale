@@ -1,0 +1,7 @@
+{
+  "why": "A path record listed as having no body must not grow a body field unread.",
+  "side": "bundle",
+  "set": ["components", "schemas", "NodeRef", "properties", "name"],
+  "value": { "type": "string" },
+  "expect": "NOT_COMPARED, but a field its reason does not cover NodeRef.name"
+}

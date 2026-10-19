@@ -1,0 +1,7 @@
+{
+  "why": "An exported component nobody maps, with a field of the wrong type, must not pass unread.",
+  "side": "bundle",
+  "set": ["components", "schemas", "HealthV2"],
+  "value": { "type": "object", "properties": { "status": { "type": "integer" }, "version": { "type": "string" } }, "required": [] },
+  "expect": "NOT COMPARED, and no reason given HealthV2"
+}

@@ -1,0 +1,44 @@
+.panel {
+  --cut: var(--cut-panel);
+  position: relative;
+  background: var(--color-rule);
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+  padding: var(--line-hair);
+}
+
+.inner {
+  background: var(--color-bg-1);
+  clip-path: polygon(0 0, calc(100% - var(--cut) + 0.5px) 0, 100% calc(var(--cut) - 0.5px), 100% 100%, calc(var(--cut) - 0.5px) 100%, 0 calc(100% - var(--cut) + 0.5px));
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--color-text-muted);
+  font-size: var(--size-sm);
+}
+
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,34 @@
+// The usage event the api tells the organization: cut from what served a
+// request, written as one JSON object, read back the same.
+import ".." as api;
+import "../../store" as st;
+
+fn main() {
+    let r = api::InferenceRequest { endpoint: "chat", has_model: true, model: "echo-1", data_class: "internal" };
+    let mut voice = api::VoiceExtension { request_id: "resp_0123", project: "work", key: "key_1", price_micros: 96, currency: "USD", wall_ms: 12 };
+    voice.served = api::ServedBy { model: "echo", node: "laptop", seat: "laptop/static", account: "static", engine: "static" };
+    let s = api::Served { request_id: "resp_0123", model: "echo-1", status: "incomplete", input_tokens: 12, output_tokens: 4, voice: voice };
+    let e = api::usage_event(r, s);
+    std::test::assert_eq_str(e.id, "resp_0123", "its id is the request's, which is how a redelivery lands once");
+    std::test::assert(e.project == "work" && e.key == "key_1" && e.requested_model == "echo-1" && e.served_model == "echo", "who asked, for which model, served as which");
+    std::test::assert(e.endpoint == "chat.completions" && e.status == "incomplete" && e.seat == "laptop/static" && e.account == "static", "where, and how it ended");
+    std::test::assert(e.input_tokens == 12 && e.output_tokens == 4 && e.price_micros == 96 && e.currency == "USD", "what it cost");
+
+    let codec = api::UsageJson { };
+    let wire = std::str::from_bytes(codec.encode(e) or b"");
+    std::test::assert(std::json::valid_object(wire), "one JSON object: " + wire);
+    std::test::assert(std::json::find_string_field(wire, "id") == "resp_0123" && std::json::find_string_field(wire, "endpoint") == "chat.completions", "its fields by name: " + wire);
+    std::test::assert(std::str::ends_with(std::json::find_string_field(wire, "created_at"), "Z"), "its time in UTC");
+    let back = codec.decode(std::bytes::from_string(wire)) or api::UsageEvent { id: "", created_at: `1970-01-01T00:00:00Z`, project: "", key: "", requested_model: "", served_model: "", endpoint: "", status: "", data_class: "", seat: "", account: "", input_tokens: 0, output_tokens: 0, price_micros: 0, currency: "", wall_ms: 0 };
+    std::test::assert(back.id == e.id && back.price_micros == 96 && back.status == "incomplete", "read back the same");
+
+    // a request its seat began and did not finish: told with how it ended,
+    // nothing charged, and no token count it does not know
+    let k = st::KeyRow { id: "key_1", project: "work" };
+    let m = st::ModelRow { id: "echo-1" };
+    let c = api::Candidate { seat: st::SeatRow { node: "laptop", id: "static", ref: "laptop/static", account: "static" }, engine_name: "echo" };
+    let gone = api::unfinished_usage(r, "resp_0456", k, m, c, "cancelled", 1500);
+    std::test::assert(gone.status == "cancelled" && gone.seat == "laptop/static" && gone.price_micros == 0 && gone.served_model == "echo", "how it ended, where");
+    let gone_wire = std::str::from_bytes(codec.encode(gone) or b"");
+    std::test::assert(!std::str::contains(gone_wire, "input_tokens") && !std::str::contains(gone_wire, "output_tokens"), "its tokens left out, not claimed zero: " + gone_wire);
+}

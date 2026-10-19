@@ -1,0 +1,462 @@
+// Rate limits as the organization ratified them (voice#1, #8): when the
+// api runs with `--head`, a project's limit is the practice
+// `operating/limits/<project>`, proposed like any practice, decided by the
+// Board, and changed only by a superseding practice the Board ratifies.
+// Voice decides nothing about policy; it reads the ratified practices and
+// enforces them (admission.hl).
+//
+// The practice's text states its own grammar: one `name: value` per line,
+// the names those of the contract's `Limit` (`window_seconds`, `requests`,
+// `input_tokens`, `output_tokens`, `concurrent`), each a whole number alone
+// after its name. A name left out is unlimited; every other line, a value
+// with words after it included, is prose.
+//
+// The reader (`Governance`) is a pinned locus of its own, and no request
+// ever waits on it: it reads the practices on its own schedule, every
+// `every` (every second until a read first lands), and leaves what it read
+// in `HeldLimits`, a map it shares with the request path, which reads only
+// that. It reads through the organization's head and nowhere else, as a
+// service (spec/dna.md, "A service is a principal too"): a token of the
+// issuer's `client_credentials` grant under its own client id, its secret
+// the vault's (`std::secret`), presented as a bearer on the head's API
+// routes for the application `--application` names. Each call is one
+// attempt under one deadline (deadline.hl), its dial, request and whole
+// answer, 30 s by default (a page of practices can take the head several).
+//
+// Until a read lands, a keyed request is refused (`503
+// metering_unavailable`): the limits fail closed. Once one has, the limits
+// it read stand until another lands; a read that does not land (the head
+// or the issuer not answering, an answer cut short or read to the close,
+// the record moving between pages, more than `PAGES_MAX` pages) keeps them
+// and is logged once. A project the organization ratified no limit for is
+// not limited. Of several ratified practices of one project, the one in
+// force is the one no other supersedes: a superseding practice is in force
+// from its ratification, before the retirement of the one it supersedes
+// lands. (The head shows no time of ratification, so the order is the
+// record's `supersedes` chain, never the listing's.) A project whose
+// practices are ambiguous, two in force or a cycle of supersessions, is
+// decided alone: it keeps the limit held for it, or, with none, its keyed
+// requests are refused, and every other project is read as it is.
+
+const LIMIT_PREFIX: String = "operating/limits/";
+
+/// One project's ratified limit: the practice it was read from, and the
+/// limit (scope `project`).
+type PracticeLimit {
+    project: String = "";
+    // the practice's name and id, as the head lists it
+    name: String = "";
+    id: String = "";
+    // the practice it supersedes, "" for none
+    supersedes: String = "";
+    limit: st::Limit = st::Limit { scope: st::LimitScope::project };
+    // the project's limit is not known (its ratified practices are
+    // ambiguous, and no limit was read for it before): its keyed requests
+    // are refused
+    closed: Bool = false;
+    // why a project's ratified practices are ambiguous ("" when not)
+    why: String = "";
+}
+
+/// The most pages of practices one read takes; past them it does not
+/// land.
+const PAGES_MAX: Int = 100;
+
+@form(vec)
+locus PracticeLimits { capacity { heap rows of PracticeLimit; } }
+
+/// A whole number, -1 when `text` is not one.
+fn whole(text: String) -> Int {
+    let t = std::str::trim(text);
+    if len(t) == 0 { return -1; }
+    let mut i = 0;
+    while i < len(t) {
+        let c = std::str::byte_at_unchecked(t, i);
+        if c < 48 || c > 57 { return -1; }
+        i = i + 1;
+    }
+    return std::str::parse_int(t) or - 1;
+}
+
+/// A practice's text as a project-scope limit: its `name: value` lines,
+/// the rest prose.
+@unbounded
+fn parse_limit(text: String) -> st::Limit {
+    let mut l = st::Limit { scope: st::LimitScope::project };
+    let v = std::str::bytes_view(text);
+    let mut start = 0;
+    while start < v.n {
+        let end = st::line_end(v, start);
+        let line = std::str::trim(std::str::slice(v, start, end));
+        start = end + 1;
+        let colon = std::str::index_of(line, ":");
+        if colon <= 0 { continue; }
+        let name = std::str::trim(line[0..colon]);
+        let value = whole(line[(colon + 1)..len(line)]);
+        if value < 0 { continue; }
+        if name == "window_seconds" && value > 0 { l.window_seconds = value; }
+        if name == "requests" { l.requests = value; }
+        if name == "input_tokens" { l.input_tokens = value; }
+        if name == "output_tokens" { l.output_tokens = value; }
+        if name == "concurrent" { l.concurrent = value; }
+    }
+    return st::counted(l);
+}
+
+/// The limits in force among the ratified practices `found`, into `out`:
+/// of a project's, the one no other of them supersedes. A project whose
+/// practices are ambiguous (two in force, or a supersession cycle among
+/// them) goes into `unsettled` instead, with why; every other project is
+/// read as it is.
+@unbounded
+fn in_force(found: PracticeLimits, out: PracticeLimits, unsettled: PracticeLimits) {
+    let mut i = 0;
+    while i < found.len() {
+        let p = found.get(i) or PracticeLimit { };
+        i = i + 1;
+        if has_project(out, p.project) || has_project(unsettled, p.project) { continue; }
+        let mut heads = 0;
+        let mut head = PracticeLimit { };
+        let mut cycle = false;
+        let mut k = 0;
+        while k < found.len() {
+            let q = found.get(k) or PracticeLimit { };
+            k = k + 1;
+            if q.project != p.project { continue; }
+            if !superseded(found, q) {
+                heads = heads + 1;
+                head = q;
+            }
+            if in_cycle(found, q) { cycle = true; }
+        }
+        if cycle {
+            unsettled.push(PracticeLimit { project: p.project, name: p.name, why: "its ratified practices supersede each other in a cycle" });
+        } else if heads != 1 {
+            unsettled.push(PracticeLimit { project: p.project, name: p.name, why: to_string(heads) + " of its ratified practices are in force, none superseding the others" });
+        } else {
+            out.push(head);
+        }
+    }
+}
+
+/// `limits` holds one for `project`.
+@unbounded
+fn has_project(limits: PracticeLimits, project: String) -> Bool {
+    let mut i = 0;
+    while i < limits.len() {
+        let have = limits.get(i) or PracticeLimit { };
+        if have.project == project { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+/// Another of `found`, of `p`'s project, supersedes `p`.
+@unbounded
+fn superseded(found: PracticeLimits, p: PracticeLimit) -> Bool {
+    let mut k = 0;
+    while k < found.len() {
+        let q = found.get(k) or PracticeLimit { };
+        if q.project == p.project && len(q.supersedes) > 0 && q.supersedes == p.id { return true; }
+        k = k + 1;
+    }
+    return false;
+}
+
+/// The practice `p`'s project's that `p` supersedes, among `found`;
+/// `id` "" when there is none.
+@unbounded
+fn superseded_by(found: PracticeLimits, p: PracticeLimit) -> PracticeLimit {
+    if len(p.supersedes) == 0 { return PracticeLimit { }; }
+    let mut k = 0;
+    while k < found.len() {
+        let q = found.get(k) or PracticeLimit { };
+        if q.project == p.project && q.id == p.supersedes { return q; }
+        k = k + 1;
+    }
+    return PracticeLimit { };
+}
+
+/// Following what `p` supersedes, among `found`, comes back round: more
+/// steps than there are practices.
+@unbounded
+fn in_cycle(found: PracticeLimits, p: PracticeLimit) -> Bool {
+    let mut at = p;
+    let mut steps = 0;
+    while steps <= found.len() {
+        let next = superseded_by(found, at);
+        if len(next.id) == 0 { return false; }
+        at = next;
+        steps = steps + 1;
+    }
+    return true;
+}
+
+/// Each project of `unsettled` into `read`: the limit `current` held for
+/// it, which stands, or, with none, closed.
+@unbounded
+fn settle(read: PracticeLimits, unsettled: PracticeLimits, current: PracticeLimits) {
+    let mut i = 0;
+    while i < unsettled.len() {
+        let u = unsettled.get(i) or PracticeLimit { };
+        i = i + 1;
+        let mut kept = false;
+        let mut k = 0;
+        while k < current.len() {
+            let have = current.get(k) or PracticeLimit { };
+            if have.project == u.project {
+                read.push(have);
+                kept = true;
+            }
+            k = k + 1;
+        }
+        if !kept { read.push(PracticeLimit { project: u.project, name: u.name, closed: true, why: u.why }); }
+    }
+}
+
+/// The projects of `unsettled`, and why, for a log line.
+@unbounded
+fn unsettled_text(unsettled: PracticeLimits) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < unsettled.len() {
+        let u = unsettled.get(i) or PracticeLimit { };
+        out = out + (if len(out) > 0 { "; " } else { "" }) + u.project + ": " + u.why;
+        i = i + 1;
+    }
+    return out;
+}
+
+/// `text` percent-encoded for a form body: unreserved characters kept.
+@unbounded
+fn form_encode(text: String) -> String {
+    let hex = "0123456789ABCDEF";
+    let out = std::bytes::BytesBuilder { initial_cap: len(text) * 3 + 1 };
+    let mut i = 0;
+    while i < len(text) {
+        let c = std::str::byte_at_unchecked(text, i);
+        let keep = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95 || c == 126;
+        out.append_str(if keep { text[i..(i + 1)] } else { "%" + hex[(c / 16)..(c / 16 + 1)] + hex[(c % 16)..(c % 16 + 1)] });
+        i = i + 1;
+    }
+    let b = out.snapshot() or b"";
+    return std::str::from_bytes(b);
+}
+
+/// What a read through the head found: the head answered, or why it did
+/// not.
+type HeadRead { ok: Bool = false; why: String = ""; }
+
+/// One project's limit as the request path finds it (`HeldLimits`): under
+/// `<generation>/<project>`, and the generation in force under `HELD`.
+type HeldLimit {
+    key: String = "";
+    generation: Int = 0;
+    practice: PracticeLimit = PracticeLimit { };
+}
+
+const HELD: String = "held";
+
+/// The ratified limits last read, shared by the reader (`Governance`, on
+/// a thread of its own) and the request path: serialized.
+@form(hashmap, sync = serialized)
+locus HeldLimits { capacity { pool entries of HeldLimit indexed_by key; } }
+
+/// A read has landed: the ratified limits are known.
+fn limits_landed(held: HeldLimits) -> Bool {
+    let now = held.get(HELD) or HeldLimit { };
+    return now.generation > 0;
+}
+
+/// `project`'s ratified limit as last read; `project` "" in the answer
+/// when the organization ratified none.
+fn held_limit(held: HeldLimits, project: String) -> PracticeLimit {
+    let now = held.get(HELD) or HeldLimit { };
+    if now.generation <= 0 { return PracticeLimit { }; }
+    let e = held.get(to_string(now.generation) + "/" + project) or HeldLimit { };
+    return e.practice;
+}
+
+/// `read` held as generation `generation`: every limit under it, then
+/// the generation in force, so a request finds the old limits or the new,
+/// never a mix.
+@unbounded
+fn hold_limits(held: HeldLimits, generation: Int, read: PracticeLimits) {
+    let mut i = 0;
+    while i < read.len() {
+        let p = read.get(i) or PracticeLimit { };
+        held.set(HeldLimit { key: to_string(generation) + "/" + p.project, generation: generation, practice: p });
+        i = i + 1;
+    }
+    held.set(HeldLimit { key: HELD, generation: generation });
+}
+
+/// The reader of the organization's ratified limits, through its head.
+locus Governance {
+    params {
+        // the organization's head ("" = the limits are the api's own)
+        head: String = "";
+        // the application whose practices these are, by its id at the head
+        application: String = "";
+        // the identity provider the head trusts, and this service's client
+        // id there
+        issuer: String = "";
+        client: String = "";
+        // the vault entry holding the client's secret (`oidc-service-<id>`)
+        secret: std::secret::Credential = std::secret::Credential { };
+        every: Duration = 30s;
+        // each call's whole deadline: dial, request and answer
+        within: Duration = 30s;
+        held: HeldLimits;
+        // the generation held, and the projects of it and of the one before
+        // (whose entries go once a request can no longer be reading them)
+        generation: Int = 0;
+        current: PracticeLimits = PracticeLimits { };
+        before: PracticeLimits = PracticeLimits { };
+        token: String = "";
+        token_until_ns: Int = 0;
+        // why the last read did not land ("" when it did), and the projects
+        // whose ratified practices it found ambiguous
+        refused: String = "";
+        ambiguous: String = "";
+    }
+
+    fn governed() -> Bool { return len(self.head) > 0; }
+
+    // The loop does not watch `self.draining`: a program that reads it
+    // waits out the drain's whole grace on a signal (FRICTION.md).
+    run() {
+        if !self.governed() { return; }
+        while true {
+            self.refresh(std::time::monotonic_ns());
+            std::time::sleep(if self.generation > 0 { self.every } else { 1s });
+        }
+    }
+
+    /// One read; what it read held when it lands.
+    @unbounded
+    fn refresh(now_ns: Int) {
+        let found = PracticeLimits { };
+        let r = self.read(now_ns, found);
+        if !r.ok {
+            if r.why != self.refused {
+                log_warn("the ratified rate limits were not read: " + r.why, std::log::kv("then", if self.generation > 0 { "the last ones read stand" } else { "keyed requests are refused until they are" }));
+                self.refused = r.why;
+            }
+            return;
+        }
+        let read = PracticeLimits { };
+        let unsettled = PracticeLimits { };
+        in_force(found, read, unsettled);
+        // an ambiguous project keeps the limit held for it, or is closed;
+        // every other project is read as it is
+        settle(read, unsettled, self.current);
+        let ambiguous = unsettled_text(unsettled);
+        if ambiguous != self.ambiguous {
+            if len(ambiguous) > 0 { log_warn("a project's ratified rate limit is ambiguous: " + ambiguous, std::log::kv("then", "its last limit stands, or, with none, its keyed requests are refused")); } else { log_info("no project's ratified rate limit is ambiguous", ""); }
+            self.ambiguous = ambiguous;
+        }
+        if len(self.refused) > 0 || self.generation == 0 { log_info("the ratified rate limits are read", std::log::kv("projects", to_string(read.len()))); }
+        self.refused = "";
+        self.generation = self.generation + 1;
+        hold_limits(self.held, self.generation, read);
+        // the generation before the one just replaced: nothing reads it now
+        let mut i = 0;
+        while i < self.before.len() {
+            let p = self.before.get(i) or PracticeLimit { };
+            self.held.remove(to_string(self.generation - 2) + "/" + p.project) or discard;
+            i = i + 1;
+        }
+        move_limits(self.current, self.before);
+        move_limits(read, self.current);
+    }
+
+    /// A token for this service, from the issuer's token endpoint, kept
+    /// until a minute before it expires.
+    fn service_token(now_ns: Int) -> HeadRead {
+        if len(self.token) > 0 && now_ns < self.token_until_ns - 60000000000 { return HeadRead { ok: true }; }
+        let found = exchange(self.issuer + "/.well-known/openid-configuration", self.within, "GET", "", "");
+        let endpoint = std::json::find_string_field(found.body, "token_endpoint");
+        if found.status != 200 || len(endpoint) == 0 { return HeadRead { why: "the issuer's discovery document did not answer" + said(found) }; }
+        if !self.secret.ready() { return HeadRead { why: "the vault holds no secret for this service" }; }
+        let x = exchange_open(endpoint, self.within);
+        if x.handle < 0 { return HeadRead { why: "the issuer's token endpoint did not answer (" + x.why + ")" }; }
+        // the secret goes on the wire as the vault holds it: a revealed
+        // secret is consumed by the write itself (spec/semantics.md, "@sealed")
+        if !exchange_send_secret(x, "POST", "Content-Type: application/x-www-form-urlencoded", "grant_type=client_credentials&client_id=" + form_encode(self.client) + "&client_secret=", self.secret.reveal_text()) {
+            exchange_close(x);
+            return HeadRead { why: "the issuer's token endpoint did not take the request" };
+        }
+        let answered = exchange_answer(x);
+        let token = std::json::find_string_field(answered.body, "access_token");
+        if answered.status != 200 || len(token) == 0 { return HeadRead { why: "the issuer refused this service" + said(answered) }; }
+        self.token = token;
+        self.token_until_ns = now_ns + std::json::find_int_field(answered.body, "expires_in") * 1000000000;
+        return HeadRead { ok: true };
+    }
+
+    /// A GET on the head's API as this service.
+    fn head_get(path: String) -> Answer {
+        let answered = exchange(self.head + path, self.within, "GET", "Authorization: Bearer " + self.token, "");
+        // a token the head no longer takes is asked for again next time
+        if answered.status == 401 { self.token = ""; }
+        return answered;
+    }
+
+    /// The ratified limit practices through the head into `found`, every
+    /// page of one snapshot.
+    @unbounded
+    fn read(now_ns: Int, found: PracticeLimits) -> HeadRead {
+        let t = self.service_token(now_ns);
+        if !t.ok { return t; }
+        let mut offset = 0;
+        let mut snapshot = "";
+        let mut pages = 0;
+        while offset >= 0 {
+            if pages == PAGES_MAX { return HeadRead { why: "the practices run past " + to_string(PAGES_MAX) + " pages" }; }
+            let at = if offset > 0 { "&offset=" + to_string(offset) + "&snapshot=" + form_encode(snapshot) } else { "" };
+            let page = self.head_get("/api/hale/v1/applications/" + form_encode(self.application) + "/dna/practices?limit=100" + at);
+            // the record moved between pages: read it whole next time
+            if page.status == 409 { return HeadRead { why: "the record moved while it was read" }; }
+            if page.status == 404 { return HeadRead { why: "the head has no application " + self.application }; }
+            if page.status != 200 { return HeadRead { why: "the head did not answer the practices" + said(page) }; }
+            // read to the close, a cut answer would pass for a whole one:
+            // a project missing from it would be unlimited
+            if !page.framed { return HeadRead { why: "the head's answer gave neither its length nor chunks" }; }
+            let data = std::json::find_field_raw(page.body, "data");
+            let mut it = std::json::array_first(std::json::find_field_raw(data, "items"));
+            while !it.done {
+                let name = std::json::find_string_field(it.element, "name");
+                if std::str::starts_with(name, LIMIT_PREFIX) && len(name) > len(LIMIT_PREFIX) && std::json::find_string_field(it.element, "state") == "ratified" {
+                    found.push(PracticeLimit { project: name[len(LIMIT_PREFIX)..len(name)], name: name, id: std::json::find_string_field(it.element, "id"), supersedes: std::json::find_string_field(it.element, "supersedes"), limit: parse_limit(std::json::find_string_field(it.element, "text")) });
+                }
+                it = std::json::array_next(it);
+            }
+            let p = std::json::find_field_raw(data, "page");
+            if len(snapshot) == 0 { snapshot = std::json::find_string_field(p, "snapshot"); }
+            // -1 (or none) on the last page
+            offset = if std::json::string_field(p, "next_offset").kind == "number" { std::json::find_int_field(p, "next_offset") } else { -1 };
+            pages = pages + 1;
+        }
+        return HeadRead { ok: true };
+    }
+}
+
+/// What an answer said, for a log line: its status, or why there was
+/// none.
+fn said(a: Answer) -> String {
+    if a.status == 0 { return " (" + a.why + ")"; }
+    return " (" + to_string(a.status) + ")";
+}
+
+/// `from`'s limits in place of `to`'s; `from` left empty.
+@unbounded
+fn move_limits(from: PracticeLimits, to: PracticeLimits) {
+    while to.len() > 0 { to.pop() or discard; }
+    let mut i = 0;
+    while i < from.len() {
+        to.push(from.get(i) or PracticeLimit { });
+        i = i + 1;
+    }
+    while from.len() > 0 { from.pop() or discard; }
+}

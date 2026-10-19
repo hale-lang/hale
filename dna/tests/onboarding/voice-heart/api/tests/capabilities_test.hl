@@ -1,0 +1,52 @@
+// GET /v1/capabilities: what the presented key may do.
+import ".." as api;
+
+fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
+    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+}
+
+fn caps(e: api::Endpoints, key: String) -> std::http::Response {
+    return e.handle(std::http::Request { method: "GET", path: "/v1/capabilities", headers: "Authorization: Bearer " + key });
+}
+
+fn raw(r: std::http::Response, name: String) -> String {
+    return std::str::trim(std::json::find_field_raw(r.body, name));
+}
+
+fn main() {
+    let e = api::Endpoints { };
+    admin(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}");
+    admin(e, "POST", "/admin/v1/models", "{\"id\": \"other-1\"}");
+    admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\", \"limits\": [{\"scope\": \"account\", \"window_seconds\": 60, \"requests\": 5}]}");
+    admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"paid\", \"name\": \"Paid\", \"limits\": [{\"scope\": \"account\", \"window_seconds\": 60, \"requests\": 7}]}");
+    admin(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\", \"data_classes\": [\"public\", \"internal\"], \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 600}]}");
+    let open = std::json::find_string_field(admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}").body, "secret");
+    let narrow = std::json::find_string_field(admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"narrow\", \"models\": [\"echo-1\"], \"accounts\": [\"static\"], \"limits\": [{\"scope\": \"key\", \"window_seconds\": 60, \"requests\": 9}]}").body, "secret");
+
+    std::test::assert_eq_int(e.handle(std::http::Request { method: "GET", path: "/v1/capabilities" }).status, 401, "a key first");
+
+    let c = caps(e, open);
+    std::test::assert_eq_int(c.status, 200, "capabilities: " + c.body);
+    std::test::assert(std::str::starts_with(c.headers, "X-Request-Id: req_"), "a request id");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(c.body, "project"), "id"), "work", "its project");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(c.body, "key"), "name"), "ci", "its key");
+    std::test::assert_eq_str(raw(c, "data_classes"), "[\"public\", \"internal\"]", "the project's data classes");
+    std::test::assert_eq_str(raw(c, "models"), "[\"echo-1\", \"other-1\"]", "every model");
+    std::test::assert_eq_str(raw(c, "accounts"), "null", "any account");
+    std::test::assert_eq_str(raw(c, "budget"), "null", "no budget");
+    let limits = raw(c, "limits");
+    std::test::assert(std::str::contains(limits, "600") && std::str::contains(limits, "\"static\"") && std::str::contains(limits, "\"paid\""), "the project's limits and every account's");
+
+    let n = caps(e, narrow);
+    std::test::assert_eq_str(raw(n, "models"), "[\"echo-1\"]", "the key's models");
+    std::test::assert_eq_str(raw(n, "accounts"), "[\"static\"]", "the key's accounts");
+    let nl = raw(n, "limits");
+    std::test::assert(std::str::contains(nl, "\"key\"") && std::str::contains(nl, "\"static\"") && !std::str::contains(nl, "\"paid\""), "its own limit and its accounts' only");
+
+    admin(e, "DELETE", "/admin/v1/accounts/paid", "");
+    let after_archive = raw(caps(e, open), "limits");
+    std::test::assert(std::str::contains(after_archive, "\"static\"") && !std::str::contains(after_archive, "\"paid\""), "an archived account's limits no longer apply");
+
+    admin(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 1000, \"period\": \"day\"}");
+    std::test::assert_eq_int(std::json::find_int_field(raw(caps(e, open), "budget"), "remaining_micros"), 1000, "the budget, with what remains");
+}

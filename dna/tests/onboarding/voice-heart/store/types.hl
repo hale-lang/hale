@@ -1,0 +1,177 @@
+// The shapes the store and its users share: the values a row holds that
+// the api's surface carries too (a price, a list of names, a restriction,
+// limits, a budget, the models a seat serves), and the JSON they are
+// written as where a store keeps JSON.
+
+type ModelPrice { input_per_mtok_micros: Int = 0; output_per_mtok_micros: Int = 0; currency: String = "USD"; }
+
+/// A list of names that is never `null`: owners, data classes, seats. At
+/// most 32, as every list of names here.
+type Names { items: bounded[String; 32]; }
+
+/// A list of names that may be `null` on the wire, where `null` means no
+/// restriction (the whole catalog, any account): `any` is that `null`.
+type Restriction { any: Bool = true; names: Names = Names { }; }
+
+/// Where a limit applies (`Limit.scope`).
+type LimitScope = enum { project, key, model, account };
+
+fn scope_name(s: LimitScope) -> String {
+    return match s {
+        LimitScope::project -> "project",
+        LimitScope::key -> "key",
+        LimitScope::model -> "model",
+        LimitScope::account -> "account"
+    };
+}
+
+/// The scope a stored or checked name says; `project` for any other.
+fn scope_of(s: String) -> LimitScope {
+    if s == "key" { return LimitScope::key; }
+    if s == "model" { return LimitScope::model; }
+    if s == "account" { return LimitScope::account; }
+    return LimitScope::project;
+}
+
+/// How often a budget resets (`BudgetSet.period`); `none` is a lifetime
+/// cap.
+type Period = enum { day, week, month, none };
+
+fn period_name(p: Period) -> String {
+    return match p {
+        Period::day -> "day",
+        Period::week -> "week",
+        Period::month -> "month",
+        Period::none -> "none"
+    };
+}
+
+/// The period a stored or checked name says; `month` for any other.
+fn period_of(s: String) -> Period {
+    if s == "day" { return Period::day; }
+    if s == "week" { return Period::week; }
+    if s == "none" { return Period::none; }
+    return Period::month;
+}
+
+/// `Limit`. A count whose `has_` flag is false is `null`: unlimited, and
+/// -1 in the count.
+type Limit {
+    scope: LimitScope;
+    // set when scope is model
+    model: String = "";
+    // set when scope is account
+    account: String = "";
+    window_seconds: Int = 60;
+    has_requests: Bool = false;
+    requests: Int = -1;
+    has_input_tokens: Bool = false;
+    input_tokens: Int = -1;
+    has_output_tokens: Bool = false;
+    output_tokens: Int = -1;
+    has_concurrent: Bool = false;
+    concurrent: Int = -1;
+}
+
+/// `l` with each count's flag set from the count: one below 0 is `null`.
+fn counted(l: Limit) -> Limit {
+    let mut out = l;
+    out.has_requests = l.requests >= 0;
+    out.has_input_tokens = l.input_tokens >= 0;
+    out.has_output_tokens = l.output_tokens >= 0;
+    out.has_concurrent = l.concurrent >= 0;
+    return out;
+}
+
+/// The limits at one scope. At most 16.
+type Limits { items: bounded[Limit; 16]; }
+
+/// `BudgetSet`.
+type BudgetSet {
+    allowance_micros: Int = 0;
+    currency: String = "USD";
+    period: Period;
+    period_anchor: Time = `1970-01-01T00:00:00Z`;
+}
+
+/// `SeatModel`. `engine_name` is its `as` (a word Hale keeps), `null` when
+/// `has_engine_name` is false.
+type SeatModel { model: String = ""; has_engine_name: Bool = false; engine_name: String = "" `json:"as"`; }
+
+type SeatModels { items: bounded[SeatModel; 16]; }
+
+/// A JSON string literal.
+fn jq(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+fn jnames(ns: bounded[String; 32]) -> String {
+    let out = JsonList { };
+    for n in ns {
+        out.add(jq(n));
+    }
+    return "[" + out.text() + "]";
+}
+
+fn jprice(priced: Bool, p: ModelPrice) -> String {
+    if !priced { return "null"; }
+    return "{\"input_per_mtok_micros\": " + to_string(p.input_per_mtok_micros) + ", \"output_per_mtok_micros\": " + to_string(p.output_per_mtok_micros) + ", \"currency\": " + jq(p.currency) + "}";
+}
+
+fn pad(n: Int, width: Int) -> String {
+    let mut s = to_string(n);
+    while len(s) < width {
+        s = "0" + s;
+    }
+    return s;
+}
+
+fn serves_json(ms: bounded[SeatModel; 16]) -> String {
+    let out_list = JsonList { };
+    for m in ms {
+        out_list.add("{\"model\": " + jq(m.model) + ", \"as\": " + (if m.has_engine_name { jq(m.engine_name) } else { "null" }) + "}");
+    }
+    let out = out_list.text();
+    return "[" + out + "]";
+}
+
+/// Where the line that starts at byte `start` of `v` ends: its newline's
+/// index, or `v.n` for a last line without one. A loop that slices the
+/// rest of a text off after each line copies the whole rest every time,
+/// so a text's lines are read by index instead.
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n {
+        if std::str::byte_at(v, i) == 10 { return i; }
+        i = i + 1;
+    }
+    return v.n;
+}
+
+/// A JSON list's entries, written once into one buffer, comma-separated.
+/// A list built by `+` in a loop keeps every prefix it made until the
+/// handler returns, so a page of n entries costs n squared; this costs n.
+locus JsonList {
+    params {
+        buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4096 };
+        n: Int = 0;
+    }
+
+    fn add(entry: String) {
+        if self.n > 0 { self.buf.append_str(", "); }
+        self.buf.append_str(entry);
+        self.n = self.n + 1;
+    }
+
+    fn text() -> String {
+        let b = self.buf.snapshot() or b"";
+        return std::str::from_bytes(b);
+    }
+}
+
+/// `n` random bytes from the kernel, in hex; the time's nanoseconds when
+/// the kernel gives none, for an id that only has to be new.
+fn random_id(n: Int) -> String {
+    let b = std::os::getrandom(n) or std::bytes::from_string(to_string(std::time::monotonic_ns()));
+    return std::hex::encode(b);
+}

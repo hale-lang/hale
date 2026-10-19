@@ -1,0 +1,128 @@
+# voice's process model on one machine: Postgres, NATS, the api, the brain
+# and a node, each its own process, as in the README's MVP.
+#
+#   docker compose up --build
+#
+# The api answers on 127.0.0.1:8080 (the admin UI at /, the planes under
+# it), the node's local API on 127.0.0.1:8081
+# and NATS on 127.0.0.1:4222 (for a process run outside Compose); nothing
+# else is published.
+#
+# `migrate` brings the schema up to date (spec/store.md) and exits, and
+# the api and the brain wait on it; the api keeps its configuration in
+# Postgres and reaches the node over NATS; the brain publishes the route
+# table. The node serves once it is created on the api and started with
+# its token:
+#
+#   curl -X POST localhost:8080/admin/v1/nodes -H 'content-type: application/json' -d '{"id": "local"}'
+#   VOICE_ENROLLMENT_TOKEN=vn-... docker compose up -d node
+
+name: voice
+
+# The api, the brain and the node are one image, built once.
+x-voice: &voice
+  build: .
+  image: voice:dev
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: voice
+      POSTGRES_PASSWORD: voice
+      POSTGRES_DB: voice
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "voice", "-d", "voice"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  nats:
+    image: nats:2.11-alpine
+    # a 12 MiB request fits a 16 MiB message (deploy/nats/nats.conf)
+    command: ["-c", "/etc/nats/voice.conf"]
+    volumes:
+      - ./deploy/nats/nats.conf:/etc/nats/voice.conf:ro
+    ports:
+      - "127.0.0.1:4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # the schema, brought up to date once, before the api and the brain start
+  migrate:
+    <<: *voice
+    command: ["voice-api", "migrate", "--database", "postgres://voice:voice@postgres:5432/voice?sslmode=disable", "--migrations", "/usr/share/voice/migrations"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *voice
+    command: ["voice-api", "--host", "0.0.0.0", "--port", "8080", "--canned", "/usr/share/voice/canned", "--nats", "nats://nats:4222", "--ui", "/usr/share/voice/ui", "--database", "postgres://voice:voice@postgres:5432/voice?sslmode=disable"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  brain:
+    <<: *voice
+    command: ["voice-brain", "--database", "postgres://voice:voice@postgres:5432/voice?sslmode=disable", "--nats", "nats://nats:4222"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  node:
+    <<: *voice
+    # the node `local`, created on the api (POST /admin/v1/nodes), started
+    # with the enrollment token that answered: VOICE_ENROLLMENT_TOKEN=vn-...
+    environment:
+      VOICE_ENROLLMENT_TOKEN: ${VOICE_ENROLLMENT_TOKEN:-}
+    command:
+      - voice-node
+      - --id
+      - local
+      - --api
+      - http://api:8080
+      - --data
+      - /var/lib/voice-node
+      - --capabilities
+      - /etc/voice/capabilities.json
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+    volumes:
+      - node-data:/var/lib/voice-node
+      - ./deploy/node/capabilities.json:/etc/voice/capabilities.json:ro
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  postgres:
+  node-data:

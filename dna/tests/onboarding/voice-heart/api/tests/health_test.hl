@@ -1,0 +1,22 @@
+// GET /healthz and GET /readyz.
+import ".." as api;
+import "../../store" as st;
+
+fn main() {
+    let e = api::Endpoints { };
+    let live = e.handle(std::http::Request { method: "GET", path: "/healthz" });
+    std::test::assert_eq_int(live.status, 200, "alive");
+    std::test::assert_eq_str(live.content_type, "application/json", "JSON");
+    std::test::assert_eq_str(std::json::find_string_field(live.body, "status"), "ok", "ok");
+    std::test::assert(len(std::json::find_string_field(live.body, "version")) > 0, "a version");
+    std::test::assert(!std::str::contains(live.body, "checks"), "liveness checks nothing");
+
+    let ready = e.handle(std::http::Request { method: "GET", path: "/readyz" });
+    std::test::assert_eq_int(ready.status, 200, "ready");
+    std::test::assert_eq_str(std::json::find_string_field(ready.body, "status"), "ok", "ok");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(ready.body, "checks"), "store"), "ok", "the store answers");
+
+    // the handlers, called as their rows are
+    let p = api::Probes { store: st::MemoryStore { } };
+    std::test::assert_eq_str(p.readiness().store, "ok", "a memory store is always ready");
+}

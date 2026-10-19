@@ -1,0 +1,2627 @@
+{
+  "note": "Written by spec/validate/bundle.mjs --write; every gap between the exported Voice surface and spec/openapi.yaml, classed by what closes it.",
+  "counts": {
+    "required": 235,
+    "path": 12,
+    "tri-state": 18,
+    "wire": 128,
+    "map": 15,
+    "json-text": 3
+  },
+  "gaps": [
+    {
+      "at": "Account.created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Account.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Account.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Account.name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Account.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Account.windows (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountCreate.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountList.data[].windows (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountUpdate.account",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "AccountUpdate.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AccountUpdate.provider",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "AccountUpdate.set_provider",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "ApiError.kind",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the row's `kind` is the envelope's `type`, renamed by the wire (error_json)"
+    },
+    {
+      "at": "ApiError.message (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.retry_after",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the HTTP status the error answers with and its Retry-After header, not fields of the envelope"
+    },
+    {
+      "at": "ApiError.status",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the HTTP status the error answers with and its Retry-After header, not fields of the envelope"
+    },
+    {
+      "at": "ApiError.type",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the row's `kind` is the envelope's `type`, renamed by the wire (error_json)"
+    },
+    {
+      "at": "ApiError.voice.attempts[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.voice.attempts[].seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.voice.budget.allowance_micros",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ApiError.voice.budget.currency",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ApiError.voice.budget.period",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ApiError.voice.budget.period_anchor",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ApiError.voice.budget.remaining_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.voice.budget.reserved_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.voice.budget.set",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ApiError.voice.budget.spent_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ApiError.voice.limit.window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AssignedSeat.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AssignedSeat.config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "AssignedSeat.engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AssignedSeat.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AssignedSeat.serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "AssignedSeat.serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.max_in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats[].config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "Assignment.seats[].engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats[].serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.seats[].serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Assignment.version (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Attempt.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Attempt.seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Budget.allowance_micros",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Budget.currency",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Budget.period",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Budget.period_anchor",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Budget.remaining_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Budget.reserved_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Budget.set",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Budget.spent_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "BudgetRequest.project",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "BudgetSet.allowance_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.budget (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.budget.allowance_micros",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Capabilities.budget.currency",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Capabilities.budget.period",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Capabilities.budget.period_anchor",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Capabilities.budget.remaining_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.budget.reserved_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.budget.set",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Capabilities.budget.spent_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.key",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "Capabilities.key_id",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "Capabilities.key_name",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "Capabilities.limits (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.models (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Capabilities.project",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "Capabilities.project_id",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "Capabilities.project_name",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the project and the key are objects of id and name on the wire"
+    },
+    {
+      "at": "CatalogList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].available (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].price.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].price.input_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].price.output_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogList.data[].seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.available (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.price.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.price.input_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.price.output_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModel.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelCreate.price.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelCreate.price.input_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelCreate.price.output_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelUpdate.model",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "CatalogModelUpdate.price",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "CatalogModelUpdate.price.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelUpdate.price.input_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelUpdate.price.output_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "CatalogModelUpdate.priced",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "CatalogModelUpdate.set_price",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "Change.after",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "Change.at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Change.before",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "Change.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Change.target (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ChangeList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ChangeList.data[].after",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "ChangeList.data[].at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ChangeList.data[].before",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "ChangeList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ChangeList.data[].target (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Health.checks",
+      "found": "missing",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records",
+      "why": "`checks` is a map of dependency to state"
+    },
+    {
+      "at": "Health.store",
+      "found": "extra",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records",
+      "why": "`checks` is a map of dependency to state"
+    },
+    {
+      "at": "Heartbeat.in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Heartbeat.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Heartbeat.seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Heartbeat.seats[].in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "InferenceRequest.account",
+      "found": "path",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.background",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.body",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.data_class",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.deadline",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.endpoint",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.frequency_penalty",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.include",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.input",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.instructions",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.max_output_tokens",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.max_tool_calls",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.metadata",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.model (required)",
+      "found": "required",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.parallel_tool_calls",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.presence_penalty",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.prompt_cache_key",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.reasoning",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.safety_identifier",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.service_tier",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.store",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.stream_options",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.temperature",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.text",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.tool_choice",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.tools",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.top_logprobs",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.top_p",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.truncation",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "InferenceRequest.voice",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Key.created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Key.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Key.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Key.name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Key.project (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Key.secret (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyCreate.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyCreate.project",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "KeyList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].project (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyList.data[].secret",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the list shares the type of the create answer; the wire leaves the secret out"
+    },
+    {
+      "at": "KeyUpdate.accounts",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.expires",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.expires_at",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.key",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "KeyUpdate.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "KeyUpdate.models",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.project",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "KeyUpdate.set_accounts",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.set_expires",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "KeyUpdate.set_models",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "Limit.window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "LimitSet.limits (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "LimitSet.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "LimitsRequest.limits (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "LimitsRequest.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "LimitsRequest.project",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "Model.available",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.context_length",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.created (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Model.data_classes",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Model.kind",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.max_output_tokens",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.object",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.owned_by (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Model.price",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "Model.voice",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelList.data[].available",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].context_length",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].created (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelList.data[].data_classes",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelList.data[].kind",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].max_output_tokens",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].object",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].owned_by (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelList.data[].price",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.data[].voice",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelList.object",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the caller's model nests voice's fields under `voice`, and lists say `object`"
+    },
+    {
+      "at": "ModelPrice.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelPrice.input_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ModelPrice.output_per_mtok_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.capabilities",
+      "found": "json-text",
+      "kind": "json-text",
+      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+    },
+    {
+      "at": "Node.created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.enrollment_token (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.local.paused_seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "Node.seats[].engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].problems (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].ref (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Node.seats[].serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].capabilities",
+      "found": "json-text",
+      "kind": "json-text",
+      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+    },
+    {
+      "at": "NodeList.data[].created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].enrollment_token",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the list shares the type of the create answer; the wire leaves the secret out"
+    },
+    {
+      "at": "NodeList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].local.paused_seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "NodeList.data[].seats[].engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].problems (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].ref (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeList.data[].seats[].serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "NodeUpdate.max_in_flight",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "NodeUpdate.node",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "NodeUpdate.set_max_in_flight",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "Project.budget.allowance_micros",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Project.budget.currency",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Project.budget.period",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Project.budget.period_anchor",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Project.budget.remaining_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.budget.reserved_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.budget.set",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "Project.budget.spent_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.data_classes (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Project.owners (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectCreate.limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].budget.allowance_micros",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ProjectList.data[].budget.currency",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ProjectList.data[].budget.period",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ProjectList.data[].budget.period_anchor",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ProjectList.data[].budget.remaining_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].budget.reserved_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].budget.set",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "a budget is its BudgetSet flattened into it on the wire"
+    },
+    {
+      "at": "ProjectList.data[].budget.spent_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].created_at (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].data_classes (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].limits[].window_seconds (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].name (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectList.data[].owners (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ProjectUpdate.accounts",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "ProjectUpdate.models",
+      "found": "optional",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "ProjectUpdate.project",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "ProjectUpdate.set_accounts",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "ProjectUpdate.set_models",
+      "found": "extra",
+      "kind": "tri-state",
+      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
+      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
+    },
+    {
+      "at": "QuotaReport.seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "QuotaReport.windows (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.max_in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats[].config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "Registered.assignment.seats[].engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats[].serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.seats[].serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.assignment.version (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.heartbeat_interval_ms (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registered.nats",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "`nats` is an object of url and subject on the wire"
+    },
+    {
+      "at": "Registered.nats_subject",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "`nats` is an object of url and subject on the wire"
+    },
+    {
+      "at": "Registered.nats_url",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "`nats` is an object of url and subject on the wire"
+    },
+    {
+      "at": "Registered.protocol (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registration.capabilities",
+      "found": "json-text",
+      "kind": "json-text",
+      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+    },
+    {
+      "at": "Registration.capabilities (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registration.local (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registration.local.paused_seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registration.protocol (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Registration.version (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatCreate.config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "SeatCreate.node",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "SeatCreate.serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatCreate.serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "SeatList.data[].engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].problems (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].ref (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatList.data[].serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatModel.model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatState.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatState.in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatStates.assignment_version (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatStates.seats (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatStates.seats[].id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatStates.seats[].in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatUpdate.config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "SeatUpdate.node",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "SeatUpdate.seat",
+      "found": "path",
+      "kind": "path",
+      "waits_on": "voice: a path or query parameter carried in the row's request"
+    },
+    {
+      "at": "SeatUpdate.serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.config",
+      "found": "map",
+      "kind": "map",
+      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
+    },
+    {
+      "at": "SeatView.engine (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.in_flight (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.problems (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.ref (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.serves (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "SeatView.serves[].model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.background",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.completed_at",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.created_at",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.error",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.frequency_penalty",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.headers",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.id",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.incomplete_details",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.input_tokens",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.instructions",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.max_output_tokens",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.max_tool_calls",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.metadata",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.model (required)",
+      "found": "required",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.object",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.output",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.output_tokens",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.parallel_tool_calls",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.presence_penalty",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.previous_response_id",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.prompt_cache_key",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.reasoning",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.request_id",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.response",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.safety_identifier",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.service_tier",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.status (required)",
+      "found": "required",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.store",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.temperature",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.text",
+      "found": "json-text",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.text (required)",
+      "found": "required",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.tool_choice",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.tools",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.top_logprobs",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.top_p",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.truncation",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.usage",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the standard request and response pass through as JSON text (`body`, `response`)"
+    },
+    {
+      "at": "Served.voice (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.attempts (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.attempts[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.attempts[].seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.key (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.price_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.project (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.request_id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.served (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.served.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.served.model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.served.node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.served.seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "Served.voice.timing",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the timing is an object of wall, queue and load on the wire"
+    },
+    {
+      "at": "Served.voice.wall_ms",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the timing is an object of wall, queue and load on the wire"
+    },
+    {
+      "at": "ServedBy.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ServedBy.model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ServedBy.node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "ServedBy.seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.attempts (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.attempts[].account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.attempts[].seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.currency (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.key (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.price_micros (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.project (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.request_id (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.served (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.served.account (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.served.model (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.served.node (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.served.seat (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
+    },
+    {
+      "at": "VoiceExtension.timing",
+      "found": "missing",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the timing is an object of wall, queue and load on the wire"
+    },
+    {
+      "at": "VoiceExtension.wall_ms",
+      "found": "extra",
+      "kind": "wire",
+      "waits_on": "voice: the REST wire's shape differs from the row (written by api/wire.hl)",
+      "why": "the timing is an object of wall, queue and load on the wire"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+.wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--size-md);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: var(--size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-rule-strong);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-rule);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.table td.wrapCell {
+  white-space: normal;
+  min-width: 16ch;
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.selectable tbody tr {
+  cursor: pointer;
+}
+
+.selectable tbody tr:hover {
+  background: var(--color-bg-2);
+}
+
+.selectable tbody tr td:first-child {
+  box-shadow: inset var(--line-rule) 0 0 transparent;
+}
+
+.selected td:first-child {
+  box-shadow: inset var(--line-rule) 0 0 var(--color-cyan) !important;
+}
+
+.empty {
+  color: var(--color-text-faint);
+  padding: var(--space-3) var(--space-2);
+}

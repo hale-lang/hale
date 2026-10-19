@@ -1,0 +1,21 @@
+// Liveness and readiness, for supervisors and load balancers. No
+// credential.
+
+/// What `version` says: the api's own version, not the contract's.
+const VERSION: String = "0.1.0";
+
+locus Probes {
+    params { store: st::Store; }
+
+    /// `getLiveness`: the process serves HTTP at all.
+    fn liveness() -> Health {
+        return Health { status: HealthStatus::ok, version: VERSION };
+    }
+
+    /// `getReadiness`: the store answers. Having no seats up is not
+    /// unreadiness.
+    fn readiness() -> Health {
+        let ok = self.store.ready();
+        return Health { status: if ok { HealthStatus::ok } else { HealthStatus::unavailable }, version: VERSION, store: if ok { "ok" } else { "unavailable" } };
+    }
+}

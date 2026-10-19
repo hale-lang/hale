@@ -1,0 +1,104 @@
+// Voice's own NATS: the requests, the assignments and the route table's
+// notice (spec/protocol.yaml, spec/internal.yaml), standalone or grafted.
+//
+// Standalone it is the server `--nats` names, with no account, and every
+// subject is under `voice.` as it always was. Grafted, the habitat
+// provisions it as the heart's `broker` (hale.toml, `[dna] needs`) and
+// hands it over: `HALE_DNA_BROKER_URL` (no credentials in it),
+// `HALE_DNA_BROKER_USER`, `HALE_DNA_BROKER_VAULT` (the vault entry of that
+// user's password, revealed on CONNECT alone) and
+// `HALE_DNA_BROKER_SUBJECTS`, the subjects the account may use
+// (`heart.<id>.>`). Every subject voice uses on it is then under that
+// prefix: `voice.node.*` becomes `heart.<id>.node.*`, `voice.reply.*`
+// `heart.<id>.reply.*`, `voice.route` `heart.<id>.route`. A request's reply
+// inbox is under `HALE_DNA_BROKER_INBOX` when the habitat hands one over,
+// and under the prefix (`heart.<id>._INBOX`) when it does not. Voice uses
+// no JetStream on it. The nodes have an account of their own,
+// `HALE_DNA_BROKER_NODE_USER` with its password in the vault entry
+// `HALE_DNA_BROKER_NODE_VAULT` (subscribing on `heart.<id>.node.>`,
+// publishing on `heart.<id>.reply.>` and `heart.<id>._INBOX.>`), which the
+// api hands a node in its registration's answer.
+
+const BROKER_URL_ENV: String = "HALE_DNA_BROKER_URL";
+const BROKER_USER_ENV: String = "HALE_DNA_BROKER_USER";
+const BROKER_VAULT_ENV: String = "HALE_DNA_BROKER_VAULT";
+const BROKER_SUBJECTS_ENV: String = "HALE_DNA_BROKER_SUBJECTS";
+const BROKER_INBOX_ENV: String = "HALE_DNA_BROKER_INBOX";
+const BROKER_NODE_USER_ENV: String = "HALE_DNA_BROKER_NODE_USER";
+const BROKER_NODE_VAULT_ENV: String = "HALE_DNA_BROKER_NODE_VAULT";
+
+/// Where voice's own NATS is, as whom, and the root of its subjects:
+/// `voice` standalone, the habitat's prefix grafted. `problem` says what is
+/// wrong with a hand-over, "" when nothing is.
+type Broker {
+    url: String = "";
+    user: String = "";
+    vault: String = "";
+    root: String = "voice";
+    // a request's reply inbox: NATS's own standalone, under the root grafted
+    inbox: String = "_INBOX";
+    // grafted, the nodes' account: its user and the vault entry of its
+    // password, which registration hands a node (fleet.hl); "" standalone
+    node_user: String = "";
+    node_vault: String = "";
+    grafted: Bool = false;
+    problem: String = "";
+}
+
+fn env_of(name: String) -> String {
+    return if std::env::var_exists(name) { std::env::var(name) } else { "" };
+}
+
+/// The broker the habitat handed over, or, with none, the server `given`
+/// names (`--nats`), as it always was.
+fn broker_or(given: String) -> Broker {
+    return broker_from(given, env_of(BROKER_URL_ENV), env_of(BROKER_USER_ENV), env_of(BROKER_VAULT_ENV), env_of(BROKER_SUBJECTS_ENV), env_of(BROKER_INBOX_ENV), env_of(BROKER_NODE_USER_ENV), env_of(BROKER_NODE_VAULT_ENV));
+}
+
+/// The broker from a hand-over's variables, `given` when none is set. A
+/// hand-over is all of its URL, user, vault entry and subjects, or none of
+/// them: any one set without the rest is refused, never read as no
+/// hand-over (that would run standalone, on `--nats` and under `voice.`).
+fn broker_from(given: String, url: String, user: String, vault: String, subjects: String, inbox: String, node_user: String, node_vault: String) -> Broker {
+    if len(url) == 0 && len(user) == 0 && len(vault) == 0 && len(subjects) == 0 && len(inbox) == 0 && len(node_user) == 0 && len(node_vault) == 0 { return Broker { url: given }; }
+    if len(url) == 0 { return Broker { url: given, problem: "a hand-over of the habitat's broker is set without " + BROKER_URL_ENV + ": it needs " + BROKER_URL_ENV + ", " + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV + " and " + BROKER_SUBJECTS_ENV }; }
+    let b = broker_of(url, user, vault, subjects);
+    return with_nodes(with_inbox(b, inbox), node_user, node_vault);
+}
+
+/// `b` with the nodes' account the habitat hands over (user and vault
+/// entry, both or neither).
+fn with_nodes(b: Broker, user: String, vault: String) -> Broker {
+    if len(b.problem) > 0 { return b; }
+    let mut out = b;
+    if (len(user) == 0) != (len(vault) == 0) {
+        out.problem = "the nodes' account needs both " + BROKER_NODE_USER_ENV + " and " + BROKER_NODE_VAULT_ENV;
+        return out;
+    }
+    out.node_user = user;
+    out.node_vault = vault;
+    return out;
+}
+
+/// `b` with its request inboxes under `inbox` (`<prefix>` or `<prefix>.>`),
+/// when the habitat hands one over; as it is with "".
+fn with_inbox(b: Broker, inbox: String) -> Broker {
+    if len(inbox) == 0 || len(b.problem) > 0 { return b; }
+    let prefix = if std::str::ends_with(inbox, ".>") { inbox[0..(len(inbox) - 2)] } else { inbox };
+    let mut out = b;
+    if len(prefix) == 0 || std::str::index_of(prefix, "*") >= 0 || std::str::index_of(prefix, ">") >= 0 {
+        out.problem = BROKER_INBOX_ENV + " is not a prefix of subjects";
+        return out;
+    }
+    out.inbox = prefix;
+    return out;
+}
+
+/// A hand-over's broker: `subjects` a prefix `<root>.>`.
+fn broker_of(url: String, user: String, vault: String, subjects: String) -> Broker {
+    if len(user) == 0 || len(vault) == 0 || len(subjects) == 0 { return Broker { url: url, problem: BROKER_URL_ENV + " names the habitat's broker, but its user, vault entry or subjects are missing (" + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV + ", " + BROKER_SUBJECTS_ENV + ")" }; }
+    if std::str::index_of(url, "@") >= 0 { return Broker { url: url, problem: BROKER_URL_ENV + " carries credentials: they are " + BROKER_USER_ENV + " and the vault's" }; }
+    if !std::str::ends_with(subjects, ".>") || len(subjects) < 3 || std::str::index_of(subjects[0..(len(subjects) - 2)], "*") >= 0 || std::str::index_of(subjects[0..(len(subjects) - 2)], ">") >= 0 { return Broker { url: url, problem: BROKER_SUBJECTS_ENV + " is not a prefix of subjects (`heart.<id>.>`)" }; }
+    let root = subjects[0..(len(subjects) - 2)];
+    return Broker { url: url, user: user, vault: vault, root: root, inbox: root + "._INBOX", grafted: true };
+}

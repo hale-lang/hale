@@ -1,0 +1,111 @@
+// A project's limit as the organization ratified it: the practice's own
+// grammar, the superseding one of two ratified practices in force, the
+// limits held a generation at a time, the deadline on every call to the
+// head, and the forms the head and the contract are written in. Reading through a head is
+// the end-to-end fixture's (api/tests/admin_limits.sh); enforcing it is
+// serve_test's.
+import ".." as api;
+
+const TEXT: String = "The rate limit for the project personal: one name: value per line, from window_seconds (the window, in seconds), requests, input_tokens, output_tokens and concurrent, each a whole number alone after its name; a name left out is unlimited.\nwindow_seconds: 60\nrequests: 2";
+
+fn main() {
+    let l = api::parse_limit(TEXT);
+    std::test::assert(l.window_seconds == 60 && l.has_requests && l.requests == 2, "the limit read from its text");
+    std::test::assert(!l.has_input_tokens && !l.has_output_tokens && !l.has_concurrent, "a name left out is unlimited");
+    let odd = api::parse_limit("requests: two\nrequests: -3\nwindow_seconds: 0\nconcurrent: 4\nrequests: 7 per minute");
+    std::test::assert(!odd.has_requests && odd.window_seconds == 60 && odd.has_concurrent && odd.concurrent == 4, "only a whole number alone counts, and a window is at least a second");
+
+    // a superseding practice before the old one's retirement lands: the
+    // one no other supersedes is in force, whatever order the head lists
+    // them in
+    let found = api::PracticeLimits { };
+    found.push(api::PracticeLimit { project: "personal", id: "d_new", supersedes: "d_old", limit: api::parse_limit("requests: 5") });
+    found.push(api::PracticeLimit { project: "work", id: "d_work", limit: api::parse_limit("requests: 9") });
+    found.push(api::PracticeLimit { project: "personal", id: "d_old", limit: api::parse_limit("requests: 2") });
+    let read = api::PracticeLimits { };
+    let none = api::PracticeLimits { };
+    api::in_force(found, read, none);
+    let first = read.get(0) or api::PracticeLimit { };
+    std::test::assert(none.len() == 0 && read.len() == 2 && first.project == "personal" && first.limit.requests == 5, "the superseding practice is in force, listed first or not");
+
+    // ambiguity is decided project by project: two that both supersede
+    // w1, and a cycle, leave those projects unsettled and the rest read
+    let mixed = api::PracticeLimits { };
+    mixed.push(api::PracticeLimit { project: "personal", name: "operating/limits/personal", id: "d_a", supersedes: "w1", limit: api::parse_limit("requests: 5") });
+    mixed.push(api::PracticeLimit { project: "personal", name: "operating/limits/personal", id: "d_b", supersedes: "w1", limit: api::parse_limit("requests: 2") });
+    mixed.push(api::PracticeLimit { project: "loop", name: "operating/limits/loop", id: "c_1", supersedes: "c_2", limit: api::parse_limit("requests: 1") });
+    mixed.push(api::PracticeLimit { project: "loop", name: "operating/limits/loop", id: "c_2", supersedes: "c_1", limit: api::parse_limit("requests: 1") });
+    mixed.push(api::PracticeLimit { project: "spiral", name: "operating/limits/spiral", id: "s_3", supersedes: "s_1", limit: api::parse_limit("requests: 1") });
+    mixed.push(api::PracticeLimit { project: "spiral", name: "operating/limits/spiral", id: "s_1", supersedes: "s_2", limit: api::parse_limit("requests: 1") });
+    mixed.push(api::PracticeLimit { project: "spiral", name: "operating/limits/spiral", id: "s_2", supersedes: "s_1", limit: api::parse_limit("requests: 1") });
+    mixed.push(api::PracticeLimit { project: "work", name: "operating/limits/work", id: "d_work", limit: api::parse_limit("requests: 9") });
+    let settled = api::PracticeLimits { };
+    let unsettled = api::PracticeLimits { };
+    api::in_force(mixed, settled, unsettled);
+    let only = settled.get(0) or api::PracticeLimit { };
+    std::test::assert(settled.len() == 1 && only.project == "work" && only.limit.requests == 9, "the unambiguous project is read: " + api::unsettled_text(unsettled));
+    std::test::assert(unsettled.len() == 3 && std::str::contains(api::unsettled_text(unsettled), "personal: 2 of its ratified practices are in force"), "two in force: " + api::unsettled_text(unsettled));
+    std::test::assert(std::str::contains(api::unsettled_text(unsettled), "loop: its ratified practices supersede each other in a cycle"), "a cycle, every practice superseded: " + api::unsettled_text(unsettled));
+    std::test::assert(std::str::contains(api::unsettled_text(unsettled), "spiral: its ratified practices supersede each other in a cycle"), "a cycle behind a head that supersedes into it: " + api::unsettled_text(unsettled));
+    // an unsettled project keeps the limit held for it, or is closed
+    let current = api::PracticeLimits { };
+    current.push(api::PracticeLimit { project: "personal", id: "w1", limit: api::parse_limit("requests: 3") });
+    api::settle(settled, unsettled, current);
+    let mut kept = 0;
+    let mut closed = 0;
+    let mut i = 0;
+    while i < settled.len() {
+        let p = settled.get(i) or api::PracticeLimit { };
+        if p.project == "personal" && !p.closed && p.limit.requests == 3 { kept = kept + 1; }
+        if (p.project == "loop" || p.project == "spiral") && p.closed { closed = closed + 1; }
+        i = i + 1;
+    }
+    std::test::assert(settled.len() == 4 && kept == 1 && closed == 2, "personal keeps its last limit; loop and spiral, with none, are closed");
+
+    // held limits: the generation in force, never a mix
+    let held = api::HeldLimits { };
+    std::test::assert(!api::limits_landed(held), "nothing read yet");
+    api::hold_limits(held, 1, read);
+    std::test::assert(api::limits_landed(held) && api::held_limit(held, "work").limit.requests == 9, "the first generation held");
+    let next = api::PracticeLimits { };
+    next.push(api::PracticeLimit { project: "work", id: "d_work2", limit: api::parse_limit("requests: 3") });
+    api::hold_limits(held, 2, next);
+    std::test::assert(api::held_limit(held, "work").limit.requests == 3 && len(api::held_limit(held, "personal").project) == 0, "the second replaces it whole");
+
+    // an answer, whole or chunked
+    let plain = api::parse_answer("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+    std::test::assert(plain.status == 200 && plain.body == "{}", "a whole answer");
+    std::test::assert(api::answer_whole("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}") && !api::answer_whole("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n{}"), "whole at its length, and not before");
+    std::test::assert(plain.framed, "a whole answer by its length is framed");
+    let to_close = api::parse_answer("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}");
+    std::test::assert(to_close.status == 200 && !to_close.framed, "an answer read to the close is not");
+    let chunked = "HTTP/1.1 404 Not Found\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{\"a\r\n4\r\n\": 1\r\n1\r\n}\r\n0\r\n\r\n";
+    std::test::assert(api::answer_whole(chunked), "a chunked answer is whole at its last chunk");
+    let c = api::parse_answer(chunked);
+    std::test::assert(c.status == 404 && c.framed && c.body == "{\"a\": 1}", "its chunks joined: " + c.body);
+    // cut: within a chunk, after a whole chunk, and before the trailer ends
+    let mut cut = std::str::index_of(chunked, "\r\n\r\n") + 4;
+    while cut < len(chunked) - 1 {
+        let short = api::parse_answer(chunked[0..cut]);
+        std::test::assert(short.status == 0 && std::str::contains(short.why, "cut short"), "cut at " + to_string(cut) + " of " + to_string(len(chunked)) + ": " + short.why);
+        cut = cut + 1;
+    }
+
+    // a peer that takes the connection and never answers costs the
+    // deadline and no more
+    let silent = std::io::tcp::listen_socket("127.0.0.1", 0) or - 1;
+    std::test::assert(silent >= 0, "a listener that never accepts");
+    let t0 = std::time::monotonic_ns();
+    let a = api::exchange("http://127.0.0.1:" + to_string(std::io::tcp::__local_port(silent)) + "/api/hale/v1/applications", 300ms, "GET", "", "");
+    let ms = (std::time::monotonic_ns() - t0) / 1000000;
+    std::test::assert(a.status == 0 && std::str::contains(a.why, "within the deadline"), "no answer: " + a.why);
+    std::test::assert(ms >= 250 && ms < 1000, "within its 300 ms deadline: " + to_string(ms) + " ms");
+    std::io::tcp::close_fd(silent);
+    // nothing listening: at once
+    let none = api::exchange("http://127.0.0.1:1/", 300ms, "GET", "", "");
+    std::test::assert(none.status == 0 && std::str::contains(none.why, "no connection"), "refused: " + none.why);
+
+    std::test::assert_eq_str(api::form_encode("a&b+c%d e/f"), "a%26b%2Bc%25d%20e%2Ff", "a value is percent-encoded in a form or a query");
+    std::test::assert_eq_str(api::duration(1), "1s", "one second");
+    std::test::assert_eq_str(api::duration(360), "6m0s", "six minutes");
+}

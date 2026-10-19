@@ -1,0 +1,100 @@
+// The route table from the fleet as reported: which seats route, in what
+// order, with how many free slots, and which accounts are exhausted.
+import ".." as brain;
+
+/// One row as the brain's read gives it; `extra` overrides by appending
+/// (JSON's first key wins in `find_*`, so overrides go first).
+fn row(extra: String, seat: String, account: String, serves: String) -> String {
+    return "{" + extra + "\"seat\": \"laptop/" + seat + "\", \"node\": \"laptop\", \"id\": \"" + seat + "\", \"account\": \"" + account + "\", \"serves\": " + serves
+        + ", \"data_classes\": [\"internal\"], \"concurrency\": 4, \"enabled\": true, \"node_cap\": null, \"assignment_version\": 3, \"capabilities\": {\"max_in_flight\": 8, \"engines\": []}"
+        + ", \"local\": {\"paused\": false, \"paused_seats\": [], \"max_in_flight\": null}, \"node_in_flight\": 1, \"applied_version\": 3, \"draining\": false, \"beat_age\": 2"
+        + ", \"seat_status\": \"up\", \"seat_in_flight\": 1, \"account_status\": \"active\", \"used\": null, \"exhausted_until\": null, \"exhausted\": false}";
+}
+
+const ECHO: String = "[{\"model\": \"echo-1\", \"as\": null}]";
+
+fn main() {
+    let up = brain::judge(row("", "static", "static", ECHO), 0.0);
+    std::test::assert(up.routes, "an up seat routes");
+    std::test::assert_eq_int(up.free, 3, "its concurrency less what it has in flight");
+    std::test::assert(!brain::judge(row("\"beat_age\": 20, ", "a", "static", ECHO), 0.0).routes, "not on a node three heartbeats silent");
+    std::test::assert(!brain::judge(row("\"beat_age\": null, ", "a", "static", ECHO), 0.0).routes, "nor on one that never beat");
+    std::test::assert(!brain::judge(row("\"draining\": true, ", "a", "static", ECHO), 0.0).routes, "nor a draining one");
+    std::test::assert(!brain::judge(row("\"applied_version\": 2, ", "a", "static", ECHO), 0.0).routes, "nor before its node applied the assignment");
+    std::test::assert(!brain::judge(row("\"seat_status\": \"paused\", ", "a", "static", ECHO), 0.0).routes, "nor a seat not up");
+    std::test::assert(!brain::judge(row("\"enabled\": false, ", "a", "static", ECHO), 0.0).routes, "nor a disabled seat");
+    std::test::assert(!brain::judge(row("\"local\": {\"paused\": false, \"paused_seats\": [\"a\"]}, ", "a", "static", ECHO), 0.0).routes, "nor one a local control holds");
+    std::test::assert(!brain::judge(row("\"account_status\": \"archived\", ", "a", "static", ECHO), 0.0).routes, "nor one on an archived account");
+    let capped = brain::judge(row("\"local\": {\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 2}, ", "a", "static", ECHO), 0.0);
+    std::test::assert_eq_int(capped.free, 1, "a local cap leaves the node one slot");
+    let full = brain::judge(row("\"used\": 100, \"exhausted\": true, \"exhausted_until\": \"2026-10-17T20:00:00+00:00\", ", "cli", "claude-work", ECHO), 0.0);
+    std::test::assert(full.exhausted && !full.routes, "an account at a full window is exhausted");
+
+    let mut seats = brain::Ranked { };
+    push(seats.items, brain::judge(row("\"used\": 80, ", "busy", "claude-work", ECHO), 0.0)) or discard;
+    push(seats.items, up) or discard;
+    push(seats.items, brain::judge(row("", "other", "static", "[{\"model\": \"other-1\", \"as\": \"o\"}]"), 0.0)) or discard;
+    push(seats.items, full) or discard;
+    let table = brain::route_table(seats, "echo-1\nother-1\nidle-1\n");
+    let models = std::json::find_field_raw(table, "models");
+    let echo = std::json::array_first(models);
+    std::test::assert_eq_str(std::json::find_string_field(echo.element, "model"), "echo-1", "per model, in the catalog's order");
+    let first = std::json::array_first(std::json::find_field_raw(echo.element, "seats"));
+    std::test::assert_eq_str(std::json::find_string_field(first.element, "seat"), "laptop/static", "the account with the most headroom first");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::array_next(first).element, "seat"), "laptop/busy", "then the fuller one");
+    std::test::assert(std::json::array_next(std::json::array_next(first)).done, "no seat that does not route");
+    let exhausted = std::json::array_first(std::json::find_field_raw(echo.element, "exhausted"));
+    std::test::assert_eq_str(std::json::find_string_field(exhausted.element, "account"), "claude-work", "the exhausted account");
+    std::test::assert_eq_str(std::json::find_string_field(exhausted.element, "until"), "2026-10-17T20:00:00+00:00", "and its reset");
+    let other = std::json::array_next(echo);
+    std::test::assert_eq_str(std::json::find_string_field(std::json::array_first(std::json::find_field_raw(other.element, "seats")).element, "engine_model"), "o", "a seat's own name for the model");
+    let idle = std::json::array_next(other);
+    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(idle.element, "seats")), "[]", "a model nothing serves has no seats");
+    at_the_bounds();
+}
+
+/// A fleet at the bounds the store holds: 256 seats on 16 nodes, each
+/// serving 16 of 256 models with long ids. A tick's table is written in
+/// well under a second (the brain ticks every second).
+fn at_the_bounds() {
+    let long = "-with-an-id-as-long-as-the-contract-allows-it-to-be-0123456789";
+    let mut models = "";
+    let mut m = 0;
+    while m < 256 {
+        models = models + "model-" + to_string(m) + long + "\n";
+        m = m + 1;
+    }
+    let mut seats = brain::Ranked { };
+    let mut i = 0;
+    while i < 256 {
+        let mut serves = "[";
+        let mut k = 0;
+        while k < 16 {
+            if k > 0 { serves = serves + ", "; }
+            serves = serves + "{\"model\": \"model-" + to_string((i * 7 + k * 16) % 256) + long + "\", \"as\": \"engine-name-" + to_string(k) + "\"}";
+            k = k + 1;
+        }
+        serves = serves + "]";
+        let mut s = brain::judge(row("", "seat-" + to_string(i) + long, "account-" + to_string(i % 32) + long, serves), Float(i % 97) / 97.0);
+        s.node = "node-" + to_string(i / 16) + long;
+        push(seats.items, s) or discard;
+        i = i + 1;
+    }
+    let t0 = std::time::monotonic_ns();
+    let table = brain::route_table(seats, models);
+    let ms = (std::time::monotonic_ns() - t0) / 1000000;
+    std::test::assert(ms < 500, "a table at the bounds took " + to_string(ms) + " ms, not well under a second");
+    let first = std::json::array_first(std::json::find_field_raw(table, "models"));
+    let routes = std::json::find_field_raw(first.element, "seats");
+    let mut n = 0;
+    let mut it = std::json::array_first(routes);
+    let mut last = -1.0;
+    while !it.done {
+        let rank = std::str::parse_float(std::str::trim(std::json::find_field_raw(it.element, "rank"))) or 0.0;
+        std::test::assert(rank >= last, "best first");
+        last = rank;
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    std::test::assert_eq_int(n, 16, "each model served by its 16 seats: " + to_string(ms) + " ms");
+}

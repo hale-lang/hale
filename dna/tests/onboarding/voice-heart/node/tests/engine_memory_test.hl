@@ -1,0 +1,28 @@
+// A long answer is scripted in memory linear in its length: 64 KiB of text
+// in 16-character chunks is about 4000 events, and scripting it grows the
+// process's peak by about ten megabytes. A script built by `+` per event kept
+// every prefix it made, about 1.3 GB for this one.
+import ".." as node;
+
+/// The process's peak resident memory so far, in kB (`VmHWM`).
+fn peak_kb() -> Int {
+    let status = std::io::fs::read_file("/proc/self/status") or "";
+    let at = std::str::index_of(status, "VmHWM:");
+    if at < 0 { return 0; }
+    let rest = std::str::trim(status[at + 6..len(status)]);
+    let end = std::str::index_of(rest, " ");
+    return std::str::parse_int(rest[0..end]) or 0;
+}
+
+fn main() {
+    let text = std::str::repeat("sixteen chars ok", 4096);
+    let c = node::static_config("{\"text\": \"" + text + "\", \"chunk_chars\": 16}");
+    std::test::assert_eq_str(c.problem, "", "a valid config");
+    let before = peak_kb();
+    std::test::assert(before > 0, "the peak is readable from /proc/self/status");
+    let run = node::run_static("resp_long", "echo-1", "echo", "{\"model\": \"echo-1\", \"input\": \"hi\"}", c);
+    let after = peak_kb();
+    std::test::assert_eq_str(run.outcome, "served", "served");
+    std::test::assert(len(run.script) > 4096 * 100, "every chunk an event: " + to_string(len(run.script)));
+    std::test::assert(after - before < 65536, "scripting grew the peak by " + to_string(after - before) + " kB; under 64 MB is linear");
+}

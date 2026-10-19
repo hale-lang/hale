@@ -1,0 +1,7 @@
+{
+  "why": "The error envelope's `code` exported as an integer, where the contract has a string, must fail.",
+  "side": "bundle",
+  "set": ["components", "schemas", "ApiError", "properties", "code"],
+  "value": { "type": "integer" },
+  "expect": "ApiError.code"
+}

@@ -1,0 +1,609 @@
+// pond/migrations — schema migrations over db::DbDriver.
+//
+// v2 (2026-07-06): registration-then-run, golang-migrate shaped.
+// The app registers its migrations into a `Migrations` set
+// (version, name, up_sql[, down_sql]) and injects the set plus a
+// driver into a `Migrator`; the run verbs are `up()` /
+// `down(n)` / `steps(±n)` / `goto(v)` / `force(v)`. The v1
+// call-at-a-time `apply()` + sticky `failed` latch surface is
+// gone (CONTRACTS.md § pond/migrations respelled; FRICTION.log
+// § pond/migrations "v2 respell" entry).
+//
+// **Model.** Data-driven, not directory-scanning: the app embeds
+// its ordered registrations (no fs access, no embed step), and it
+// works against ANY backend the DbDriver covers (postgres via pq,
+// sqlite via sqlite::Driver). Versions already recorded in
+// `schema_migrations` are skipped — re-running `up()` is a no-op.
+//
+// **Atomicity.** Every step (apply or revert) runs as ONE explicit
+// driver transaction: begin → step SQL → tracking write → commit,
+// with rollback on any failure. Both pond backends have
+// transactional DDL, so a failed migration leaves the schema
+// untouched (this closes the sqlite half-applied hazard that
+// FRICTION item 7 documented for the v1 multi-statement shape).
+//
+// **Dirty state.** A failure whose ROLLBACK also fails leaves the
+// database in an unknown state: a dirty marker row is written
+// (best effort) and every subsequent run op fails kind="dirty"
+// until a human inspects the schema and calls `force(v)` —
+// golang-migrate's dirty/force protocol, but reachable only on
+// the rollback-also-failed path since normal failures roll back
+// cleanly.
+//
+// **Locking.** On postgres, run ops hold `pg_advisory_lock` for
+// the duration (concurrent deploys serialize; the lock rides the
+// session, so a crashed process releases it on disconnect). On
+// sqlite the per-step write transaction already excludes other
+// writers. `force()` deliberately takes no lock (it is the manual
+// repair hatch).
+//
+// **Errors are fallible values.** Every run op is
+// `fallible(MigrationError)` (member fns may declare fallible
+// since v0.8.1; the v1 Bool-plus-latch shape predated that). The
+// injected driver's interface methods stay non-fallible per F.20 —
+// Migrator branches on `result.ok` and translates `result.err`
+// into MigrationError payloads.
+//
+// **Why no exec_params here.** The tracking INSERT interpolates
+// `name` via __quote() ('' doubling) instead of bind parameters,
+// deliberately: building a db::Args INSIDE a Migrator method frame
+// and passing it into the driver is exactly the shape of the OPEN
+// upstream heap-corruption bug (method-frame fresh-locus args —
+// FRICTION.log § pond/ml/neural), so the safe spelling wins until
+// that closes. Migration names are developer-authored constants,
+// not user input; __quote() is about correctness (apostrophes),
+// not injection defense.
+//
+// **Narration.** verbose=true (default) prints one line per
+// applied/reverted/forced step — the operator surface. Tests
+// construct with verbose=false; every path is silent and
+// unit-testable under spec/testing.md's no-stdout contract.
+
+import "../db" as db;
+
+// Migrations — the registered set (order of registration is the
+// declared order; versions must be strictly ascending). Build it
+// in a `fn main()` / lifecycle frame — NOT inside a locus method —
+// per the open method-frame fresh-locus bug (see header).
+//
+//   let s = migs::Migrations { };
+//   s.add(1, "create_posts", "CREATE TABLE posts (...)");
+//   s.add_rev(2, "add_comments", "CREATE TABLE comments (...)",
+//             "DROP TABLE comments");
+@form(vec)
+locus Migrations {
+    params {
+        n: Int = 0; // tracked count (don't rely on synthesized len shape)
+    }
+    capacity { heap data of Migration; }
+
+    // add — register a forward-only (irreversible) migration.
+    fn add(version: Int, name: String, up_sql: String) {
+        self.push(Migration { version: version, name: name, up_sql: up_sql });
+        self.n = self.n + 1;
+    }
+
+    // add_rev — register a reversible migration.
+    fn add_rev(version: Int, name: String, up_sql: String, down_sql: String) {
+        self.push(Migration {
+            version: version,
+            name: name,
+            up_sql: up_sql,
+            down_sql: down_sql,
+        });
+        self.n = self.n + 1;
+    }
+
+    fn count() -> Int { return self.n; }
+
+    // entry — the i-th registration (zero Migration out of range).
+    fn entry(i: Int) -> Migration {
+        return self.get(i) or Migration { };
+    }
+}
+
+locus Migrator {
+    params {
+        driver: db::DbDriver; // injected: pq::PgConn / pq::PgPool / sqlite::Driver
+        set: Migrations; // injected: built in a main/lifecycle frame
+        verbose: Bool = true; // false = silent (unit-test construction)
+    }
+
+    // ensure — create (or v1→v2 upgrade) the tracking table. Run
+    // ops call this themselves; it stays public for explicit
+    // bringup. The applied_at default is the one piece of
+    // backend-specific DDL: postgres gets a real timestamptz;
+    // sqlite (no now(), no timestamptz) gets an ISO text stamp.
+    fn ensure() -> () fallible(MigrationError) {
+        let mut applied_at_ddl = "applied_at timestamptz NOT NULL DEFAULT now()";
+        if self.driver.backend() == "sqlite" {
+            applied_at_ddl = "applied_at text NOT NULL"
+                + " DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))";
+        }
+        let e = self.driver.exec(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                + "version int PRIMARY KEY, "
+                + "name text NOT NULL, "
+                + "dirty int NOT NULL DEFAULT 0, "
+                + applied_at_ddl + ")");
+        if !e.ok {
+            fail MigrationError {
+                kind: "ensure_failed",
+                detail: e.err.detail,
+                engine_code: e.err.engine_code,
+            };
+        }
+        // v1 tracking tables predate the dirty column: probe, and
+        // upgrade in place if absent.
+        let probe = self.driver.query_one(
+            "SELECT count(dirty) FROM schema_migrations");
+        if !probe.ok {
+            let a = self.driver.exec(
+                "ALTER TABLE schema_migrations"
+                    + " ADD COLUMN dirty int NOT NULL DEFAULT 0");
+            if !a.ok {
+                fail MigrationError {
+                    kind: "ensure_failed",
+                    detail: "add dirty column: " + a.err.detail,
+                    engine_code: a.err.engine_code,
+                };
+            }
+        }
+    }
+
+    // current_version — highest applied version, 0 if none (or if
+    // the tracking table doesn't exist yet).
+    fn current_version() -> Int {
+        let r = self.driver.query_one(
+            "SELECT coalesce(max(version),0) FROM schema_migrations");
+        if !r.ok { return 0; }
+        return std::str::parse_int(r.data) or 0;
+    }
+
+    // dirty — true if an earlier run left dirty rows (see header).
+    fn dirty() -> Bool {
+        let r = self.driver.query_one(
+            "SELECT count(*) FROM schema_migrations WHERE dirty = 1");
+        if !r.ok { return false; }
+        let n = std::str::parse_int(r.data) or 0;
+        return n > 0;
+    }
+
+    // pending — how many registered migrations up() would apply.
+    fn pending() -> Int {
+        let cur = self.current_version();
+        let mut i = 0;
+        let mut n = 0;
+        while i < self.set.count() {
+            let m = self.set.entry(i);
+            if m.version > cur { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    // up — apply every pending migration in ascending order.
+    // Returns the count applied (0 = already current).
+    fn up() -> Int fallible(MigrationError) {
+        self.__pre() or raise;
+        let n = self.__up_to(self.__last_version(), 1000000000)
+        or self.__unlock_refail(err);
+        self.__unlock();
+        return n;
+    }
+
+    // down — revert the n most recent applied migrations (newest
+    // first). Returns the count reverted; n <= 0 is a no-op.
+    fn down(n: Int) -> Int fallible(MigrationError) {
+        if n <= 0 { return 0; }
+        self.__pre() or raise;
+        let k = self.__down_to(0, n) or self.__unlock_refail(err);
+        self.__unlock();
+        return k;
+    }
+
+    // steps — ezdb-style signed stepper: positive applies the next
+    // n pending, negative reverts the last |n| applied. Returns
+    // the count actually run (may be < |n| at either end).
+    fn steps(n: Int) -> Int fallible(MigrationError) {
+        if n == 0 { return 0; }
+        self.__pre() or raise;
+        if n > 0 {
+            let k = self.__up_to(self.__last_version(), n)
+            or self.__unlock_refail(err);
+            self.__unlock();
+            return k;
+        }
+        let k = self.__down_to(0, 0 - n) or self.__unlock_refail(err);
+        self.__unlock();
+        return k;
+    }
+
+    // goto — migrate (up or down) to exactly version v. v must be
+    // 0 (revert everything) or a registered version. Returns the
+    // count of steps run.
+    fn goto(v: Int) -> Int fallible(MigrationError) {
+        self.__pre() or raise;
+        if v != 0 && !self.__has(v) {
+            self.__unlock();
+            fail MigrationError {
+                kind: "not_found",
+                version: v,
+                detail: "goto: version " + to_string(v)
+                    + " is not in the migration set",
+            };
+        }
+        let cur = self.current_version();
+        if v > cur {
+            let k = self.__up_to(v, 1000000000) or self.__unlock_refail(err);
+            self.__unlock();
+            return k;
+        }
+        if v < cur {
+            let k = self.__down_to(v, 1000000000) or self.__unlock_refail(err);
+            self.__unlock();
+            return k;
+        }
+        self.__unlock();
+        return 0;
+    }
+
+    // force — manual repair hatch (golang-migrate's Force): declare
+    // the schema to be at version v. Deletes tracking rows above v
+    // and clears every dirty marker; the SCHEMA itself is not
+    // touched — the operator has already reconciled it by hand.
+    // Deliberately not gated on dirty() and takes no advisory lock.
+    fn force(v: Int) -> () fallible(MigrationError) {
+        self.ensure() or raise;
+        let b = self.driver.begin();
+        if !b.ok {
+            fail MigrationError {
+                kind: "force_failed",
+                version: v,
+                detail: "begin: " + b.err.detail,
+                engine_code: b.err.engine_code,
+            };
+        }
+        let d = self.driver.exec(
+            "DELETE FROM schema_migrations WHERE version > " + to_string(v));
+        if !d.ok {
+            let _ = self.driver.rollback();
+            fail MigrationError {
+                kind: "force_failed",
+                version: v,
+                detail: "delete: " + d.err.detail,
+                engine_code: d.err.engine_code,
+            };
+        }
+        let u = self.driver.exec("UPDATE schema_migrations SET dirty = 0");
+        if !u.ok {
+            let _ = self.driver.rollback();
+            fail MigrationError {
+                kind: "force_failed",
+                version: v,
+                detail: "clear dirty: " + u.err.detail,
+                engine_code: u.err.engine_code,
+            };
+        }
+        let c = self.driver.commit();
+        if !c.ok {
+            fail MigrationError {
+                kind: "force_failed",
+                version: v,
+                detail: "commit: " + c.err.detail,
+                engine_code: c.err.engine_code,
+            };
+        }
+        if self.verbose {
+            // voice: through std::log, not a bare println
+            let log = std::log::Logger { name: "migrate" };
+            log.info_kv("forced version", "version=" + to_string(v));
+        }
+    }
+
+    // ---- private: run-op prologue/epilogue ----
+
+    // __pre — shared gate for up/down/steps/goto: validate the
+    // set, bring up the tracking table, refuse dirty state, take
+    // the postgres advisory lock.
+    fn __pre() -> () fallible(MigrationError) {
+        self.__validate() or raise;
+        self.ensure() or raise;
+        if self.dirty() {
+            fail MigrationError {
+                kind: "dirty",
+                detail: "tracking table has dirty rows —"
+                    + " inspect the schema, repair, then force(v)",
+            };
+        }
+        if self.driver.backend() == "postgres" {
+            let l = self.driver.query_one(
+                "SELECT pg_advisory_lock(" + to_string(__lock_key()) + ")");
+            if !l.ok {
+                fail MigrationError {
+                    kind: "lock_failed",
+                    detail: l.err.detail,
+                    engine_code: l.err.engine_code,
+                };
+            }
+        }
+    }
+
+    fn __unlock() {
+        if self.driver.backend() == "postgres" {
+            let _ = self.driver.query_one(
+                "SELECT pg_advisory_unlock(" + to_string(__lock_key()) + ")");
+        }
+    }
+
+    // __unlock_refail — or-handler for the locked run body:
+    // release the advisory lock, then re-fail with the same
+    // payload (rebuilt field-by-field; fallible handlers propagate
+    // implicitly since hale 400ac68).
+    fn __unlock_refail(e: MigrationError) -> Int fallible(MigrationError) {
+        self.__unlock();
+        fail MigrationError {
+            kind: e.kind,
+            version: e.version,
+            name: e.name,
+            detail: e.detail,
+            engine_code: e.engine_code,
+        };
+    }
+
+    // ---- private: set queries ----
+
+    fn __validate() -> () fallible(MigrationError) {
+        if self.set.count() == 0 {
+            fail MigrationError { kind: "bad_set", detail: "empty migration set" };
+        }
+        let mut prev = 0;
+        let mut i = 0;
+        while i < self.set.count() {
+            let m = self.set.entry(i);
+            if m.version <= prev {
+                fail MigrationError {
+                    kind: "bad_set",
+                    version: m.version,
+                    name: m.name,
+                    detail: "versions must be strictly ascending and >= 1",
+                };
+            }
+            if m.name == "" {
+                fail MigrationError {
+                    kind: "bad_set",
+                    version: m.version,
+                    detail: "migration name must be non-empty",
+                };
+            }
+            prev = m.version;
+            i = i + 1;
+        }
+    }
+
+    // __last_version — highest registered version (call after
+    // __validate: the set is non-empty and ascending).
+    fn __last_version() -> Int {
+        let m = self.set.entry(self.set.count() - 1);
+        return m.version;
+    }
+
+    // __find — the registration for version v (zero Migration if
+    // absent — Migration.version == 0 is the miss sentinel).
+    fn __find(v: Int) -> Migration {
+        let mut i = 0;
+        while i < self.set.count() {
+            let m = self.set.entry(i);
+            if m.version == v { return m; }
+            i = i + 1;
+        }
+        return Migration { };
+    }
+
+    fn __has(v: Int) -> Bool {
+        let m = self.__find(v);
+        return m.version != 0;
+    }
+
+    // ---- private: the run loops ----
+
+    // __up_to — apply pending migrations ascending, stopping at
+    // `target` (inclusive) or after max_n steps.
+    fn __up_to(target: Int, max_n: Int) -> Int fallible(MigrationError) {
+        let cur = self.current_version();
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.set.count() {
+            let m = self.set.entry(i);
+            if m.version > cur && m.version <= target && n < max_n {
+                self.__apply_one(m) or raise;
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    // __down_to — revert applied migrations descending, stopping
+    // when current_version reaches `target` or after max_n steps.
+    fn __down_to(target: Int, max_n: Int) -> Int fallible(MigrationError) {
+        let mut n = 0;
+        let mut going = true;
+        while going {
+            let cur = self.current_version();
+            if cur <= target || n >= max_n {
+                going = false;
+            } else {
+                let m = self.__find(cur);
+                if m.version == 0 {
+                    fail MigrationError {
+                        kind: "not_found",
+                        version: cur,
+                        detail: "applied version " + to_string(cur)
+                            + " is not in the migration set — cannot revert",
+                    };
+                }
+                if m.down_sql == "" {
+                    fail MigrationError {
+                        kind: "irreversible",
+                        version: m.version,
+                        name: m.name,
+                        detail: "no down_sql registered",
+                    };
+                }
+                self.__revert_one(m) or raise;
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
+    // ---- private: one transactional step each way ----
+
+    fn __apply_one(m: Migration) -> () fallible(MigrationError) {
+        let b = self.driver.begin();
+        if !b.ok {
+            fail MigrationError {
+                kind: "migration_failed",
+                version: m.version,
+                name: m.name,
+                detail: "begin: " + b.err.detail,
+                engine_code: b.err.engine_code,
+            };
+        }
+        let e = self.driver.exec(m.up_sql);
+        if !e.ok {
+            self.__abort(m.version, m.name, "up_sql", e.err,
+                __dirty_insert_sql(m)) or raise;
+        }
+        let t = self.driver.exec(
+            "INSERT INTO schema_migrations (version, name) VALUES ("
+                + to_string(m.version) + ", " + __quote(m.name) + ")");
+        if !t.ok {
+            self.__abort(m.version, m.name, "record", t.err,
+                __dirty_insert_sql(m)) or raise;
+        }
+        let c = self.driver.commit();
+        if !c.ok {
+            self.__abort(m.version, m.name, "commit", c.err,
+                __dirty_insert_sql(m)) or raise;
+        }
+        if self.verbose {
+            // voice: through std::log, not a bare println
+            let log = std::log::Logger { name: "migrate" };
+            log.info_kv("applied", "version=" + to_string(m.version) + " name=" + m.name);
+        }
+    }
+
+    fn __revert_one(m: Migration) -> () fallible(MigrationError) {
+        let b = self.driver.begin();
+        if !b.ok {
+            fail MigrationError {
+                kind: "migration_failed",
+                version: m.version,
+                name: m.name,
+                detail: "begin: " + b.err.detail,
+                engine_code: b.err.engine_code,
+            };
+        }
+        let e = self.driver.exec(m.down_sql);
+        if !e.ok {
+            self.__abort(m.version, m.name, "down_sql", e.err,
+                __dirty_update_sql(m)) or raise;
+        }
+        let t = self.driver.exec(
+            "DELETE FROM schema_migrations WHERE version = "
+                + to_string(m.version));
+        if !t.ok {
+            self.__abort(m.version, m.name, "unrecord", t.err,
+                __dirty_update_sql(m)) or raise;
+        }
+        let c = self.driver.commit();
+        if !c.ok {
+            self.__abort(m.version, m.name, "commit", c.err,
+                __dirty_update_sql(m)) or raise;
+        }
+        if self.verbose {
+            // voice: through std::log, not a bare println
+            let log = std::log::Logger { name: "migrate" };
+            log.info_kv("reverted", "version=" + to_string(m.version) + " name=" + m.name);
+        }
+    }
+
+    // __abort — a step's SQL failed: roll the transaction back and
+    // fail "migration_failed" (schema untouched). If the ROLLBACK
+    // itself fails the connection state is unknown: persist the
+    // dirty marker (best effort — the connection may be unusable)
+    // and fail "rollback_failed" so later runs refuse until
+    // force(v).
+    fn __abort(
+        version: Int,
+        name: String,
+        stage: String,
+        e: db::DbError,
+        dirty_sql: String
+    ) -> () fallible(MigrationError) {
+        let rb = self.driver.rollback();
+        if !rb.ok {
+            let _ = self.driver.exec(dirty_sql);
+            fail MigrationError {
+                kind: "rollback_failed",
+                version: version,
+                name: name,
+                detail: stage + ": " + e.detail
+                    + " (rollback also failed: " + rb.err.detail + ")",
+                engine_code: e.engine_code,
+            };
+        }
+        fail MigrationError {
+            kind: "migration_failed",
+            version: version,
+            name: name,
+            detail: stage + ": " + e.detail,
+            engine_code: e.engine_code,
+        };
+    }
+}
+
+// ---- free helpers ----
+
+// __quote — SQL single-quoted string literal with '' doubling.
+// Used for the tracking-table name column (see the header for why
+// this is exec-string interpolation rather than exec_params).
+fn __quote(s: String) -> String {
+    let mut out = "'";
+    let mut rest = s;
+    let mut scanning = true;
+    while scanning {
+        let p = std::str::index_of(rest, "'");
+        if p < 0 {
+            out = out + rest;
+            scanning = false;
+        } else {
+            out = out + rest[0..p] + "''";
+            rest = rest[(p + 1)..len(rest)];
+        }
+    }
+    return out + "'";
+}
+
+// __lock_key — the pg_advisory_lock key run ops serialize on.
+// Arbitrary fixed constant; all pond/migrations instances against
+// the same postgres database contend on it (that's the point).
+fn __lock_key() -> Int {
+    return 61207226;
+}
+
+// __dirty_insert_sql / __dirty_update_sql — the best-effort dirty
+// markers __abort writes when a rollback fails: an apply that
+// half-happened gets a dirty tracking row inserted; a revert that
+// half-happened gets its existing row flagged.
+fn __dirty_insert_sql(m: Migration) -> String {
+    return "INSERT INTO schema_migrations (version, name, dirty) VALUES ("
+        + to_string(m.version) + ", " + __quote(m.name) + ", 1)";
+}
+
+fn __dirty_update_sql(m: Migration) -> String {
+    return "UPDATE schema_migrations SET dirty = 1 WHERE version = "
+        + to_string(m.version);
+}

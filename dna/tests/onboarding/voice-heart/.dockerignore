@@ -1,0 +1,13 @@
+.git
+**/vendor
+!spec/vendor
+api/api
+brain/brain
+node/node
+node-data
+build
+ui/node_modules
+ui/**/node_modules
+ui/**/dist
+ui/build
+spec/validate/node_modules

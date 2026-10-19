@@ -1,0 +1,3404 @@
+{
+  "inventory": 1,
+  "app": "Api",
+  "surfaces": [
+    {
+      "name": "Voice",
+      "digest": "fnv1a64:94142dde9438f0f9",
+      "members": [
+        {
+          "name": "Accounts::archive",
+          "digest": "fnv1a64:dae8f4a16c32e2bd",
+          "request": {
+            "$ref": "#/schemas/AccountRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Account"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Accounts::create",
+          "digest": "fnv1a64:5412b18775cd4353",
+          "request": {
+            "$ref": "#/schemas/AccountCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/Account"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Accounts::get",
+          "digest": "fnv1a64:00de143293f3e8bf",
+          "request": {
+            "$ref": "#/schemas/AccountRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Account"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Accounts::list",
+          "digest": "fnv1a64:b349a9c54e545ca8",
+          "request": {
+            "$ref": "#/schemas/AccountQuery"
+          },
+          "response": {
+            "$ref": "#/schemas/AccountList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Accounts::update",
+          "digest": "fnv1a64:b3e38e41f2fc09fb",
+          "request": {
+            "$ref": "#/schemas/AccountUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/Account"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Catalog::create",
+          "digest": "fnv1a64:de05441416ea8432",
+          "request": {
+            "$ref": "#/schemas/CatalogModelCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/CatalogModel"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Catalog::get",
+          "digest": "fnv1a64:78ea0faca53bff40",
+          "request": {
+            "$ref": "#/schemas/ModelRef"
+          },
+          "response": {
+            "$ref": "#/schemas/CatalogModel"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Catalog::list",
+          "digest": "fnv1a64:81df575a1c1c6d24",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/CatalogList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Catalog::remove",
+          "digest": "fnv1a64:0b41ebdd66c679d6",
+          "request": {
+            "$ref": "#/schemas/ModelRef"
+          },
+          "response": {
+            "$ref": "#/schemas/CatalogModel"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Catalog::update",
+          "digest": "fnv1a64:518945bba16a044e",
+          "request": {
+            "$ref": "#/schemas/CatalogModelUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/CatalogModel"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Changes::list",
+          "digest": "fnv1a64:c891f430ab14d407",
+          "request": {
+            "$ref": "#/schemas/ChangeQuery"
+          },
+          "response": {
+            "$ref": "#/schemas/ChangeList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Inference::chat",
+          "digest": "fnv1a64:de05c276c4ac92a7",
+          "request": {
+            "$ref": "#/schemas/InferenceRequest"
+          },
+          "response": {
+            "$ref": "#/schemas/Served"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "caller"
+          ]
+        },
+        {
+          "name": "Inference::respond",
+          "digest": "fnv1a64:82d463dffc8a5958",
+          "request": {
+            "$ref": "#/schemas/InferenceRequest"
+          },
+          "response": {
+            "$ref": "#/schemas/Served"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "caller"
+          ]
+        },
+        {
+          "name": "Keys::create",
+          "digest": "fnv1a64:2a75c4c64a12f520",
+          "request": {
+            "$ref": "#/schemas/KeyCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/Key"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Keys::get",
+          "digest": "fnv1a64:231562f6ee671ae5",
+          "request": {
+            "$ref": "#/schemas/KeyRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Key"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Keys::list",
+          "digest": "fnv1a64:d20ff2da3328b658",
+          "request": {
+            "$ref": "#/schemas/ProjectRef"
+          },
+          "response": {
+            "$ref": "#/schemas/KeyList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Keys::revoke",
+          "digest": "fnv1a64:25aa2b344adb230b",
+          "request": {
+            "$ref": "#/schemas/KeyRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Key"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Keys::update",
+          "digest": "fnv1a64:407915eb556fee41",
+          "request": {
+            "$ref": "#/schemas/KeyUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/Key"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Models::capabilities",
+          "digest": "fnv1a64:ea9efb9b1f5e577c",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/Capabilities"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "caller"
+          ]
+        },
+        {
+          "name": "Models::get",
+          "digest": "fnv1a64:df6e084c95d0c90a",
+          "request": {
+            "$ref": "#/schemas/ModelRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Model"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "caller"
+          ]
+        },
+        {
+          "name": "Models::list",
+          "digest": "fnv1a64:7ec796a6e2696428",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/ModelList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "caller"
+          ]
+        },
+        {
+          "name": "NodePlane::assignment",
+          "digest": "fnv1a64:5f998cab9ead3a69",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/Assignment"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::capabilities",
+          "digest": "fnv1a64:ece19ed9c57dda28",
+          "request": {
+            "$ref": "#/schemas/NodeReport"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::going_away",
+          "digest": "fnv1a64:93ff0e0101d43b96",
+          "request": {
+            "$ref": "#/schemas/Draining"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::heartbeat",
+          "digest": "fnv1a64:d47a2126e7e4ce2a",
+          "request": {
+            "$ref": "#/schemas/Heartbeat"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::local",
+          "digest": "fnv1a64:fb26d7dea8a4bd32",
+          "request": {
+            "$ref": "#/schemas/LocalControls"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::quota",
+          "digest": "fnv1a64:1af631978b9bba6e",
+          "request": {
+            "$ref": "#/schemas/QuotaReport"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::register",
+          "digest": "fnv1a64:83462d3a7fcc3e49",
+          "request": {
+            "$ref": "#/schemas/Registration"
+          },
+          "response": {
+            "$ref": "#/schemas/Registered"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "NodePlane::seat_states",
+          "digest": "fnv1a64:7df075e3db30d0b6",
+          "request": {
+            "$ref": "#/schemas/SeatStates"
+          },
+          "response": null,
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "node"
+          ]
+        },
+        {
+          "name": "Nodes::create",
+          "digest": "fnv1a64:a1ecf2102e21114f",
+          "request": {
+            "$ref": "#/schemas/NodeCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/Node"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Nodes::get",
+          "digest": "fnv1a64:93dbdf03813b3be6",
+          "request": {
+            "$ref": "#/schemas/NodeRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Node"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Nodes::list",
+          "digest": "fnv1a64:178ea695cf187677",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/NodeList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Nodes::revoke",
+          "digest": "fnv1a64:e4c9edb775dda8fa",
+          "request": {
+            "$ref": "#/schemas/NodeRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Node"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Nodes::rotate_token",
+          "digest": "fnv1a64:6e55e9e8414b1e1d",
+          "request": {
+            "$ref": "#/schemas/NodeRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Node"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Nodes::update",
+          "digest": "fnv1a64:b6c1da618c0f9c23",
+          "request": {
+            "$ref": "#/schemas/NodeUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/Node"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Probes::liveness",
+          "digest": "fnv1a64:f58c063e1c051c06",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/Health"
+          },
+          "error": null,
+          "requires": []
+        },
+        {
+          "name": "Probes::readiness",
+          "digest": "fnv1a64:26d9dbf7281b5619",
+          "request": null,
+          "response": {
+            "$ref": "#/schemas/Health"
+          },
+          "error": null,
+          "requires": []
+        },
+        {
+          "name": "Projects::archive",
+          "digest": "fnv1a64:04413be8a6a0b566",
+          "request": {
+            "$ref": "#/schemas/ProjectRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Project"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::budget",
+          "digest": "fnv1a64:4903122bbbba324a",
+          "request": {
+            "$ref": "#/schemas/ProjectRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Budget"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::create",
+          "digest": "fnv1a64:8f8282c1760262d9",
+          "request": {
+            "$ref": "#/schemas/ProjectCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/Project"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::get",
+          "digest": "fnv1a64:5a2b0e3e988a0654",
+          "request": {
+            "$ref": "#/schemas/ProjectRef"
+          },
+          "response": {
+            "$ref": "#/schemas/Project"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::limits",
+          "digest": "fnv1a64:890d43d7ae8a4a29",
+          "request": {
+            "$ref": "#/schemas/ProjectRef"
+          },
+          "response": {
+            "$ref": "#/schemas/LimitSet"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::list",
+          "digest": "fnv1a64:0b1f6821147d4955",
+          "request": {
+            "$ref": "#/schemas/ProjectQuery"
+          },
+          "response": {
+            "$ref": "#/schemas/ProjectList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::set_budget",
+          "digest": "fnv1a64:e676af5f7e845e47",
+          "request": {
+            "$ref": "#/schemas/BudgetRequest"
+          },
+          "response": {
+            "$ref": "#/schemas/Budget"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::set_limits",
+          "digest": "fnv1a64:40b67505cc0669b6",
+          "request": {
+            "$ref": "#/schemas/LimitsRequest"
+          },
+          "response": {
+            "$ref": "#/schemas/LimitSet"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Projects::update",
+          "digest": "fnv1a64:a83c724b38b08f36",
+          "request": {
+            "$ref": "#/schemas/ProjectUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/Project"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Seats::create",
+          "digest": "fnv1a64:c750bf7e5276bde7",
+          "request": {
+            "$ref": "#/schemas/SeatCreate"
+          },
+          "response": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Seats::get",
+          "digest": "fnv1a64:28eaad11794f4bf4",
+          "request": {
+            "$ref": "#/schemas/SeatRef"
+          },
+          "response": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Seats::list",
+          "digest": "fnv1a64:167e240125a65db9",
+          "request": {
+            "$ref": "#/schemas/NodeRef"
+          },
+          "response": {
+            "$ref": "#/schemas/SeatList"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Seats::remove",
+          "digest": "fnv1a64:04c5a77af9f1ba2c",
+          "request": {
+            "$ref": "#/schemas/SeatRef"
+          },
+          "response": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        },
+        {
+          "name": "Seats::update",
+          "digest": "fnv1a64:b314ddf2b84a8fb8",
+          "request": {
+            "$ref": "#/schemas/SeatUpdate"
+          },
+          "response": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "error": {
+            "$ref": "#/schemas/ApiError"
+          },
+          "requires": [
+            "admin"
+          ]
+        }
+      ]
+    }
+  ],
+  "exposures": [],
+  "hubs": [],
+  "schemas": {
+    "Account": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "billing": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "metered",
+            "none"
+          ],
+          "x-hale-type": "Billing"
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "x-hale-type": "Lifecycle"
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/QuotaWindow"
+          },
+          "maxItems": 16
+        },
+        "exhausted_until": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "archived_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "billing",
+        "status"
+      ]
+    },
+    "AccountCreate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "billing": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "subscription",
+                "metered",
+                "none"
+              ],
+              "x-hale-type": "Billing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "AccountList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Account"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": []
+    },
+    "AccountQuery": {
+      "type": "object",
+      "properties": {
+        "include_archived": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "AccountRef": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "account"
+      ]
+    },
+    "AccountUpdate": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_provider": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "billing": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "subscription",
+                "metered",
+                "none"
+              ],
+              "x-hale-type": "Billing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/schemas/Limit"
+              },
+              "maxItems": 16
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "account"
+      ]
+    },
+    "ApiError": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_request",
+            "unsupported",
+            "request_too_large",
+            "invalid_key",
+            "model_not_found",
+            "model_not_permitted",
+            "account_not_permitted",
+            "data_class_refused",
+            "previous_response_not_found",
+            "rate_limited",
+            "budget_exhausted",
+            "no_eligible_seat",
+            "no_capacity",
+            "metering_unavailable",
+            "upstream_failed",
+            "deadline_exceeded",
+            "not_found",
+            "conflict",
+            "internal_error",
+            "route_table_unavailable"
+          ],
+          "x-hale-type": "ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/ErrorVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry_after": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "AssignedSeat": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "serves": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatModel"
+          },
+          "maxItems": 16
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "config": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "Assignment": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "max_in_flight": {
+          "type": "integer"
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/AssignedSeat"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": []
+    },
+    "Attempt": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "served",
+            "failed",
+            "abandoned"
+          ],
+          "x-hale-type": "AttemptOutcome"
+        },
+        "error": {
+          "type": "string"
+        },
+        "output_tokens_before_failure": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wall_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "outcome"
+      ]
+    },
+    "Budget": {
+      "type": "object",
+      "properties": {
+        "set": {
+          "$ref": "#/schemas/BudgetSet"
+        },
+        "spent_micros": {
+          "type": "integer"
+        },
+        "reserved_micros": {
+          "type": "integer"
+        },
+        "remaining_micros": {
+          "type": "integer"
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "window_end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "BudgetInput": {
+      "type": "object",
+      "properties": {
+        "allowance_micros": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "period": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "none"
+          ],
+          "x-hale-type": "Period"
+        },
+        "period_anchor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "allowance_micros",
+        "period"
+      ]
+    },
+    "BudgetRequest": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "allowance_micros": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "period": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "none"
+          ],
+          "x-hale-type": "Period"
+        },
+        "period_anchor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project",
+        "allowance_micros",
+        "period"
+      ]
+    },
+    "BudgetSet": {
+      "type": "object",
+      "properties": {
+        "allowance_micros": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "period": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "none"
+          ],
+          "x-hale-type": "Period"
+        },
+        "period_anchor": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        }
+      },
+      "required": [
+        "period"
+      ]
+    },
+    "Capabilities": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "project_name": {
+          "type": "string"
+        },
+        "key_id": {
+          "type": "string"
+        },
+        "key_name": {
+          "type": "string"
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256
+        },
+        "accounts": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 1056
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/Budget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "CatalogList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/CatalogModel"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": []
+    },
+    "CatalogModel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "owned_by": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local",
+            "hosted"
+          ],
+          "x-hale-type": "ModelKind"
+        },
+        "context_length": {
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "type": "integer"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "CatalogModelCreate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "owned_by": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "local",
+                "hosted"
+              ],
+              "x-hale-type": "ModelKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context_length": {
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "type": "integer"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "CatalogModelUpdate": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "owned_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "local",
+                "hosted"
+              ],
+              "x-hale-type": "ModelKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_price": {
+          "type": "boolean"
+        },
+        "priced": {
+          "type": "boolean"
+        },
+        "price": {
+          "$ref": "#/schemas/ModelPrice"
+        }
+      },
+      "required": [
+        "model"
+      ]
+    },
+    "Change": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "principal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "update",
+            "delete",
+            "archive",
+            "revoke",
+            "rotate"
+          ],
+          "x-hale-type": "ChangeAction"
+        },
+        "target": {
+          "type": "string"
+        },
+        "before": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "ChangeList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Change"
+          },
+          "maxItems": 1000
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "ChangeQuery": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "Draining": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "ErrorVoice": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/Limit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/Budget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Attempt"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": []
+    },
+    "Health": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "unavailable"
+          ],
+          "x-hale-type": "HealthStatus"
+        },
+        "version": {
+          "type": "string"
+        },
+        "store": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "Heartbeat": {
+      "type": "object",
+      "properties": {
+        "in_flight": {
+          "type": "integer"
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatState"
+          },
+          "maxItems": 16
+        },
+        "assignment_version": {
+          "type": "integer"
+        }
+      },
+      "required": []
+    },
+    "InferenceRequest": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "previous_response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "account": {
+          "type": "string"
+        },
+        "data_class": {
+          "type": "string"
+        },
+        "deadline": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "Key": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounts": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_used_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "revoked",
+            "expired"
+          ],
+          "x-hale-type": "KeyStatus"
+        },
+        "revoked_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secret": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "KeyCreate": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounts": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project",
+        "name"
+      ]
+    },
+    "KeyList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Key"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": []
+    },
+    "KeyRef": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project",
+        "key"
+      ]
+    },
+    "KeyUpdate": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_models": {
+          "type": "boolean"
+        },
+        "models": {
+          "$ref": "#/schemas/Restriction"
+        },
+        "set_accounts": {
+          "type": "boolean"
+        },
+        "accounts": {
+          "$ref": "#/schemas/Restriction"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/schemas/Limit"
+              },
+              "maxItems": 16
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_expires": {
+          "type": "boolean"
+        },
+        "expires": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        }
+      },
+      "required": [
+        "project",
+        "key"
+      ]
+    },
+    "Limit": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "key",
+            "model",
+            "account"
+          ],
+          "x-hale-type": "LimitScope"
+        },
+        "model": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "window_seconds": {
+          "type": "integer"
+        },
+        "requests": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "concurrent": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "scope"
+      ]
+    },
+    "LimitSet": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "stored",
+            "practice"
+          ],
+          "x-hale-type": "LimitSource"
+        },
+        "practice": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/PracticeRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "LimitsRequest": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "project"
+      ]
+    },
+    "LocalControls": {
+      "type": "object",
+      "properties": {
+        "paused": {
+          "type": "boolean"
+        },
+        "paused_seats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "max_in_flight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "paused"
+      ]
+    },
+    "Model": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "created": {
+          "type": "integer"
+        },
+        "owned_by": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "context_length": {
+          "type": "integer"
+        },
+        "max_output_tokens": {
+          "type": "integer"
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "ModelList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Model"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": []
+    },
+    "ModelPrice": {
+      "type": "object",
+      "properties": {
+        "input_per_mtok_micros": {
+          "type": "integer"
+        },
+        "output_per_mtok_micros": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "ModelRef": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ]
+    },
+    "Names": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": []
+    },
+    "Node": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "up",
+            "down",
+            "revoked"
+          ],
+          "x-hale-type": "NodeStatus"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "local": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/LocalControls"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_in_flight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_max_in_flight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "in_flight": {
+          "type": "integer"
+        },
+        "assignment_version": {
+          "type": "integer"
+        },
+        "applied_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "maxItems": 16
+        },
+        "connected_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_heartbeat_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "revoked_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enrollment_token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "NodeCreate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "max_in_flight": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "NodeList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Node"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": []
+    },
+    "NodeRef": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node"
+      ]
+    },
+    "NodeReport": {
+      "type": "object",
+      "properties": {
+        "json": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "NodeUpdate": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_max_in_flight": {
+          "type": "boolean"
+        },
+        "max_in_flight": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node"
+      ]
+    },
+    "PracticeRef": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "id"
+      ]
+    },
+    "Project": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "x-hale-type": "Lifecycle"
+        },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounts": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/Budget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        },
+        "key_count": {
+          "type": "integer"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "archived_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "ProjectCreate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounts": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/schemas/BudgetInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Limit"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "ProjectList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Project"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": []
+    },
+    "ProjectQuery": {
+      "type": "object",
+      "properties": {
+        "include_archived": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "ProjectRef": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project"
+      ]
+    },
+    "ProjectUpdate": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owners": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_classes": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "set_models": {
+          "type": "boolean"
+        },
+        "models": {
+          "$ref": "#/schemas/Restriction"
+        },
+        "set_accounts": {
+          "type": "boolean"
+        },
+        "accounts": {
+          "$ref": "#/schemas/Restriction"
+        }
+      },
+      "required": [
+        "project"
+      ]
+    },
+    "QuotaReport": {
+      "type": "object",
+      "properties": {
+        "seat": {
+          "type": "string"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/QuotaWindow"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": []
+    },
+    "QuotaWindow": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "used_percent": {
+          "type": "number"
+        },
+        "resets_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "x-hale-type": "Time"
+        },
+        "seat": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "used_percent",
+        "observed_at"
+      ]
+    },
+    "Registered": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "integer"
+        },
+        "heartbeat_interval_ms": {
+          "type": "integer"
+        },
+        "nats_url": {
+          "type": "string"
+        },
+        "nats_subject": {
+          "type": "string"
+        },
+        "assignment": {
+          "$ref": "#/schemas/Assignment"
+        }
+      },
+      "required": []
+    },
+    "Registration": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "string"
+        },
+        "local": {
+          "$ref": "#/schemas/LocalControls"
+        }
+      },
+      "required": []
+    },
+    "Restriction": {
+      "type": "object",
+      "properties": {
+        "any": {
+          "type": "boolean"
+        },
+        "names": {
+          "$ref": "#/schemas/Names"
+        }
+      },
+      "required": []
+    },
+    "SeatCreate": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "serves": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatModel"
+          },
+          "maxItems": 16
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "config": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "id",
+        "engine",
+        "account"
+      ]
+    },
+    "SeatList": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatView"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": []
+    },
+    "SeatModel": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "as": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "SeatRef": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "seat": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "seat"
+      ]
+    },
+    "SeatState": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "starting",
+            "up",
+            "down",
+            "disabled",
+            "paused",
+            "refused"
+          ],
+          "x-hale-type": "SeatStateStatus"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "in_flight": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "SeatStates": {
+      "type": "object",
+      "properties": {
+        "assignment_version": {
+          "type": "integer"
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatState"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": []
+    },
+    "SeatUpdate": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "seat": {
+          "type": "string"
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "account": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serves": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/schemas/SeatModel"
+              },
+              "maxItems": 16
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_classes": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "concurrency": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "node",
+        "seat"
+      ]
+    },
+    "SeatView": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "serves": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/SeatModel"
+          },
+          "maxItems": 16
+        },
+        "data_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "concurrency": {
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "config": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "offline",
+            "starting",
+            "up",
+            "down",
+            "disabled",
+            "paused",
+            "refused"
+          ],
+          "x-hale-type": "SeatStatus"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "in_flight": {
+          "type": "integer"
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "Served": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "response": {
+          "type": "string"
+        },
+        "voice": {
+          "$ref": "#/schemas/VoiceExtension"
+        },
+        "headers": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "ServedBy": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "quantization": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "node": {
+          "type": "string"
+        },
+        "seat": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": []
+    },
+    "VoiceExtension": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "served": {
+          "$ref": "#/schemas/ServedBy"
+        },
+        "price_micros": {
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "wall_ms": {
+          "type": "integer"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/schemas/Attempt"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": []
+    }
+  },
+  "notes": {
+    "inventory": "every exposure with its listener, its sources and its receivers: a deployment inventory, never an authorization statement for any caller",
+    "authorization": "requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths",
+    "lifecycle": "a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back"
+  }
+}

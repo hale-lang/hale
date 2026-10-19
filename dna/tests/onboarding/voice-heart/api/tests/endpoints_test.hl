@@ -1,0 +1,44 @@
+// The router, in process: every endpoint still answered by a canned body
+// answers its happy path, so a typo in a route or a missing body fails
+// here rather than on the wire. The endpoints with a row in the surface
+// have tests of their own, one file per resource.
+import ".." as api;
+
+fn expect(e: api::Endpoints, method: String, path: String, status: Int) {
+    let resp = e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json" });
+    std::test::assert_eq_int(resp.status, status, method + " " + path);
+    std::test::assert(len(resp.body) > 0, method + " " + path + " has a body");
+}
+
+fn main() {
+    let e = api::Endpoints { canned: canned_dir() };
+    expect(e, "GET", "/admin/v1/usage", 200);
+    expect(e, "GET", "/admin/v1/usage/summary", 200);
+    expect(e, "GET", "/admin/v1/usage/resp_01j8z3q4v7m2k9x0", 200);
+
+    let chunked = e.handle(std::http::Request { method: "POST", path: "/v1/responses", headers: "Transfer-Encoding: chunked", body: "" });
+    std::test::assert_eq_int(chunked.status, 400, "a chunked request body is refused");
+    std::test::assert(std::str::contains(chunked.body, "a chunked request body is not accepted: send it with Content-Length"), "saying so: " + chunked.body);
+
+    let routes = e.handle(std::http::Request { method: "GET", path: "/admin/v1/routes" });
+    std::test::assert_eq_int(routes.status, 503, "no route table without NATS and a brain");
+
+    expect(e, "GET", "/admin/v1/events", 200);
+    std::test::assert(api::is_ui_path("/nodes/laptop"), "an app route is the ui's");
+    std::test::assert(!api::is_ui_path("/node/v1/assignment"), "the node plane is not");
+    std::test::assert(api::has_extension("/assets/a.woff2"), "a file has an extension");
+    std::test::assert(!api::has_extension("/nodes/laptop"), "a route has none");
+    let missing = e.handle(std::http::Request { method: "GET", path: "/nope" });
+    std::test::assert_eq_int(missing.status, 404, "unknown route");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(missing.body, "error"), "code"), "not_found", "in the error envelope");
+
+    // a route with a row answers from its handler, not a canned body
+    let models = e.handle(std::http::Request { method: "GET", path: "/admin/v1/models" });
+    std::test::assert_eq_str(std::str::trim(models.body), "{\"data\": []}", "the catalog starts empty");
+}
+
+// The canned directory, from the repository root or from api/.
+fn canned_dir() -> String {
+    if std::io::fs::file_exists("api/canned/getUsage.json") { return "api/canned"; }
+    return "canned";
+}
