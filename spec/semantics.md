@@ -1414,6 +1414,12 @@ reveals it:**
   transparent (every call it makes is to such a fn, or writes a builder
   it made itself; it calls no method or fn value, builds no locus,
   assigns only its own locals, and sends, stores and prints nothing).
+  The list holds the conversions, encodings, hashes and
+  percent-encoding (`std::url::encode`, `decode`, `decode_query`).
+  A secret that reaches a fn of the program's own that is not
+  transparent is refused there, and the diagnostic names the first
+  thing in that fn's body that keeps it from being one (`` `tag`
+  calls `println`, which may keep what it is handed ``).
 - It is **never** bound to a `let` or a `match` pattern, assigned,
   stored in a field, a param default or a locus literal, returned,
   raised, published, printed, iterated, used to decide a branch, or

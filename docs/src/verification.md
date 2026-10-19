@@ -514,7 +514,22 @@ returned, used to decide a branch or handed to `std::process`. Compare
 with `matches`: it is constant-time, and `==` is not; comparing a slice
 of the secret is refused, because each answer gives away part of it.
 `hale check` (and `build`) refuses anything else and says where the
-value went. A tool that reads a secret from a file gets it through
+value went. On its way to the wire the value may pass through what only
+computes a new value from it — `+`, a conversion, a hash,
+`std::url::encode` — or through a fn of your own built from those, and
+the result is held to the same rule. A client secret in a form body is
+percent-encoded in the statement that sends it:
+
+```hale,fragment
+let r = std::http::post(issuer + "/token",
+    std::bytes::from_string("grant_type=client_credentials&client_secret="
+        + std::url::encode(self.secret.reveal_text())),
+    "application/x-www-form-urlencoded") or raise;
+```
+
+A fn of your own that does anything else with what it is handed — prints
+it, stores it, calls a method — is refused there, and the message names
+the call that keeps it from carrying the value on. A tool that reads a secret from a file gets it through
 `write_private(path)`, which writes a new 0600 file in a private
 directory on the sealed side with nothing revealed; what the tool, or
 your own code, reads back from that file is beyond the check.

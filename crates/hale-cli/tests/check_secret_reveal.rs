@@ -114,6 +114,52 @@ fn a_secret_parameter_is_a_consumer_its_body_is_held_to() {
     assert!(!ok && out.contains("is bound to `k`"), "{out}");
 }
 
+/// `std::url`'s percent-encoding computes a fresh String from its
+/// argument and keeps none of it, so a revealed secret passes through it,
+/// directly or through a fn of the program's own, and its result carries
+/// the secret on: it still reaches the wire write in its statement, and
+/// bound or printed it is refused as the secret itself is. A client
+/// secret in a form body is percent-encoded this way.
+#[test]
+fn percent_encoding_carries_a_secret_on_to_the_wire() {
+    let form = "fn form_value(s: String) -> String { return std::url::encode(s); }\n";
+    for f in ["std::url::encode", "std::url::decode", "std::url::decode_query", "form_value"] {
+        let tag = f.replace("::", "_");
+        let post = format!(
+            "let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"client_secret=\" + {f}(self.token.reveal_text())), \"application/x-www-form-urlencoded\") or std::http::ClientResponse {{ status: 0, headers: \"\", body: b\"\" }};"
+        );
+        let (ok, out) = one(&method(&post, form), &format!("url_wire_{tag}"));
+        assert!(ok && !out.contains(CONSUMED), "{f} into a form body: {out}");
+        let bound = format!("let t = {f}(self.token.reveal_text());");
+        let (ok, out) = one(&method(&bound, form), &format!("url_bound_{tag}"));
+        assert!(!ok && out.contains(CONSUMED) && out.contains("is bound to `t`"), "{f}, bound: {out}");
+        let printed = format!("println({f}(self.token.reveal_text()));");
+        let (ok, out) = one(&method(&printed, form), &format!("url_printed_{tag}"));
+        assert!(!ok && out.contains(CONSUMED) && out.contains("is printed"), "{f}, printed: {out}");
+    }
+}
+
+/// A fn of the program's own that a revealed secret reaches, and that
+/// does not only compute its result from its arguments, is named in the
+/// refusal with the call that keeps it from carrying the value on.
+#[test]
+fn an_own_fn_that_does_not_carry_a_secret_on_says_why() {
+    let helpers = "fn tagged(s: String) -> String { println(\"tagging\"); return \"t:\" + s; }\n\
+                   fn via(s: String) -> String { return tagged(s); }\n";
+    let post = |f: &str| {
+        format!(
+            "let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string({f}(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse {{ status: 0, headers: \"\", body: b\"\" }};"
+        )
+    };
+    let (ok, out) = one(&method(&post("tagged"), helpers), "opaque_direct");
+    assert!(
+        !ok && out.contains("reaches `tagged`") && out.contains("`tagged` calls `println`, which may keep what it is handed"),
+        "{out}"
+    );
+    let (ok, out) = one(&method(&post("via"), helpers), "opaque_through");
+    assert!(!ok && out.contains("`via` calls `tagged`, which may keep what it is handed"), "{out}");
+}
+
 /// Each bypass the review of PR #1216 ran end to end (`hale check` said
 /// `ok`, the program printed the secret), each refused where it is.
 #[test]

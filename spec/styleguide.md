@@ -351,6 +351,14 @@ Four rules, each load-bearing:
 - **Classify the one privileged method** with `secret_use`, so the
   law can find it.
 
+When a revealed credential has to be reshaped on its way out — a client
+secret percent-encoded into a form body — reshape it in the statement
+that sends it, with what only computes a value (`std::url::encode`, a
+conversion, `+`) or a fn of your own built from those: the result stays
+the secret, held to the same one statement. A helper that also logs,
+stores or calls a method is refused, and the message names that call.
+**[error]**
+
 A sealed locus may not also carry `contract { expose … }`: sealing
 denies every external read, so the expose grants nothing, and the pair
 is rejected rather than left to read as permission. Callers use the
