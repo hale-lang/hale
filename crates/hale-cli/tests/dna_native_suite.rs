@@ -1093,6 +1093,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_node_relay_test.hl",
             "knowledge_store_test.hl",
             "knowledge_test.hl",
+            "law_in_force_test.hl",
             "lease_epoch_test.hl",
             "ledger_test.hl",
             "leg_candidate_test.hl",

@@ -3574,6 +3574,16 @@ rule: when the Mutation's seed is the repository's root (`.`) and the
 root is not a seed, `fmt --check`, `check`, `verify`, `test` and the base
 topology run in the seed of the first file the candidate changed.
 
+**The law in force on a Hale heart (GH #1591).** When the practice
+`standard/logs-are-structured` is in force as law (ratified, not retired,
+its document saying `law: true`), the candidate's `check` adopts
+`std::law::Standard` from outside, as `hale check --adopt
+std::law::Standard` (spec/verification.md, "Adopting from outside the
+source"): a heart with a bare `println` on a served or attached path
+fails the check, naming the clause `logs_structured`, and one that writes
+through `std::log` passes. Nothing is written into the heart's source,
+and with the practice absent, advice or retired the check adopts nothing.
+
 ## Models
 
 The organization's models are a catalog in source (GH #583 M1):

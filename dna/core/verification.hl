@@ -287,6 +287,14 @@ locus HaleVerification {
         let x = j.append(j.revision(), "evidence." + step, candidate, b.result());
         return r.code;
     }
+    // Whether the practice `standard/logs-are-structured` is in force as
+    // law: ratified, not retired, and its document says `law: true`.
+    fn standard_in_force(j: Journal) -> Bool {
+        let k = KnowledgeRecord { journal: j, receipts: self.receipts };
+        let digest = k.practice_in_force("standard/logs-are-structured");
+        if len(digest) < 8 { return false; }
+        return std::json::find_bool_field(self.receipts.read(digest[7..len(digest)]), "law");
+    }
     fn lineage_applied(j: Journal) -> Int {
         let mut n = 0;
         let mut i = 0;
@@ -327,7 +335,11 @@ locus HaleVerification {
             let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_of(self.repo, seed) + "\n--dump-topology=" + base));
         }
         let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
-        let checked = run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo);
+        // the laws in force on a Hale heart (GH #1591): a clause the Board
+        // ratified as law is adopted by the check from outside, never
+        // written into the heart's source
+        let adopt = if self.standard_in_force(j) { "\n--adopt\nstd::law::Standard" } else { "" };
+        let checked = run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo + adopt);
         let check = self.record(j, cand, m.id, "check", checked);
         // from the tree, never the check's words: Hale source in the seed
         // at the base or at the candidate (a candidate that deletes every
