@@ -191,6 +191,20 @@ fn main() {
     let foreign = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nforeign/app\n--attach\n--no-library");
     std::test::assert(foreign.code != 0 && std::str::contains(text_of(scratch + "/foreign/hale.toml"), "record = \"" + dna::record_scope(genome) + "\"") && !std::io::fs::file_exists(scratch + "/foreign/app/hale.toml"), "a workspace pinned to another record is refused, its pin untouched: " + foreign.stdout + foreign.stderr);
 
+    // ---- a clone that keeps no head DSN of its own: memory says whose
+    // child its record is before anything is grafted. A clone of the
+    // habitat's own genome pins a record born of no parent (or one whose
+    // parent memory cannot say), and is refused; a clone of a grafted
+    // child pins this habitat's child, and
+    // its graft goes on, recorded once
+    let cloned = dna::run_tool("sh\n-c\ncd \"$1\" && git -C attached add -A && git -C attached -c user.name=t -c user.email=t@dna commit -qm attached && git clone -q --no-local attached attached-clone && git clone -q --no-local \"$2\" genome-clone\nsh\n" + scratch + "\n" + genome);
+    std::test::assert(cloned.code == 0 && !std::io::fs::file_exists(scratch + "/attached-clone/.hale/dna/memory.env") && !std::io::fs::file_exists(scratch + "/genome-clone/.hale/dna/memory.env"), "two clones, neither with a head DSN of its own: " + cloned.stderr);
+    let orphan = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ngenome-clone\n--attach\n--no-library");
+    std::test::assert(orphan.code != 0 && (std::str::contains(orphan.stderr, "born of no parent, not of this habitat") || std::str::contains(orphan.stderr, "so its parent is not known")) && occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + key + "\"") == 0, "a record born of no parent is refused, and no graft is recorded: " + orphan.stdout + orphan.stderr);
+    let joined = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached-clone\n--attach\n--no-library");
+    std::test::assert(joined.code == 0 && std::str::contains(joined.stdout, "the graft goes on where it stopped") && std::str::contains(joined.stdout, "kept    the graft of " + akey), "a clone of this habitat's child goes on: " + joined.stdout + joined.stderr);
+    std::test::assert_eq_int(occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + akey + "\""), 1, "and the graft stays one row");
+
     // ---- a graft stopped part way goes on where it stopped: the first
     // stops at the git config the birth writes (a lock held on it), after
     // the record is pinned; the second at the heart's database (its

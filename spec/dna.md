@@ -4412,7 +4412,11 @@ The live half is memory's, projected from the record by the spine
   genome whose genesis names this habitat, and no such row yet) goes on
   where it stopped when run again, each step keeping what is done (the
   birth's seed, the allocations, the row, the `standard` pack, each
-  once). A genome pinning a record born of another parent, or of none, is
+  once). Memory decides whose child a pinned record is, never a guess:
+  its genesis is read from memory (with the clone's kept head DSN, else
+  one derived from memory that is there, else after the local setup the
+  birth makes), and a genesis that cannot be read is refused, naming why.
+  A genome pinning a record born of another parent, or of none, is
   refused, and one memory holds no record for is refused by the birth,
   naming it. The habitat must be born
   and its record readable, and the environment must agree with its

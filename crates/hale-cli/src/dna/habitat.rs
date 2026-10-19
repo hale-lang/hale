@@ -1219,13 +1219,24 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     // the birth itself, naming it
     let pinned = manifest.as_deref().and_then(manifest_pin_in_text);
     if let Some(id) = &pinned {
-        let born_of = rows_of(&root).iter().find(|r| r["kind"] == "record.genesis").map(|g| {
-            let body: serde_json::Value = g["body"].as_str().and_then(|b| serde_json::from_str(b).ok()).unwrap_or_default();
-            body["parent"].as_str().unwrap_or("").to_string()
-        });
-        if let Some(of) = born_of.filter(|of| *of != parent) {
-            let whose = if of.is_empty() { "no parent".to_string() } else { format!("the record {}…", &of[..12.min(of.len())]) };
-            return Err(format!("{} pins the record {}…, born of {whose}, not of this habitat: an organism is grafted once, at its birth", root.display(), &id[..12.min(id.len())]));
+        let short = &id[..12.min(id.len())];
+        // memory decides, never a guess: the genesis is read, after the
+        // local setup the birth would make first when it cannot be
+        let mut said = pinned_genesis(&root);
+        if let PinnedGenesis::Unread(_) = said {
+            let _ = super::memory_migrate(&root);
+            said = pinned_genesis(&root);
+        }
+        match said {
+            PinnedGenesis::Parent(of) if of == parent => {}
+            PinnedGenesis::Parent(of) => {
+                let whose = if of.is_empty() { "no parent".to_string() } else { format!("the record {}…", &of[..12.min(of.len())]) };
+                return Err(format!("{} pins the record {short}…, born of {whose}, not of this habitat: an organism is grafted once, at its birth", root.display()));
+            }
+            // memory holds no such record: the birth refuses the pin,
+            // naming it
+            PinnedGenesis::Absent => {}
+            PinnedGenesis::Unread(why) => return Err(format!("{} pins the record {short}…, whose genesis could not be read, so its parent is not known: {why}", root.display())),
         }
     }
     let needs = needs_of(manifest.as_deref())?;
@@ -1274,6 +1285,52 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
     out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("{:<8}the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", "note", root.display()) });
     Ok(out)
+}
+
+/// What memory says of the record the organism at `root` pins (GH #1653):
+/// the parent its genesis names ("" for none), that it holds no such
+/// record, or why it could not be read.
+enum PinnedGenesis {
+    Parent(String),
+    Absent,
+    Unread(String),
+}
+
+fn pinned_genesis(root: &Path) -> PinnedGenesis {
+    // the clone's kept head DSN, else one derived from memory that is
+    // there (nothing brought up, nothing written)
+    let head = super::kept_head_dsn(root).ok().flatten().or_else(|| {
+        host_run("memory-migrate", root, &["--derive".to_string()]).ok().and_then(|o| o.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).map(str::to_string))
+    });
+    let ask = |verb: &str| -> Result<String, String> {
+        let (mut cmd, _) = super::host_command(verb, root)?;
+        if let Some(h) = &head {
+            cmd.env("HALE_DNA_MEMORY_DSN_HEAD", h);
+        }
+        let out = cmd.output().map_err(|e| format!("hale dna {verb}: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { format!("hale dna {verb} failed") } else { err });
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    };
+    match ask("record-head") {
+        Err(why) => return PinnedGenesis::Unread(why),
+        Ok(h) if h.trim() == "none" => return PinnedGenesis::Absent,
+        Ok(_) => {}
+    }
+    let rows = match ask("record-rows") {
+        Ok(r) => r,
+        Err(why) => return PinnedGenesis::Unread(why),
+    };
+    let genesis = rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|r| r["kind"] == "record.genesis");
+    match genesis {
+        Some(g) => {
+            let body: serde_json::Value = g["body"].as_str().and_then(|b| serde_json::from_str(b).ok()).unwrap_or_default();
+            PinnedGenesis::Parent(body["parent"].as_str().unwrap_or("").to_string())
+        }
+        None => PinnedGenesis::Unread("the record has no genesis row".to_string()),
+    }
 }
 
 /// The rows of the record of the organism at `root`, none when it cannot
