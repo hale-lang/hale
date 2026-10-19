@@ -71,8 +71,8 @@ main locus App {
     }
     run() {
         let scratch = dna::scratch_root("prompt");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nreceipts");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nreceipts"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/receipts";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");

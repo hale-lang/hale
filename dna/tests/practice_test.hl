@@ -71,8 +71,8 @@ main locus App {
 
         // ---- through the CLI, with no organization here: a row for the host to relay
         let scratch = dna::scratch_root("practice");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nbooks"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/books";
         let g0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/books.git");
         let g1 = in_dir(app, "git\nconfig\nuser.name\nriley");

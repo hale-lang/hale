@@ -130,8 +130,8 @@ main locus App {
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let init = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nkept");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nkept"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/kept";
         let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
         let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");

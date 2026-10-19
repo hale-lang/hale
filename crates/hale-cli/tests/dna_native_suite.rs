@@ -657,7 +657,7 @@ struct SliceHabitat {
 
 fn slice_habitat(tag: &str, dsn: Option<&str>, mine: &[&PathBuf]) -> Option<SliceHabitat> {
     // only a slice with a fixture that grafts pays for a birth
-    let grafts = mine.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("dna::grafted(") || t.contains("dna::test_habitat(")));
+    let grafts = mine.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("dna::grafted(") || t.contains("dna::test_habitat(") || t.contains("dna::in_habitat(")));
     if !grafts {
         return None;
     }

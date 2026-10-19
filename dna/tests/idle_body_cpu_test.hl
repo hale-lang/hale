@@ -94,8 +94,8 @@ main locus App {
         let scratch = dna::scratch_root("idlecpu");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nidle");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nidle"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/idle";
         std::io::fs::write_file(a + "/dna/org/main.hl", IDLE_ORG) or discard;
         let g = in_dir(a, "sh\n-c\ngit -c user.name=organism-host -c user.email=host@dna add -A && git -c user.name=organism-host -c user.email=host@dna commit -q -m 'an idle organization'");

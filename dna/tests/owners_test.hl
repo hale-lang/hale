@@ -54,8 +54,8 @@ main locus App {
         let bare = scratch + "/origin.git";
         let b0 = self.in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
         // the record is born in memory (GH #1590): `new` keeps the owner's DSN
-        let made = dna::run_tool_timeout(dna::wait_secs(300), "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + scratch + "\n" + toolchain() + "\ndna\nnew\nteam");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = dna::run_tool_timeout(dna::wait_secs(300), "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + scratch + "\n" + dna::in_habitat(toolchain() + "\nhabitat\ngraft\nteam"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/team";
         // ---- born with one owner: no owners file, and no map in main.hl
         std::test::assert(!std::io::fs::file_exists(app + "/dna/org/owners"), "a new organization has no owners file: the graph is the org chart");

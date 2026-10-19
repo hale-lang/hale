@@ -89,8 +89,8 @@ main locus App {
 
         // ---- through the CLI: no reassignment to a retired person
         let scratch = dna::scratch_root("retired");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nret");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nret"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/ret";
         std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
         // the task's rows are the Ledger's (GH #1590)

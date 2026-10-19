@@ -41,8 +41,8 @@ main locus App {
         dna::reap_on_exit(scratch);
         let cache = scratch + "/cache";
         std::io::fs::mkdir(cache) or discard;
-        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nclaimed");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, cache, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nclaimed"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/claimed";
         let g1 = in_dir(a, cache, "git\nconfig\nuser.name\noperator");
         let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nop@dna");

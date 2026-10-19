@@ -21,7 +21,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
-       hale habitat graft <dir> [--attach] [--no-library]
+       hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
        hale habitat handover [organism]
        hale habitat status
        hale habitat down
@@ -62,7 +62,8 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      declare `database`, a tenant database of its memory
                      server handed to it as HALE_DNA_DATABASE_DSN) are
                      allocated to it and recorded in the habitat's record,
-                     and the `standard` pack is proposed to its Board.
+                     and the `standard` pack is proposed to its Board
+                     (--no-pack leaves it for `hale dna pack apply`).
                      <dir> is a new application's directory, or with
                      --attach an application (its workspace's manifest is
                      the organism's) or a repository that is there
@@ -1316,10 +1317,12 @@ fn graft(args: &[String]) -> ExitCode {
     let mut dir: Option<PathBuf> = None;
     let mut attach = false;
     let mut library = true;
+    let mut pack = true;
     for a in args {
         match a.as_str() {
             "--attach" => attach = true,
             "--no-library" => library = false,
+            "--no-pack" => pack = false,
             f if f.starts_with("--") => {
                 eprintln!("hale habitat graft: `{f}` is not a flag of `graft`\n{}", usage_text());
                 return ExitCode::from(2);
@@ -1336,7 +1339,7 @@ fn graft(args: &[String]) -> ExitCode {
         eprintln!("hale habitat graft: which directory?\n{}", usage_text());
         return ExitCode::from(2);
     };
-    match graft_lines(&dir, attach, library) {
+    match graft_lines(&dir, attach, library, pack) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -1355,7 +1358,7 @@ fn graft(args: &[String]) -> ExitCode {
 /// it needs allocated to it, and the graft and its needs a row of the
 /// habitat's record. The habitat must be born, and the environment must
 /// agree with its backends.
-fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, String> {
+fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let Some(parent) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else {
         return Err("the habitat is not born: `hale habitat up` births it, and every other organism is grafted from it".to_string());
@@ -1449,6 +1452,10 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     // the standard practices, the law every organism is born under, for
     // the child's Board (a process of its own: the verb execs the host),
     // proposed once
+    if !pack {
+        out.push(format!("{:<8}the `standard` pack (--no-pack: `hale dna pack apply standard` proposes it)", "skipped"));
+        return Ok(out);
+    }
     let proposed = |r: &serde_json::Value| {
         r["kind"] == "batch.proposed" && r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).is_some_and(|b| b["pack"].as_str().is_some_and(|p| p.starts_with("standard@")))
     };
