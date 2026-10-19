@@ -10174,6 +10174,7 @@ shared	dynamic	sites in operations #726c9d93
 -- dynamic	sites in operations/tests
 dynamic	Authority	on main
 dynamic	FaultRecord	on main
+dynamic	MovingRecord	on main
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main
