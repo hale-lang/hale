@@ -291,7 +291,7 @@ fn an_interrupted_init_is_finished_step_by_step() {
     assert!(!ok, "a held config lock stops the init: {out}");
     std::fs::remove_file(&lock).unwrap();
     let (ok, out) = hale(&["dna", "init", "."], &app);
-    assert!(ok && out.contains("kept    the record's seed"), "the retry keeps the seed the first run wrote and finishes it: {out}");
+    assert!(ok && out.contains("kept    the record (memory holds it; not reseeded)"), "the retry keeps the seed the first run wrote and finishes it: {out}");
     let member = String::from_utf8_lossy(&git(&["config", "--local", "--get-all", "dna.unix.member"]).stdout).to_string();
     let trust = String::from_utf8_lossy(&git(&["config", "--local", "--get", "dna.trust"]).stdout).trim().to_string();
     assert!(member.starts_with("uid:") && trust == "local", "the person is seated: {member} {trust}\n{out}");

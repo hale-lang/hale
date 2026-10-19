@@ -1844,7 +1844,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     let held = record_kinds(&root)?;
     let has = |kind: &str, entity: Option<&str>| held.iter().any(|(k, e)| k == kind && entity.is_none_or(|x| x == e));
     if has("application.attached", None) {
-        out.push("kept    the record's seed (memory holds it; not reseeded)".to_string());
+        out.push("kept    the record (memory holds it; not reseeded)".to_string());
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
