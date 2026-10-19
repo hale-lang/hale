@@ -110,6 +110,93 @@ fn main() { App { }; }
     }
 }
 
+/// GET `/` on a fresh connection: the status line.
+fn get_status(port: u16) -> String {
+    let Ok(mut conn) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return "refused".to_string();
+    };
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    if conn.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").is_err() {
+        return "write failed".to_string();
+    }
+    let mut answer = String::new();
+    let _ = conn.read_to_string(&mut answer);
+    answer.lines().next().unwrap_or("").to_string()
+}
+
+/// `main`'s run() returning is not a request to stop serving: a server
+/// a pinned child runs keeps accepting, and keeps the process alive,
+/// until a signal ends it. The tree drain that begins `main`'s
+/// teardown used to stop every listener (GH #1659), so a main that only
+/// builds its tree — no `run()` at all, as a node whose children do the
+/// work — cut its own server, whether it bound before the drain or after
+/// (downstream handoff: the admin listener never came up).
+#[test]
+fn a_server_outlives_mains_run() {
+    let shapes = [
+        (
+            "no_run",
+            r#"
+locus Admin {
+    params { n: Int = 0; }
+    run() {
+        println("serving");
+        std::http::Server { port: 0, handler: Hello { } };
+    }
+}
+main locus App {
+    params { admin: Admin = Admin { }; }
+    placement { admin: pinned; }
+    birth() { println("starting"); }
+}
+fn main() { App { }; }
+"#,
+        ),
+        (
+            "run_returns",
+            r#"
+main locus App {
+    params { server: std::http::Server = std::http::Server { port: 0, handler: Hello { } }; }
+    placement { server: pinned; }
+    run() { std::time::sleep(200ms); }
+}
+fn main() { App { }; }
+"#,
+        ),
+        (
+            "run_returns_on_main",
+            r#"
+main locus App {
+    params { server: std::http::Server = std::http::Server { port: 0, handler: Hello { } }; }
+    run() { std::time::sleep(200ms); }
+}
+fn main() { App { }; }
+"#,
+        ),
+    ];
+    for (shape, src) in shapes {
+        let (c, port, bin) = serve(&format!("serve_drain_outlives_{shape}"), src);
+        assert!(get_status(port).starts_with("HTTP/1.1 200"), "{shape}: serving at start");
+        // well past main's run(): the tree drain is up by now
+        std::thread::sleep(Duration::from_millis(700));
+        for _ in 0..3 {
+            let status = get_status(port);
+            assert!(status.starts_with("HTTP/1.1 200"), "{shape}: still serving after main's run(): {status:?}");
+        }
+        let (status, took, err) = term_and_wait(c);
+        let _ = std::fs::remove_file(&bin);
+        // nothing in these programs reads `draining`, so the signal keeps
+        // its default action (spec/semantics.md § Drain cascade); a
+        // program that reads it drains instead (the test above)
+        assert!(
+            status.success() || status.signal() == Some(15),
+            "{shape}: the signal ends it: {status:?} (signal {:?})\n{err}",
+            status.signal()
+        );
+        assert!(took < Duration::from_millis(2000), "{shape}: ended {took:?} after the signal\n{err}");
+    }
+}
+
 /// The drain stops accepting, never cuts: a request the server is
 /// handling when the signal comes is answered, then the program ends.
 #[test]

@@ -135,9 +135,10 @@ pool (calling `self.web.shutdown()` from `App`'s pool is refused: a
 method call may not cross pools). Stopping ends the accept and lets
 the requests already accepted finish: the server's `run()` returns once
 each has been answered. You need it only to stop a server early: a
-SIGTERM or Ctrl-C, or `main`'s `run()` returning, stops every server
-the same way, so a served program ends as soon as its last request is
-answered.
+SIGTERM or Ctrl-C stops every server the same way, so a served program
+ends as soon as its last request is answered. `main`'s `run()`
+returning does not: a server keeps serving until the signal, so a
+`main` that only builds the loci that serve needs no `run()` at all.
 
 ```hale,fragment
 // in App: `web: std::http::Server = std::http::Server { port: 8080, name: "web", handler: Api { } };`

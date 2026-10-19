@@ -5223,11 +5223,18 @@ or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
 wait. A `main` that declares no `run()` and holds an exposure's listener
 is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
-alive until it returns, as under a signal; the tree's drain stops the
-process's listeners as a signal's does (step 3 above), so a server
-child's accept loop ends; an `async_io` child parked
-on an untimed wait (a plain `recv`) is abandoned at its pool's
-shutdown (`runtime.md` § the wakeable park). The tree's drain ends
+alive until it returns, as under a signal. **`main`'s `run()` returning
+does not cut a live listener:** the tree's drain does not take step 3
+above, so a server the tree runs on main or on a pinned thread — its
+own param, or one a pinned child's `run()` builds — keeps accepting,
+and its join keeps the process alive, until a signal's drain stops it.
+A `main` that only builds its tree (no `run()`, its children doing the
+work) serves for as long as they do. (2026-10-19: GH #1659 had the
+tree's drain stop every listener, which cut such a program's servers,
+one bound before the drain and one bound after alike; downstream
+handoff.) An `async_io` child parked
+on an untimed wait (a plain `recv`, an `accept`) is abandoned at its
+pool's shutdown (`runtime.md` § the wakeable park), as before. The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,
 and a signal's drain is neither masked nor ended by it. (Before
 2026-10-12 a pinned or classic child's loop kept the process alive

@@ -15029,10 +15029,17 @@ int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
  * timed park on an async_io pool expires (its worker is woken to see
  * it), and a run() that watches the drain returns, so the joins that
  * follow end. The runs of the tree are the only ones off main while it
- * is torn down: main loci are built one after another. */
+ * is torn down: main loci are built one after another.
+ *
+ * It does not stop the process's listeners: main's run() returning (or
+ * a main with no run(), whose run is empty) is not a request to stop
+ * serving. A server child keeps accepting, and its join keeps the
+ * process alive, until a signal's drain (`lotus_drain_watcher`) stops
+ * it. Stopping them here cut every listener of a program whose main
+ * only builds its tree, one bound before the drain and one bound
+ * after alike (spec/semantics.md § Drain cascade). */
 void lotus_tree_drain_raise(void) {
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TREE, __ATOMIC_RELEASE);
-    lotus_tcp_stop_all_listeners();
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -23190,9 +23197,9 @@ int64_t lotus_tcp_listener_stop(const char *name) {
     return fd >= 0 ? 1 : 0;
 }
 
-/* Shut every named listener's socket down: what a drain does to the
- * process's servers (`lotus_drain_watcher` on a signal,
- * `lotus_tree_drain_raise` when `main`'s run() returns). Each accept
+/* Shut every named listener's socket down: what a signal's drain does
+ * to the process's servers (`lotus_drain_watcher`; a tree drain, when
+ * `main`'s run() returns, leaves them serving). Each accept
  * loop's accept returns, its loop ends, and the server's run() returns
  * once the connections it accepted are answered (spec/stdlib.md
  * § Shutdown is a drain): it used to keep accepting, so a server held a
