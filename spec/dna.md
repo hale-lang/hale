@@ -4450,9 +4450,14 @@ The live half is memory's, projected from the record by the spine
   and `heart.<id>._INBOX.>`; no JetStream; their passwords the vault
   slots `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with the
   organism's other secrets as every drawn secret is — 32 lowercase hex
-  digits, so a password is safe in a JSON document and a URL as it is; recorded as its `broker` allocation. A
-  habitat on `operator` backends does not provision it (the operator's
-  NATS is not the habitat's to configure). `cache` and `object-store` are
+  digits, so a password is safe in a JSON document and a URL as it is;
+  recorded as its `broker` allocation. **`broker`, and any heart role
+  that needs server configuration, requires `own` backends**: a habitat
+  on `operator` backends refuses it at graft, by name (the operator's
+  NATS is not the habitat's to configure), so a heart that needs one
+  runs in a habitat on `own` backends — a fixture's own compose stack,
+  taken down by the sweep — while `database`, a tenant database and a
+  role, is provisioned on either. `cache` and `object-store` are
   refused by name at graft until a heart needs one, as is a role the
   habitat does not know.
 - **The attach handover** (GH #1653). What the habitat hands a
