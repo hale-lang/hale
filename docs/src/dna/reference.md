@@ -42,10 +42,11 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 
 ```text
 usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
+       hale habitat graft <dir> [--attach] [--no-library]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
-       hale habitat sweep <root>
+       hale habitat sweep <root> | --test-vaults [<root>]
 
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
@@ -69,6 +70,23 @@ up                   birth the habitat the first time, from the genome the
                      the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
                      HALE_DNA_NATS_URL_OWNER name, and provisions nothing
                      of its own. The hosted profile is not built.
+graft <dir>          birth an organism as the habitat's child, the one way an
+                     organism other than the habitat is born: its record's
+                     genesis names the habitat's record as its parent, the
+                     roles its genome needs (`[dna] needs` in its hale.toml:
+                     memory and nerves always, senses unless left out;
+                     undeclared, as a foreign heart is, it is exactly the
+                     organism's own, never a heart's; a Hale heart may
+                     declare `database`, a tenant database of its memory
+                     server handed to it as HALE_DNA_DATABASE_DSN) are
+                     allocated to it and recorded in the habitat's record,
+                     and the `standard` pack is proposed to its Board.
+                     <dir> is a new application's directory, or with
+                     --attach an application (its workspace's manifest is
+                     the organism's) or a repository that is there
+                     already. A graft that stopped part way goes on
+                     where it stopped when run again; a record born of
+                     anything but this habitat is refused.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this
@@ -93,6 +111,11 @@ sweep <root>         take down every compose project run from under <root>,
                      retried. Never the developer's habitat (under $HOME),
                      nor the one XDG_DATA_HOME names outside <root>. Exit 1
                      names what survived; nothing is done without docker.
+                     --test-vaults sweeps the test vaults of processes
+                     that are gone (<tmp>/hale-test-vaults-<uid>, or
+                     <root>): each one's habitat comes down before the
+                     vault goes, and a habitat whose vault went first is
+                     found by its compose working directory.
 
 Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
 and `work` run on what is up and migrated, and name this command when it

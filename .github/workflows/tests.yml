@@ -763,7 +763,7 @@ jobs:
         run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/5
 
   dna:
-    name: dna ${{ matrix.part }}/5
+    name: dna ${{ matrix.part }}/6
     needs: [scope, build-cli]
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
@@ -772,7 +772,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4, 5]
+        part: [1, 2, 3, 4, 5, 6]
     services:
       knowledge-db:
         image: ghcr.io/hale-lang/ci-pgvector:pg16
@@ -857,15 +857,15 @@ jobs:
 
       - *toolchain-save
 
-      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/5)
-        # The suite alone on its runner: twenty slice tests split across
-        # five jobs, four slices each, two at a time (`--profile small`,
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/6)
+        # The suite alone on its runner: twenty-four slice tests split across
+        # six jobs, four slices each, two at a time (`--profile small`,
         # the `dna-fixtures-small` group in .config/nextest.toml).
         # `count:` deals the alphabetical test list out round-robin, so
         # the split is the same every run, and the slice tests are named
         # `dna_fixtures_slice_<ii>` (zero-padded) so that list is slice
         # order: `HEAVY` in dna_native_suite.rs places the heavy fixtures
-        # so the five parts' slice minutes come out level and each part
+        # so the six parts' slice minutes come out level and each part
         # starts its longest slices first. Change the job count only
         # with HEAVY.
         env:
@@ -877,7 +877,7 @@ jobs:
           cargo nextest run $NEXTEST_ARCHIVE \
             -E 'binary_id(hale-cli::dna_native_suite)' \
             --profile small \
-            --partition count:${{ matrix.part }}/5
+            --partition count:${{ matrix.part }}/6
 
       - &tree-is-clean
         name: The run left the source tree as it found it

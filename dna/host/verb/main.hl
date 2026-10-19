@@ -99,6 +99,9 @@ fn main() {
         // GH #1653: the versions this toolchain migrates each allocation
         // role to, which the habitat records per allocation
         ans = host::answer("memory=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\nnerves=" + to_string(dna::NERVES_STREAM_VERSION) + "\n");
+    } else if verb == "database-provision" {
+        // GH #1653: the `database` heart role, at graft (with --derive, its DSN)
+        ans = host::database_provision_verb(root, host::has_flag(a, "--derive"));
     } else if verb == "memory-migrate" {
         // GH #985: memory's schema, applied with the owner's DSN
         ans = host::memory_migrate_verb(root, host::has_flag(a, "--derive"));

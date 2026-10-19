@@ -4401,6 +4401,55 @@ The live half is memory's, projected from the record by the spine
   that cannot be reached is a refusal that destroys nothing. Allocation
   rows wait for the genesis memory confirms before they are written into
   the record.
+- **Every other organism is grafted from the habitat** (GH #1653).
+  `hale habitat graft <dir> [--attach] [--no-library]` births an
+  organism as the habitat's child: a new application at `<dir>`, or with
+  `--attach` the application or repository already there. An attached
+  application's organism is its workspace's: the manifest the birth
+  reads (the nearest `hale.toml` above the seed) is the one its pin and
+  its needs are read from. A graft is complete when the habitat's record
+  holds its `habitat.grafted` row; one that stopped part way (a pinned
+  genome whose genesis names this habitat, and no such row yet) goes on
+  where it stopped when run again, each step keeping what is done (the
+  birth's seed, the allocations, the row, the `standard` pack, each
+  once). Memory decides whose child a pinned record is, never a guess:
+  its genesis is read from memory (with the clone's kept head DSN, else
+  one derived from memory that is there, else after the local setup the
+  birth makes), and a genesis that cannot be read is refused, naming why.
+  A genome pinning a record born of another parent, or of none, is
+  refused, and one memory holds no record for is refused by the birth,
+  naming it. The habitat must be born
+  and its record readable, and the environment must agree with its
+  backends. Graft has two halves. **Needs by role** come first: the
+  genome declares the roles it needs from the habitat in its manifest,
+  `[dna] needs = ["memory", "nerves", "senses"]`; memory and the nerves
+  are always among them (the record is memory's, and the organization
+  reads the nerves). A genome that declares none, foreign heart or not
+  (a foreign heart declares nothing), gets exactly the organism's own
+  roles — memory, the nerves and the senses' store — and never a heart
+  role (`database`, `broker`, `cache`, `object-store`): a heart's
+  infrastructure is its own, and the habitat provides nothing for a
+  heart that did not ask. A Hale heart that needs one declares it. The
+  local profile provisions **`database`**: a tenant database of the
+  organism's own memory server (its memory allocation's Postgres, or the
+  operator's on `operator` backends), `heart_<id>`, owned by a role of
+  the same name that it alone reaches (`PUBLIC` revoked), its password
+  drawn into the vault slot `postgres-heart_<id>`; it is recorded as the
+  organism's `database` allocation (`habitat.allocated <id>/database`),
+  provisioned again by `hale habitat migrate`, and handed to the heart as
+  `HALE_DNA_DATABASE_DSN`, a DSN that names its vault slot and carries
+  no password (the attach contract's name for it; `hale dna dev` derives
+  it, provisioning nothing). `broker`, `cache` and `object-store` are
+  refused by name at graft until a heart needs one, as is a role the
+  habitat does not know. **Then birth satisfies them**: the record's
+  genesis names its parent (`parent`, the habitat's record identity, in
+  the first row's body, and so in the child's identity), each role it
+  needs is allocated to it and recorded in the habitat's record
+  (`habitat.allocated`, `habitat.migrated`), the graft is a
+  `habitat.grafted <child>` row (`child`, `parent`, `needs`,
+  `backends`), and the `standard` pack is proposed to the child's Board.
+  `hale dna new` and `hale dna init` still birth an organism with no
+  parent until graft replaces them.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the
@@ -4453,7 +4502,14 @@ The live half is memory's, projected from the record by the spine
   found again by name and retried by the next — a vault whose habitat
   did not come down is kept for the next sweep. It, and
   `dna::scratch_done`, refuse the developer's habitat's project whatever
-  a file under a root names.
+  a file under a root names. The test vaults of gone processes are
+  swept by `hale habitat sweep --test-vaults [<root>]` (`hale test`'s
+  first vault runs it, as do the CLI tests'): each vault's habitat comes
+  down before the vault goes, and a habitat whose vault went first —
+  every toolchain before this one removes a gone process's vault
+  without its habitat, and they share `<tmp>/hale-test-vaults-<uid>` —
+  is found by its compose working directory under a gone process's
+  vault and taken down by its project's name.
 - **Knowledge changes later work (K2).** The substrate holds a
   `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
   spine's role), the owner's line to memory; the editor never holds
@@ -5891,6 +5947,7 @@ otherwise.
 | `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the memory allocation | A Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory and creates the record's roles. Migrated by `hale habitat migrate`, `memory migrate` and `upgrade`; read, never migrated, by `dev`, `head` and `show`; and by the fixtures that migrate or drop a record. |
 | `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
 | `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
+| `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
 | `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |

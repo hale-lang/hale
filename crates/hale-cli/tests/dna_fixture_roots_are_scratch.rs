@@ -67,7 +67,7 @@ fn runs_a_verb(kind: Kind, line: &str) -> bool {
             !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
     };
-    let spelled = |sep: &str| VERBS.iter().any(|v| word(&format!("dna{sep}{v}"))) || word(&format!("memory{sep}migrate")) || word(&format!("habitat{sep}migrate"));
+    let spelled = |sep: &str| VERBS.iter().any(|v| word(&format!("dna{sep}{v}"))) || word(&format!("memory{sep}migrate")) || word(&format!("habitat{sep}migrate")) || word(&format!("habitat{sep}graft")) || word(&format!("habitat{sep}up"));
     match kind {
         // an argv line `dna\nnew`, or a shell string `dna new`
         Kind::Fixture => spelled("\\n") || spelled(" "),

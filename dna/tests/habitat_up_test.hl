@@ -14,6 +14,7 @@
 // nothing here is exercised.
 
 import "../core" as dna;
+import "../core/pond/db" as db;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -34,6 +35,19 @@ fn up(dir: String, log: String) -> String {
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// How many times `needle` occurs in `text`.
+fn occurrences(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    let mut at = std::str::index_of(rest, needle);
+    while at >= 0 {
+        n = n + 1;
+        rest = rest[(at + len(needle))..len(rest)];
+        at = std::str::index_of(rest, needle);
+    }
+    return n;
+}
 
 // Whether `log` comes to say `text` within `secs`.
 fn logged(log: String, text: String, secs: Int) -> Bool {
@@ -117,11 +131,102 @@ fn main() {
     std::test::assert(std::str::contains(allocated, "\"entity\": \"" + key + "/memory\"") && std::str::contains(allocated, "\"entity\": \"" + key + "/nerves\""), "its bootstrap allocations are rows of its record: " + allocated);
     std::test::assert(!std::str::contains(allocated, genome) && std::str::contains(allocated, "postgres-owner-" + key), "keyed by organism and role, naming vault slots, never a checkout: " + allocated);
 
-    // ---- a tenant: an organism born beside it is recorded in its record
-    let made = in_dir(scratch, toolchain() + "\ndna\nnew\ntenant\n--no-library");
-    std::test::assert_eq_int(made.code, 0, "the tenant is born: " + made.stdout + made.stderr);
+    // ---- a tenant, grafted: born as the habitat's child, its genesis
+    // naming the habitat's record, its graft a row of the habitat's
+    let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ntenant\n--no-library");
+    std::test::assert(made.code == 0 && std::str::contains(made.stdout, "as the habitat's child (parent " + key) && std::str::contains(made.stdout, "needs memory, nerves, senses"), "the tenant is grafted: " + made.stdout + made.stderr);
     let tenant = scratch + "/tenant";
     let tkey = dna::allocation_key(tenant);
+    let genesis = in_dir(tenant, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(std::str::contains(genesis, "\"kind\": \"record.genesis\"") && std::str::contains(genesis, "\\\"parent\\\":\\\"" + dna::record_scope(genome) + "\\\""), "its genesis names its parent: " + genesis);
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + tkey + "\""), "and the habitat records the graft");
+    // a repository attached, declaring the roles it needs: no senses
+    std::io::fs::mkdir(scratch + "/attached") or discard;
+    std::io::fs::write_file(scratch + "/attached/README.md", "# attached\n\nA repository grafted as it is.\n") or discard;
+    std::io::fs::write_file(scratch + "/attached/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n") or discard;
+    let attached = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach\n--no-library");
+    std::test::assert(attached.code == 0 && std::str::contains(attached.stdout, "needs memory, nerves)") && !std::str::contains(attached.stdout, "senses  allocated"), "an attached repository gets the roles it declares: " + attached.stdout + attached.stderr);
+    // a Hale heart declaring the `database` heart role: a tenant database
+    // of its memory server, its DSN naming its vault slot, working
+    std::io::fs::mkdir(scratch + "/keeper") or discard;
+    std::io::fs::write_file(scratch + "/keeper/README.md", "# keeper\n\nA repository whose heart keeps a store.\n") or discard;
+    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n") or discard;
+    let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--attach\n--no-library");
+    std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
+    let kkey = dna::allocation_key(scratch + "/keeper");
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + kkey + "/database\""), "and recorded as its allocation");
+    let hp = dna::trim_nl(dna::run_tool(dna::allocation_compose(scratch + "/keeper") + "\nport\nmemory-" + kkey + "\n5432").stdout);
+    let role = dna::heart_role(kkey);
+    let c = dna::pq_conn(dna::parse_dsn("postgres://" + role + "@" + hp + "/" + role + "?sslmode=disable&vault=" + dna::role_vault_name(role)));
+    let opened = c.open();
+    let wrote = if opened.ok { c.exec("CREATE TABLE IF NOT EXISTS kept (n int); INSERT INTO kept VALUES (7)") } else { db::ExecResult { } };
+    let read = if opened.ok { c.query_one("SELECT n FROM kept") } else { db::Row { } };
+    if opened.ok { c.close(); }
+    std::test::assert(opened.ok && wrote.ok && read.ok && std::str::contains(read.data, "7"), "the DSN reaches the heart's own database through its slot: " + opened.err.detail + wrote.err.detail + read.err.detail);
+    let undeclared = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(!std::str::contains(undeclared, "database-" + tkey) && !std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + tkey + "/database\""), "an undeclared genome gets no database: " + undeclared);
+    // a whole graft grafted again goes on where it stopped, which is its
+    // end: nothing is born, allocated or recorded twice
+    let again = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach");
+    let akey = dna::allocation_key(scratch + "/attached");
+    std::test::assert(again.code == 0 && std::str::contains(again.stdout, "the graft goes on where it stopped") && std::str::contains(again.stdout, "kept    the graft of " + akey) && std::str::contains(again.stdout, "kept    the `standard` pack"), "a whole graft keeps everything: " + again.stdout + again.stderr);
+    std::test::assert_eq_int(occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + akey + "\""), 1, "and the habitat records it once");
+
+    // ---- an application under a workspace: the organism is the
+    // workspace's, whose manifest declares the database
+    std::io::fs::mkdir(scratch + "/ws") or discard;
+    std::io::fs::mkdir(scratch + "/ws/app") or discard;
+    std::io::fs::write_file(scratch + "/ws/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n") or discard;
+    std::io::fs::write_file(scratch + "/ws/app/main.hl", "main locus Shop { }\n") or discard;
+    let ws = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nws/app\n--attach\n--no-library");
+    let wkey = dna::allocation_key(scratch + "/ws");
+    std::test::assert(ws.code == 0 && len(wkey) == 12 && std::str::contains(ws.stdout, "needs memory, nerves, database)") && std::str::contains(ws.stdout, "database a tenant database of the organism's memory server"), "the workspace's needs are the organism's: " + ws.stdout + ws.stderr);
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + wkey + "/database\"") && !std::io::fs::file_exists(scratch + "/ws/app/hale.toml"), "its database is recorded, and the pin is the workspace's");
+    // a workspace pinned to a record that is not this habitat's child is
+    // never grafted: nothing re-parents it
+    std::io::fs::mkdir(scratch + "/foreign") or discard;
+    std::io::fs::mkdir(scratch + "/foreign/app") or discard;
+    std::io::fs::write_file(scratch + "/foreign/hale.toml", "[dna]\nrecord = \"" + dna::record_scope(genome) + "\"\n") or discard;
+    std::io::fs::write_file(scratch + "/foreign/app/main.hl", "main locus Shop { }\n") or discard;
+    let foreign = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nforeign/app\n--attach\n--no-library");
+    std::test::assert(foreign.code != 0 && std::str::contains(text_of(scratch + "/foreign/hale.toml"), "record = \"" + dna::record_scope(genome) + "\"") && !std::io::fs::file_exists(scratch + "/foreign/app/hale.toml"), "a workspace pinned to another record is refused, its pin untouched: " + foreign.stdout + foreign.stderr);
+
+    // ---- a clone that keeps no head DSN of its own: memory says whose
+    // child its record is before anything is grafted. A clone of the
+    // habitat's own genome pins a record born of no parent (or one whose
+    // parent memory cannot say), and is refused; a clone of a grafted
+    // child pins this habitat's child, and
+    // its graft goes on, recorded once
+    let cloned = dna::run_tool("sh\n-c\ncd \"$1\" && git -C attached add -A && git -C attached -c user.name=t -c user.email=t@dna commit -qm attached && git clone -q --no-local attached attached-clone && git clone -q --no-local \"$2\" genome-clone\nsh\n" + scratch + "\n" + genome);
+    std::test::assert(cloned.code == 0 && !std::io::fs::file_exists(scratch + "/attached-clone/.hale/dna/memory.env") && !std::io::fs::file_exists(scratch + "/genome-clone/.hale/dna/memory.env"), "two clones, neither with a head DSN of its own: " + cloned.stderr);
+    let orphan = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ngenome-clone\n--attach\n--no-library");
+    std::test::assert(orphan.code != 0 && (std::str::contains(orphan.stderr, "born of no parent, not of this habitat") || std::str::contains(orphan.stderr, "so its parent is not known")) && occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + key + "\"") == 0, "a record born of no parent is refused, and no graft is recorded: " + orphan.stdout + orphan.stderr);
+    let joined = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached-clone\n--attach\n--no-library");
+    std::test::assert(joined.code == 0 && std::str::contains(joined.stdout, "the graft goes on where it stopped") && std::str::contains(joined.stdout, "kept    the graft of " + akey), "a clone of this habitat's child goes on: " + joined.stdout + joined.stderr);
+    std::test::assert_eq_int(occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + akey + "\""), 1, "and the graft stays one row");
+
+    // ---- a graft stopped part way goes on where it stopped: the first
+    // stops at the git config the birth writes (a lock held on it), after
+    // the record is pinned; the second at the heart's database (its
+    // password's vault slot cannot be written); the third, repaired, ends
+    std::io::fs::mkdir(scratch + "/held") or discard;
+    std::io::fs::write_file(scratch + "/held/README.md", "# held\n\nA repository whose graft is interrupted.\n") or discard;
+    std::io::fs::write_file(scratch + "/held/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n") or discard;
+    let locked = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && : > .git/config.lock\nsh\n" + scratch + "/held");
+    std::test::assert_eq_int(locked.code, 0, "the repository, its config locked: " + locked.stderr);
+    let first = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nheld\n--attach\n--no-library");
+    let hkey = dna::allocation_key(scratch + "/held");
+    std::test::assert(first.code != 0 && len(hkey) == 12 && !std::str::contains(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + hkey + "\""), "the first graft stops after the pin, ungrafted: " + first.stdout + first.stderr);
+    let slot = std::secret::vault_local_dir() + "/" + dna::role_vault_name(dna::heart_role(hkey));
+    let blocked = dna::run_tool("sh\n-c\nrm -f \"$1/.git/config.lock\" && mkdir -p \"$2\"\nsh\n" + scratch + "/held\n" + slot);
+    std::test::assert_eq_int(blocked.code, 0, "the lock goes, and the database's slot is blocked: " + blocked.stderr);
+    let second = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nheld\n--attach\n--no-library");
+    std::test::assert(second.code != 0 && std::str::contains(second.stderr, "could not be provisioned in the vault") && dna::allocation_key(scratch + "/held") == hkey && !std::str::contains(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + hkey + "\""), "the second goes on, the same record, and stops at the database: " + second.stdout + second.stderr);
+    let repaired = dna::run_tool("rmdir\n" + slot);
+    std::test::assert_eq_int(repaired.code, 0, "the slot repaired: " + repaired.stderr);
+    let third = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nheld\n--attach\n--no-library");
+    std::test::assert(third.code == 0 && std::str::contains(third.stdout, "the graft goes on where it stopped") && std::str::contains(third.stdout, "database a tenant database") && std::str::contains(third.stdout, "recorded the graft of " + hkey) && dna::allocation_key(scratch + "/held") == hkey, "the third ends it, the same record: " + third.stdout + third.stderr);
+    std::test::assert_eq_int(occurrences(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + hkey + "\""), 1, "and the habitat records it once");
     let with_tenant = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(std::str::contains(with_tenant, "allocation " + tkey + " (" + tenant + ")") && std::str::contains(with_tenant, "memory  memory-" + tkey + " running"), "status names the tenant's allocation: " + with_tenant);
     std::test::assert(std::str::contains(rows_of(genome, "habitat.migrated"), "\"entity\": \"" + tkey + "/memory\""), "the tenant's migration is a row of the habitat's record");

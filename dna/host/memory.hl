@@ -69,3 +69,25 @@ fn memory_fence_for(spine: String, root: String) -> String {
     c.close();
     return why;
 }
+
+// GH #1653: `database-provision` — the `database` heart role, a tenant
+// database of the organism's memory server (`dna::provision_heart_database`):
+// `HALE_DNA_DATABASE_DSN=<dsn>` naming its vault slot, and the allocation's
+// lines; `none: <why>` with no server. `derive` (what `dev` asks, to hand
+// the heart its DSN) provisions nothing: the DSN of the database on memory
+// that is up.
+fn database_provision_verb(root: String, derive: Bool) -> Answer {
+    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
+    if len(owner) == 0 {
+        let infra = ReferenceInfrastructure { root: root };
+        let db = if derive { infra.knowledge_database_if_up() } else { infra.knowledge_database(root) };
+        if !db.present { return answer("none: " + db.why + "\n"); }
+        owner = db.dsn;
+    }
+    let key = dna::allocation_key(root);
+    let h = if derive { dna::heart_dsn(dna::parse_dsn(owner), key) } else { dna::provision_heart_database(dna::parse_dsn(owner), key) };
+    if !h.ok { return fail("database provision: " + h.why); }
+    let mut out = "HALE_DNA_DATABASE_DSN=" + h.dsn + "\n";
+    if !derive { out = out + "allocation.schema_version=0\nallocation.vault_slots=" + h.slot + "\n"; }
+    return answer(out);
+}

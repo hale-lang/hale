@@ -792,3 +792,55 @@ fn unmigrate(owner: String, record_id: String) -> String {
     if !dropped.ok { return dropped.err.kind + " " + dropped.err.detail; }
     return "";
 }
+
+// ---- the `database` heart role (GH #1653) ------------------------------
+//
+// A Hale heart that declares `database` in its genome's needs is given one
+// at graft: in the local profile a tenant database of its organism's
+// memory server (its memory allocation's Postgres, or the operator's on
+// `operator` backends), named for the organism, owned by a role of its own
+// that reaches nothing else. The heart reads it through
+// HALE_DNA_DATABASE_DSN, a DSN that names its vault slot and carries no
+// password, as every role's does (GH #989).
+
+// The heart's role and its database, both `heart_<key>`.
+fn heart_role(key: String) -> String { return "heart_" + std::str::lower(key); }
+
+type HeartDatabase {
+    ok: Bool = false;
+    dsn: String = "";
+    slot: String = "";
+    why: String = "";
+}
+
+// The heart's DSN on `owner`'s server: its role, its database, its slot.
+fn heart_dsn(owner: Dsn, key: String) -> HeartDatabase {
+    if !owner.ok { return HeartDatabase { why: "the owner DSN: " + owner.why }; }
+    let role = heart_role(key);
+    let d = Dsn { ok: true, user: role, vault: role_vault_name(role), host: owner.host, port: owner.port, database: role, sslmode: owner.sslmode };
+    return HeartDatabase { ok: true, dsn: dsn_text(d), slot: role_vault_name(role) };
+}
+
+// The heart's database provisioned on `owner`'s server: its role's
+// password drawn into the vault where none is, the role made (or given the
+// vault's password again), and its database made once, owned by it.
+fn provision_heart_database(owner: Dsn, key: String) -> HeartDatabase {
+    if !owner.ok { return HeartDatabase { why: "the owner DSN: " + owner.why }; }
+    if len(key) == 0 { return HeartDatabase { why: "the organism has no record identity yet" }; }
+    let role = heart_role(key);
+    if len(provision_role(role)) == 0 { return HeartDatabase { why: "the heart's role password could not be provisioned in the vault (" + role_vault_name(role) + ")" }; }
+    let c = pq_conn(owner);
+    let st = c.open();
+    if !st.ok { return HeartDatabase { why: "open: " + st.err.kind + " " + st.err.detail }; }
+    let made = c.exec(role_sql(role));
+    if !made.ok { c.close(); return HeartDatabase { why: "the heart's role: " + made.err.kind + " " + made.err.detail }; }
+    let have = c.query_one("SELECT datname FROM pg_database WHERE datname = '" + role + "'");
+    if !have.ok {
+        let db = c.exec("CREATE DATABASE " + role + " OWNER " + role);
+        if !db.ok { c.close(); return HeartDatabase { why: "the heart's database: " + db.err.kind + " " + db.err.detail }; }
+    }
+    let revoke = c.exec("REVOKE ALL ON DATABASE " + role + " FROM PUBLIC");
+    c.close();
+    if !revoke.ok { return HeartDatabase { why: "the heart's database is reachable by others: " + revoke.err.kind + " " + revoke.err.detail }; }
+    return heart_dsn(owner, key);
+}
