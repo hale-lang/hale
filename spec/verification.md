@@ -212,7 +212,11 @@ main locus Org {
   its bodies hits) or an `avoiding` gate (a walk never enters one); in
   any other position it is refused. `avoiding std::m::*` writes the gate
   inline: the implicit group of that one member, named by its
-  spelling.
+  spelling. The structured-logs law,
+  `forbid reaches(program, effects(stdio)) avoiding std::log::*`, so
+  means **no terminal write that bypasses `std::log`'s sinks**: a
+  program that publishes a `std::log::LogEvent` to `log.**` itself is
+  logging through a sink, and holds it.
 - **`effects(<class>)`** in target position: the declared carriers
   of an effect class (an `@effects(is: {…})` frontier entry or a
   classified leaf), composed-class masks included. An undeclared

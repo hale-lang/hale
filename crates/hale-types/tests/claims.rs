@@ -953,3 +953,26 @@ fn a_program_publish_to_a_stdlib_sink_reaches_a_syscall() {
     let ds = diags(&program(""));
     assert!(!ds.iter().any(|m| m.contains("claim `c`")), "{ds:?}");
 }
+
+/// The structured-logs law means "no terminal write that bypasses
+/// `std::log`'s sinks": a program that publishes a `LogEvent` to
+/// `log.**` itself is logging through a sink, and the law holds. The
+/// print is the sink's, inside the module the law masks.
+#[test]
+fn a_program_publishing_a_log_event_holds_the_structured_logs_law() {
+    let ds = diags(
+        r#"
+    main locus App {
+        params { sink: std::log::StdoutSink = std::log::StdoutSink { }; }
+        bus { publish "log.app" of type std::log::LogEvent; }
+        claims {
+            logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+        }
+        run() {
+            "log.app" <- std::log::LogEvent { level: 1, msg: "raw", path: "app", fields: "", ts: 0 };
+        }
+    }
+"#,
+    );
+    assert!(!ds.iter().any(|m| m.contains("logs_structured")), "{ds:?}");
+}
