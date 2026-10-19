@@ -1118,6 +1118,30 @@ each declare `Core` with different clauses, so a binding by bare name
 proves only that each entrypoint had *some* constitution called
 `Core`, not that all were evaluated against one claimset.
 
+### Adopting from outside the source
+
+`hale check --adopt <constitution>` (and `hale build`, `hale run`;
+`BuildOptions::adopt` for a library caller) adopts a constitution into
+the entry's `main locus` for that command, exactly as `--env` adopts an
+environment's: the same injection, evaluated in the same closed world,
+in union with what the source and the environment already adopt. The
+flag repeats. Adoption is by name, so one constitution adopted by the
+flag and by `hale.toml` or by an `adopt` in the source is adopted once,
+and its clauses are checked once. A name nothing declares is refused as
+an unknown constitution, as a misspelt `adopt` is.
+
+**`std::law`** holds the stdlib's standard constitutions. One is adopted
+by its path (`--adopt std::law::Standard`, or `constitution =
+"std::law::Standard"` in an environment) with no import, and its source
+(`crates/hale-stdlib/hl/law.hl`) is loaded only when one is adopted, so a
+program that adopts none loads and checks nothing more. A `std::…`
+name the module does not declare is refused by name, with the ones it
+does. Its diagnostics point into that source as `/<stdlib>/law.hl`.
+
+| Constitution | Clauses |
+|---|---|
+| `std::law::Standard` | `logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;`: a program writes to standard output or standard error only through its logger (#1591). The stdlib's own lines are written through `std::log` (a binding that cannot be realized before the process exits, a role naming nobody, a listener's `ready_signal`), so a served program is judged by its own writes. |
+
 ### Deployment environments
 
 `hale.toml` binds constitutions to deployment targets:
@@ -1187,7 +1211,8 @@ section into the program: a served surface's role source is the one its
 serve site names (`spec/api.md` § Identity sources), and the stdlib's
 `std::api::StaticRoles` takes its table as a param or, at run time, from
 `LOTUS_API_ROLES`. `hale check --env <name>`, `hale build --env <name>`
-and `hale run --env <name>` adopt the environment's constitution.
+and `hale run --env <name>` adopt the environment's constitution, a
+stdlib one (`constitution = "std::law::Standard"`) included.
 
 Combinations that cannot be honoured are rejected rather than
 ignored. `--matrix` runs many evaluations, so a per-evaluation

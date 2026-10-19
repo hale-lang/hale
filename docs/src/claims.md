@@ -1228,6 +1228,31 @@ union with whatever the source already adopts. So one entrypoint gets
 two verdicts, one per environment, without the source knowing where it
 will be deployed.
 
+A constitution can also be adopted for one run without a manifest,
+which is how an operator holds a program to a law its source never
+names:
+
+```sh
+hale check apps/prober --adopt std::law::Standard
+```
+
+`--adopt` is the same injection as `--env`, and it repeats. A
+constitution adopted by the flag and by the manifest or the source is
+one adoption, checked once. `std::law` is the stdlib's set of standard
+constitutions, adopted by path with no import and loaded only when
+adopted. `std::law::Standard` says the program writes to the terminal
+only through its logger:
+
+```hale,fragment
+constitution Standard {
+    logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+}
+```
+
+A handler that calls `println` is the witness. The stdlib's own lines,
+such as a listener that cannot bind, are written through `std::log`, so
+a served program is judged only by its own writes.
+
 `--matrix` checks every pair. **An entrypoint listed in no environment
 is an error**, not a skip — that is the one hole composition cannot
 close by construction, since no single compilation can see that a

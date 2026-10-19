@@ -1783,7 +1783,9 @@ constitution Logs {
 So log through `std::log`, never `println`, outside a CLI's own
 output: `stdio` is the class of a write to standard output or standard
 error, and `std::log` is the gate, so a bare print anywhere in the
-program is the witness.
+program is the witness. The stdlib ships it as `std::law::Standard`, so
+adopt that rather than restating it, in the source, in an environment,
+or from outside with `hale check --adopt std::law::Standard`.
 
 - **In the `main locus`** — law about this application. A claim is
   evaluated in a closed world, so it belongs where the world closes.

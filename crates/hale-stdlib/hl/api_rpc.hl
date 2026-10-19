@@ -1600,7 +1600,7 @@ locus __StdApiUnixListener {
         if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: unix::Rpc could not listen on " + self.path);
+            __std_log_diag("api: unix::Rpc could not listen on " + self.path);
             std::process::exit(2);
         }
         self.relay.name = self.listener;
@@ -1956,7 +1956,7 @@ locus __StdApiHttpListener {
         if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: " + self.what + " could not listen on " + self.bind);
+            __std_log_diag("api: " + self.what + " could not listen on " + self.bind);
             std::process::exit(2);
         }
         self.relay.name = self.listener;

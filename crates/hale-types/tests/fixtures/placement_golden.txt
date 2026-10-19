@@ -638,7 +638,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#cb91cfa8
+== crates/hale-stdlib/hl/api_rpc.hl#655203e0
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -652,7 +652,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
-== crates/hale-stdlib/hl/log.hl#6a34a769
+== crates/hale-stdlib/hl/log.hl#4469c22a
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 

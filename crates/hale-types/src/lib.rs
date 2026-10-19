@@ -540,3 +540,15 @@ pub fn dump_effects_manifest(bundle: &Bundle<'_>, effects: &effect_rows::EffectR
 fn is_merged_symbol(name: &str) -> bool {
     name.split("::").any(|seg| seg.starts_with("__lib_"))
 }
+
+/// `std::law`'s source (`hale_stdlib::LAW_SOURCE`), loaded by a snapshot
+/// only when one of its constitutions is adopted.
+pub fn stdlib_law_source() -> &'static str {
+    hale_stdlib::LAW_SOURCE
+}
+
+/// `std::law`'s constitutions: the path each is adopted under, and its
+/// declared name.
+pub fn stdlib_law_constitutions() -> &'static [(&'static str, &'static str)] {
+    hale_stdlib::LAW_CONSTITUTIONS
+}

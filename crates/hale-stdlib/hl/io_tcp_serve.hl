@@ -218,7 +218,7 @@ locus __StdIoTcpAcceptor {
         self.relay.sent = 0;
         self.relay.armed = true;
         if len(self.ready_signal) > 0 {
-            println(self.ready_signal);
+            __std_log_out(self.ready_signal);
         }
     }
     run() {
@@ -628,7 +628,7 @@ locus __StdHttpServer {
             max_connections: self.max_connections
         };
         if len(self.ready_signal) > 0 {
-            println(self.ready_signal);
+            __std_log_out(self.ready_signal);
         }
     }
     run() {
