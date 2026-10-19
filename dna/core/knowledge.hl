@@ -51,7 +51,15 @@ type SupersededPick { digest: String = ""; why: String = ""; }
 // `declined` or `retired`. An unknown prefix, one that names several
 // practices, and one whose practice is not in force are refused by name.
 @bounded_by(candidates)
-fn superseded_digest(candidates: String, given: String) -> SupersededPick {
+fn superseded_digest(candidates: String, given: String) -> SupersededPick { return superseded_digest_for(candidates, given, true); }
+
+// `superseded_digest`, with whether the request is a fresh one: a replay of
+// a request the record already answered resolves the prefix to the same
+// full digest whatever its practice's state is now, so it recovers its
+// answer (the native admission recovers an identity before it judges
+// eligibility) instead of being refused because its predecessor retired.
+@bounded_by(candidates)
+fn superseded_digest_for(candidates: String, given: String, fresh: Bool) -> SupersededPick {
     let g = std::str::trim(given);
     let hex = if std::str::starts_with(g, "sha256:") { g[7..len(g)] } else { g };
     if len(hex) == 0 { return SupersededPick { why: "--supersedes names no digest: give the practice's digest as `hale dna practice` lists it (`sha256:<hex>`)" }; }
@@ -81,7 +89,7 @@ fn superseded_digest(candidates: String, given: String) -> SupersededPick {
     let sp2 = std::str::index_of(after, " ");
     let state = if sp2 < 0 { after } else { after[0..sp2] };
     let name = if sp2 < 0 { "" } else { after[(sp2 + 1)..len(after)] };
-    if state != "in-force" { return SupersededPick { why: "--supersedes " + g + " is the practice `" + name + "` (sha256:" + raw + "), which is not in force (" + state + "): only the version in force is superseded" }; }
+    if fresh && state != "in-force" { return SupersededPick { why: "--supersedes " + g + " is the practice `" + name + "` (sha256:" + raw + "), which is not in force (" + state + "): only the version in force is superseded" }; }
     return SupersededPick { digest: "sha256:" + raw };
 }
 

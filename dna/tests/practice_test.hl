@@ -121,6 +121,9 @@ main locus App {
         std::test::assert_eq_str(dna::superseded_digest(cands, "3122da").digest, "sha256:3122dabc", "with or without its `sha256:`");
         std::test::assert(std::str::contains(dna::superseded_digest(cands, "sha256:3122").why, "is ambiguous: it begins 2 practices' digests"), "an ambiguous prefix is refused");
         std::test::assert(std::str::contains(dna::superseded_digest(cands, "sha256:").why, "names no digest"), "an empty one too");
+        // a replay resolves whatever the predecessor's state now, the short
+        // spelling to the same digest as the full one
+        std::test::assert(dna::superseded_digest_for(cands, "sha256:3122ff", false).digest == "sha256:3122ffff" && dna::superseded_digest_for(cands, "3122ffff", false).digest == "sha256:3122ffff", "a replay of a request against a version no longer in force resolves it");
 
         dna::scratch_done(scratch);
         dna::scratch_done("/tmp/dna-practice-receipts-" + to_string(std::process::pid()));

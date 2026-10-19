@@ -825,6 +825,18 @@ locus GovernanceCli {
         };
         return self.submit(native, authority, settings.context, command, authority_flag, no_wait);
     }
+    // Whether the record already holds an answer for `request_id` under this
+    // local identity and policy: a replay, which recovers that answer.
+    fn answered(request_id: String, who_flag: String) -> Bool {
+        let settings = self.settings(who_flag);
+        if !settings.ok { return false; }
+        let codec = ops::GovernanceCommandCodec { };
+        if len(codec.identity(settings.context, request_id)) == 0 { return false; }
+        let record = dna::MemoryRecord { repo: self.root };
+        let authority = ops::FixedAuthority { policy: settings.policy };
+        let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
+        return native.lookup(settings.context, request_id).ok;
+    }
     fn lookup(request_id: String, who_flag: String) -> Answer {
         let settings = self.settings(who_flag);
         if !settings.ok { return fail(settings.error); }
@@ -844,7 +856,12 @@ fn practice_command_verb(root: String, seed: String, sub: String, name: String, 
     // is proposed: a proposal the Board would refuse is refused here
     let mut supersedes = given_supersedes;
     if sub == "propose" && len(given_supersedes) > 0 {
-        let pick = dna::superseded_digest(practice_candidates(root), given_supersedes);
+        // a request the record already holds an answer for is a replay: its
+        // identity is recovered first, and only a fresh request's
+        // predecessor must still be in force
+        let native = len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0;
+        let replay = native && len(request_id) > 0 && cli.answered(request_id, who_flag);
+        let pick = dna::superseded_digest_for(practice_candidates(root), given_supersedes, !replay);
         if len(pick.why) > 0 { return fail("practice " + name + ": " + pick.why); }
         supersedes = pick.digest;
     }
