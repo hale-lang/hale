@@ -166,6 +166,17 @@ fn check() {
     std::test::assert(std::str::starts_with(dna::native_json_string(adopted, "pack"), "dev-team@1 sha256:") && std::str::contains(dna::native_json_string(adopted, "pack"), " toolchain "), "the pack's name, digest and source are recorded: " + adopted);
     std::test::assert(std::str::contains(dna::native_json_string(last_body(repo, "review.requested"), "question"), "ratify adopting the pack dev-team@1"), "the Review names the pack: " + last_body(repo, "review.requested"));
     std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/pack-dev-team.batch"), "the rendered steps are not left behind");
+    // GH #1591: the standard pack's clauses are practices proposed as law:
+    // the step says so, and so does the practice's document
+    let standard = dna_cli(repo, "pack\napply\nstandard");
+    std::test::assert(standard.code == 0 && std::str::contains(standard.stdout, "+ practice standard/logs-are-structured\n"), "the standard pack is proposed: " + standard.stdout + standard.stderr);
+    let steps = dna::native_json_string(last_body(repo, "batch.proposed"), "steps");
+    std::test::assert(std::str::contains(steps, "practice\tstandard/logs-are-structured\tLogs are structured:") && std::str::contains(steps, "\tlaw\n"), "naming its clause, proposed as law: " + steps);
+    let as_law = dna::knowledge_document(dna::Idea { kind: "practice", text: "t", name: "standard/logs-are-structured", law: true }, "org");
+    let as_advice = dna::knowledge_document(dna::Idea { kind: "practice", text: "t", name: "web/reviewed-before-merge" }, "org");
+    std::test::assert(std::str::ends_with(as_law, ", \"law\": true}") && !std::str::contains(as_advice, "law"), "the practice's document proposes it as law, and advice says nothing of law: " + as_law + " " + as_advice);
+    let plan = dna::batch_steps("law standard/x | Text.\npractice y/z | More.\n");
+    std::test::assert(plan.steps == "practice\tstandard/x\tText.\tlaw\npractice\ty/z\tMore.\n" && dna::batch_text(plan.steps) == "law standard/x | Text.\npractice y/z | More.\n", "a `law` line is a practice step marked law, and renders back: " + plan.steps + plan.why);
 
     let unratified = dna_cli(repo, "pack\nretire\ndev-team");
     std::test::assert(unratified.code != 0 && std::str::contains(unratified.stderr, "no adoption of the pack `dev-team` the Board ratified"), "a pack is retired once the Board has adopted it: " + unratified.stderr);

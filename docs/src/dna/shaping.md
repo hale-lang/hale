@@ -609,7 +609,11 @@ hale dna pack apply dev-team --set part=api --set dev=ada
 `show` prints the steps with the blanks filled; `apply` proposes them as
 one Review, named for the pack, like any batch. A pack may open
 positions, fill them and propose the practices its people work by
-(`practice <name> | <text>` is a batch step too). A line marked `? ` is
+(`practice <name> | <text>` is a batch step too, and `law <name> |
+<text>` proposes a practice as law, for the Board to ratify as law or as
+advice). The toolchain's `standard` pack holds the standard practices,
+each proposed as law: its first clause is that logs are structured,
+every line a running part logs a record. A line marked `? ` is
 left out when a blank it uses is not given, so `--set dev=ada` fills the
 dev's seat and leaving out `reviewer` leaves that seat open. Another
 nursery is named with `--from`: a directory, or a git URL with `#<rev>`
