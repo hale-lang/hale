@@ -3035,6 +3035,44 @@ mod default_scope_tests {
         assert_eq!(errors(src), Vec::<String>::new());
     }
 
+    /// A name a default binds itself is its own only where it is in scope,
+    /// as the checker scopes it: after its `let`, within its block, a match
+    /// arm's binding within its arm, an `or` handler's `err` within the
+    /// handler. A read before or outside that is the caller's.
+    #[test]
+    fn a_defaults_own_names_are_its_own_only_in_their_scope() {
+        // read in its own initializer: the caller's `a`
+        assert_eq!(errors("type R { b: Int = { let a = a + 1; a }; }\nfn main() { let a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        // bound in an inner block, read after it
+        assert_eq!(
+            errors("type R { b: Int = { let ignored = { let a = 99; a }; a + 1 }; }\nfn main() { let a = 1; let r = R { }; }\n"),
+            vec![caller("a")]
+        );
+        // a constant read before a `let` of its name: still the constant,
+        // which the caller's binding would shadow where the literal leaves it
+        let k = "const K: Int = 4;\ntype R { b: Int = { let first = K; let K = 8; first }; }\n";
+        assert_eq!(
+            errors(&format!("{k}fn main() {{ let K = 2; let r = R {{ }}; }}\n")),
+            vec!["a default reads only its own fields and constants; `K` here is the caller's binding, which a default \
+                  left out here would read in place of the module's `K`: rename the binding or pass the value"
+                .to_string()]
+        );
+        assert_eq!(errors(&format!("{k}fn main() {{ let r = R {{ }}; }}\n")), Vec::<String>::new());
+        // a match arm's binding: its own within the arm, not after the match
+        assert_eq!(errors("type R { b: Int = match 2 { n -> n + 1, }; }\nfn main() { }\n"), Vec::<String>::new());
+        assert_eq!(
+            errors("type R { b: Int = { let m = match 2 { n -> n, }; m + n }; }\nfn main() { let n = 1; let r = R { }; }\n"),
+            vec![caller("n")]
+        );
+        // an `or` handler's `err`: its own within the handler only
+        let fallible = "type Oops { kind: String; }\nfn pick() -> Int fallible(Oops) { return 1; }\n";
+        assert_eq!(errors(&format!("{fallible}type R {{ b: Int = pick() or len(err.kind); }}\nfn main() {{ }}\n")), Vec::<String>::new());
+        assert_eq!(
+            errors(&format!("{fallible}type R {{ b: Int = (pick() or len(err.kind)) + len(err.kind); }}\nfn main() {{ }}\n")),
+            vec![caller("err")]
+        );
+    }
+
     #[test]
     fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
         let shadow = |name: &str| {

@@ -842,17 +842,23 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
-/// The bare names a default reads that it does not bind itself (a block's
-/// `let`s, a `for`, a match arm's pattern, an `or` handler's `err`), each
-/// with where it is read: what the default needs of the scope it is
-/// evaluated in.
+/// The bare names a default reads that it does not bind itself, each with
+/// where it is read: what the default needs of the scope it is evaluated
+/// in. The walk keeps lexical frames in binding order, as the checker
+/// does: a `let`'s initializer and a `for`'s iterator are read before the
+/// name is bound, a block's `let` is visible after it and within the block
+/// only, and a `for`'s name, a match arm's bindings, an `or` handler's
+/// `err` and a `shm_write`'s binding within their own body only. An
+/// assignment's target reads its name. A narrowing's policy word (`or
+/// clamp`) is no name.
 fn default_free_names(e: &Expr) -> Vec<(String, Span)> {
-    use crate::listener_window::{visit_expr, Visited};
-    fn pattern_names(p: &Pattern, out: &mut BTreeSet<String>) {
+    struct Walk {
+        frames: Vec<Vec<String>>,
+        out: Vec<(String, Span)>,
+    }
+    fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
         match p {
-            Pattern::Binding(i) => {
-                out.insert(i.name.clone());
-            }
+            Pattern::Binding(i) => out.push(i.name.clone()),
             Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
                 for a in args {
                     pattern_names(a, out);
@@ -861,43 +867,187 @@ fn default_free_names(e: &Expr) -> Vec<(String, Span)> {
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
-    let mut bound: BTreeSet<String> = BTreeSet::new();
-    let mut words: Vec<Span> = Vec::new();
-    visit_expr(e, &mut |v| match v {
-        Visited::Stmt(Stmt::Let { name, .. }) | Visited::Stmt(Stmt::For { name, .. }) => {
-            bound.insert(name.name.clone());
-        }
-        Visited::Stmt(Stmt::LetTuple { names, .. }) => {
-            bound.extend(names.iter().map(|n| n.name.clone()));
-        }
-        Visited::Expr(Expr::Match(m)) => {
-            for arm in &m.arms {
-                pattern_names(&arm.pattern, &mut bound);
+    impl Walk {
+        fn read(&mut self, i: &Ident) {
+            if !self.frames.iter().any(|f| f.contains(&i.name)) {
+                self.out.push((i.name.clone(), i.span));
             }
         }
-        Visited::Expr(Expr::Or { disposition, .. }) => {
-            bound.insert("err".to_string());
-            // a narrowing's policy word ends its `or` (`Session(70) or
-            // clamp`): no name
-            if let OrDisposition::Substitute(rhs) = disposition {
-                if let Expr::Ident(w) = rhs.as_ref() {
-                    if w.name == "clamp" || w.name == "wrap" || crate::units::RoundPolicy::of(&w.name).is_some() {
-                        words.push(w.span);
+        fn bind(&mut self, n: &str) {
+            self.frames.last_mut().expect("a frame").push(n.to_string());
+        }
+        fn scoped(&mut self, names: Vec<String>, body: &mut dyn FnMut(&mut Walk)) {
+            self.frames.push(names);
+            body(self);
+            self.frames.pop();
+        }
+        fn block(&mut self, b: &Block) {
+            self.scoped(Vec::new(), &mut |w| {
+                for st in &b.stmts {
+                    w.stmt(st);
+                }
+                if let Some(t) = &b.tail {
+                    w.expr(t);
+                }
+            });
+        }
+        fn if_(&mut self, i: &IfStmt) {
+            self.expr(&i.cond);
+            self.block(&i.then_block);
+            match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => self.block(b),
+                Some(ElseBranch::ElseIf(e)) => self.if_(e),
+                None => {}
+            }
+        }
+        fn match_(&mut self, m: &MatchStmt) {
+            self.expr(&m.scrutinee);
+            for arm in &m.arms {
+                let mut names = Vec::new();
+                pattern_names(&arm.pattern, &mut names);
+                self.scoped(names, &mut |w| {
+                    if let Some(g) = &arm.guard {
+                        w.expr(g);
+                    }
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => w.expr(e),
+                        MatchArmBody::Block(b) => w.block(b),
+                    }
+                });
+            }
+        }
+        fn or_(&mut self, d: &OrDisposition) {
+            match d {
+                // a narrowing's policy word ends its `or`: no name
+                OrDisposition::Substitute(rhs)
+                    if matches!(rhs.as_ref(), Expr::Ident(w)
+                        if w.name == "clamp" || w.name == "wrap" || crate::units::RoundPolicy::of(&w.name).is_some()) => {}
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    self.scoped(vec!["err".to_string()], &mut |w| w.expr(e));
+                }
+                OrDisposition::Wait(_) | OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+            }
+        }
+        fn stmt(&mut self, st: &Stmt) {
+            match st {
+                Stmt::Let { name, value, .. } => {
+                    self.expr(value);
+                    self.bind(&name.name);
+                }
+                Stmt::LetTuple { names, value, .. } => {
+                    self.expr(value);
+                    for n in names {
+                        self.bind(&n.name);
                     }
                 }
+                Stmt::Assign { target, value, .. } => {
+                    self.read(&target.head);
+                    for seg in &target.tail {
+                        if let LValueSeg::Index(e) = seg {
+                            self.expr(e);
+                        }
+                    }
+                    self.expr(value);
+                }
+                Stmt::If(i) => self.if_(i),
+                Stmt::Match(m) => self.match_(m),
+                Stmt::For { name, iter, body, .. } => {
+                    self.expr(iter);
+                    self.scoped(vec![name.name.clone()], &mut |w| w.block(body));
+                }
+                Stmt::While { cond, body, .. } => {
+                    self.expr(cond);
+                    self.block(body);
+                }
+                Stmt::Return(e, _) => {
+                    if let Some(e) = e {
+                        self.expr(e);
+                    }
+                }
+                Stmt::Fail { value, .. } => self.expr(value),
+                Stmt::Block(b) => self.block(b),
+                Stmt::Recovery { args, modifier, .. } => {
+                    for a in args {
+                        self.expr(a);
+                    }
+                    if let Some(RecoveryModifier::For(e)) | Some(RecoveryModifier::Until(e)) = modifier {
+                        self.expr(e);
+                    }
+                }
+                Stmt::Violate { payload, .. } => {
+                    if let Some(p) = payload {
+                        self.expr(p);
+                    }
+                }
+                Stmt::Send { subject, value, or_disposition, .. } => {
+                    self.expr(subject);
+                    self.expr(value);
+                    if let Some(d) = or_disposition {
+                        self.or_(d);
+                    }
+                }
+                Stmt::ShmWrite { max, binding, body, .. } => {
+                    self.expr(max);
+                    self.scoped(vec![binding.name.clone()], &mut |w| w.block(body));
+                }
+                Stmt::Expr(e) => self.expr(e),
+                Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => {}
             }
         }
-        _ => {}
-    });
-    let mut out = Vec::new();
-    visit_expr(e, &mut |v| {
-        if let Visited::Expr(Expr::Ident(i)) = v {
-            if !bound.contains(&i.name) && !words.contains(&i.span) {
-                out.push((i.name.clone(), i.span));
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                Expr::Ident(i) => self.read(i),
+                Expr::Binary { left, right, .. } => {
+                    self.expr(left);
+                    self.expr(right);
+                }
+                Expr::Unary { operand, .. } => self.expr(operand),
+                Expr::Call { callee, args, .. } => {
+                    self.expr(callee);
+                    for a in args {
+                        self.expr(a);
+                    }
+                }
+                Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+                Expr::Index { receiver, index, .. } => {
+                    self.expr(receiver);
+                    self.expr(index);
+                }
+                Expr::Tuple(es, _) | Expr::Array(es, _) => {
+                    for x in es {
+                        self.expr(x);
+                    }
+                }
+                Expr::Struct { inits, .. } => {
+                    for i in inits {
+                        self.expr(&i.value);
+                    }
+                }
+                Expr::Block(b) => self.block(b),
+                Expr::If(i) => self.if_(i),
+                Expr::Match(m) => self.match_(m),
+                Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
+                Expr::Approx { left, right, tolerance, .. } => {
+                    self.expr(left);
+                    self.expr(right);
+                    self.expr(tolerance);
+                }
+                Expr::Range { lo, hi, .. } => {
+                    self.expr(lo);
+                    self.expr(hi);
+                }
+                Expr::ArrayRepeat { val, .. } => self.expr(val),
+                Expr::Or { inner, disposition, .. } => {
+                    self.expr(inner);
+                    self.or_(disposition);
+                }
+                Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
             }
         }
-    });
-    out
+    }
+    let mut w = Walk { frames: vec![Vec::new()], out: Vec::new() };
+    w.expr(e);
+    w.out
 }
 
 /// A bare name every scope resolves alike: a builtin (a value builtin, a

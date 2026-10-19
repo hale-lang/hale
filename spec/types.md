@@ -1524,7 +1524,10 @@ Three init shapes:
   - a builtin, or a primitive's conversion (`Time(3ns)`);
   - a qualified path (no local is qualified);
   - a name the default binds itself (a block's `let`, a `match` arm's
-    binding);
+    binding, an `or` handler's `err`), where that binding is in scope:
+    after its `let` and within its block, within its arm or handler. A
+    read in a `let`'s own initializer, or after the block that bound it,
+    is not the default's;
   - for a locus's param only, an earlier param through `self.<param>`.
 
   Anything else is refused where the default is written ("a default
