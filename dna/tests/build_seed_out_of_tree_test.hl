@@ -91,7 +91,10 @@ fn main() {
     let f = dna::scratch_root("build-seed-prune-root");
     let pcache = dna::scratch_root("build-seed-prune-cache");
     write_seed(f, ok_src);
-    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"old$i/app\"; touch -t 200101010000 \"old$i\"; i=$((i+1)); done; echo stale > oldfile; touch -t 200101010000 oldfile\nsh\n" + pcache);
+    // strictly ordered times: each stale entry a minute after the one before,
+    // and the old-layout file the oldest of all, so which ten go never rests
+    // on a tie
+    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"old$i/app\"; touch -t \"$(printf '2001010100%02d' $i)\" \"old$i\"; i=$((i+1)); done; echo stale > oldfile; touch -t 200001010000 oldfile\nsh\n" + pcache);
     let fresh = host::build_seed_at(hale, f, f + "/app", pcache);
     std::test::assert_eq_str(fresh.why, "", "the build beside a full cache succeeds");
     std::test::assert(std::io::fs::file_exists(fresh.bin), "the fresh binary survives the pruning");
