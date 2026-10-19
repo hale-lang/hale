@@ -2227,8 +2227,12 @@ wire that exists.
 The element has no fields but the key and the value, so the decoder
 builds every record whole, and the check refuses any other field at the
 clause. The value is a scalar (a unit-dialect one by its count), a `Time`
-or a payload-free enum; a record, a list, or an enum with payloads is
-refused at the clause, because a map of records already carries one. A
+or a payload-free enum, read through its aliases as the codec reads every
+field; a record, a list (an alias of one included), or an enum with
+payloads is refused at the clause, because a map of records already
+carries one. What the check admits is the codec's own answer
+(`json_gen::uncarried_wire_maps`), so no admitted map is left out of a
+codec. A
 member's value is read as a list element of its type is, and one of the
 wrong kind is `wrong_type`. A key the object repeats is `duplicate_key`,
 more entries than the list holds `too_long`, and an absent map is empty,

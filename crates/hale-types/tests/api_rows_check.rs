@@ -469,6 +469,16 @@ fn main() { }
         refused("type Inner { n: Int; }\ntype Check { name: String; inner: Inner; }", "checks: bounded[Check; 4] indexed_by name -> inner;"),
         vec!["`indexed_by` on `Bad.checks`, its value `-> inner`: `Check.inner` is a `Inner`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
     );
+    // the value read through its aliases: an aliased list is a list
+    assert_eq!(
+        refused("type Tags = bounded[Int; 2];\ntype Check { name: String; tags: Tags; }", "checks: bounded[Check; 4] indexed_by name -> tags;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> tags`: `Check.tags` is a `Tags`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+    // an aliased scalar is the scalar
+    assert_eq!(
+        refused("type Status = String;\ntype Check { name: String; status: Status; }", "checks: bounded[Check; 4] indexed_by name -> status;"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         refused("type Shape = enum { Dot, Circle(Float) };\ntype Check { name: String; shape: Shape; }", "checks: bounded[Check; 4] indexed_by name -> shape;"),
         vec!["`indexed_by` on `Bad.checks`, its value `-> shape`: `Check.shape` is a `Shape`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]

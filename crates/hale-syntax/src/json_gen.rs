@@ -103,6 +103,63 @@ struct MapValue {
     elem_ty: String,
 }
 
+/// What the value `field` of the records `record` of a map of values
+/// crosses as, or why the codec cannot carry it: a list, a record or a
+/// type it carries no other way (through its aliases, as the codec reads
+/// every field).
+fn map_value(
+    record: &str,
+    field: &str,
+    records: &std::collections::BTreeMap<String, Vec<crate::ast::StructField>>,
+    scalars: &std::collections::BTreeMap<String, Conv>,
+    aliases: &std::collections::BTreeMap<String, TypeExpr>,
+    enums: &std::collections::BTreeMap<String, bool>,
+) -> Result<MapValue, &'static str> {
+    let vf = records.get(record).and_then(|fs| fs.iter().find(|g| g.name.name == field)).ok_or("its records have no such field")?;
+    let vt = through_aliases(&vf.ty, aliases);
+    if wire_list(&vt).is_some() || matches!(vt, TypeExpr::Bounded { .. } | TypeExpr::Array { .. }) {
+        return Err("its value is a list");
+    }
+    let (elem, elem_ty) = elem_of(&vt, scalars, aliases, enums).ok_or("its value is no type the codec carries")?;
+    if matches!(elem, Elem::Nested(_)) {
+        return Err("its value is a record");
+    }
+    if matches!(elem, Elem::Enum { unit_only: false, .. }) {
+        return Err("its value is an enum with payloads");
+    }
+    Ok(MapValue { field: field.to_string(), elem, elem_ty })
+}
+
+/// The maps of values whose value the codec cannot carry, read as the
+/// codec reads them (`map_value`), each with its record's name, the
+/// field and why: the check refuses each at the clause, so a program the
+/// check admits has every map carried whole, never dropped from its codec.
+pub fn uncarried_wire_maps(programs: &[&Program]) -> Vec<(String, String, Span, &'static str)> {
+    let ro: Vec<&Program> = programs.to_vec();
+    let scalars = scalar_convs(&ro);
+    let mut aliases = std::collections::BTreeMap::new();
+    let mut enum_kinds = std::collections::BTreeMap::new();
+    let mut records = std::collections::BTreeMap::new();
+    for p in programs {
+        collect_aliases(&p.items, &mut aliases);
+        collect_enum_kinds(&p.items, &mut enum_kinds);
+        collect_record_fields(&p.items, &mut records);
+    }
+    let mut out = Vec::new();
+    for (name, fields) in &records {
+        for f in fields {
+            let (Some(_), Some(v)) = (&f.indexed_by, &f.map_value) else { continue };
+            let ty = through_aliases(&f.ty, &aliases);
+            let Some((elem, _, _)) = wire_list(&ty) else { continue };
+            let Some((Elem::Nested(tn), _)) = elem_of(elem, &scalars, &aliases, &enum_kinds) else { continue };
+            if let Err(why) = map_value(&tn, &v.name, &records, &scalars, &aliases, &enum_kinds) {
+                out.push((name.clone(), f.name.name.clone(), v.span, why));
+            }
+        }
+    }
+    out
+}
+
 /// The record a map of values crosses protobuf as, an entry of its
 /// `map<string, V>`: `__ApiMapEntry_<T>__<key>`.
 fn map_entry_record(record: &str, key: &str) -> String {
@@ -2895,19 +2952,19 @@ fn collect_api_types(
                         // a list: its elements are what a field of their type is
                         let Some((elem, elem_ty)) = elem_of(elem, scalars, aliases, enums) else { continue };
                         // `indexed_by <key>`: a wire map of the records,
-                        // keyed by their `<key>` (spec/api.md § Codecs)
+                        // keyed by their `<key>` (spec/api.md § Codecs); a
+                        // map whose value this codec cannot carry is
+                        // refused by the check from this codec's own answer
+                        // (`uncarried_wire_maps`), so it is never dropped
+                        // from a program that checks
                         let key = f.indexed_by.as_ref().map(|k| k.name.clone()).filter(|_| matches!(elem, Elem::Nested(_)));
                         // `indexed_by <key> -> <value>`: a map of the
                         // records' `<value>`s
                         let value = match (&elem, &f.map_value, key.is_some()) {
-                            (Elem::Nested(tn), Some(v), true) => {
-                                let Some(vf) = records.get(tn).and_then(|fs| fs.iter().find(|g| g.name.name == v.name)) else { continue };
-                                let Some((velem, vty)) = elem_of(&vf.ty, scalars, aliases, enums) else { continue };
-                                if matches!(velem, Elem::Nested(_)) {
-                                    continue;
-                                }
-                                Some(MapValue { field: v.name.clone(), elem: velem, elem_ty: vty })
-                            }
+                            (Elem::Nested(tn), Some(v), true) => match map_value(tn, &v.name, records, scalars, aliases, enums) {
+                                Ok(mv) => Some(mv),
+                                Err(_) => continue,
+                            },
                             _ => None,
                         };
                         FieldKind::List { elem, elem_ty, cap, exact, key, value }

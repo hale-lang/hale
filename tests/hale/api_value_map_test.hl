@@ -18,12 +18,16 @@ type Gauge { name: String; depth: Int; }
 type Price { name: String; amount: Money; }
 type Mark { name: String; level: Level; }
 type Stamp { name: String; at: Time; }
+// a value typed by an alias of a scalar is the scalar
+type Label = String;
+type Tag { name: String; label: Label; }
 type Health {
     checks: bounded[Check; 3] indexed_by name -> status;
     gauges: bounded[Gauge; 2] indexed_by name -> depth;
     prices: bounded[Price; 2] indexed_by name -> amount;
     marks: bounded[Mark; 2] indexed_by name -> level;
     stamps: bounded[Stamp; 2] indexed_by name -> at;
+    tags: bounded[Tag; 2] indexed_by name -> label;
     ok: Bool = true;
 }
 
@@ -34,7 +38,7 @@ fn refused(text: String) -> String {
 
 fn main() {
     let text = "{\"checks\":{\"db\":\"ok\",\"nats\":\"unavailable\"},\"gauges\":{\"queue\":3},\"prices\":{\"tea\":250},"
-        + "\"marks\":{\"disk\":\"high\"},\"stamps\":{\"boot\":\"2026-10-12T03:04:05Z\"},\"ok\":false}";
+        + "\"marks\":{\"disk\":\"high\"},\"stamps\":{\"boot\":\"2026-10-12T03:04:05Z\"},\"tags\":{\"env\":\"prod\"},\"ok\":false}";
     let h = Health::api_decode(text) or {
         std::test::assert(false, "a valid health: " + err.kind + " " + err.field);
         return;
@@ -55,6 +59,9 @@ fn main() {
         let high = match m.level { Level::low -> false, Level::high -> true, };
         std::test::assert(high, "an enum value by its variant");
     }
+    for t in h.tags {
+        std::test::assert_eq_str(t.label, "prod", "an aliased scalar's value");
+    }
     std::test::assert(!h.ok, "the other fields as ever");
     std::test::assert_eq_str(Health::api_encode(h), text, "written back as it was read");
 
@@ -66,7 +73,7 @@ fn main() {
     std::test::assert_eq_int(count(none.checks) + count(none.stamps), 0, "absent and empty are empty");
     std::test::assert_eq_str(
         Health::api_encode(none),
-        "{\"checks\":{},\"gauges\":{},\"prices\":{},\"marks\":{},\"stamps\":{},\"ok\":true}",
+        "{\"checks\":{},\"gauges\":{},\"prices\":{},\"marks\":{},\"stamps\":{},\"tags\":{},\"ok\":true}",
         "an empty map is `{}`"
     );
 
