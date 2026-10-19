@@ -89,11 +89,13 @@ fn __std_log_kv(key: String, value: String) -> String {
     if std::str::contains(value, " ") { needs_quote = true; }
     if std::str::contains(value, "\"") { needs_quote = true; }
     if std::str::contains(value, "=") { needs_quote = true; }
+    // a record is one line: a line break in a value is written `\n`
+    if std::str::contains(value, "\n") { needs_quote = true; }
     if !needs_quote {
         return key + "=" + value;
     }
-    let escaped = std::str::replace(
-        std::str::replace(value, "\\", "\\\\"), "\"", "\\\"");
+    let escaped = std::str::replace(std::str::replace(
+        std::str::replace(value, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n");
     return key + "=\"" + escaped + "\"";
 }
 
@@ -226,8 +228,14 @@ locus __StdLogLogger {
 // std::log::StdoutSink — default sink.
 //
 // Subscribes to "log.**" so it sees every Logger's publishes
-// regardless of namespace depth. Emits one line per event in
-// the form `[LEVEL path] msg`.
+// regardless of namespace depth. Emits one record per event, in
+// logfmt by default (GH #1592):
+//
+//   time=2026-10-19T06:56:00Z level=warn logger=app.db msg="retrying" attempt=2
+//
+// `HALE_LOG_FORMAT=json` writes the same record as one JSON object
+// per line, and `HALE_LOG_FORMAT=text` the format before records,
+// `[WARN app.db] retrying attempt=2`.
 //
 // Routing: WARN and ERROR go to stderr via `eprintln` so the
 // signal lane separates from normal program output in shell
@@ -240,6 +248,10 @@ locus __StdLogStdoutSink {
     params {
         // Same contract as the Logger's: -1 asks `HALE_LOG`.
         min_severity: Int = 0 - 1;
+        // The record format (GH #1592): "logfmt", "json" or "text";
+        // empty asks `HALE_LOG_FORMAT`, and logfmt when that names
+        // none. Resolved at birth.
+        format: String = "";
     }
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
@@ -248,15 +260,17 @@ locus __StdLogStdoutSink {
         if self.min_severity < 0 {
             self.min_severity = __log_env_severity();
         }
+        self.format = __log_format(self.format);
     }
     fn on_event(e: __StdLogEvent) {
         if __log_severity(e.level) < self.min_severity {
             return;
         }
-        let name = __log_level_name(e.level);
-        let line = "[" + name + " " + e.path + "] " + e.msg
-            + __log_fields_suffix(e.fields);
-        if e.level == 2 || e.level == 3 {
+        let line = __log_render(self.format, e);
+        // A record is one stream: every level on stdout, the level in
+        // the record. The text format keeps its split, WARN and ERROR
+        // on stderr.
+        if self.format == "text" && (e.level == 2 || e.level == 3) {
             eprintln(line);
         } else {
             println(line);
@@ -273,6 +287,96 @@ fn __log_level_name(level: Int) -> String {
     if level == 4 { return "DEBUG"; }
     if level == 5 { return "TRACE"; }
     return "?";
+}
+
+// ---- the record (GH #1592) ------------------------------------------
+//
+// Every line a sink writes is a record: a time, a level, the logger's
+// path, the message and the event's named fields. logfmt by default,
+// one JSON object per line under `HALE_LOG_FORMAT=json`, and the format
+// before records under `HALE_LOG_FORMAT=text`. The standard-practices
+// pack's first clause (logs are structured) reads these records.
+
+// The format a sink writes: `asked` when it names one, else
+// `HALE_LOG_FORMAT`, else logfmt. An unknown name is logfmt too: a
+// config typo must not turn the records back into free text.
+fn __log_format(asked: String) -> String {
+    let mut want = std::str::lower(asked);
+    if len(want) == 0 && std::env::var_exists("HALE_LOG_FORMAT") {
+        want = std::str::lower(std::env::var("HALE_LOG_FORMAT"));
+    }
+    if want == "json" || want == "text" { return want; }
+    return "logfmt";
+}
+
+// The level as a record spells it.
+fn __log_level_word(level: Int) -> String {
+    return std::str::lower(__log_level_name(level));
+}
+
+// The event's time, RFC 3339 in UTC, to the second the event carries.
+fn __log_time(ts: Int) -> String {
+    return std::time::iso8601(std::time::time_from_unix(ts));
+}
+
+// One event as the line a sink writes, in `format` (a resolved one).
+fn __log_render(format: String, e: __StdLogEvent) -> String {
+    if format == "text" {
+        return "[" + __log_level_name(e.level) + " " + e.path + "] " + e.msg + __log_fields_suffix(e.fields);
+    }
+    if format == "json" {
+        return "{\"time\":\"" + __log_time(e.ts) + "\",\"level\":\"" + __log_level_word(e.level)
+            + "\",\"logger\":\"" + std::json::escape_string(e.path) + "\",\"msg\":\"" + std::json::escape_string(e.msg)
+            + "\"" + __log_fields_json(e.fields) + "}";
+    }
+    return "time=" + __log_time(e.ts) + " level=" + __log_level_word(e.level) + " "
+        + __std_log_kv("logger", e.path) + " " + __std_log_kv("msg", e.msg) + __log_fields_suffix(e.fields);
+}
+
+// A logfmt field list (`k=v k2="two words"`, as `std::log::kv` writes
+// it) as JSON members, each `,"k":"v"`. A key without `=` is a member
+// whose value is empty.
+fn __log_fields_json(fields: String) -> String {
+    let b = std::bytes::from_string(fields);
+    let n = len(b);
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        while i < n && (std::bytes::at(b, i) or 0) == 32 { i = i + 1; }
+        if i >= n { break; }
+        let key_start = i;
+        while i < n && (std::bytes::at(b, i) or 0) != 61 && (std::bytes::at(b, i) or 0) != 32 { i = i + 1; }
+        let key = std::str::from_bytes(std::bytes::slice(b, key_start, i));
+        let mut value = "";
+        if i < n && (std::bytes::at(b, i) or 0) == 61 {
+            i = i + 1;
+            if i < n && (std::bytes::at(b, i) or 0) == 34 {
+                // quoted: until the closing quote, `\` escapes undone
+                i = i + 1;
+                let v = std::str::builder_new();
+                while i < n && (std::bytes::at(b, i) or 0) != 34 {
+                    if (std::bytes::at(b, i) or 0) == 92 && i + 1 < n {
+                        i = i + 1;
+                        if (std::bytes::at(b, i) or 0) == 110 {
+                            std::str::builder_append(v, "\n");
+                            i = i + 1;
+                            continue;
+                        }
+                    }
+                    std::str::builder_append(v, std::str::from_bytes(std::bytes::slice(b, i, i + 1)));
+                    i = i + 1;
+                }
+                i = i + 1;
+                value = std::str::builder_finish(v);
+            } else {
+                let value_start = i;
+                while i < n && (std::bytes::at(b, i) or 0) != 32 { i = i + 1; }
+                value = std::str::from_bytes(std::bytes::slice(b, value_start, i));
+            }
+        }
+        out = out + ",\"" + std::json::escape_string(key) + "\":\"" + std::json::escape_string(value) + "\"";
+    }
+    return out;
 }
 
 // Fields render AFTER the message, space-separated, and vanish
@@ -327,6 +431,8 @@ locus __StdLogFileSink {
         last_errno: Int = 0;
         last_path: String = "";
         min_severity: Int = 0 - 1;
+        // The record format, as the StdoutSink's (GH #1592).
+        format: String = "";
     }
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
@@ -335,6 +441,7 @@ locus __StdLogFileSink {
         if self.min_severity < 0 {
             self.min_severity = __log_env_severity();
         }
+        self.format = __log_format(self.format);
     }
 
     // std::text::Sink shape — raw text with the same rotation.
@@ -352,9 +459,7 @@ locus __StdLogFileSink {
         if __log_severity(e.level) < self.min_severity {
             return;
         }
-        let name = __log_level_name(e.level);
-        self.__append("[" + name + " " + e.path + "] " + e.msg
-                + __log_fields_suffix(e.fields) + "\n");
+        self.__append(__log_render(self.format, e) + "\n");
     }
 
     fn last_error_kind() -> String { return self.last_kind; }

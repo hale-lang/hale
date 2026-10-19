@@ -1243,6 +1243,30 @@ name of a constant a default reads (`let LIMIT = 9` before `Page { }`) is
 refused at that literal for the same reason: rename it, or write the
 field.
 
+---
+
+### C12. Log records through `std::log`, never free text
+
+A running part's log is read by the platform as well as by people, so
+every line it writes is a record: a time, a level, the logger's path,
+a message and named fields. Log through a `std::log::Logger` and let a
+sink write them (logfmt by default, `HALE_LOG_FORMAT=json` for one JSON
+object a line), with the details in fields, not spliced into the
+message:
+
+```hale
+fn main() {
+    std::log::StdoutSink { };
+    let log = std::log::Logger { name: "orders" };
+    log.warn_kv("retrying", std::log::kv("order", "o-17") + " " + std::log::kv("attempt", "2"));
+}
+```
+
+A bare `println` in a served or attached program is free text the
+collector cannot parse; it is the standard-practices pack's first
+clause (`standard/logs-are-structured`, GH #1591), which the Board
+holds in review until the compiler can check it. **[convention]**
+
 ## 4. Speed rules
 
 **First ask: is this path hot?** Hot means a per-frame/per-message

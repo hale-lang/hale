@@ -15,7 +15,7 @@ fn build_and_run_split_streams(
 ) -> (String, String, std::process::ExitStatus) {
     let bin = harness::unique_bin(&format!("lotus_test_{}", name));
     build_opts::build_source(source, &bin, &build_opts::options()).expect("build");
-    let output = Command::new(&bin).output().expect("run");
+    let output = Command::new(&bin).env("HALE_LOG_FORMAT", "text").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
         String::from_utf8_lossy(&output.stdout).to_string(),

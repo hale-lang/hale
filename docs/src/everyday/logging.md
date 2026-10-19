@@ -24,7 +24,8 @@ fn main() {
 }
 ```
 
-`StdoutSink` subscribes to all log events and prints them;
+`StdoutSink` subscribes to all log events and prints them, one
+**record** per event on stdout;
 `Logger` emits them. The ordering matters — instantiate the sink
 *first*, because a subscriber has to exist before a publisher
 sends, or the early events have nowhere to go.
@@ -72,7 +73,7 @@ log.warn_kv(
     std::log::kv("attempt", to_string(n)) + " "
         + std::log::kv("after", "2s")
 );
-// → [WARN app] retrying attempt=2 after=2s
+// → time=2026-10-19T06:56:00Z level=warn logger=app msg=retrying attempt=2 after=2s
 ```
 
 `std::log::kv(key, value)` renders one `key=value` pair in
@@ -90,6 +91,32 @@ event was **published**, not where it was rendered. Under a
 queued sink, a sink bridged to another process, or `hale replay`,
 those are different times, and the one worth printing is the
 event's.
+
+## Records: the format a sink writes
+
+Every line a `StdoutSink` or a `FileSink` writes is a **record**: the
+event's time (RFC 3339, UTC), its level, the logger's path, the
+message and the fields. By default that is one logfmt line, every
+level on stdout, so a platform's log collector reads them as data:
+
+```text
+time=2026-10-19T06:56:00Z level=info logger=app msg="starting up"
+time=2026-10-19T06:56:00Z level=warn logger=app.db msg=retrying attempt=2 after=2s
+```
+
+`HALE_LOG_FORMAT` picks another:
+
+```sh
+HALE_LOG_FORMAT=json ./myapp   # {"time":"…","level":"warn","logger":"app.db","msg":"retrying","attempt":"2","after":"2s"}
+HALE_LOG_FORMAT=text ./myapp   # [WARN app.db] retrying attempt=2 after=2s  (warn and error on stderr)
+```
+
+`text` is the format before records, kept for a terminal you read
+yourself (`ConsoleSink` is the colored one). A sink's own `format:`
+param (`"logfmt"`, `"json"`, `"text"`) pins it in code. An unknown
+name is logfmt, so a typo never turns records back into free text. A
+line break in a message or a value is written `\n`, so a record is
+always one line. (Before October 2026 the default was `text`.)
 
 ## Per-component loggers, one sink
 

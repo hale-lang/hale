@@ -5115,6 +5115,11 @@ row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogLogger@main3	__StdLogLogger	main	default
 row	__StdLogLogger@main4	__StdLogLogger	main	default
 
+== crates/hale-codegen/tests/stdlib_log.rs#0720981e
+row	__StdLogLogger@main2	__StdLogLogger	main	default
+row	__StdLogLogger@main3	__StdLogLogger	main	default
+row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+
 == crates/hale-codegen/tests/stdlib_metrics.rs#7c488f97
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
