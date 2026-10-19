@@ -25,7 +25,7 @@ hale-dna = { path = "../hale-dna" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-# GH #1590: `hale dna init`/`upgrade` pin the record in hale.toml by
+# GH #1590: `hale habitat graft`/`upgrade` pin the record in hale.toml by
 # editing the parsed document, so the manifest's layout and comments survive.
 toml_edit = "0.22"
 # GH #408 Phase 7: ES256 fleet signatures. System OpenSSL on
@@ -60,6 +60,10 @@ path = "tests/seeds_build_out_of_tree.rs"
 [[test]]
 name = "dna_fixture_ports_are_free"
 path = "tests/dna_fixture_ports_are_free.rs"
+
+[[test]]
+name = "births_go_through_graft"
+path = "tests/births_go_through_graft.rs"
 
 [[test]]
 name = "dna_fixture_roots_are_scratch"

@@ -65,10 +65,10 @@ identity):
 | `forge-token` | slot | the forge's token |
 | `model-<NAME>`, per credential `dna/org/models.hl` or `dna/org/work.hl` names | slot | a model's key |
 
-**Drawn** means the organism owns the value: `hale dna init` and `hale
+**Drawn** means the organism owns the value: a graft and `hale
 dna upgrade` draw it from urandom (32 hex characters) into the vault
 when the vault lacks it. The nerves' passwords are drawn anew on every
-`init` and `upgrade`. The habitat's allocations read theirs from files
+a graft and `upgrade`. The habitat's allocations read theirs from files
 written from the same draw, `nats.secrets.conf` and `postgres.secrets`,
 which live beside the allocation in the local habitat
 (`allocations/<id>/`, mode 600), never in your checkout. The nerves'
@@ -182,7 +182,7 @@ started with no principal source refuses to start.
 
 Local mode is OIDC too: `hale dna head` (from a checkout, `dna/face/start.sh`) starts a stub provider
 (`dna/oidc`) on the loopback, under a key made for that launch and the
-`oidc-client-dna-local` secret `init` drew, and signs you in as
+`oidc-client-dna-local` secret the graft drew, and signs you in as
 yourself. An issuer on the loopback is anyone's who can bind its port,
 so its key is pinned (`dna.oidc.key`). A program with no person behind
 it gets a service token instead, mapped with `git config --local --add

@@ -13,6 +13,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -40,7 +42,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     let scratch = scratch::Scratch::new(format!("hale_dna_len_{}", std::process::id()));
     let d = scratch.join("a-fairly-ordinary-checkout-directory").join("nested-inside-another-one");
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orglong"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orglong", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orglong");
     // the shakeout's finding 6 was a 108-byte Unix socket address the

@@ -1010,7 +1010,7 @@ jobs:
           restore-keys: dna-toolchain-no-observer-${{ steps.compiler.outputs.toolchain }}
 
       - name: Warm the DNA toolchain cache and build the DNA API and the head
-        # The head fixtures create fresh projects with hale dna new under
+        # The head fixtures graft fresh projects (hale habitat graft) under
         # their own budgets; the first host build of this binary is paid
         # once here, not inside one of them. Nothing here runs the
         # observer, so its build is skipped.
@@ -1197,8 +1197,8 @@ jobs:
           key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
       - name: Warm the DNA toolchain cache and build the DNA API and the head
-        # The warm: the face's browser fixtures create fresh projects with
-        # hale dna new under their own budgets; the first host build of
+        # The warm: the face's browser fixtures graft fresh projects (hale
+        # habitat graft) under their own budgets; the first host build of
         # this binary is paid once here, not inside one of them. Nothing
         # here runs the observer, so its build is skipped.
         #

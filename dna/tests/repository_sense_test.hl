@@ -1,7 +1,7 @@
 // dna/tests/repository_sense_test.hl — a repository's application is
 // attached, and what it says reaches the heart (ruling 11, 2026-10-12).
 //
-// `hale dna init` on a repository root (no Hale source of its own) is the
+// `hale habitat graft` on a repository root (no Hale source of its own) is the
 // repository mode: its application is its compose services, which the
 // compose file expresses. It used to record no `application.attached`, so
 // no broker account was drawn and the application's sense had nowhere to

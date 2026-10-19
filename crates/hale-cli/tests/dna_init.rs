@@ -1,4 +1,4 @@
-//! GH #528 — `hale dna init` / `upgrade` (Track C, PR 23).
+//! GH #528 — `hale habitat graft` / `hale dna upgrade` (Track C, PR 23).
 //!
 //! What these hold the command to (the issue's acceptance for the
 //! existing-application path):
@@ -18,6 +18,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -64,7 +66,8 @@ fn journal_rows(root: &Path) -> Vec<serde_json::Value> {
 fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     let app = pipeline_app("attach");
     let before = std::fs::read_to_string(app.join("main.hl")).unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     for f in [
         "vendor/dna/assembly.hl",
@@ -129,7 +132,8 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     assert!(run.status.success(), "run: {}", String::from_utf8_lossy(&run.stderr));
 
     // Re-running keeps everything.
-    let (ok, out2) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out2) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out2}");
     assert!(out2.contains("kept") && !out2.contains("created "), "second init is non-destructive:\n{out2}");
     assert_eq!(after, std::fs::read_to_string(app.join("main.hl")).unwrap(), "main.hl untouched on re-run");
@@ -139,7 +143,8 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
 #[test]
 fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let app = pipeline_app("journal");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     let rows = journal_rows(&app);
     let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
@@ -194,7 +199,8 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
 #[test]
 fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     let app = pipeline_app("upgrade");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     let assembly = app.join("dna/org/main.hl");
     let owned = std::fs::read_to_string(&assembly).unwrap().replace("self.core.request_tick(", "self.core.tick(");
@@ -232,7 +238,8 @@ fn upgrade_retires_the_owners_map() {
     // the cut has `dna/org/owners` and the generated `ownership:` field;
     // upgrade removes both, and says what the file named
     let app = pipeline_app("owners-cut");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "{out}");
     assert!(!app.join("dna/org/owners").exists(), "init writes no owners file: {out}");
     let main = app.join("dna/org/main.hl");
@@ -269,7 +276,8 @@ fn init_refuses_a_seed_without_a_main_locus() {
     let d = workdir("nomain");
     std::fs::write(d.join("main.hl"), "fn main() { println(\"hi\"); }\n").unwrap();
     std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &d);
     assert!(!ok);
     assert!(out.contains("declares no `main locus`"), "{out}");
     let _ = std::fs::remove_dir_all(&d);
@@ -287,10 +295,12 @@ fn an_interrupted_init_is_finished_step_by_step() {
     assert!(git(&["init", "-q"]).status.success());
     let lock = app.join(".git/config.lock");
     std::fs::write(&lock, "").unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(!ok, "a held config lock stops the init: {out}");
     std::fs::remove_file(&lock).unwrap();
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok && out.contains("kept    the record (memory holds it; not reseeded)"), "the retry keeps the seed the first run wrote and finishes it: {out}");
     let member = String::from_utf8_lossy(&git(&["config", "--local", "--get-all", "dna.unix.member"]).stdout).to_string();
     let trust = String::from_utf8_lossy(&git(&["config", "--local", "--get", "dna.trust"]).stdout).trim().to_string();
@@ -304,7 +314,8 @@ fn an_interrupted_init_is_finished_step_by_step() {
     let rows = journal_rows(&app);
     let counts: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();
     assert!(counts.iter().all(|n| *n > 0), "every family proposed: {counts:?}");
-    let (ok, again) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, again) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok && again.contains("seeded  design (0 practice(s) proposed"), "a finished init proposes nothing again: {again}");
     let rows = journal_rows(&app);
     let after: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();

@@ -1097,7 +1097,7 @@ locus WorkflowCatalog {
 // ---- the baseline catalog (GH #995) ------------------------------------
 //
 // The definitions DNA ships, each a chain in which every step writes one
-// store. A project's `dna/org/workflows.hl` (generated at `hale dna new`)
+// store. A project's `dna/org/workflows.hl` (generated at `hale habitat graft`)
 // returns these plus its own; the vendored toolchain supersedes them by
 // revision, so a Task born under an old revision finishes under it and a
 // new one binds the newest (`latest`). A step the organization performs

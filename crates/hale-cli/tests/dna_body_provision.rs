@@ -126,7 +126,12 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     std::fs::create_dir_all(&d).unwrap();
     let home = d.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let (ok, out) = hale_env(&["dna", "new", "prov"], &d, &home, None);
+    // the habitat it is grafted from, its own under the test's HOME (GH
+    // #1653): on the operator's backends when they are named, else its own
+    let operator = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().all(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+    let (ok, out) = hale_env(&["habitat", "up", "--no-body", "--backends", if operator { "operator" } else { "own" }], &d, &home, None);
+    assert!(ok, "the test's habitat: {out}");
+    let (ok, out) = hale_env(&["habitat", "graft", "prov", "--no-pack"], &d, &home, None);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("prov");
     git(&["config", "user.name", "riley"], &app);

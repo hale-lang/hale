@@ -1,7 +1,7 @@
 // dna/tests/oidc_head_test.hl — the head's principal path is OIDC (GH #989).
 //
 // The stub provider (dna/oidc) serves in this process; a record is made
-// with `hale dna new`, its trust taken back so the graph's holds say who
+// with `hale habitat graft`, its trust taken back so the graph's holds say who
 // holds what, alice seated at position:agent and bob at nothing. The
 // practice_review head starts under `dna.principal = oidc`, reading the
 // provider's discovery document and JWKS once. A call on the commands port

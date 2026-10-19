@@ -89,8 +89,8 @@ fn main() -> ExitCode {
     if cmd == "iris" {
         return iris::run(&args[2..]);
     }
-    // GH #528: `hale dna init|new|upgrade …` — the DNA attached to an
-    // application as ordinary Hale source.
+    // GH #528: `hale dna …` — the DNA attached to an application as
+    // ordinary Hale source (an organism is born by `hale habitat graft`).
     if cmd == "dna" {
         return dna::run(&args[2..]);
     }

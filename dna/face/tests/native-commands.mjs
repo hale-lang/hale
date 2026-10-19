@@ -389,7 +389,7 @@ async function scenario(name, run) {
 
 let failure;
 try {
-  // `hale dna new` births the record in memory (GH #1590), with the owner's DSN
+  // the graft births the record in memory (GH #1590, #1653), with the owner's servers
   scaffoldProject({ hale: binaries.hale, root: fixture, env: { ...childEnv, USER: actor, LOGNAME: actor, HALE_DNA_MEMORY_DSN_OWNER: owner }, actor });
   const ready = await startHost();
   application = recordIdentity(fixture);

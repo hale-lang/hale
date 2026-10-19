@@ -3,7 +3,7 @@
 // (GH #946, item D: the dogfood run).
 //
 // The vendored voice repository (dna/tests/onboarding/voice) is read into
-// its graph (`hale dna init`), its holes ratified, and the suite's user
+// its graph (`hale habitat graft`), its holes ratified, and the suite's user
 // mapped to riley (`dna.unix.member`). The record declares no trust, so
 // the graph's `holds` edges say who holds what: until riley holds a
 // position the head's socket lists no claim to the peer, and the leg
@@ -89,7 +89,7 @@ locus App {
     fn dna(args: String) -> dna::RunResult {
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head_dsn + "\n" + toolchain() + "\ndna\n" + args);
     }
-    // `hale dna init` in the project: the record is born in memory (GH
+    // `hale habitat graft` in the project: the record is born in memory (GH
     // #1590), the owner's, so it keeps the owner's DSN
     fn init() -> dna::RunResult {
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.owner + "\n" + dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach\n--no-pack"));
@@ -254,12 +254,12 @@ locus App {
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.init();
-        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);
         // what init wrote is committed, as a person commits it: the ignores
         // (vendor/, .hale/) are the genome's, so a candidate carries none of it
-        let kept = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git -c user.name=riley -c user.email=riley@dna commit -q -m 'hale dna init'\nsh\n" + self.repo);
+        let kept = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git -c user.name=riley -c user.email=riley@dna commit -q -m 'hale habitat graft'\nsh\n" + self.repo);
         std::test::assert_eq_int(kept.code, 0, "init's output committed: " + kept.stderr);
-        self.ratify("hale dna init");
+        self.ratify("hale habitat graft");
         std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         self.identity = dna::MemoryRecord { repo: self.repo }.identity();
         if len(self.owner) > 0 {
@@ -274,7 +274,7 @@ locus App {
         // is mapped to riley, and the record declares no trust
         let as_riley = dna::RecordJournal { repo: self.repo, author: "riley" };
         std::test::assert(as_riley.append(as_riley.revision(), "note.kept", "riley", "riley was here").ok, "a row in riley's name: " + as_riley.last_error());
-        // `hale dna init` seats its maker (the uid mapped to $USER, and local
+        // `hale habitat graft` seats its maker (the uid mapped to $USER, and local
         // trust declared): this run is about the graph deciding, so the seat
         // is taken back and the peer mapped to riley alone
         let unmapped = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--local\n--unset-all\ndna.unix.member");

@@ -1,5 +1,5 @@
 //! No test run touches the developer's vault (GH #989's Deferred line,
-//! closed). `hale dna init` and `upgrade` provision the organism's secrets
+//! closed). `hale habitat graft` and `hale dna upgrade` provision the organism's secrets
 //! into the vault and `hale dna secret set` fills a slot, so a test run
 //! against the real one left a throwaway organization's entries there, or
 //! a fake key in a real slot.
@@ -13,7 +13,7 @@
 //! from `isolatedEnvironment()`.
 //!
 //! The first test runs `hale test -j 2` over two fixtures that each run
-//! `hale dna new`: the organism's secrets go into two vaults, gone after,
+//! `hale habitat graft`: the organism's secrets go into two vaults, gone after,
 //! and the caller's vault, the cache's vault and `~/.config` are left as
 //! they were. The second holds every Rust DNA test to its path, every
 //! Node allow-listed environment to carrying the override, and every test
@@ -28,7 +28,7 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
-// A fixture that runs a vault-writing verb, `hale dna new` (whose init
+// A fixture that runs a vault-writing verb, `hale habitat graft` (whose birth
 // provisions the organism's secrets), and writes down which vault it ran
 // under (never a value). Two of them, `ORG` apart, run side by side.
 const PROBE: &str = r#"fn main() {
@@ -39,8 +39,8 @@ const PROBE: &str = r#"fn main() {
     std::test::assert(std::env::var("XDG_DATA_HOME") == dir + "/data", "and so is the local habitat, beside the vault (GH #1653): " + std::env::var("XDG_DATA_HOME"));
     std::test::assert(std::env::var("HALE_DNA_HABITAT") == dir + "/data/hale/habitat/local", "named outright, never the caller's: " + std::env::var("HALE_DNA_HABITAT"));
     std::io::fs::write_file(std::env::var("PROBE_ROOT") + "/ORG.vault", dir) or raise;
-    let made = std::process::run("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna new ORG\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN")) or raise;
-    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    let made = std::process::run("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off && \"$2\" habitat up --no-body --backends \"$3\" >/dev/null && exec \"$2\" habitat graft ORG --no-pack\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN") + "\n" + (if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") && std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { "operator" } else { "own" })) or raise;
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
     // the memory allocation's owner entry, named for the record's identity
     let manifest = std::io::fs::read_file(std::env::var("PROBE_ROOT") + "/ORG/hale.toml") or "";
     let at = std::str::index_of(manifest, "record = \"");
@@ -161,9 +161,13 @@ fn no_test_spawns_a_vault_writing_hale_on_the_developers_vault() {
         }
         let text = std::fs::read_to_string(&p).unwrap();
         // `dev` upgrades and `migrate` draws memory's role passwords, as
-        // `new` / `init` / `upgrade` provision and `secret set` fills a slot
-        let writes = text.contains("\"dna\"")
-            && ["\"new\"", "\"init\"", "\"upgrade\"", "\"secret\"", "\"dev\"", "\"migrate\""].iter().any(|v| text.contains(v));
+        // `upgrade` provisions and `secret set` fills a slot; the habitat's
+        // `up`, `graft` and `migrate` provision too (GH #1653)
+        let writes = (text.contains("\"dna\"") && ["\"upgrade\"", "\"secret\"", "\"dev\"", "\"migrate\""].iter().any(|v| text.contains(v)))
+            || {
+                let squashed: String = text.split_whitespace().collect();
+                ["\"habitat\",\"up\"", "\"habitat\",\"graft\"", "\"habitat\",\"migrate\""].iter().any(|v| squashed.contains(v))
+            };
         // a spawn of the toolchain, however it is spelled, and a vault of
         // the file's own only where one is actually set on a child
         let spawns = spawns_hale_directly(&text);

@@ -113,7 +113,7 @@ pub struct Manifest {
 pub struct DnaManifest {
     pub fleet: Option<String>,
     /// GH #1590: `[dna] record = "<identity>"` — the record this genome
-    /// belongs to, pinned by `hale dna init` / `upgrade`. The DNA host
+    /// belongs to, pinned by `hale habitat graft` / `hale dna upgrade`. The DNA host
     /// reads it (`dna::record_identity_at`); the toolchain only carries it.
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it; read in Hale
     pub record: Option<String>,
@@ -359,7 +359,7 @@ pub struct Lockfile {
     pub deps: Vec<LockedDep>,
     /// GH #528: `[dna] toolchain = "<version>"` — the compiler
     /// version whose `dna/core` was materialized into `vendor/dna/`
-    /// by `hale dna init` / `upgrade`. Toolchain-owned, so it is
+    /// by `hale habitat graft` / `hale dna upgrade`. Toolchain-owned, so it is
     /// pinned here beside the git deps rather than in `hale.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dna: Option<DnaLock>,

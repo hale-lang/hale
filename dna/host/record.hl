@@ -90,7 +90,7 @@ fn organizations_in_record(root: String) -> String {
 }
 // GH #989: the application the record attaches, by the name its broker
 // account carries — `application.attached`'s `name`, or for a row written
-// before it named one, the project's directory, as `hale dna init` names
+// before it named one, the project's directory, as `hale habitat graft` names
 // it — and "" when none is attached or an `application.detached` row
 // removed it. The record is the membership source.
 fn attached_application(root: String) -> String {

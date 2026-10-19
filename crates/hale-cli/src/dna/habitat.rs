@@ -829,13 +829,13 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     match genesis_state(genome)? {
         Genesis::Unpinned => {
             out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
-            out.extend(super::init(genome, false)?);
+            out.extend(super::init_under(genome, false, super::Lineage::Habitat)?);
         }
         Genesis::Present => {
             // born: the rest of its init, each step of which keeps what
             // is done, against the record memory holds
             out.push(format!("{:<8}the habitat's record is in memory; its birth goes on where it stopped", "resume"));
-            out.extend(super::init(genome, false)?);
+            out.extend(super::init_under(genome, false, super::Lineage::Habitat)?);
         }
         Genesis::Never(drawn) => {
             // memory answered that this identity's record was never born
@@ -845,7 +845,7 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
             unpin(&manifest)?;
             out.push(format!("{:<8}the habitat's earlier birth stopped before its record reached memory: born again", "resume"));
             out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
-            out.extend(super::init(genome, false)?);
+            out.extend(super::init_under(genome, false, super::Lineage::Habitat)?);
         }
     }
     // the bootstrap's allocations, the habitat's own memory and nerves,
@@ -1432,8 +1432,7 @@ fn graft(args: &[String]) -> ExitCode {
 /// it needs allocated to it, and the graft and its needs a row of the
 /// habitat's record. The habitat must be born, and the environment must
 /// agree with its backends.
-/// A new application's profile pieces (`--profile`, `--remote`, `--body`),
-/// as `hale dna new` took them.
+/// A new application's profile pieces (`--profile`, `--remote`, `--body`).
 struct Shape<'a> {
     profile: Option<&'a str>,
     remote: Option<&'a str>,
@@ -1452,8 +1451,8 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     if attach && !dir.is_dir() {
         return Err(format!("{} is not there to attach (graft without --attach births a new application there)", dir.display()));
     }
-    if !attach && dir.exists() {
-        return Err(format!("{} exists: `--attach` grafts the application or repository that is there", dir.display()));
+    if !attach && std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()) {
+        return Err(format!("{} exists and is not empty: `--attach` grafts the application or repository that is there", dir.display()));
     }
     // the organism's root, as its birth resolves it: an attached
     // application's workspace (its manifest, its pin and its needs are the
@@ -1489,7 +1488,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     }
     let needs = needs_of(manifest.as_deref())?;
     let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {}){}", "graft", root.display(), &parent[..12], needs.join(", "), if pinned.is_some() { "; the graft goes on where it stopped" } else { "" })];
-    out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, Some(&parent))? });
+    out.extend(if attach { super::init_under(dir, library, super::Lineage::Child(&parent))? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, &parent)? });
     let root = if attach { root } else { project(dir)?.0 };
     let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
     // birth allocated memory and the nerves; the rest of what it needs here

@@ -2,7 +2,7 @@
 // already proposes (seed/structure): each proposed position carries a
 // mandate, and a position's node carries its standard equipment.
 //
-// `hale dna init` on a repository (the todo fixture, vendored under
+// `hale habitat graft` on a repository (the todo fixture, vendored under
 // dna/tests/onboarding/todo, with the description its toolchain exports
 // rewritten to name an `editor` member and a `reviewer` member) proposes the
 // holes, each position followed by its mandate; the API roles the contract's
@@ -16,7 +16,7 @@
 // position (memory's bindings table), the hat of an `edit` Work on the part
 // carries the editor's mandate and not the reviewer's, `hale dna show org`
 // prints the mandate and the roles, and `hale dna fill` prints the roles.
-// An application gets the same path (seed/structure-2): `hale dna init` on
+// An application gets the same path (seed/structure-2): `hale habitat graft` on
 // the fixture's `api/` directory alone (one member rewritten to require
 // `reviewer`, ports of its own) reads its graph with the application as the
 // root seed and each surface and stream it serves, from the toolchain's

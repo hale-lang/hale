@@ -117,7 +117,7 @@ locus ReferenceInfrastructure {
     // `why` says what is needed instead, when there is no docker compose or
     // the organism has no identity yet.
     fn allocation(role: String) -> String {
-        if len(dna::allocation_key(self.root)) == 0 { return "the organism has no record identity yet: its allocations in the local habitat are named for it (`hale dna init` pins one)"; }
+        if len(dna::allocation_key(self.root)) == 0 { return "the organism has no record identity yet: its allocations in the local habitat are named for it (`hale habitat graft` pins one)"; }
         if dna::run_tool("docker\ncompose\nversion").code != 0 { return "the local habitat's " + role + " runs under docker compose, which is not on PATH"; }
         return "";
     }
@@ -167,7 +167,7 @@ locus ReferenceInfrastructure {
     // DSN, never bringing it up (GH #1653: only the habitat's acts do).
     fn knowledge_database_if_up() -> dna::Database {
         let service = dna::allocation_service(self.root, "memory");
-        if len(service) == 0 { return dna::Database { why: "the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale dna init` pins one)" }; }
+        if len(service) == 0 { return dna::Database { why: "the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale habitat graft` pins one)" }; }
         let hp = if dna::run_tool("docker\ncompose\nversion").code == 0 { self.published(service, "5432") } else { "" };
         if len(hp) == 0 { return dna::Database { why: "the organism's memory allocation in the local habitat (" + service + ") is not up: `hale habitat migrate " + self.root + "` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
         return dna::Database { present: true, dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(dna::allocation_key(self.root)) };

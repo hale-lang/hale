@@ -1,7 +1,7 @@
 // dna/api/project_service/tests/operations_s3_test.hl — the head's S3
 // operations over a real project (GH #965), without the head's HTTP
 // surface: the fixture stands in for the dispatcher. It makes a project
-// with `hale dna new` under a private HOME, then drives `s3_plan` and
+// with `hale habitat graft` under a private HOME, then drives `s3_plan` and
 // the S2 journal exactly as the head does — a `run` plan is written
 // 0600 and started under `timeout -k 10 <secs> sh -e` through
 // `children.hl`, a `body` plan is a detached child polled
@@ -113,10 +113,11 @@ fn request(request_id: String, operation: String, application_id: String, argume
     return b.result();
 }
 
-// A project made with `hale dna new` under `parent`, its genome committed.
+// A project grafted from the test's habitat under `parent`, its genome
+// committed.
 fn project(parent: String, name: String, user: String) -> String {
-    let made = in_dir(parent, toolchain() + "\ndna\nnew\n" + name);
-    std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
+    let made = in_dir(parent, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n" + name));
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft " + name + ": " + made.stdout + made.stderr);
     let app = parent + "/" + name;
     let g1 = in_dir(app, "git\nconfig\nuser.name\n" + user);
     let g2 = in_dir(app, "git\nconfig\nuser.email\n" + user + "@local");

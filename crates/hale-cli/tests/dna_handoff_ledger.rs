@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -57,7 +59,8 @@ fn plumb(app: &Path, kind: &str, entity: &str, body: &str, author: &str) {
 }
 
 fn project(scratch: &Path, name: &str, user: &str) -> (PathBuf, PathBuf) {
-    let (ok, out) = hale(&["dna", "new", name], scratch, &[]);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", name, "--no-pack"], scratch, &[]);
     assert!(ok, "{out}");
     let app = scratch.join(name);
     let bare = scratch.join(format!("{name}.git"));

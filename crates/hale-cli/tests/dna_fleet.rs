@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -209,8 +211,9 @@ fn bring_up(tag: &str) -> Fleet {
     // schema and its stream on the nerves, whose durable consumer the two
     // organizations would then share, each hearing the other's facts
     // (GH #986). A committer of the test's own makes the first commit its.
+    habitat::habitat();
     let made = vault::hale()
-        .args(["dna", "new", "fleetapp"])
+        .args(["habitat", "graft", "fleetapp", "--no-pack"])
         .current_dir(&d)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
@@ -218,7 +221,7 @@ fn bring_up(tag: &str) -> Fleet {
         .env("GIT_COMMITTER_NAME", format!("fleet-{tag}"))
         .env("GIT_AUTHOR_NAME", format!("fleet-{tag}"))
         .output()
-        .expect("hale dna new");
+        .expect("hale habitat graft");
     let (ok, out) = (made.status.success(), format!("{}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr)));
     assert!(ok, "{out}");
     let app = f.app.clone();

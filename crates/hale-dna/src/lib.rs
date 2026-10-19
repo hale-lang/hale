@@ -5,7 +5,7 @@
 //! materializes it: `hale iris`, whose observer imports the core's
 //! typed control topics (`dna.review.verdict`, `dna.intent.offered`)
 //! so a verdict or an intent published from the browser is the SAME
-//! declaration the organism binds. Track C (`hale dna init` /
+//! declaration the organism binds. Track C (`hale habitat graft` /
 //! `upgrade`) materializes the same set into a project's `vendor/dna`.
 //!
 //! Paths are relative to a materialization root and keep the repo's

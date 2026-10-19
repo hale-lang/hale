@@ -1,7 +1,7 @@
 //! GH #726 — the embedded DNA source set has a name, and the CLI
 //! surface that carries it.
 //!
-//! `hale dna new` / `init` / `upgrade` materialize `vendor/dna` from
+//! `hale habitat graft` and `hale dna upgrade` materialize `vendor/dna` from
 //! the source embedded in the binary, so an organism runs the core
 //! the BINARY carries; two builds of one version can carry different
 //! source, and a mutation run against a binary that predates the

@@ -24,7 +24,7 @@ shows itself to people.
 
 ## Start the head
 
-With the toolchain installed, and a project made by `hale dna new`:
+With the toolchain installed, and a project made by `hale habitat graft`:
 
 ```sh
 hale dna head /absolute/path/to/project
@@ -93,7 +93,7 @@ mapped to a person in the record's own config:
 git config --local --add dna.unix.member "uid:1000=alice"
 ```
 
-`hale dna new` and `hale dna init` map whoever runs them. The socket is
+A graft maps whoever runs it. The socket is
 one per record, under `$XDG_RUNTIME_DIR/hale/dna/` (else the record's
 `.hale/dna`), and the head names it in its capabilities. This is where `hale dna work` sends its
 commands ([Legs, hands and voice](./legs.md)).
@@ -382,7 +382,7 @@ lands a row.
 **The application's page.** A repository whose browser page is buildless —
 a `ui/` holding no `package.json` or other manifest — has no seed for it.
 When the repository references that directory (a README link to it, or
-the compose file mounting `./ui`), `hale dna init` says once that the head
+the compose file mounting `./ui`), `hale habitat graft` says once that the head
 serves it, and the head answers it under `/app/` for the attached project:
 `/app/` is `ui/index.html`, `/app/seq.js` is `ui/seq.js`, and nothing
 outside `ui/` is reachable. A `ui/` nothing references is said once and

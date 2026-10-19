@@ -20,22 +20,25 @@ if [ -n "$taken" ]; then
 fi
 MODELS=${MODELS:-canned}; TAPE_DIR=$CYCLE_DIR/tape; mkdir -p "$TAPE_DIR"
 N=$(date +%s); RUN=$CYCLE_DIR/run-$N; mkdir -p "$RUN"; R=$RUN/report.md; LOG=$RUN/cycle.log; echo "$RUN" > "$CYCLE_DIR/current"
-export XDG_STATE_HOME=$RUN/state XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
-units_env=(--setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=HALE_BIN="$HALE_BIN" --setenv=HALE_SKIP_STALE_CHECK=1 --setenv=HALE_DNA_DISCOVER=off --setenv=GIT_CONFIG_NOSYSTEM=1 --setenv=XDG_STATE_HOME="$XDG_STATE_HOME")
+# the run's own habitat (GH #1653), under the run's directory: the
+# organism is grafted from it, and the teardown sweeps it
+export XDG_STATE_HOME=$RUN/state XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache} XDG_DATA_HOME=$RUN/data
+units_env=(--setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=HALE_BIN="$HALE_BIN" --setenv=HALE_SKIP_STALE_CHECK=1 --setenv=HALE_DNA_DISCOVER=off --setenv=GIT_CONFIG_NOSYSTEM=1 --setenv=XDG_STATE_HOME="$XDG_STATE_HOME" --setenv=XDG_DATA_HOME="$XDG_DATA_HOME")
 echo "# dna cycle UP $N (hale $(hale --version 2>/dev/null | head -1), $(git -C "$HW" rev-parse --short HEAD))" > "$R"
 
 step "copy the repository" bash -c "cp -r '$HW/dna/tests/onboarding/todo' '$RUN/todo' && cd '$RUN/todo' && git init -q -b main && git config user.name riley && git config user.email riley@dna.cycle && git add -A && git commit -q -m 'todo: the repository' && rm -rf bin"
 cd "$RUN/todo" || exit 1
 # the founder holds every seat the repository's holes open: the `founder` pack, planned on those holes
-step "hale dna init . --with founder" bash -c "hale dna init . --with founder --set founder=riley --as riley > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
-step "commit what init wrote" bash -c "git add -A && git commit -q -m 'the organism'"
+step "the run's habitat" bash -c "hale habitat up --no-body"
+step "hale habitat graft . --attach --with founder" bash -c "hale habitat graft . --attach --with founder --set founder=riley --as riley > '$RUN/init.out' 2>&1; rc=\$?; cat '$RUN/init.out'; exit \$rc"
+step "commit what the graft wrote" bash -c "git add -A && git commit -q -m 'the organism'"
 case "$MODELS" in canned) mm="canned $HERE/canned";; live) mm=live;; *) mm=record;; esac
 step "models: $MODELS" bash -c "python3 '$HERE/model-mode.py' $mm dna/org/models.hl && git add -A dna/org/models.hl && (git commit -q -m 'models: $MODELS' || true)"
 step "the legs' model: the canned gateway" bash -c "python3 '$HERE/model-mode.py' gateway '$GATEWAY' dna/org/work.hl && git add -A dna/org/work.hl && git commit -q -m 'legs: the canned gateway'"
 step "the gateway's key in the vault" bash -c "echo canned-gateway-key | hale dna secret set CANNED_GATEWAY_KEY"
 note "models: $MODELS$( { [ "$MODELS" = record ] || [ "$MODELS" = replay ]; } && echo " (tape $TAPE_DIR)")"
 note "init: $(grep -E '^graph ' "$RUN/init.out" | head -1 | cut -c1-160)"
-note "init --with founder: $(grep -E '^planned on ' "$RUN/init.out" | head -1 | cut -c1-120)"
+note "graft --with founder: $(grep -E '^planned on ' "$RUN/init.out" | head -1 | cut -c1-120)"
 
 systemd-run --user --quiet --collect --unit="dna-cycle-gateway-$N" "${units_env[@]}" python3 "$HERE/canned-gateway.py" 8796 "$RUN/gateway.jsonl"
 systemd-run --user --quiet --collect --unit="dna-cycle-dev-$N" --working-directory="$RUN/todo" "${units_env[@]}" \

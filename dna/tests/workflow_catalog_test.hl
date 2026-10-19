@@ -10,7 +10,7 @@
 // refused saying so. A concern is an execution of concern-escalate: its
 // steps write the rows the concern path wrote. And a Task born under a
 // revision finishes under it after the catalog gains the next one, while
-// a new Task binds the newest. Through the CLI, `hale dna new` writes
+// a new Task binds the newest. Through the CLI, `hale habitat graft` writes
 // dna/org/workflows.hl and `hale dna definitions` lists it.
 
 import "../core" as dna;

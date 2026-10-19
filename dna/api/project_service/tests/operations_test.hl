@@ -3,7 +3,7 @@
 // passes through, the plans of the nine operations (their refusal
 // codes, scripts, working directories, deadlines and externality),
 // an attach and a detach through the framework against a project
-// `hale dna new` made (the API child starts, the policies land, the
+// a graft made (the API child starts, the policies land, the
 // registry folds), the outcome parsers over the logs the verbs print,
 // and the `record` evidence over rows the Record gained.
 //
@@ -93,13 +93,13 @@ locus OperationCases {
         std::test::assert_eq_str(bad_parent.refused, "path_invalid", "the parent must exist");
         let plan = head::own_plan(self.cfg, self.ctx(), "command-c4", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"beta\",\"profile\":\"remote-body\",\"remote\":\"git@example.invalid:x/y.git\",\"body\":\"me@host\",\"discover\":false}");
         std::test::assert(plan.ok && plan.kind == "run" && plan.refused == "", "a create plan: " + plan.reason);
-        std::test::assert_eq_str(plan.script, "exec \"$HALE_BIN\" dna new '" + parent + "/beta' --profile 'remote-body' --remote 'git@example.invalid:x/y.git' --body 'me@host'", "the create script");
+        std::test::assert_eq_str(plan.script, "exec \"$HALE_BIN\" habitat graft '" + parent + "/beta' --profile 'remote-body' --remote 'git@example.invalid:x/y.git' --body 'me@host'", "the create script");
         std::test::assert(plan.cwd == parent && plan.deadline_secs == 600 && !plan.external, "create runs in the parent, 600 s, internal");
         std::test::assert(std::str::contains(plan.envs, "HALE_DNA_DISCOVER=off"), "discover:false exports off");
         let discovering = head::own_plan(self.cfg, self.ctx(), "command-c5", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"gamma\",\"discover\":true}");
         std::test::assert_eq_str(discovering.envs, "HALE_DNA_DISCOVER=" + std::env::var("HALE_DNA_DISCOVER") + "\n", "discover:true exports the head's own value, whatever it is");
         let init = head::own_plan(self.cfg, self.ctx(), "command-i1", "dna.project.init", "{\"root\":\"" + self.project + "\"}");
-        std::test::assert(init.ok && init.script == "exec \"$HALE_BIN\" dna init '" + self.project + "'" && init.cwd == self.project && init.deadline_secs == 600, "an init plan");
+        std::test::assert(init.ok && init.script == "exec \"$HALE_BIN\" habitat graft '" + self.project + "' --attach" && init.cwd == self.project && init.deadline_secs == 600, "an init plan");
         std::test::assert_eq_str(head::own_plan(self.cfg, self.ctx(), "command-i2", "dna.project.init", "{\"root\":\"" + self.root + "/missing\"}").refused, "path_invalid", "init needs a directory");
         // the create outcome names the project and reports the attach it made
         let receipt = head::Receipt { command_id: "command-c9", operation: "dna.project.create", request: "{\"arguments\":{\"parent\":\"" + parent + "\",\"name\":\"alpha\"}}" };
@@ -247,8 +247,8 @@ fn main() {
     // the project the CLI makes (600 s budget for a cold host build), under
     // this test's vault: the head reaches its record with the roles the
     // bootstrap drew there (GH #1590)
-    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
-    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stderr);
+    let made = dna::run_tool("env\nHALE_DNA_HABITAT=" + dna::test_habitat() + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\nhabitat\ngraft\n" + parent + "/alpha");
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stderr);
     git(parent + "/alpha", "config\nuser.name\nops-fixture");
     git(parent + "/alpha", "config\nuser.email\nops-fixture@example.invalid");
     git(parent + "/alpha", "config\ncommit.gpgsign\nfalse");

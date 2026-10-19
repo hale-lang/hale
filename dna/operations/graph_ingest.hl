@@ -1,7 +1,7 @@
 // dna/operations/graph_ingest.hl — a repository read into the graph (GH
 // #1090).
 //
-// `hale dna init` ingests: it reads what the repository already says and
+// `hale habitat graft` ingests: it reads what the repository already says and
 // writes it as `graph.*` rows (graph.hl); it never derives one perspective
 // from the other. Most of the graph is structure — the README's first
 // paragraph, compose services, manifests, the specs and their schemas, CI
@@ -267,7 +267,7 @@ type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: S
 locus GraphIngest {
     params {
         root: String = ".";
-        // an application's graph (`hale dna init` on an application): its
+        // an application's graph (`hale habitat graft` on an application): its
         // own name, the root seed (the repository path's root is not one
         // seed, and `app` stays empty), and what `hale check --api` exports
         // for it, the surfaces it serves and the streams over a hub
@@ -948,7 +948,7 @@ locus GraphIngest {
         }
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("author", "hale dna init");
+        b.string_field("author", "hale habitat graft");
         b.string_field("kind", "practice");
         b.bool_field("law", mark == "law");
         b.string_field("mark", mark);

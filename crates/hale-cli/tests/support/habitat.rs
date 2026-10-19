@@ -10,8 +10,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[path = "vault.rs"]
-mod vault;
+// the including test file's own vault module (`#[path = "support/vault.rs"]
+// mod vault;` beside this one), so a graft and every later `hale` of the
+// test share one vault and one habitat
+use super::vault;
 
 /// The habitat's directory, as `hale` resolves it under `vault::hale()`.
 pub fn dir() -> PathBuf {
@@ -39,4 +41,20 @@ pub fn graft(cwd: &Path, dir: &str, args: &[&str]) -> std::process::Output {
     let mut c: Command = vault::hale();
     c.args(["habitat", "graft", dir]).args(args).current_dir(cwd).env("HALE_DNA_DISCOVER", "off").env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
     c.output().expect("hale habitat graft")
+}
+
+/// The habitat's secrets lent into `vault`, each entry it lacks: a test
+/// that runs a graft under a vault of its own (`HALE_VAULT_DIR`) reaches
+/// the habitat's record with them.
+#[allow(dead_code)]
+pub fn lend(to: &Path) {
+    habitat();
+    let _ = std::fs::create_dir_all(to);
+    let Ok(entries) = std::fs::read_dir(vault::dir()) else { return };
+    for e in entries.flatten() {
+        let target = to.join(e.file_name());
+        if e.path().is_file() && !target.exists() {
+            let _ = std::fs::copy(e.path(), &target);
+        }
+    }
 }

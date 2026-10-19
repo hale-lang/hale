@@ -38,7 +38,7 @@
 // refused whole as stale, never half applied.
 //
 // A batch may be planned on proposals still pending (`batch_plan_on`, what
-// `hale dna init --with <pack>` does with the holes init just proposed):
+// `hale habitat graft --with <pack>` does with the holes init just proposed):
 // planned as though they were ratified, it names those it stands on
 // (`planned_on`), and its ratification waits until each of them is decided —
 // ratified, it is planned again against the record and applied; one of them
@@ -1432,7 +1432,7 @@ fn batch_text(steps: String) -> String {
 
 // ---- a batch planned on pending proposals ---------------------------------
 //
-// `hale dna init --with <pack>` proposes the pack in the same breath as the
+// `hale habitat graft --with <pack>` proposes the pack in the same breath as the
 // holes init opens: the Board, each part's dev and reviewer, each operator.
 // Planned against the record alone, a pack that fills one of those seats is
 // refused (no position the graph states), since a hole is a proposal until
@@ -1465,7 +1465,7 @@ locus PlannedOn {
     fn verify_chain() -> Bool { return self.record.verify_chain(); }
 }
 
-// The holes `hale dna init` proposed that are not decided yet, one
+// The holes `hale habitat graft` proposed that are not decided yet, one
 // `<review id> <digest>` a line in the record's order: what `init --with`
 // plans its pack on.
 fn batch_init_holes(j: Journal) -> String {
@@ -1474,7 +1474,7 @@ fn batch_init_holes(j: Journal) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "review.requested" && native_json_string(e.body, "group") == "holes" && native_json_string(e.body, "author") == "hale dna init" && std::str::starts_with(e.entity, "review:") {
+        if e.kind == "review.requested" && native_json_string(e.body, "group") == "holes" && native_json_string(e.body, "author") == "hale habitat graft" && std::str::starts_with(e.entity, "review:") {
             asked = asked + e.entity[7..len(e.entity)] + " " + native_json_string(e.body, "knowledge_digest") + "\n";
         }
         if e.kind == "knowledge.ratified" || e.kind == "knowledge.declined" || e.kind == "knowledge.refused" { decided = decided + e.entity + "\n"; }

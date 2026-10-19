@@ -2,7 +2,7 @@
 // it reads that the voice fixture does not exercise (GH #1090, the
 // review's hardening).
 //
-// Four small repositories, each run through the real `hale dna init`:
+// Four small repositories, each run through the real `hale habitat graft`:
 //
 //   tricky  — YAML indented by four (compose services, schemas, CI jobs),
 //             a contract whose path is not ASCII, `$ref`s that leave the
@@ -51,10 +51,10 @@ fn init(repo: String) -> dna::RunResult {
     return dna::grafted(repo, ".\n--attach\n--no-library");
 }
 
-// `hale dna init .` on a repository whose birth a refusal left unfinished:
-// the record is born, so it is no graft again, and init finishes it.
+// The graft again, on a repository whose birth a refusal left unfinished:
+// the record is born, so the graft goes on where it stopped.
 fn init_again(repo: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init . --no-library\nsh\n" + repo + "\n" + toolchain());
+    return dna::grafted(repo, ".\n--attach\n--no-library");
 }
 
 // The record's rows past its birth, `<kind> <entity>` per line; "" when

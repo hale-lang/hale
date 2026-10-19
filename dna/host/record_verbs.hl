@@ -1,5 +1,5 @@
 // dna/host/record_verbs.hl — the record's operator surface that #649
-// added, and the seeding `hale dna init` / `upgrade` do through the host
+// added, and the seeding `hale habitat graft` / `hale dna upgrade` do through the host
 // rather than with record code of their own (the driver in
 // `crates/hale-cli/src/dna.rs` kept a third copy of the row-commit
 // sequence, with the three-try bound GH #603 removed elsewhere).
@@ -87,7 +87,7 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
 fn record_genesis_verb(root: String, body: String) -> Answer {
     if len(body) == 0 { return fail("record-genesis: the genesis row's body"); }
     let id = record_identity(root);
-    if len(id) == 0 { return fail("record-genesis: hale.toml pins no record; `hale dna init` pins it first"); }
+    if len(id) == 0 { return fail("record-genesis: hale.toml pins no record; `hale habitat graft` pins it first"); }
     if dna::event_digest("genesis", "record.genesis", "record", body) != id { return fail("record-genesis: the row's digest is not the identity hale.toml pins (" + id + ")"); }
     let key = dna::record_key(dna::schema_for(id));
     if !key.ready() { return fail("record-genesis: the record's key is not in the vault (" + dna::exchange_key_vault(dna::schema_for(id)) + "); `hale dna secrets` draws it"); }
@@ -181,7 +181,7 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
     return answer(to_string(landed) + "\n");
 }
 
-// ---- hale dna init on a repository (GH #1090) ----------------------------
+// ---- hale habitat graft on a repository (GH #1090) ----------------------------
 //
 // The repository read into the graph (dna/operations/graph_ingest.hl) and
 // its rows appended to the record after the declared purpose's proposal
@@ -206,7 +206,7 @@ fn structure_roles(root: String) -> String {
     return dna::trim_nl(std::str::trim(lit[0..end]));
 }
 
-// An application's (`hale dna init`, the application attached): `rows_path`
+// An application's (`hale habitat graft`, the application attached): `rows_path`
 // is a file of the artifact's rows, which land first; `app` names the
 // application's root seed; `description_path` is a file holding what
 // `hale check --api` exports.
@@ -225,7 +225,7 @@ fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String
     let mut rest = holes.proposals;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
-        proposals = proposals + hole_rows(keeps, rest[0..nl], "hale dna init");
+        proposals = proposals + hole_rows(keeps, rest[0..nl], "hale habitat graft");
         rest = rest[(nl + 1)..len(rest)];
     }
     // GH #995: the declared purpose, proposed in the same checked seed, so

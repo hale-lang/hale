@@ -7,7 +7,7 @@ the first task.
 ## What you need
 
 - The `hale` binary on your `PATH`.
-- git. The record lives in your repository, so `new` and `init` make
+- git. The record lives in your repository, so a graft makes
   one when there is none.
 - `docker compose` on your `PATH`. The organism's private services
   (Postgres for memory, NATS for the nerves, Prometheus for the senses)
@@ -22,11 +22,16 @@ the first task.
 
 ## Make one
 
-`hale dna new <name>` makes a greenfield application with its organism
-in a new directory:
+Every organism but the habitat is grafted from it: the habitat is the
+long-lived organism on your machine that holds every other one's
+infrastructure. `hale habitat up` births it the first time and brings
+it up after that ([The habitat](../habitat.md)). Then `hale habitat
+graft <name>` makes a greenfield application with its organism in a new
+directory, as the habitat's child:
 
 ```text
-$ hale dna new demo
+$ hale habitat up
+$ hale habitat graft demo
 ok: 1 file(s) typechecked
 created demo/hale.toml
 created demo/main.hl
@@ -78,7 +83,7 @@ login: the record's local config maps your uid to you, and
 `dna.trust = local` says this is one person's record, in which you hold
 every position.
 
-`new` refuses a directory that is not empty. `--profile remote-body
+A graft of a new application refuses a directory that exists. `--profile remote-body
 --remote <url> [--body <user@host>]` starts it on a shared record and
 a remote body instead; [The heart and the body](./heart.md) covers
 bodies.
@@ -86,10 +91,10 @@ bodies.
 ### Or attach one to an application you have
 
 ```sh
-hale dna init .
+hale habitat graft . --attach
 ```
 
-`init` prints the same kind of lines. It makes a git repository when
+`--attach` prints the same kind of lines. It makes a git repository when
 there is none, writes `vendor/dna`, and then cuts your application's
 structure with `hale check`: an application that does not check stops
 it there, before any of the organization is written, so fix the
@@ -97,12 +102,12 @@ application first. It keeps your application's files (`kept … (the
 application is not modified …)`), adds the two environments to your
 `hale.toml` (or writes one), and ends by running `hale fmt` over
 `dna/` and your application's seed. On a directory with no application
-at its root, `init` seeds the record with the repository's graph
-instead. An application's `init` reads its graph too, after the rows it
+at its root, the graft seeds the record with the repository's graph
+instead. Grafting an application reads its graph too, after the rows it
 observes: the application is the root seed, and each API surface it
 serves (and each stream over a hub) is a contract it meets as server,
 named from `hale check --api`, so the example above also ends with a
-`graph` line and a `holes` group. Either way `init` proposes the holes
+`graph` line and a `holes` group. Either way the graft proposes the holes
 that graph implies: the positions (the board, and for the application
 its `dev` and its `reviewer`), and with each position its **mandate**, a
 text bound to the position that says what it decides, what it may not,
@@ -158,7 +163,7 @@ hale habitat migrate .
 of `vendor/dna`: the digest of the DNA source this `hale` binary
 carries. `hale dna status` prints it on its first line.
 
-Commit what `new` wrote (the ignored files stay out):
+Commit what the graft wrote (the ignored files stay out):
 
 ```sh
 cd demo
@@ -186,7 +191,7 @@ proposes is tested against them before anyone is asked.
 
 ## Fill the vault
 
-`new` provisioned every secret the organism owns and left a slot for
+The graft provisioned every secret the organism owns and left a slot for
 each one a person supplies. The vault is a local directory,
 `HALE_VAULT_DIR`, else one under the toolchain's cache; each entry is
 a file of mode 600. `hale dna secrets` lists what the organism
@@ -315,7 +320,7 @@ born together.
 
 ## The first Review
 
-There is already something to decide. `new` declared a purpose and
+There is already something to decide. The graft declared a purpose and
 proposed it to the Board, which is you:
 
 ```hale,fragment
@@ -323,7 +328,7 @@ const PURPOSE: String = "refproj: keep the application correct, reviewable and e
 ```
 
 That is `dna/org/purpose.hl` in a project named `refproj`. The Review
-pins the text `new` declared by its digest, and your verdict ratifies
+pins the text the graft declared by its digest, and your verdict ratifies
 those words. `hale dna review` lists every pending Review, grouped:
 
 ```text
@@ -380,17 +385,17 @@ depth.
 
 `hale dna review all approve --as alice` decides every group in turn,
 the holes included. The holes are positions with nobody in them; to
-take the seats yourself in the same verdict, propose it at `init`:
+take the seats yourself in the same verdict, propose it at the graft:
 
 ```sh
-hale dna init . --with founder --set founder=alice --as alice
+hale habitat graft . --attach --with founder --set founder=alice --as alice
 hale dna review all approve --as alice      # with `dev` running
 ```
 
 The `founder` pack fills every seat the holes open (the board, the
 application's dev and reviewer) with you, planned on those holes while
 they are still proposals, and `review all` ratifies it right after them.
-[A pack at `init`](./shaping.md#a-pack-at-init) has how it waits for
+[A pack at the graft](./shaping.md#a-pack-at-the-graft) has how it waits for
 them and when it is refused.
 
 ## The first task

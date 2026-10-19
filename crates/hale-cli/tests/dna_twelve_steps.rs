@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -106,7 +108,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(ok, "before: {out}");
     let (ok, out) = hale(&["test", "."], &app);
     assert!(ok && out.contains("1 passed, 0 failed"), "before: {out}");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok, "init: {out}");
     let (ok, out) = hale(&["check", "--matrix", "."], &app);
     assert!(ok, "after init, the law: {out}");

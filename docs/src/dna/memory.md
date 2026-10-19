@@ -58,12 +58,12 @@ so two projects made alike are two records. It is the same in every
 clone and different for every record. Memory's schema and the nerves'
 token are both named after it (`dna_<identity>`).
 
-The genome pins it. `hale dna init` writes it into `hale.toml` as it
+The genome pins it. `hale habitat graft` writes it into `hale.toml` as it
 composes the record:
 
 ```toml
 [dna]
-record = "4f1c…"   # the record's identity, written by init
+record = "4f1c…"   # the record's identity, written by the graft
 ```
 
 A clone knows its record from the genome. A second clone reaches the
@@ -71,14 +71,14 @@ record through memory: its pin names the schema, and `hale habitat
 migrate` (or `hale dna upgrade` with the owner's DSN) keeps the head's
 DSN there. A pin whose genome is not the one this clone's history
 holds — a `hale.toml` copied from another project — is refused.
-Remove the line from a copied manifest and run `init` again.
+Remove the line from a copied manifest and graft it again.
 
-`hale dna init` appends two rows to the record it provisions:
+`hale habitat graft` appends two rows to the record it provisions:
 `record.genesis`, then `record.key {key}`, the public half of the
 record's key.
 
 A clone that still holds a record an earlier toolchain kept on git
-(`refs/dna/journal`) is refused by `init` and `upgrade`. Nothing reads
+(`refs/dna/journal`) is refused by a graft and `upgrade`. Nothing reads
 it and nothing carries it forward; see
 [Troubleshooting](./troubleshooting.md).
 
@@ -116,7 +116,7 @@ names the person on the verbs that take it.
 Whether a row counts is a check every reader makes,
 `dna::row_admissible`, under the clone's `dna.trust`:
 
-- `local`, the default and what `hale dna new` declares: every writer
+- `local`, the default and what `hale habitat graft` declares: every writer
   to the record is trusted.
 - `signed`: a person's row counts only when a key enrolled for them
   verifies its signature. A node answers an unverified request with a
@@ -272,7 +272,7 @@ the allocation and the project. To reach the services by hand:
 
 The habitat is long-lived: nothing takes it down when work ends, and
 your organism's memory is there on the next run. Only the habitat's
-acts provision or migrate. Birth (`hale dna init`, `hale dna new`)
+acts provision or migrate. Birth (`hale habitat up`, `hale habitat graft`)
 brings memory and the nerves up, applies memory's schema and creates
 the organization's stream. `hale habitat migrate [organism]` brings
 the organism's allocations up and moves memory's schema and the
@@ -367,7 +367,7 @@ is admitted until it answers.
 
 The graph is what memory understands of the record. Every node of
 [the spine](./spine.md) projects the record into it on its tick:
-ratified knowledge and its bindings, the code's structure as `init`
+ratified knowledge and its bindings, the code's structure as the graft
 observed it, the concerns and pressure raised per source, the
 repository's nodes and edges (`graph.node`, `graph.edge`), and who
 retired. Each record row is one transaction that moves memory's stamp
@@ -401,7 +401,7 @@ face](./head.md) and [Shaping and governing it](./shaping.md).
 
 ### Reading the repository again
 
-`hale dna init` reads the repository once. `hale dna ingest [--at
+`hale habitat graft` reads the repository once. `hale dna ingest [--at
 <rev>]` reads it again at a commit (`HEAD` by default) with the same
 ingest, and files what differs from the graph the record states as one
 Board Review, listed under `ingest`: nodes and edges added, bodies
@@ -437,7 +437,7 @@ the same way: `hale dna review <id>` lists, under `knowledge for …`, the
 ideas ratified for the node the Review is bound to (or `system:dna` for a
 change to the organization), when memory is there to ask.
 
-`init` writes the two nodes everything hangs from, `language:hale` and
+The graft writes the two nodes everything hangs from, `language:hale` and
 `system:dna`, and for an attached application the node
 `application:<name>` with a `written_in` edge to the language. It also
 proposes the toolchain's library: the book per chapter and the spec per
@@ -456,7 +456,7 @@ Work's brief until the Board decides:
 hale dna review                      # two library families, listed beside the practices
 hale dna review library approve      # ratify both families, and so bind every idea
 hale dna review <family id>          # the ideas a family ratifies, by name
-hale dna init --no-library           # a record with none of it (also `new --no-library`)
+hale habitat graft <name> --no-library    # a record with none of it
 ```
 
 What a brief pulls from the library is what is bound to the node it is

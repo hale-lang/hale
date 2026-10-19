@@ -1,5 +1,5 @@
 //! The vault a test's `hale` runs under (GH #989's Deferred line, closed):
-//! `hale dna init` and `upgrade` provision the organism's secrets and
+//! `hale habitat graft` and `hale dna upgrade` provision the organism's secrets and
 //! `hale dna secret set` fills a slot, so a test that ran them against the
 //! developer's vault left a throwaway organization's entries there, or a
 //! fake key in a real slot. Every `hale` a DNA test starts goes through

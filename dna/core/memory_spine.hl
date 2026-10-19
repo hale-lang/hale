@@ -116,7 +116,7 @@ fn memory_source(repo: String, env_name: String) -> String {
 // A record's identity names its memory: the schema `dna_<identity>`, the
 // nerves' organization token, the roles. It is pinned in the genome, as
 // `[dna] record = "<identity>"` in the repository's `hale.toml`, written by
-// `hale dna init` and `upgrade`, so a clone knows which record it belongs
+// `hale habitat graft` and `hale dna upgrade`, so a clone knows which record it belongs
 // to before it holds a row of it. The identity is the digest of the
 // record's first row, `record.genesis`, composed by init before the pin is
 // written; a `hale.toml` copied from another project names a record whose
@@ -287,7 +287,7 @@ fn record_identity_at(repo: String) -> RecordIdentity {
     // GH #1590: the record is memory's, and the pin is the only way a clone
     // names it; a genome with no pin names no record yet
     if !pin.present { return RecordIdentity { }; }
-    if hex_text(pinned) && len(pinned) == 40 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, the root commit of a record an earlier toolchain kept on git, and records are not carried forward: re-init a fresh record (remove the `[dna] record` line and run `hale dna init`)" }; }
+    if hex_text(pinned) && len(pinned) == 40 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, the root commit of a record an earlier toolchain kept on git, and records are not carried forward: re-init a fresh record (remove the `[dna] record` line and run `hale habitat graft`)" }; }
     if !hex_text(pinned) || len(pinned) != 64 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (64 lowercase hex digits)" }; }
     return RecordIdentity { id: pinned };
 }

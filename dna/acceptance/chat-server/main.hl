@@ -1,6 +1,6 @@
 // dna/acceptance/chat-server — the site's "A chat server that runs
 // itself" example, kept in-repo as the small application the Track D
-// acceptance scenario (GH #529 D7) governs in CI: `hale dna init`
+// acceptance scenario (GH #529 D7) governs in CI: `hale habitat graft`
 // attaches the DNA to it, an intent becomes a Mutation, a human's
 // verdict applies it, the host restarts it, the window judges it.
 //

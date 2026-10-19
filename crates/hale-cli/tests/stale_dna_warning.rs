@@ -1,5 +1,5 @@
 //! GH #785: the stale-binary warning covers the DNA source set. The
-//! binary embeds `dna/**` (GH #726) and `hale dna new` / `init` /
+//! binary embeds `dna/**` (GH #726) and `hale habitat graft` /
 //! `upgrade` materialize that, so a `dna/core` edited after the last
 //! build runs nowhere — and nothing said so on an ordinary `hale`
 //! invocation. Now the same warning the codegen tree gets fires when

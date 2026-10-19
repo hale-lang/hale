@@ -47,7 +47,7 @@ this API and removes its temporary build. The application's existing body and
 services retain their lifecycles. The launcher never initializes or commits the
 project, adopts its Ledger, starts infrastructure or fetches dependencies.
 
-For a fresh project, create it with `hale dna new /absolute/path/to/project` and
+For a fresh project, create it with `hale habitat graft /absolute/path/to/project` and
 commit the generated source before inspecting Organization. Organization reads
 use committed source and existing vendored dependencies; they exclude local
 uncommitted edits. Launching the face itself does not require a running body or a

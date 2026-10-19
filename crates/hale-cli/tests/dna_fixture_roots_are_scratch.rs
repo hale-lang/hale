@@ -2,8 +2,8 @@
 //! temporary root: it takes the one whose end takes everything under it
 //! down.
 //!
-//! A verb that applies memory's schema (`hale dna new`, `init`,
-//! `upgrade`, `memory migrate`, `hale habitat migrate`) with no
+//! A verb that applies memory's schema (`hale habitat graft`, `up`,
+//! `migrate`, `hale dna upgrade`, `memory migrate`) with no
 //! `HALE_DNA_MEMORY_DSN_OWNER` brings the organism's memory up in the
 //! local habitat, and `dev` and `run` start bodies. Under a
 //! root a test made by hand, nothing took the compose project down when
@@ -56,7 +56,7 @@ fn comment(kind: Kind, line: &str) -> bool {
     }
 }
 
-const VERBS: &[&str] = &["new", "init", "upgrade", "dev", "run"];
+const VERBS: &[&str] = &["upgrade", "dev", "run"];
 
 /// Whether `line` runs a verb that can start a body or bring up compose.
 fn runs_a_verb(kind: Kind, line: &str) -> bool {
@@ -69,13 +69,15 @@ fn runs_a_verb(kind: Kind, line: &str) -> bool {
     };
     let spelled = |sep: &str| VERBS.iter().any(|v| word(&format!("dna{sep}{v}"))) || word(&format!("memory{sep}migrate")) || word(&format!("habitat{sep}migrate")) || word(&format!("habitat{sep}graft")) || word(&format!("habitat{sep}up"));
     match kind {
-        // an argv line `dna\nnew`, or a shell string `dna new`
+        // an argv line `habitat\ngraft`, or a shell string `habitat graft`
         Kind::Fixture => spelled("\\n") || spelled(" "),
         Kind::Cli => {
             let squashed: String = line.split_whitespace().collect::<Vec<_>>().join("");
             VERBS.iter().any(|v| squashed.contains(&format!("\"dna\",\"{v}\"")))
                 || squashed.contains("\"dna\",\"memory\"")
                 || squashed.contains("\"habitat\",\"migrate\"")
+                || squashed.contains("\"habitat\",\"graft\"")
+                || squashed.contains("\"habitat\",\"up\"")
                 || spelled(" ")
         }
         Kind::Script => spelled(" "),
@@ -185,17 +187,17 @@ fn the_scan_is_not_vacuous() {
 #[test]
 fn the_matchers_see_what_they_name() {
     // what runs a verb
-    assert!(runs_a_verb(Kind::Fixture, r#"let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");"#));
-    assert!(runs_a_verb(Kind::Fixture, r#"exec \"$2\" dna new app\nsh\n"#));
+    assert!(runs_a_verb(Kind::Fixture, r#"let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbooks");"#));
+    assert!(runs_a_verb(Kind::Fixture, r#"exec env HALE_DNA_HABITAT=\"$3\" \"$2\" habitat graft app\nsh\n"#));
     assert!(runs_a_verb(Kind::Fixture, r#"let up = in_dir(app, toolchain() + "\ndna\nupgrade");"#));
     assert!(!runs_a_verb(Kind::Fixture, r#"dna_cli(repo, "task\ndone\nt1")"#));
     assert!(!runs_a_verb(Kind::Fixture, r#"toolchain() + "\ndna\nrunner""#));
     assert!(!runs_a_verb(Kind::Fixture, r#"std::test::assert(dsn.ok, "memory migrates: " + dsn.why);"#));
     assert!(runs_a_verb(Kind::Fixture, r#"in_dir(app, toolchain() + "\ndna\nmemory\nmigrate")"#));
-    assert!(runs_a_verb(Kind::Cli, r#"let (ok, out) = hale(&["dna", "new", "demo-app"], &d);"#));
-    assert!(runs_a_verb(Kind::Cli, r#".args(["dna",  "init", "."])"#));
+    assert!(runs_a_verb(Kind::Cli, r#"let (ok, out) = hale(&["habitat", "graft", "demo-app"], &d);"#));
+    assert!(runs_a_verb(Kind::Cli, r#".args(["habitat",  "up", "--no-body"])"#));
     assert!(!runs_a_verb(Kind::Cli, r#"hale(&["dna", "--embedded-digest"])"#));
-    assert!(runs_a_verb(Kind::Script, r#"LOTUS_DUMP_IR=1 "$hale" dna new "$tmp/warm" >/dev/null"#));
+    assert!(runs_a_verb(Kind::Script, r#"LOTUS_DUMP_IR=1 "$hale" habitat graft "$tmp/warm" >/dev/null"#));
     // what makes a root
     assert!(makes_a_root(Kind::Fixture, r#"let repo = "/tmp/dna-public-" + to_string(std::process::pid());"#));
     assert!(makes_a_root(Kind::Fixture, r#"let made = dna::run_tool("mktemp\n-d\n/tmp/hale-x.XXXXXX");"#));
@@ -206,8 +208,8 @@ fn the_matchers_see_what_they_name() {
     assert!(!makes_a_root(Kind::Cli, r#"let d = scratch::Scratch::new(format!("hale_dna_x_{}", std::process::id()));"#));
     assert!(makes_a_root(Kind::Script, r#"tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm.XXXXXX")"#));
     // a script that hands its root to the teardown passes
-    assert!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap '\"$here/compose-down-under.sh\" \"$tmp\"' EXIT\n\"$hale\" dna new \"$tmp/w\"\n").is_empty());
-    assert_eq!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\n\"$hale\" dna new \"$tmp/w\"\n").len(), 1);
+    assert!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap '\"$here/compose-down-under.sh\" \"$tmp\"' EXIT\n\"$hale\" habitat graft \"$tmp/w\"\n").is_empty());
+    assert_eq!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\n\"$hale\" habitat graft \"$tmp/w\"\n").len(), 1);
 }
 
 /// GH #1653: the three Rust and shell teardowns are one, `hale habitat

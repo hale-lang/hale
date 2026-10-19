@@ -323,7 +323,7 @@ main locus App {
         // the offline copy is another organism, so it is born with a record
         // of its own, as the first was
         let unpinned = in_dir(offline, "sh\n-c\nsed -i '/^record = /d' hale.toml && rm -f .hale/dna/memory.env && git commit -qam unpinned");
-        let reborn = in_dir(offline, toolchain() + "\ndna\ninit\n.");
+        let reborn = in_dir(offline, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach"));
         std::test::assert(unpinned.code == 0 && reborn.code == 0, "the offline copy has a record of its own: " + unpinned.stderr + reborn.stdout + reborn.stderr);
         let deliver = "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=\"$2\" exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + toolchain();
         // the first time, its concern cannot be raised: the bill stays, to be tried again

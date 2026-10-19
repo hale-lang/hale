@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -123,7 +125,8 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
             .expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
-    let (ok, out) = hale(&["dna", "new", "orggh"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orggh", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orggh");
     let bare = d.join("origin.git");
@@ -242,7 +245,8 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
             .expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
-    let (ok, out) = hale(&["dna", "new", "orgfile"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgfile", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgfile");
     let bare = d.join("origin.git");

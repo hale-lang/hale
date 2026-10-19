@@ -1,5 +1,5 @@
 // dna/api/project_service/tests/head_api_s3_test.hl — S3's operations
-// through the real head over HTTP (GH #965). A project `hale dna new`
+// through the real head over HTTP (GH #965). A project `hale habitat graft`
 // made is attached; a secret request carrying a `value` key, at the top
 // or inside its source, is refused at the door (400) and never
 // recorded; a secret set from a 0600 file source runs detached, settles
@@ -108,10 +108,11 @@ fn operation_entry(name: String, available: Bool, reason: String) -> String {
     return "\"name\": \"" + name + "\", \"version\": \"1\", \"available\": " + (if available { "true" } else { "false" }) + ", \"reason_code\": \"" + reason + "\"";
 }
 
-// A project made with `hale dna new` under `parent`, its genome committed.
+// A project grafted from the test's habitat under `parent`, its genome
+// committed.
 fn project(parent: String, name: String) -> String {
-    let made = in_dir(parent, "timeout\n600\n" + toolchain() + "\ndna\nnew\n" + name);
-    std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
+    let made = in_dir(parent, dna::in_habitat("timeout\n600\n" + toolchain() + "\nhabitat\ngraft\n" + name));
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft " + name + ": " + made.stdout + made.stderr);
     let app = parent + "/" + name;
     git(app, "config\nuser.name\nhead-s3");
     git(app, "config\nuser.email\nhead-s3@example.invalid");

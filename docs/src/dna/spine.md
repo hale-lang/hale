@@ -198,7 +198,7 @@ limits (depth 8, 32 steps, 32 members to a step, 8 attempts to a leaf,
 
 ### The catalog
 
-`hale dna new` writes `dna/org/workflows.hl`, which returns DNA's
+`hale habitat graft` writes `dna/org/workflows.hl`, which returns DNA's
 baseline plus your own. `hale dna upgrade` rewrites it to the current
 shape and never touches `dna/org/own_workflows.hl`. The baseline is
 the vendored toolchain's, so an upgrade supersedes a definition by

@@ -61,7 +61,7 @@ pub(crate) fn check_stale_cli() {
     }
 }
 
-/// GH #785: the same warning for the DNA source set. `hale dna new`,
+/// GH #785: the same warning for the DNA source set. `hale habitat graft`,
 /// `init` and `upgrade` materialize the `dna/` the binary EMBEDS
 /// (`hale_dna::EMBEDDED_DIGEST`, GH #726), and every organism a
 /// fixture starts runs that core — so a `dna/core` edited after the

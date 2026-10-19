@@ -13,7 +13,7 @@
 //
 // The fixture is a client of the surface through the generated one
 // (`dna/core/legs/head_commands`, `hale api client --lang hale`), over the
-// head's socket, on the todo repository `hale dna init` reads:
+// head's socket, on the todo repository `hale habitat graft` reads:
 //
 //   * unseated, the caller is listed the preview and the ungated rows only,
 //     and a batch, an opening and a fill are refused `unauthorized`, naming
@@ -201,7 +201,7 @@ locus App {
         dna::reap_on_exit(scratch);
         let binary = head_binary(scratch);
 
-        // The todo repository, read into a record by `hale dna init`; the
+        // The todo repository, read into a record by `hale habitat graft`; the
         // graph's `holds` edges say who holds what (init's local trust is
         // taken out); this uid is ada (init mapped it to whoever ran it),
         // who holds nothing yet.

@@ -115,7 +115,7 @@ locus HoleDoc {
     fn document() -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("author", "hale dna init");
+        b.string_field("author", "hale habitat graft");
         b.string_field("kind", "graph");
         b.string_field("name", self.name);
         b.string_field("provenance", "proposed");
@@ -160,7 +160,7 @@ fn hole_line(doc: String, question: String, group: String, kind: String, name: S
 }
 
 // The mandate proposed right after position `name`: a knowledge idea of
-// kind `mandate`, authored by `hale dna init`, bound by its `target` to the
+// kind `mandate`, authored by `hale habitat graft`, bound by its `target` to the
 // position's node, listed under `holes` directly after the position, so the
 // group's approval ratifies the position and then its mandate. The text is
 // the toolchain's (graph_mandates.hl); the binding is made at ratification
@@ -169,7 +169,7 @@ fn hole_mandate(name: String, text: String) -> String {
     let target = graph_node_id("position", name);
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("author", "hale dna init");
+    b.string_field("author", "hale habitat graft");
     b.string_field("kind", "mandate");
     b.string_field("name", "mandate/" + name);
     b.string_field("provenance", "proposed");

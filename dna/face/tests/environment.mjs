@@ -15,7 +15,7 @@ export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE'
 
 // Every environment a fixture is handed carries a vault of its own
 // (`HALE_VAULT_DIR`, mode 700, removed when the process exits) and no real
-// vault: `hale dna new` provisions the organism's secrets, and a fixture's
+// vault: a graft provisions the organism's secrets, and a fixture's
 // never land in the developer's vault or read a secret held there.
 function fixtureVault() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hale-face-vault-'));
@@ -50,6 +50,28 @@ export function isolatedEnvironment() {
     GIT_TERMINAL_PROMPT: '0', HALE_DNA_DISCOVER: 'off',
   });
 }
+
+// GH #1653: every organism but the habitat is grafted from a habitat. A
+// fixture's is the one its environment names (`XDG_DATA_HOME`, inside its
+// vault), born with no body before its first graft: on the operator's
+// backends when the runner names an owner's DSN and NATS (CI's: no
+// compose), else its own. `graftEnvironment` is `env` with the owner's
+// servers a graft agrees with; `habitatUp` and `graft` are the argv of the
+// two acts. A fixture's project is grafted with `--no-pack`: the standard
+// pack is a Board's to ratify, not a face case's.
+export function graftEnvironment(env) {
+  const graft = { ...env };
+  if (memoryOwner() && nervesOwner()) {
+    graft.HALE_DNA_MEMORY_DSN_OWNER = memoryOwner();
+    graft.HALE_DNA_NATS_URL_OWNER = nervesOwner();
+  } else {
+    delete graft.HALE_DNA_MEMORY_DSN_OWNER;
+    delete graft.HALE_DNA_NATS_URL_OWNER;
+  }
+  return graft;
+}
+export const habitatUp = () => ['habitat', 'up', '--no-body', '--backends', memoryOwner() && nervesOwner() ? 'operator' : 'own'];
+export const graft = dir => ['habitat', 'graft', dir, '--no-pack'];
 
 // The owner's DSN the Knowledge fixtures migrate a record with, from the
 // runner's own environment; "" when memory is not configured.

@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -74,7 +76,8 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "handed"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "handed", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("handed");
     std::fs::write(app.join("dna/org/models.hl"), PERSON_CATALOG).unwrap();

@@ -80,7 +80,7 @@ named `refproj` the users are:
 | `app-<name>` | the application the record attaches | publish on `<org>.app.<name>.>` alone; read nothing of DNA's |
 
 Each password is the vault's, `nats-<org>-<role>` (the application's
-is `nats-<org>-app-<name>`), drawn by `hale dna init` and drawn anew by
+is `nats-<org>-app-<name>`), drawn by `hale habitat graft` and drawn anew by
 every `hale dna upgrade`, which restarts the nerves allocation when it
 is up so it reads them. A part that connects names its user and its vault
 entry, and pond's client presents the password on the one line that
@@ -91,7 +91,7 @@ with a default.
 The application's account is provisioned when the record attaches the
 application and revoked by `hale dna application remove`
 ([The heart and the body](./heart.md)). A repository's record attaches
-one too: `hale dna init` on a repository root names its application by
+one too: `hale habitat graft <dir> --attach` on a repository root names its application by
 the project (its compose services are what express it), and its services
 publish their events as `app-<project>`. An application named
 `reflexes` holds no account: those subjects are the reflexes' alone.

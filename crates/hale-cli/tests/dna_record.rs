@@ -1,4 +1,4 @@
-//! GH #566 F1, #1590 — the record is memory's. `hale dna init` pins the
+//! GH #566 F1, #1590 — the record is memory's. `hale habitat graft` pins the
 //! record's identity in the genome and births the record in memory;
 //! nothing of it is a git ref or a file under `.hale/dna`; a clone of the
 //! genome reaches the same record through memory once its memory is
@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -34,7 +36,8 @@ fn the_record_is_memory_s_and_every_clone_reaches_it() {
     let d = scratch::Scratch::new(format!("hale_dna_record_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrec", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgrec", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrec");
     // the genome pins the record; nothing of the record is a ref or a file
@@ -63,7 +66,8 @@ fn the_record_is_memory_s_and_every_clone_reaches_it() {
     assert!(ok && after.contains(&format!("{n} event(s), chain verified")) && after.contains("review.requested"), "{after}");
 
     // init again keeps the record it has
-    let (ok, out) = hale(&["dna", "init", "."], &app);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
     assert!(ok && out.contains("kept    the record"), "init keeps an existing record: {out}");
 
     // a clone that still holds a record an earlier toolchain kept on git is
@@ -76,7 +80,8 @@ fn the_record_is_memory_s_and_every_clone_reaches_it() {
     git(&["commit", "-q", "-m", "base"], &old);
     let head = git(&["rev-parse", "HEAD"], &old);
     git(&["update-ref", "refs/dna/journal", &head], &old);
-    let (ok, refused) = hale(&["dna", "init", "."], &old);
+    habitat::habitat();
+    let (ok, refused) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &old);
     assert!(!ok && refused.contains("records are not carried forward: re-init a fresh record"), "init refuses a git-era record: {refused}");
     record::unmigrate(&app, &owner);
     let _ = std::fs::remove_dir_all(&d);

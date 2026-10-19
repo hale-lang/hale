@@ -277,7 +277,7 @@ host's tick (**The spine**, below).
   dna` verb in that clone given neither role's DSN runs with it. The
   file holds the head role's DSN alone (never the owner's or the
   spine's), is written mode 600 and never printed, and is written only
-  where git ignores it (`init` and `upgrade` keep `/.hale/` in
+  where git ignores it (a graft and `upgrade` keep `/.hale/` in
   `.gitignore`); a verb refuses it when it is readable by group or
   others, naming `chmod 600`. A kept DSN derived from anything but the
   operator's database or the organism's own memory allocation (another
@@ -419,7 +419,7 @@ sync.
 
 - **One row per event**: `seq`, `kind`, `entity`, `body`, `author`, the
   writer's role (`writer`, the session's), `prev`, `digest`, `sig`.
-- **The identity is the first row's digest.** `hale dna init` composes
+- **The identity is the first row's digest.** `hale habitat graft` composes
   `record.genesis {genome, nonce}` (the genome's root commit, and a
   nonce so two projects made alike are two records), pins its digest in
   `hale.toml` (`[dna] record`), provisions memory (the record's Ledger
@@ -458,9 +458,10 @@ sync.
   `signer.revoked {who}` rows, each counted only when signed by someone
   the record already admits; the first enrolment is the bootstrap).
 - **A record an earlier toolchain kept on git** (`refs/dna/journal`) is
-  not carried forward: nothing reads it, and `hale dna init` and `hale
-  dna upgrade` refuse a clone that holds one, saying to re-init a fresh
-  record (delete the old refs and the `[dna] record` line, then `init`).
+  not carried forward: nothing reads it, and a graft and `hale
+  dna upgrade` refuse a clone that holds one, saying to start a fresh
+  record (delete the old refs and the `[dna] record` line, then graft
+  again).
 - **Receipts** are kept in memory by the digest of their content: a
   verification step's output, a diff document. Events name receipts by
   digest. A receipt has a data class (GH #606): a `public` or
@@ -715,7 +716,7 @@ sync.
     nerves migrate` creates the stream, its inbox consumer (`exchange`,
     over `exchange.<org>.in.>`) and the card, purging the one before.
     The key's seed is the SHA-256 of the vault's `dna-exchange-<org>`,
-    drawn by `init`/`upgrade` like the organism's other secrets; it signs
+    drawn by the graft and `upgrade` like the organism's other secrets; it signs
     through `std::secret::Credential.sign_ed25519`, so neither the secret
     nor the seed leaves the vault's credential. The record is the signer
     (a record-to-record act); the person who acted is named in the
@@ -1264,7 +1265,7 @@ sync.
   out through those bindings. The generated organization reads them
   through its own pinned connection: a message that arrives is handed
   to every topic of its subject the organization subscribes, whatever
-  its `bindings` list (which `init` writes for most of them, for its
+  its `bindings` list (which the graft writes for most of them, for its
   own publishes). The payload
   is the bus's own encoding: both ends are Hale programs declaring the
   same topic, and nothing converts it. A one-shot verb instantiates no
@@ -1333,7 +1334,7 @@ sync.
   publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
-  `application.attached` lands (`hale dna init` lands it, for an
+  `application.attached` lands (`hale habitat graft` lands it, for an
   application and for a repository alike, then
   provisions the organism's secrets) and on every `upgrade` that finds
   it missing. `hale dna application remove [project] [--as <who>]`
@@ -1361,7 +1362,7 @@ sync.
     bootstrap from the same draw as the vault's entries, is the one file
     that holds a password: mode 600, mounted with `nats.conf` into the
     `nerves-<id>` service.
-  - **Rotation.** `init` and `upgrade` draw every role's password anew;
+  - **Rotation.** A graft and `upgrade` draw every role's password anew;
     a `nerves-<id>` allocation that is up is restarted to read them, and
     a restart that fails is said. A server of the operator's
     (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the secrets file
@@ -1482,7 +1483,7 @@ record's.
 |---|---|---|
 | `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain, and its `name`, which its broker account carries |
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
-| `structure.observed` | record | the compiler's model of one of its parts, at `init` |
+| `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph; a ratified graph proposal's receipt may carry one too (a re-ingest's retirement), with the same effect |
@@ -1495,7 +1496,7 @@ record's.
 | `position.proposed` / `position.refused` | record | the organization proposed the position's node and its mandate as one family Review, group `positions` (`digest`, `review_id`), or why not (a name the graph already states, no mandate, an `under` that names no node the graph states: the CLI resolves a bare `--under <name>` to the seed, work part, position or process the graph states by that name) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
-| `law.deferred` | record | a clause `init` could not certify |
+| `law.deferred` | record | a clause the graft could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
 | `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
 | `intent.unrecovered` | ledger | an intent offered before a restart that no admission names; never re-offered |
@@ -1684,7 +1685,7 @@ expansion.
 DNA ships a catalog of definitions, each a chain in which every step
 writes one store (`dna::baseline_definitions()`, in
 `dna/core/workflow_definition.hl`). A project's `dna/org/workflows.hl` is
-generated — written by `hale dna new` and rewritten to the current shape
+generated — written by `hale habitat graft` and rewritten to the current shape
 by every `hale dna upgrade`, whatever an earlier toolchain wrote — and
 returns it plus the project's own (`fn workflows() -> dna::WorkflowCatalog`),
 which live in `dna/org/own_workflows.hl` (`fn own_workflows(catalog)`:
@@ -1791,7 +1792,7 @@ what an admission would refuse each definition for.
 work (`step.*`, `attempt.*`, `work.settled`, `effect.*`), each one row
 of the Ledger in memory beside the record (GH #1590).
 
-**The declared purpose is a proposal like any other.** `hale dna init`
+**The declared purpose is a proposal like any other.** `hale habitat graft`
 proposes it in the record's one seed call (host verb `graph-ingest`, a repository's
 or an application's: kind `purpose`, author `org`, for
 `org`, `provenance: declared`) with the Board's Review under the
@@ -1800,7 +1801,7 @@ review purpose approve` decides; the generated organization holds no
 Review of its own for it.
 
 **The graph read again (`hale dna ingest [project] [--at <rev>]`).**
-`init` reads the repository once; a later commit is read again with the
+The graft reads the repository once; a later commit is read again with the
 same ingest, the commit (`HEAD` by default) checked out beside the
 record under `.hale/dna/ingest/` with the repository's own directory
 name and removed after. The ingest also states a `tool` node per
@@ -2302,7 +2303,7 @@ memory is named to it.
   fresh id per call (a claim by its holder renews); `renew` is counted
   by the caller. A leg's identity is a position the record knows —
   `position:<name>` from the graph (a `graph.node` row, or a position a ratified graph proposal
-  states: a hole `hale dna init` proposed, a position `hale dna position
+  states: a hole `hale habitat graft` proposed, a position `hale dna position
   open` opened; read through the record the command is admitted over,
   and ended by a reviewed retirement in a later ratified proposal) or the organization's own, `/` allowed in the name
   as the graph spells a process's positions (`position:api/dev`), with
@@ -2315,7 +2316,7 @@ memory is named to it.
   `unresolved`; 2 usage, or a catalog with a performer declaring no
   effect class.
   `run` is one cycle through the project's performers
-  (`dna/org/work.hl`, generated at init): a person's leg renders the
+  (`dna/org/work.hl`, generated by the graft): a person's leg renders the
   brief and leaves the outcome to `submit`; a deterministic performer
   wins for the work kinds it takes and settles; the model performer
   (`legs::ModelPerformer`) is the catalog's router behind the
@@ -2396,7 +2397,7 @@ memory is named to it.
   reads (the record head, the hat, the socket's path in
   `/capabilities`) stay HTTP. The principal is the peer's credentials
   mapped to a person by the record (`dna.unix.member`; a record that
-  declares `dna.trust = local`, as `hale dna new` declares for the one
+  declares `dna.trust = local`, as `hale habitat graft` declares for the one
   it makes, is that person's — they hold every position — and one that
   declares nothing, or another trust, leaves it to the graph's `holds`
   edges); the lease's holder is the position
@@ -3077,7 +3078,7 @@ its head (`journal`), *bodies* kept by the digest of their content, the
 implementation over memory, `MemRecord` the one for fixtures; what the
 interface kept for git's transport (chains built beside a head and
 swapped, cells, pointers, families shared with a remote) answers that
-the record is memory's. `hale dna init` and `upgrade` seed the record
+the record is memory's. `hale habitat graft` and `hale dna upgrade` seed the record
 through the host (`graph-ingest`, `design-upgrade`): the driver keeps no
 record code of its own.
 
@@ -3118,8 +3119,8 @@ interface.
 ## The organization
 
 The organism is an organization written in Hale (GH #566 F2): a
-program at `dna/org` that `hale dna init` generates and `hale dna run`
-runs. The application it oversees is not modified by `init` and
+program at `dna/org` that `hale habitat graft` generates and `hale dna run`
+runs. The application it oversees is not modified by the graft and
 contains none of it; it is observed like any Hale binary. The
 manifest declares two environments, the application's and the
 organization's (`[claims] no_base = true`; each adopts its own law).
@@ -3428,8 +3429,8 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   record's remote, the body lease and its last tick, `[dna] fleet`,
   the knowledge store's environment, `dna.trust`, `dna.github`; the
   status projection carries a `profile:` and a `body:` line. `hale
-  dna new --profile local|remote-body [--remote <url>] [--body
-  <user@host>]` sets pieces (a remote, `dna.body`); the profile name
+  habitat graft <name> --profile local|remote-body [--remote <url>]
+  [--body <user@host>]` sets pieces (a remote, `dna.body`); the profile name
   is not written anywhere. Profiles are examples of combinations,
   not a closed set; the toolchain refuses only what breaks a
   commitment (a second body on one record).
@@ -3561,7 +3562,7 @@ model named a file the listing does not hold (`SourceEditor.located_why`).
 
 **Which seed is checked.** A root that is itself a seed (it holds a
 `.hl` file of its own: an application's organization; the root
-`hale.toml` that `hale dna init` writes in repository mode is the
+`hale.toml` that `hale habitat graft` writes in repository mode is the
 organization's environments, not source, and does not make a seed) is
 checked and formatted whole. Otherwise (a repository, whose code sits under its
 seeds) each edited file's seed is its nearest ancestor directory under
@@ -3576,7 +3577,7 @@ topology run in the seed of the first file the candidate changed.
 ## Models
 
 The organization's models are a catalog in source (GH #583 M1):
-`dna/org/models.hl`, generated by `init` and owned by the project.
+`dna/org/models.hl`, generated by the graft and owned by the project.
 
 - **The seam.** `ModelBackend` (`identity`, `adapter`, `price_micros`,
   `model_name`, `allows`, `capacity_bytes`, `complete`) is what every
@@ -3756,7 +3757,7 @@ The organization's models are a catalog in source (GH #583 M1):
   is one more function; a provider switch is one file; `hale check`
   validates it and the law keeps the concrete types at every
   boundary.
-- **Discovery.** `init` and `new` look at the environment
+- **Discovery.** The graft looks at the environment
   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and `PATH` (`ollama`, whose
   first listed model becomes the desk model; `claude`, else `codex`,
   becomes `harness()`), write the catalog for what is there
@@ -3838,13 +3839,13 @@ The organization's models are a catalog in source (GH #583 M1):
   <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]`**
   appends `model.category` (prices in micro-dollars per 1k tokens); a
   `tools` or `do` category without `--tools` is refused. **`models
-  map`** lists the latest row per selector and per category. `hale dna
-  init` seeds a starting mapping when a hosted model's key is in the
+  map`** lists the latest row per selector and per category. A graft
+  (`hale habitat graft`) seeds a starting mapping when a hosted model's key is in the
   vault: `model.rule default` at `standard` (permitting every size), and
   every category `<mode>.<size>` filled by the hosted pair the catalog
   writes, `quick` by the fast model and `standard` and `deep` by the
   frontier one, each with tool calls and the catalog's prices, in the
-  name `hale dna init`; with no hosted key it seeds none. `hale dna
+  name `hale habitat graft`; with no hosted key it seeds none. `hale dna
   task create --size <size>` appends `model.rule task:<intent id>`, an
   override that holds only inside the sizes the rule beneath it
   permits.
@@ -3972,11 +3973,11 @@ The live half is memory's, projected from the record by the spine
   never read. A record with no rows yet has no identity: its projection
   opens under `dna_unscoped`, where nothing is ever applied, and moves
   to the record's own schema once its first row lands.
-- **The genome pins the identity (GH #1590).** `hale dna init`
+- **The genome pins the identity (GH #1590).** `hale habitat graft`
   composes the record's first row, writes `[dna] record = "<identity>"`
   into the repository's `hale.toml`, and only then provisions memory
   and appends the row, so a clone knows which record — which schema,
-  roles and nerves token — it belongs to from its genome. `init` writes
+  roles and nerves token — it belongs to from its genome. The graft writes
   it into the `dna` table wherever the manifest keeps it (a `[dna]`
   header in any spelling, dotted keys, an inline table), editing the
   parsed document so the rest of the file survives.
@@ -3987,7 +3988,7 @@ The live half is memory's, projected from the record by the spine
   taken for no pin; and a pin that is not 40 or 64 lowercase hex digits
   is none. A record whose first row names a genome this clone's
   history does not hold is not opened (the `hale.toml` naming it was
-  copied from another project). `init` in a clone whose pinned record
+  copied from another project). A graft in a clone whose pinned record
   memory does not hold refuses: it would start a second record under
   the first one's name.
 - **The spine projects; readers read.** `MemoryProjection`
@@ -4023,7 +4024,7 @@ The live half is memory's, projected from the record by the spine
   knowledge row <m>; the spine applies it on its tick`. The organization's knowledge package is read from memory
   under the spine role. The API reads the graph under the head's role
   (**The API**, below).
-- **The design, as proposals (GH #596 C).** `init` seeds the
+- **The design, as proposals (GH #596 C).** The graft seeds the
   toolchain's practices about how a DNA organization works — the
   design principles, the evolution pattern, structure follows intent,
   standard equipment, the structural signals, signaling, the optimize
@@ -4056,7 +4057,7 @@ The live half is memory's, projected from the record by the spine
   retires an idea by marking it not accepted: it leaves every package
   and stays readable by digest.
 - **The operating practices, as proposals (GH #994).** Beside the
-  design, `init` seeds a second family, `operating/<slug>`: how the
+  design, the graft seeds a second family, `operating/<slug>`: how the
   organism runs, which is what a leader plans within and a reviewer
   cites, where the design says how an organization is shaped — one
   store per step, row first, readings never act, legs hold nothing,
@@ -4113,7 +4114,7 @@ The live half is memory's, projected from the record by the spine
   package's budget; without memory (`HALE_DNA_MEMORY_DSN_HEAD`) it says
   the knowledge was not read, and a subject with no node prints nothing.
 - **The nodes knowledge is about, and the library (seed/pull,
-  seed/library).** `init`
+  seed/library).** The graft
   writes `graph.node` rows for `language:hale` (kind `language`, text
   `Hale <toolchain version>…`) and `system:dna` (kind `system`) and, for
   an attached application, `application:<account name>` (kind
@@ -4187,7 +4188,7 @@ The live half is memory's, projected from the record by the spine
   gets no library from an upgrade. `HALE_DNA_LIBRARY_VERSION` and
   `HALE_DNA_LIBRARY_SUFFIX` (fixtures only) name another version and
   append to every text: how a test makes a later toolchain out of the one
-  binary it has. `init --no-library` (and `new --no-library`) seeds none of
+  binary it has. `graft --no-library` seeds none of
   the nodes, the edge or the ideas (the practices stay). `language`,
   `system` and `application` are node kinds and
   `written_in(application, language)` an edge kind (**The repository's
@@ -4200,7 +4201,7 @@ The live half is memory's, projected from the record by the spine
   each, grouped `using`, seeded, decided and superseded exactly as the
   other two (`hale dna review using approve|reject`), and kept by
   `--no-library`: they are practices, not the library.
-- **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
+- **The charter (GH #596 L).** The graft writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
   decides — and what it must know before it plans an ask or decides a
@@ -4214,7 +4215,7 @@ The live half is memory's, projected from the record by the spine
   when memory has any — and puts it above the diffs. The model
   call carries `knowledge_bindings` naming the package, so the
   evidence of every decision that read it says so.
-- **`HALE_DNA_DISCOVER=off`** makes `init`'s discovery find nothing —
+- **`HALE_DNA_DISCOVER=off`** makes the graft's discovery find nothing —
   no key, no local model, no harness — so a fixture on a developer's
   machine makes the organization CI makes: one whose leader has no
   model that answers, whose plans take the defaults, and which spends
@@ -4352,7 +4353,7 @@ The live half is memory's, projected from the record by the spine
   `habitat/identity`, `habitat/admission`). It is the one organism born
   without a parent. `hale habitat up [--foreground] [--profile local]`
   births it the first time into `<habitat>/genome` (written from the
-  toolchain's files, a repository, then `init` on it, its record in its
+  toolchain's files, a repository, then the birth's seed on it, its record in its
   own memory allocation, and both packs proposed to its Board), then
   migrates its own memory and nerves (the habitat's schema is its own to
   move, at bootstrap and at a toolchain's upgrade), brings every tenant's
@@ -4388,13 +4389,13 @@ The live half is memory's, projected from the record by the spine
   the next `up`; `<habitat>/birth.pending` says a birth is not whole yet
   (and which of its profile and packs are done), but whether its record
   was born is memory's to say, never the file's. A pinned identity whose
-  `record.genesis` memory holds is resumed: the rest of `init`, each step
+  `record.genesis` memory holds is resumed: the rest of the birth, each step
   of which keeps what is done, against that record — every seed step
   checks its own completion and runs when it is missing (the seed when
   the record holds no `application.attached`, the seat when its git
   config keys are absent, each family for what the record does not hold,
-  the library and the models map when their rows are absent), so a plain
-  `hale dna init` that stopped part way is finished the same way. Only when memory
+  the library and the models map when their rows are absent), so a
+  graft that stopped part way is finished the same way. Only when memory
   answers that it holds no genesis for the pin, or the identity's memory
   allocation was never made (docker answers it has no such volume), is
   the identity drawn again and what was made for it taken down. Memory
@@ -4524,11 +4525,15 @@ The live half is memory's, projected from the record by the spine
   birth proposed (`hale dna pack apply <pack> --on-holes`), so one
   `review all approve` ratifies the starting organization whole; a
   pack the holes refuse is the graft's failing exit, its organism born.
-  A new application takes the profile pieces `hale dna new` took,
+  A new application takes the profile flags
   `--profile local|remote-body [--remote <url>] [--body <user@host>]`;
   an attached one keeps its own, and graft refuses them with `--attach`.
-  `hale dna new` and `hale dna init` still birth an organism with no
-  parent until graft replaces them.
+  `hale dna new` and `hale dna init` are retired: each exits 2 naming the
+  graft that replaces it (`hale habitat graft <name>`, `hale habitat graft
+  <dir> --attach`, with the flags it was given). A graft of an organism
+  this habitat's record already holds as its child goes on where its
+  birth stopped; one whose genesis names another parent, or none, is
+  refused.
 - **A test's organisms are grafted too** (GH #1653). A DNA fixture
   makes an organism with `dna::grafted(dir, args)`, into
   `dna::test_habitat()`: the DNA suite's slice habitat when the suite
@@ -4566,14 +4571,14 @@ The live half is memory's, projected from the record by the spine
   tears the local habitat down when work ends, and organisms are reused
   tenants from run to run: `hale dna dev` and `hale dna work next` run
   against whatever is up. Provisioning and migration are the habitat's
-  acts alone: **birth** (`init`, `new`) brings the organism's memory and
+  acts alone: **birth** (`hale habitat up`, `hale habitat graft`) brings the organism's memory and
   nerves allocations up, applies memory's schema and creates the
   organization's stream; `hale habitat migrate [organism]` brings its
   allocations up and moves memory's schema and the nerves' stream to this
   toolchain's, idempotently; `upgrade` moves the schema of an operator's
   own memory (`HALE_DNA_MEMORY_DSN_OWNER`); and the explicit verbs `hale
-  dna memory migrate`, `nerves migrate` and `senses up` remain until graft
-  retires the free-standing ones. **No other command migrates or
+  dna memory migrate`, `nerves migrate` and `senses up` remain until the graft
+  retires them. **No other command migrates or
   provisions as a side effect**: `dev`, `run`, `head`, `show`, `work` and
   the host's verbs derive the roles' DSNs and URLs from what is up
   (`memory-migrate --derive`, `nerves-migrate --derive`, `senses-up
@@ -4669,7 +4674,7 @@ The live half is memory's, projected from the record by the spine
   (a firm, GH #1123), `definition` (a workflow catalog definition a
   schedule convenes, GH #1143), and what knowledge is about (seed/pull):
   `language` (`language:hale`), `system` (`system:dna`) and
-  `application` (`application:<name>`), which `init` seeds and an ingest
+  `application` (`application:<name>`), which the graft seeds and an ingest
   of a repository never reads; a node's id is `<kind>:<name>`. **Hyperedge
   kinds**, arity two or more, each a list of members `{role, node}`
   whose first is its anchor:
@@ -4739,8 +4744,8 @@ The live half is memory's, projected from the record by the spine
   `organization` nodes and their `holds` edges, proposed and ratified as
   holes and holds (below). Who owns a position and who is a firm's
   member are `holds` edges, never a file: the owners map
-  (`dna/org/owners`) is retired, not rendered (GH #1123) — `hale dna
-  init` and `new` write none, and `hale dna upgrade` removes one,
+  (`dna/org/owners`) is retired, not rendered (GH #1123) — a graft
+  writes none, and `hale dna upgrade` removes one,
   noting the lines it named to be stated again as `holds` edges, and
   takes the generated `ownership:` field out of `dna/org/main.hl` (or
   notes it where the file was edited by hand). The organization's
@@ -4760,9 +4765,9 @@ The live half is memory's, projected from the record by the spine
   ratified practices that bind something, one hyperedge each.
   `Pq.graph_ownership()` is JSON `[node, holder]` pairs of every live
   `holds` edge an organization is in (**Owners**).
-- **Ingest: `hale dna init` on a repository (GH #1090).** A directory
+- **Ingest: `hale habitat graft <dir> --attach` on a repository (GH #1090).** A directory
   with no Hale source of its own that is no workspace's seed is a
-  repository, not one application: `init` makes the organization there
+  repository, not one application: the graft makes the organization there
   as it would for an application — `vendor/dna`, `dna/org`, the manifest
   with `[claims] no_base` and `[environments.org]` alone (there is no
   application entrypoint) — cuts no topology artifact, and seeds the
@@ -4791,8 +4796,8 @@ The live half is memory's, projected from the record by the spine
   `index.html`, `/app/<path>` the file `ui/<path>`, nothing outside it,
   for the attached project: `ops::application_asset`; a file's bytes are
   written as they are, with their length and the extension's content
-  type, so an image or a font arrives whole), and `init` says so
-  on a `note` line; when nothing references it `init` says once that it
+  type, so an image or a font arrives whole), and the graft says so
+  on a `note` line; when nothing references it the graft says once that it
   is ignored. Neither writes a row. **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
   and each directory under `spec/vendor/`; **nouns** — a YAML contract's
   `components.schemas` and a markdown contract's `CREATE TABLE`s, named
@@ -4835,14 +4840,14 @@ The live half is memory's, projected from the record by the spine
   a meets row that links no contract; a runs row that names no
   deployment; a name in code in a declaring table that is no process,
   seed or file of the repository. Nothing is appended then, the purpose's
-  Review included (init seeds it and the graph in one `graph-ingest`
-  call), so the record does not exist and init can be run again once the
-  document is fixed. A job's own `name:` names its gate and is not a
-  word its steps say. `init` says what it read:
+  Review included (the graft seeds it and the graph in one `graph-ingest`
+  call), so the record does not exist and the graft can be run again once
+  the document is fixed. A job's own `name:` names its gate and is not a
+  word its steps say. The graft says what it read:
   `graph   <n> node(s), <m> edge(s): <count> <kind>, …; <p> proposal(s)`.
   A record that exists is not reseeded.
-- **Ingest: `hale dna init` on an application (seed/structure-2).** An
-  application's `init` enriches this one path; there is no second
+- **Ingest: `hale habitat graft <dir> --attach` on an application (seed/structure-2).** An
+  grafting an application enriches this one path; there is no second
   proposer and no starter chart. The artifact's rows are unchanged
   (`application.attached`, `structure.observed` per locus, topic, binding
   and effect class, `responsibility.proposed` per locus: facts the Board
@@ -4859,7 +4864,7 @@ The live half is memory's, projected from the record by the spine
   manifest walk finds it as before): the root that is never a seed for a
   repository is one here, a compose process of its name unfolds into it, a
   CI step naming `.` guards it, and an application with no `README.md`
-  takes the purpose `init` declares (`dna/org/purpose.hl`) as its
+  takes the purpose the graft declares (`dna/org/purpose.hl`) as its
   `purpose` node, so the board has a place. And each API surface it serves
   is a **contract** the seed `meets` as server: `api:<Surface>`, from the
   toolchain's own export (`hale check --api`, handed to the host as a
@@ -4871,18 +4876,18 @@ The live half is memory's, projected from the record by the spine
   table's row. The `requires` of the surface's members, and of a stream, are
   the contract's **roles**: the equipment of the positions that serve it
   (**Standard equipment**, below), never an organization and
-  never authority. `init` says what it read on the same
+  never authority. The graft says what it read on the same
   `graph   …` line, and writes `dna/org/structure.hl` as for a
   repository. A fresh application whose export is empty has two nodes (its
   `purpose` and its seed) and no edge.
 - **Holes as proposals (GH #1091).** What a repository cannot imply
-  and a delivery needs, `init` proposes at record birth, each on its own
+  and a delivery needs, the graft proposes at record birth, each on its own
   with one Board Review, in the same checked seed as the graph (so a
   repository whose holes cannot be proposed leaves no record either).
   The holes are **derived from the graph's edges**, never enumerated; a
   *part* is a process, or a seed no process unfolds into (a UI, a
   validator); a cell naming a seed a process unfolds into (a link, a path
-  inside it) names that process. `init` proposes: a `board` under the purpose; under each
+  inside it) names that process. The graft proposes: a `board` under the purpose; under each
   part that serves or consumes a contract (`meets`) — and under an
   application's own seed whether or not it serves one — a `reviewer` whose
   proposal carries a `reviews` edge to the part's seed and to every
@@ -4894,13 +4899,13 @@ The live half is memory's, projected from the record by the spine
   `operator` with a `reviews` edge to the deployment; and each item a document
   marks `derived`, `practice` or `law`, proposed as advice (a `law`
   item's question asks for law). The one structure policy is the
-  project's: **`dna/org/structure.hl`**, which `init` writes for a
+  project's: **`dna/org/structure.hl`**, which the graft writes for a
   repository or an application unless one is there already, and whose
   `fn operational_roles() -> String` names, space-separated, the
   operational roles each deployment also gets (`support`, `accounts`,
   `billing`, `on-call`), proposed empty and signing nothing — `""`, none,
-  by default. It is read once, when `init` seeds the record, so a project
-  opts in by writing the file before `init`; a word that is no
+  by default. It is read once, when the graft seeds the record, so a project
+  opts in by writing the file before grafting; a word that is no
   operational role refuses the seed, and a role named twice is proposed
   once. `upgrade` rewrites an existing file to the current shape, keeps
   the roles it names, and notes every other line the rewrite dropped. A work item is an
@@ -4936,7 +4941,7 @@ The live half is memory's, projected from the record by the spine
   `PositionOpenRequested` until it is answered. The organization refuses
   a name with a space or `|`, no mandate, no author, a name the graph
   states, or an `under` the graph does not state (`position.refused`);
-  otherwise it proposes the position's node (the body `init` writes for
+  otherwise it proposes the position's node (the body the graft writes for
   a hole, and an `unfold` edge from the part with `--under`) and its
   mandate as two members of one family Review in the group `positions`
   (`position.proposed`), which ratifying ratifies both.
@@ -4976,9 +4981,9 @@ The live half is memory's, projected from the record by the spine
   each seat; a wildcard that finds no vacant seat is refused.
   **Planned on pending proposals (`--on-holes`, `batch_plan_on`).**
   `hale dna apply <file> --on-holes` and `hale dna pack apply … --on-holes`
-  (what `init --with` passes) plan the batch on the holes `hale dna init`
+  (what `graft --with` passes) plan the batch on the holes `hale habitat graft`
   proposed that are not decided yet (`batch_init_holes`: each
-  `review.requested` in the group `holes` authored by `hale dna init`
+  `review.requested` in the group `holes` authored by `hale habitat graft`
   whose digest has no `knowledge.ratified`, `knowledge.declined` or
   `knowledge.refused`): the record is read with a `knowledge.ratified`
   row for each appended (`PlannedOn`, a read-only journal), so a hole's
@@ -4999,7 +5004,7 @@ The live half is memory's, projected from the record by the spine
   is refused whole as stale (`the batch is stale: the proposal it was
   planned on, k:…, was not ratified`); when all are ratified, it is
   planned again against the record and its `effects` compared, as every
-  batch is. A pack that opens a position init already proposes is
+  batch is. A pack that opens a position the graft already proposes is
   refused when it is proposed (`` `position:…` is a position the graph
   already states``), not at ratification.
   **The operations, as graph rows.** `assign` adds a `reviews` edge
@@ -5076,7 +5081,7 @@ The live half is memory's, projected from the record by the spine
   `path`, `summary`, `params` with each one's default, `""` for none).
   With no `--from` the nursery is the toolchain's (`dna/nursery`,
   embedded: `dev-team`, `small-startup`, `content-team`, `founder`,
-  `fill * {founder}`, one person in every vacant seat, what `init --with
+  `fill * {founder}`, one person in every vacant seat, what `graft --with
   founder --set founder=<who>` proposes, and `standard`, the standard
   practices every organism is to adopt at birth, each a `law` step that
   extends the foundational law once ratified: its first clause,
@@ -5154,10 +5159,10 @@ The live half is memory's, projected from the record by the spine
   Review the same steps await. The habitat UI is a client of the
   generated surface (`hale api client --surface HeadCommands`), and wires
   its affordances to these members.
-  **Mandates (seed/structure).** Each position `init` proposes carries a
+  **Mandates (seed/structure).** Each position the graft proposes carries a
   **mandate**, proposed in the same seed right after its hole: a
-  knowledge idea of kind `mandate` (family `mandate`, `author: hale dna
-  init`, name `mandate/<position name>`, `target` the position's node id,
+  knowledge idea of kind `mandate` (family `mandate`, `author: hale habitat
+  graft`, name `mandate/<position name>`, `target` the position's node id,
   `position:<name>`), whose text states what the position decides, what it
   may not, what it cites, how it writes and what it escalates. `review`
   lists it under `holes` directly after its position (question: `ratify
@@ -5182,7 +5187,7 @@ The live half is memory's, projected from the record by the spine
   rest, inside the grant, the Leader's), cited and not re-implemented; the
   charter refines them. The organism's own positions the hat already names
   (`position:leader`, `position:editor`, `position:agent`) get theirs at
-  `init` and `upgrade` under `design` beside the design practices
+  the graft and `upgrade` under `design` beside the design practices
   (`design/mandate-<name>`, a seeded practice with a `target`, proposed as
   a `mandate` bound to it and superseded on `upgrade` the same way).
   **Standard equipment.** A proposed position's node body carries
@@ -5218,7 +5223,7 @@ The live half is memory's, projected from the record by the spine
   position (`fill org/collections organization:north`) or a person's
   membership of a firm (`fill organization:north bob`), each a `holds`
   edge (GH #1123) —
-  as `hale dna practice propose` asks for a practice (`init` alone writes
+  as `hale dna practice propose` asks for a practice (the graft alone writes
   proposals directly, since no organism exists yet): a
   `hold.requested <id> {request_id, position, holder, by}` row in the
   asker's name, relayed as `HoldRequested` until the organization answers
@@ -5260,7 +5265,7 @@ The live half is memory's, projected from the record by the spine
   so). Its expression is the repository's compose services (below).
 - **A repository's application is its compose services (ruling 11,
   2026-10-12).** The compose file is a repository's expression, and the
-  record attaches its application all the same: `init` lands
+  record attaches its application all the same: the graft lands
   `application.attached` (entity `.`) with the project's name as `name`,
   `repository: true` and no `main`, `artifact` or shape (nothing was
   cut), before the purpose and the graph. Its broker account is drawn as
@@ -5398,7 +5403,7 @@ The live half is memory's, projected from the record by the spine
   answers. Nothing is edited through it: a change moves through the
   record's rows, and the spine projects it into both perspectives. A
   record with no rows is the empty perspective, with no memory asked, and
-  stderr says `hale dna init` births a record; with rows and no memory
+  stderr says a graft births a record; with rows and no memory
   named it refuses, and says the graph is
   memory's. The projection's stamp is read before the graph, so the rows
   it reports never overstate what the graph holds. Text
@@ -5433,7 +5438,7 @@ The live half is memory's, projected from the record by the spine
   its holes filled the two texts are GRAPH.md's renderings, byte for byte
   (`dna/tests/graph_show_test.hl`).
 - **Projections and ranking (K3).** The tail also projects the
-  record's `structure.observed` rows (init's loci, topics, bindings,
+  record's `structure.observed` rows (the graft's loci, topics, bindings,
   effect classes and claims) into memory by kind and name, the
   latest row winning, and its `pressure.raised` and `concern.raised`
   rows into signals counted per (kind, source, what) with the last
@@ -5539,7 +5544,7 @@ The assembly names what fills each role; `hale check` sees the wiring.
 
 The skin's (GH #989). **A secret is provisioned when its owner is
 declared and consumed when it runs.** Organism-level secrets are
-provisioned by `hale dna init` and `upgrade`, whether or not the part
+provisioned by a graft and `hale dna upgrade`, whether or not the part
 that uses one runs; per-member secrets are provisioned at that member's
 admission, and are not on the organism's list: an owner's head role on
 a shared record (`postgres-<schema>_head_<owner>`) where the owner
@@ -5565,7 +5570,7 @@ secret, by its vault name, and never creates one.
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
-  it; the nerves' are drawn anew on every `init` and `upgrade`, since
+  it; the nerves' are drawn anew on every graft and `upgrade`, since
   the server's include is written from the same draw. The habitat's
   allocations read theirs from files written from the same draw as the
   vault's entries, beside the allocation and never in a checkout
@@ -5805,7 +5810,7 @@ through memory's append function, and starts every child — the
 organization, the application, iris, an instance — through `sh`,
 detached, with its pid, its exit code and its log as files under
 `.hale/dna/` or `.hale/node/<name>/`, echoing the log to the terminal
-a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
+a tick at a time. The compiler keeps the graft and `upgrade` (they
 embed the sources), `hale fleet check` and the plan schema, and the
 exec shims. The host decides nothing.
 
@@ -5857,7 +5862,7 @@ every build a miss.
 
 ## The embedded source has a name
 
-`hale dna init` / `new` / `upgrade` materialize `vendor/dna` from the
+A graft and `hale dna upgrade` materialize `vendor/dna` from the
 DNA source **embedded in the `hale` binary**, so an organism runs the
 core that binary carries and not the one in any checkout. A version
 does not identify that source — two builds of one version can embed
@@ -6025,7 +6030,7 @@ otherwise.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `HALE_DNA_DISCOVER=off` | discover | `off` makes `init`'s discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the `init` it runs. |
+| `HALE_DNA_DISCOVER=off` | discover | `off` makes the graft's discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the graft it runs. |
 | `HALE_DNA_TAPE=record\|replay` | the catalog's `mode` | Whether a `RecordedModel` whose `mode_env` names it records answers or replays them; the trio fixture's catalog and `scripts/dna-cycle` name it. |
 | `HALE_DNA_TAPE_DIR=<dir>` | the catalog's `dir` | The tape directory of a `RecordedModel` whose `dir_env` names it. |
 | `HALE_DNA_TOOLCHAIN=<path>` | the running `hale` | The toolchain binary the host and the processes it starts use; `hale dna` sets it to the binary it is. It is part of a seed's build fingerprint. |
@@ -6083,7 +6088,7 @@ otherwise.
 | `HALE_DNA_ORGANIZATION_LAUNCH=<attempt>` | unset | Set by the host on the organization process it starts for a workflow attempt: which attempt launched it. |
 | `HALE_DNA_RESTART_FOR=<mutation>` | unset | Set by the host when it restarts an expression on a Mutation's request; the expression journals `expression.restarted` for it (GH #529 D6). |
 | `HALE_DNA_EXPRESSION=<name>` | unset | The expression that was restarted; set with `HALE_DNA_RESTART_FOR`. |
-| `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
+| `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale habitat graft` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
 | `HALE_DNA_LIBRARY_VERSION=<version>` | the toolchain's | The version the library is proposed under (`library/<node>@<version>`, and on each idea): a fixture's way to make a later toolchain out of the one binary it has, so `upgrade`'s supersession is exercised against real record history. |
 | `HALE_DNA_LIBRARY_SUFFIX=<text>` | unset | Appended to every library idea's text, so a later version's ideas differ from the earlier's (fixtures only). |
 | `HALE_DNA_LIBRARY_EARLIER_NAMES=1` | unset | The two moved chapters are proposed under their earlier names (`library/api`, `library/shaping`): a fixture's way to make a record the earlier toolchain would have seeded, so an upgrade is seen finding them (fixtures only). |

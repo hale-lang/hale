@@ -11,6 +11,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -109,7 +111,8 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgapply"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgapply", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgapply");
     git(&["init", "-q", "-b", "main"], &app);
