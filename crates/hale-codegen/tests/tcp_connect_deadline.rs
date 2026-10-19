@@ -5,7 +5,8 @@
 //! SYN retransmits). `connect_within(host, port, timeout)` bounds the one
 //! attempt (tls: the dial and the handshake), `connect_wait`'s `wait`
 //! bounds the whole dial, `std::http::Client`'s `timeout_ms` bounds each
-//! attempt's dial, and every expiry is the IoError kind `timeout`. On an
+//! call's dials (and, since 2026-10-18, the rest of the call: the test at
+//! the end of this file), and every expiry is the IoError kind `timeout`. On an
 //! `async_io` pool the pending connect parks the coroutine.
 //!
 //! The host that never answers is made here, deterministically, without
@@ -437,4 +438,78 @@ fn the_one_shot_http_fns_dial_under_a_30_s_deadline() {
         );
     }
     let _ = std::fs::remove_file(&bin);
+}
+
+/// A server that accepts every connection and then holds it: it reads
+/// the request and answers nothing, or (`partial`) answers the status
+/// line, headers and the first bytes of a body it never finishes. The
+/// connections stay open while it lives.
+struct Holder {
+    port: u16,
+    _accepting: std::thread::JoinHandle<()>,
+}
+
+impl Holder {
+    fn new(partial: bool) -> Holder {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let port = addr.port();
+        let accepting = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                if partial {
+                    use std::io::Write;
+                    let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc");
+                }
+                held.push(conn);
+            }
+        });
+        Holder { port, _accepting: accepting }
+    }
+}
+
+/// `std::http::Client`'s `timeout_ms` bounded only the dial: a server that
+/// accepted and then held the response blocked the caller indefinitely,
+/// and the default three retries repeated it (a request took 120 s
+/// against a server holding each call 30 s). It bounds the call whole
+/// now — the dial, the writes, the headers and the body, and the retries
+/// — on both the one-shot and the keep-alive path, and a body the
+/// deadline cuts short is no response.
+#[test]
+fn the_http_client_timeout_bounds_a_held_response_and_its_retries() {
+    let src = r#"
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let url = "http://127.0.0.1:" + to_string(port) + "/";
+            let empty = std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            let c = std::http::Client { timeout_ms: 300 };
+            let t = std::time::monotonic_ns();
+            let r = c.get(url) or { println("plain kind=", err.kind, " ms=", (std::time::monotonic_ns() - t) / 1000000); println("plain_detail ", err.detail); empty };
+            let k = std::http::Client { timeout_ms: 300, keep_alive: true };
+            let t2 = std::time::monotonic_ns();
+            let r2 = k.get(url) or { println("pooled kind=", err.kind, " ms=", (std::time::monotonic_ns() - t2) / 1000000); println("pooled_detail ", err.detail); empty };
+            let t3 = std::time::monotonic_ns();
+            let r3 = c.post(url, b"x=1", "application/x-www-form-urlencoded") or { println("post kind=", err.kind, " ms=", (std::time::monotonic_ns() - t3) / 1000000); empty };
+            println("statuses ", r.status + r2.status + r3.status);
+        }
+    "#;
+    for partial in [false, true] {
+        let holder = Holder::new(partial);
+        let port = holder.port.to_string();
+        let out = run(&format!("hale_http_client_held_{partial}"), src, &[&port]);
+        for tag in ["plain ", "pooled ", "post "] {
+            assert_eq!(field(&out, tag, "kind"), "retries_exhausted", "partial={partial} {tag}: {out}");
+            let took = ms(&out, tag);
+            assert!(
+                (280..1500).contains(&took),
+                "partial={partial} {tag}: the call must end at timeout_ms, retries included; took {took} ms: {out}"
+            );
+        }
+        for tag in ["plain_detail ", "pooled_detail "] {
+            let line = out.lines().find(|l| l.starts_with(tag)).expect(tag);
+            assert!(line.contains("timeout: no complete response within 300 ms"), "partial={partial}: {line:?}");
+        }
+        assert!(out.contains("statuses 0"), "no truncated response is handed back: {out}");
+    }
 }

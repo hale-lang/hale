@@ -583,12 +583,17 @@ let r = c.get("http://api.local/health") or raise;
 ```
 
 The `Client`'s `timeout_ms` (30 s unless you say otherwise) bounds
-each attempt's connect — and, for https, the TLS handshake — so a host
-that never answers costs that long, not the kernel's two minutes; the
-error's `detail` names the timeout. `timeout_ms: 0` turns the bound
-off. The one-shot `get` / `post` / `request` dial under the same 30 s
-bound, failing `connect_failed` when it ends; for another deadline,
-make the call through a `Client { timeout_ms: 2000, max_retries: 0 }`,
+the whole call: the connect (and, for https, the TLS handshake),
+sending the request, reading the response's headers and body, and the
+retries, which start only while time is left. A host that never
+answers, or a server that accepts and then sits on the response, costs
+that long and no more, retries included, and the error's `detail` names
+the timeout; a response cut short by it is an error, never a truncated
+body. `timeout_ms: 0` turns the bound off — which a download that may
+outlast 30 s needs. The one-shot `get` / `post` / `request` run under
+the same 30 s bound, failing `connect_failed` when it ends the dial and
+`recv_failed` when it ends the exchange; for another deadline, make
+the call through a `Client { timeout_ms: 2000, max_retries: 0 }`,
 which without `keep_alive` is the same one-shot exchange.
 
 The `Client` retries a 5xx too. A one-shot `get` hands a 5xx back as

@@ -4,7 +4,7 @@
 // Outbound HTTP/1.1 for both schemes:
 //   - `std::http::get(url)` / `post(url, body, content_type)` /
 //     `request(req)` — one-shot free fns, `Connection: close`,
-//     read-to-close, the dial bounded at 30 s (the `Client`'s
+//     read-to-close, the whole call bounded at 30 s (the `Client`'s
 //     default `timeout_ms`). `fallible(std::http::HttpError)`.
 //   - `std::http::Client` — pooled locus: per-host keep-alive
 //     (opt-in), retry-with-backoff, configurable user-agent /
@@ -215,6 +215,81 @@ fn __http_close_handle(handle: Int, is_tls: Bool) {
     if is_tls { std::io::tls::close(handle); } else { std::io::tcp::__close_fd(handle); }
 }
 
+// ---- the call's deadline ---------------------------------------------
+//
+// `timeout_ms` bounds a call whole: the dial, the writes and the reads
+// of the headers and the body, every attempt and the backoff between
+// them. It is one monotonic instant (ns), 0 for none. Each write and
+// each read is armed with what is left of it (SO_SNDTIMEO / SO_RCVTIMEO,
+// which an async_io pool's park mirrors), so a server that accepts and
+// then holds the response ends the call at the deadline: it used to
+// bound only the dial, and a request against a server holding each
+// response 30 s took 120 s through the default three retries.
+
+fn __http_deadline(timeout_ms: Int) -> Int {
+    if timeout_ms <= 0 { return 0; }
+    return std::time::monotonic_ns() + timeout_ms * 1000000;
+}
+
+// Whether `deadline` has passed (never, for none).
+fn __http_expired(deadline: Int) -> Bool {
+    return deadline != 0 && std::time::monotonic_ns() >= deadline;
+}
+
+// What is left before `deadline` in ms, for a dial: at least 1 while
+// it has not passed; 0 for none.
+fn __http_left_ms(deadline: Int) -> Int {
+    if deadline == 0 { return 0; }
+    let left = (deadline - std::time::monotonic_ns()) / 1000000;
+    return if left < 1 { 1 } else { left };
+}
+
+// Arm `handle`'s write and read waits with what is left before
+// `deadline`; false once it has passed. No deadline arms nothing.
+fn __http_arm(handle: Int, is_tls: Bool, deadline: Int) -> Bool {
+    if deadline == 0 { return true; }
+    let left = deadline - std::time::monotonic_ns();
+    if left <= 0 { return false; }
+    if is_tls {
+        std::io::tls::set_recv_timeout(handle, left * 1ns) or discard;
+        std::io::tls::set_send_timeout(handle, left * 1ns) or discard;
+    } else {
+        std::io::tcp::set_recv_timeout(handle, left * 1ns) or discard;
+        std::io::tcp::set_send_timeout(handle, left * 1ns) or discard;
+    }
+    return true;
+}
+
+// Clear what `__http_arm` set, for a connection going back to the pool.
+fn __http_disarm(handle: Int, is_tls: Bool, deadline: Int) {
+    if deadline == 0 { return; }
+    if is_tls {
+        std::io::tls::set_recv_timeout(handle, 0ns) or discard;
+        std::io::tls::set_send_timeout(handle, 0ns) or discard;
+    } else {
+        std::io::tcp::set_recv_timeout(handle, 0ns) or discard;
+        std::io::tcp::set_send_timeout(handle, 0ns) or discard;
+    }
+}
+
+// A read within `deadline`: empty once it has passed, as at EOF; the
+// caller tells the two apart with `__http_expired`.
+fn __http_recv_within(handle: Int, is_tls: Bool, max_bytes: Int, deadline: Int) -> Bytes {
+    if !__http_arm(handle, is_tls, deadline) { return b""; }
+    return __http_recv_raw(handle, is_tls, max_bytes);
+}
+
+// A write within `deadline`: -1 once it has passed.
+fn __http_send_within(handle: Int, is_tls: Bool, b: Bytes, deadline: Int) -> Int {
+    if !__http_arm(handle, is_tls, deadline) { return -1; }
+    return __http_send_raw(handle, is_tls, b);
+}
+
+// What a call its deadline ended says.
+fn __http_timeout_detail(host: String, port: Int, timeout_ms: Int) -> String {
+    return host + ":" + to_string(port) + " timeout: no complete response within " + to_string(timeout_ms) + " ms";
+}
+
 // Connect + TCP_NODELAY (Nagle costs up to ~40ms on small
 // writes). `timeout_ms` bounds the dial — the TCP connect and, for
 // https, the TLS handshake — and `0` leaves it unbounded.
@@ -344,7 +419,7 @@ fn __http_parse_client_response(raw: Bytes) -> std::http::ClientResponse {
 }
 
 // Drain a one-shot connection to close (or max_total).
-fn __http_recv_to_close(s: __StdHttpConn, max_total: Int) -> Bytes {
+fn __http_recv_to_close(s: __StdHttpConn, max_total: Int, deadline: Int) -> Bytes {
     let chunk_size = 8192;
     let mut total = 0;
     let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
@@ -352,7 +427,7 @@ fn __http_recv_to_close(s: __StdHttpConn, max_total: Int) -> Bytes {
         let want = max_total - total;
         let mut take = chunk_size;
         if want < take { take = want; }
-        let piece = s.recv_bytes(take);
+        let piece = __http_recv_within(s.handle, s.is_tls, take, deadline);
         let n = len(piece);
         if n <= 0 { return buf.snapshot() or raise; }
         buf.append(piece);
@@ -366,14 +441,15 @@ fn __http_exchange_oneshot(
     s: __StdHttpConn,
     req: std::http::ClientRequest,
     user_agent: String,
-    max_body: Int
+    max_body: Int,
+    deadline: Int
 ) -> std::http::ClientResponse {
     let header_block = __http_build_request_headers(req, user_agent, false);
-    s.send_bytes(std::bytes::from_string(header_block));
+    __http_send_within(s.handle, s.is_tls, std::bytes::from_string(header_block), deadline);
     if len(req.body) > 0 {
-        s.send_bytes(req.body);
+        __http_send_within(s.handle, s.is_tls, req.body, deadline);
     }
-    let raw = __http_recv_to_close(s, max_body);
+    let raw = __http_recv_to_close(s, max_body, deadline);
     return __http_parse_client_response(raw);
 }
 
@@ -474,7 +550,7 @@ type __StdHttpFramedRead { bytes: Bytes; framed: Bool; }
 // by Content-Length or chunked. framed=true ⇒ stopped cleanly at
 // the boundary (connection reusable); framed=false ⇒ EOF/close
 // or unframable (fall back to read-to-close semantics).
-fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFramedRead {
+fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int, deadline: Int) -> __StdHttpFramedRead {
     let chunk = 8192;
     let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
     let mut total = 0;
@@ -483,7 +559,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
 
     while total < max_body {
         let take = if (max_body - total) < chunk { max_body - total } else { chunk };
-        let piece = __http_recv_raw(handle, is_tls, take);
+        let piece = __http_recv_within(handle, is_tls, take, deadline);
         let n = len(piece);
         if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false }; }
         buf.append(piece);
@@ -510,7 +586,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
                 return __StdHttpFramedRead { bytes: full, framed: false };
             }
             let take = if (max_body - total) < chunk { max_body - total } else { chunk };
-            let piece = __http_recv_raw(handle, is_tls, take);
+            let piece = __http_recv_within(handle, is_tls, take, deadline);
             let n = len(piece);
             if n <= 0 { return __StdHttpFramedRead { bytes: full, framed: false }; }
             buf.append(piece);
@@ -527,7 +603,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
         while total < need && total < max_body {
             let want = need - total;
             let take = if want < chunk { want } else { chunk };
-            let piece = __http_recv_raw(handle, is_tls, take);
+            let piece = __http_recv_within(handle, is_tls, take, deadline);
             let n = len(piece);
             if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false }; }
             buf.append(piece);
@@ -540,7 +616,7 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int) -> __StdHttpFram
 
     while total < max_body {
         let take = if (max_body - total) < chunk { max_body - total } else { chunk };
-        let piece = __http_recv_raw(handle, is_tls, take);
+        let piece = __http_recv_within(handle, is_tls, take, deadline);
         let n = len(piece);
         if n <= 0 { break; }
         buf.append(piece);
@@ -554,15 +630,20 @@ type __StdHttpExchangeResult { resp: std::http::ClientResponse; ok: Bool; reusab
 // One keep-alive round-trip on a raw handle (no auto-close).
 // reusable ⇒ cleanly framed AND the peer didn't say
 // `Connection: close`.
-fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRequest, ua: String, max_body: Int) -> __StdHttpExchangeResult {
+fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRequest, ua: String, max_body: Int, deadline: Int) -> __StdHttpExchangeResult {
     let header_block = __http_build_request_headers(req, ua, true);
-    let sent = __http_send_raw(handle, is_tls, std::bytes::from_string(header_block));
+    let sent = __http_send_within(handle, is_tls, std::bytes::from_string(header_block), deadline);
     if sent < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
     if len(req.body) > 0 {
-        let bs = __http_send_raw(handle, is_tls, req.body);
+        let bs = __http_send_within(handle, is_tls, req.body, deadline);
         if bs < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
     }
-    let fr = __http_recv_framed(handle, is_tls, max_body);
+    let fr = __http_recv_framed(handle, is_tls, max_body, deadline);
+    // a read the deadline cut short is no response, however much of
+    // one it holds
+    if !fr.framed && __http_expired(deadline) {
+        return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false };
+    }
     let resp = __http_parse_client_response(fr.bytes);
     if resp.status <= 0 { return __StdHttpExchangeResult { resp: resp, ok: false, reusable: false }; }
     let conn = std::str::lower(__http_client_header(resp.headers, "connection"));
@@ -591,20 +672,25 @@ fn __http_check_scheme(scheme: String) -> Int fallible(std::http::HttpError) {
 }
 
 // One-shot exchange: connect, send, recv-to-close, parse. The
-// __StdHttpConn's fn-exit dissolve closes the handle. `timeout_ms`
-// bounds the dial (0: unbounded).
+// __StdHttpConn's fn-exit dissolve closes the handle. The whole
+// exchange ends by `deadline` (0: unbounded); `timeout_ms` is what set
+// it, for the message.
 fn __http_round_trip_oneshot(
     req: std::http::ClientRequest,
     user_agent: String,
     max_body: Int,
-    timeout_ms: Int
+    timeout_ms: Int,
+    deadline: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let host = req.url.host;
     let port = req.url.port;
     let is_tls = req.url.scheme == "https";
-    let handle = __http_dial_nd(host, port, is_tls, timeout_ms) or __http_raise_connect(err, host, port, timeout_ms);
+    let handle = __http_dial_nd(host, port, is_tls, __http_left_ms(deadline)) or __http_raise_connect(err, host, port, timeout_ms);
     let s = __StdHttpConn { handle: handle, is_tls: is_tls };
-    let resp = __http_exchange_oneshot(s, req, user_agent, max_body);
+    let resp = __http_exchange_oneshot(s, req, user_agent, max_body, deadline);
+    if __http_expired(deadline) {
+        fail std::http::HttpError { kind: "recv_failed", status: 0, detail: __http_timeout_detail(host, port, timeout_ms) };
+    }
     if resp.status <= 0 {
         fail std::http::HttpError { kind: "bad_response", status: 0, detail: "unparseable response" };
     }
@@ -622,13 +708,14 @@ fn __http_round_trip_with_retry(
     max_retries: Int,
     timeout_ms: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let deadline = __http_deadline(timeout_ms);
     let mut attempt = 0;
     let mut last_5xx = __http_empty_client_response();
     let mut detail = "";
     let max_attempts = max_retries + 1;
     while attempt < max_attempts {
         let mut failure = "";
-        let resp = __http_round_trip_oneshot(req, user_agent, max_body, timeout_ms) or {
+        let resp = __http_round_trip_oneshot(req, user_agent, max_body, timeout_ms, deadline) or {
             failure = err.kind + " " + err.detail;
             __http_empty_client_response()
         };
@@ -642,21 +729,26 @@ fn __http_round_trip_with_retry(
             detail = failure;
         }
         attempt = attempt + 1;
+        // the retries share the call's deadline: none starts once it
+        // has passed, nor sleeps past it
+        if __http_expired(deadline) { break; }
         if attempt < max_attempts {
             std::time::sleep(50ms);
         }
     }
-    fail __http_retries_exhausted(last_5xx, detail + " after " + to_string(max_attempts) + " attempt(s)");
+    fail __http_retries_exhausted(last_5xx, detail + " after " + to_string(attempt) + " attempt(s)");
 }
 
 // ---- free-fn surface (one-shot) -------------------------------------
 
-// The one-shot fns' dial deadline, 30000 ms: the TCP connect and, for
-// https, the TLS handshake. 30 s, the pooled Client's default
-// `timeout_ms` (and Go's default dialer's), so a host that never
-// answers fails `connect_failed` with "timeout: no connection within
-// 30000 ms" instead of holding the caller for the kernel's ~2 min of
-// SYN retransmits. A different deadline is `std::http::Client {
+// The one-shot fns' deadline, 30000 ms, over the whole call: the TCP
+// connect and, for https, the TLS handshake, the request's writes and
+// the response's reads. 30 s, the pooled Client's default `timeout_ms`,
+// so a host that never answers fails `connect_failed` with "timeout: no
+// connection within 30000 ms" instead of holding the caller for the
+// kernel's ~2 min of SYN retransmits, and one that accepts and never
+// answers fails `recv_failed` with "timeout: no complete response
+// within 30000 ms". A different deadline is `std::http::Client {
 // timeout_ms: …, max_retries: 0 }`, whose default (keep_alive false)
 // is the same one-shot exchange. The three fns below pass it as the
 // literal 30000.
@@ -669,7 +761,7 @@ fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std:
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
 }
 
 // `std::http::post(url, body, content_type)`.
@@ -681,7 +773,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
     let req = std::http::ClientRequest {
         method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
     };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
 }
 
 // `std::http::request(req)` — full control over method / headers
@@ -689,7 +781,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
 /// One-shot arbitrary request (build a ClientRequest yourself).
 fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
 }
 
 // ---- the pooled Client ----------------------------------------------
@@ -708,7 +800,9 @@ fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResp
 /// `max_body` params; `keep_alive: true` switches to framed
 /// reads (Content-Length or chunked) over a 4-slot per-host:port
 /// connection pool with retry-and-backoff. `timeout_ms` bounds each
-/// attempt's dial (the TCP connect and, for https, the handshake);
+/// call whole: every attempt's dial (the TCP connect and, for https,
+/// the handshake), its writes and its reads of the headers and the
+/// body, and the retries, which start only while it has not passed;
 /// `0` leaves it unbounded. Same fallible get/post/request surface
 /// as the free fns.
 locus __StdHttpClient {
@@ -761,11 +855,12 @@ locus __StdHttpClient {
         let port = req.url.port;
         let is_tls = req.url.scheme == "https";
 
+        let deadline = __http_deadline(self.timeout_ms);
         let pfd = self.__pool_take(host, port, is_tls);
         if pfd >= 0 {
-            let ex = __http_exchange_on_handle(pfd, is_tls, req, self.user_agent, self.max_body);
+            let ex = __http_exchange_on_handle(pfd, is_tls, req, self.user_agent, self.max_body, deadline);
             if ex.ok {
-                if ex.reusable { self.__pool_put(host, port, pfd, is_tls); }
+                if ex.reusable { __http_disarm(pfd, is_tls, deadline); self.__pool_put(host, port, pfd, is_tls); }
                 else { __http_close_handle(pfd, is_tls); }
                 return ex.resp;
             }
@@ -776,32 +871,34 @@ locus __StdHttpClient {
         let max_attempts = self.max_retries + 1;
         let mut last_5xx = __http_empty_client_response();
         let mut detail = "";
-        while attempt < max_attempts {
-            let fd = __http_dial_nd(host, port, is_tls, self.timeout_ms) or {
+        while attempt < max_attempts && !__http_expired(deadline) {
+            let fd = __http_dial_nd(host, port, is_tls, __http_left_ms(deadline)) or {
                 detail = "connect_failed " + __http_connect_detail(err, self.timeout_ms);
                     -1
             };
             if fd >= 0 {
-                let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body);
+                let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body, deadline);
                 if ex.ok && ex.resp.status < 500 {
-                    if ex.reusable { self.__pool_put(host, port, fd, is_tls); }
+                    if ex.reusable { __http_disarm(fd, is_tls, deadline); self.__pool_put(host, port, fd, is_tls); }
                     else { __http_close_handle(fd, is_tls); }
                     return ex.resp;
                 }
                 if ex.ok {
                     last_5xx = ex.resp;
                     detail = "status " + to_string(ex.resp.status);
+                } else if __http_expired(deadline) {
+                    detail = "timeout: no complete response within " + to_string(self.timeout_ms) + " ms";
                 } else {
                     detail = "no response";
                 }
                 __http_close_handle(fd, is_tls);
             }
             attempt = attempt + 1;
-            if attempt < max_attempts { std::time::sleep(50ms); }
+            if attempt < max_attempts && !__http_expired(deadline) { std::time::sleep(50ms); }
         }
         fail __http_retries_exhausted(
             last_5xx,
-            host + ":" + to_string(port) + " " + detail + " after " + to_string(max_attempts) + " attempt(s)"
+            host + ":" + to_string(port) + " " + detail + " after " + to_string(attempt) + " attempt(s)"
         );
     }
 
