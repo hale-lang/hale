@@ -12388,6 +12388,46 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #1477: a `std::observe::Probes` param asks the runtime to serve
+    /// the process's probes, which are the process's: one, on the main
+    /// locus, and built by its default (a literal of the main locus
+    /// supplying it is refused where the literal is checked).
+    fn check_probes_params(&mut self, decl: &'a LocusDecl) {
+        let probes: Vec<&ParamDecl> = decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Params(pb) => Some(pb.params.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter(|p| crate::probes::is_probes_param(p))
+            .collect();
+        if !decl.is_main {
+            for p in &probes {
+                self.diags.push(Diag::ty(
+                    p.span,
+                    format!(
+                        "`{}: std::observe::Probes` is a param of `{}`, which is not the main locus: the \
+                         probes are the process's, and the main locus declares them",
+                        p.name.name, decl.name.name
+                    ),
+                ));
+            }
+            return;
+        }
+        for p in probes.iter().skip(1) {
+            self.diags.push(Diag::ty(
+                p.span,
+                format!(
+                    "`{}`: the main locus declares one `std::observe::Probes` (`{}` is the first); a \
+                     process serves one probe set",
+                    p.name.name, probes[0].name.name
+                ),
+            ));
+        }
+    }
+
     fn check_locus(&mut self, decl: &'a LocusDecl) {
         if !decl.generics.is_empty() {
             self.typed.body(decl.id).enclosing_locus = Some(decl.id);
@@ -12402,6 +12442,8 @@ impl<'a> Checker<'a> {
         // GH #747 — a `const` is not a locus member. Also before the
         // lookup, for the same reason.
         self.check_no_member_consts(decl);
+        // GH #1477 — the runtime's probes are one param of the main locus.
+        self.check_probes_params(decl);
 
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
@@ -25619,6 +25661,26 @@ impl<'a> Checker<'a> {
                         init.span,
                         format!(
                             "locus `{}`: param `{}` is a hub that streams are bound to; its default is the hub, and a construction cannot supply another",
+                            name, init.name.name
+                        ),
+                    ));
+                }
+                // GH #1477: the probes param is built by its default; a
+                // construction that supplied another would serve probes
+                // the declaration does not describe
+                let probes = self.locus_decls.get(name).is_some_and(|l| {
+                    l.members.iter().any(|m| {
+                        matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p|
+                            p.name.name == init.name.name
+                                && crate::probes::is_probes_param(p)))
+                    })
+                });
+                if probes {
+                    self.diags.push(Diag::ty(
+                        init.span,
+                        format!(
+                            "locus `{}`: param `{}` is the process's probes; its default builds them, and a \
+                             construction cannot supply another (set the port in the default)",
                             name, init.name.name
                         ),
                     ));

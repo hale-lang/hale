@@ -459,6 +459,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("url.hl", &["url"]),
         ("rand.hl", &["rand"]),
         ("crypto.hl", &["crypto"]),
+        ("probes.hl", &["process"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[

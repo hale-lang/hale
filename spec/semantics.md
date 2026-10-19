@@ -4054,6 +4054,51 @@ spawns one OS worker thread per inferred pool name beyond
 named purely by use site, and the runtime materializes them
 on demand at startup.
 
+
+## Probes
+
+A param of the main locus of type `std::observe::Probes` (GH #1477,
+2026-10-19) asks the runtime to serve the process's health over HTTP on
+its `port`, every interface:
+
+```hale,fragment
+params {
+    probe_port: Int = 9090;
+    probes: std::observe::Probes = std::observe::Probes { port: self.probe_port };
+}
+```
+
+Since #1565 what the runtime serves is an ordinary param of main,
+recognized by its type as a hub and an exposure are; there is no
+keyword. The check allows one, on the main locus, built by its default:
+a param of the type on another locus, a second one, and a construction
+of the main locus that supplies it are refused. Its port is a param
+literal's field, checked as one, and a default reading `self.<param>`
+is a default like any other. Nothing is served, and nothing is sampled,
+in a program that declares none.
+
+The param's `birth()` starts the probes on a thread of the runtime's
+own, not on a pool or a thread the program places: the probes judge the
+program's pools and its main thread, so they must answer while any of
+those is wedged or busy. The param is declared and named like any
+other; a placement does not apply to the thread. A port that cannot be
+bound fails the start. `wasm32` has no threads or sockets and serves
+none.
+
+| path | answers |
+|---|---|
+| `GET /healthz` | liveness: `200 ok`, unless a queue holds work its consumer has not touched for the stall window (main's queue, each cooperative pool's; 10 s, `LOTUS_PROBES_STALL_MS`), then `503` and `stalled: <queue> …` (`main`, `pool:<name>`) |
+| `GET /readyz` | readiness: `503 starting` until the main locus's births are done (its params' children born, a placed child's readiness awaited, its bindings open, its boot subscriptions in place, its `run()` not yet entered), `200 ready` from then, `503 draining` once the process drains (a signal's drain or the main locus's tree drain, `self.draining`) |
+| `GET /capacity` | `application/json`: `{"ready", "draining", "queues": [{"name", "pending", "capacity", "stalled_ms"}]}`, a queue's cells waiting, the cells it holds before it grows or spills, and how long it has stalled (0 while it moves) |
+
+Any other path is `404`, and any method but `GET` and `HEAD` is `405`;
+each connection gets one response and closes. The readings cost the
+program nothing on its own paths: once a second the probe thread reads
+each queue's depth and its consumer's heartbeat (the count every drain
+and every cell taken bumps), and a queue is stalled while it holds work
+and that count stands still. A pool worker running one long cell with
+nothing waiting is not stalled.
+
 ## Seams
 
 A seam (GH #1530, 2026-10-17) stitches a producer whose output is a set to

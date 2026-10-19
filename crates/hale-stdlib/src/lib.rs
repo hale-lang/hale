@@ -242,6 +242,10 @@ pub const AP_SOURCE: &str = concat!(
     "\n",
     // std::crypto::ed25519_keypair: one fn over a native primitive.
     include_str!("../hl/crypto.hl"),
+    "\n",
+    // std::observe::Probes (GH #1477): a locus over one native
+    // primitive; order is free.
+    include_str!("../hl/probes.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -286,6 +290,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("url.hl", include_str!("../hl/url.hl")),
     ("rand.hl", include_str!("../hl/rand.hl")),
     ("crypto.hl", include_str!("../hl/crypto.hl")),
+    ("probes.hl", include_str!("../hl/probes.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -550,6 +555,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "process", "wait"], "__std_process_wait"),
     (&["std", "process", "write_stdin"], "__std_process_write_stdin"),
     (&["std", "source", "Walk"], "__StdSourceWalk"),
+    (&["std", "observe", "Probes"], "__StdObserveProbes"),
     // v1.x polish (2026-05-20): qualified `std::str::ParseError`
     // resolves to the same bare ParseError the stdlib's parse_*
     // fns inject. Lets users disambiguate explicitly in fn

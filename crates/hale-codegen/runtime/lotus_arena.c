@@ -52,6 +52,7 @@
 #include "wasm/lotus_wasm_shim.h"
 #else
 #include <stdint.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26075,6 +26076,299 @@ static lotus_bus_queue_t *g_bus_queue_for_remote = NULL;
 
 void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
     g_bus_queue_for_remote = queue;
+}
+
+/*
+ * Runtime probes (GH #1477, S1): a main-locus param of type
+ * `std::observe::Probes` (`probes: std::observe::Probes { port: 9090 }`)
+ * asks the runtime to serve the process's health over HTTP, on a thread
+ * of its own, so a wedged pool or a busy main thread cannot keep it from
+ * answering. Nothing is served unless a program declares it: the param's
+ * birth calls `lotus_probes_start(port)` (the listener, not yet ready),
+ * and the main locus calls `lotus_probes_ready()` once all its births are
+ * done, just before its run().
+ *
+ *   GET /healthz   liveness: 200 unless a queue has work its consumer has
+ *                  not touched for the stall window (main's queue, each
+ *                  cooperative pool's; 10 s, or `LOTUS_PROBES_STALL_MS`);
+ *                  503 naming the queues.
+ *   GET /readyz    readiness: 200 once every birth is done (the start is
+ *                  that point) and while the process is not draining; 503
+ *                  otherwise.
+ *   GET /capacity  JSON: ready, draining, and per queue its pending cells,
+ *                  its capacity, and how long it has stalled.
+ *
+ * Nothing is sampled on the program's hot path: the probe thread reads
+ * each queue's consumer heartbeat (`drains`, bumped at every drain and
+ * every cell taken) and depth once a second, relaxed and racy by design;
+ * a queue is stalled while it holds work and its heartbeat stands still.
+ * wasm32 has neither threads nor sockets, and serves nothing.
+ */
+#define LOTUS_PROBES_STALL_NS ((uint64_t)10 * 1000000000ull)
+static uint64_t g_probes_stall_ns = LOTUS_PROBES_STALL_NS;
+#define LOTUS_PROBES_MAX_QUEUES (LOTUS_COOP_POOL_MAX + 1)
+
+#ifndef __wasm__
+typedef struct {
+    char     name[72];
+    uint64_t pending;
+    uint64_t capacity;
+    uint64_t heartbeat;
+    uint64_t moved_at;   /* monotonic ns: last heartbeat move, or last seen idle */
+} lotus_probe_queue_t;
+
+static _Atomic int g_probes_started = 0;
+static _Atomic int g_probes_ready = 0;
+static pthread_mutex_t g_probes_lock = PTHREAD_MUTEX_INITIALIZER;
+static lotus_probe_queue_t g_probe_queues[LOTUS_PROBES_MAX_QUEUES];
+static size_t g_probe_queue_count = 0;
+
+static uint64_t lotus_probes_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* One reading of every queue: main's, then each pool's in registration
+ * order. Under g_probes_lock. */
+static void lotus_probes_sample(void) {
+    uint64_t now = lotus_probes_now();
+    size_t n = 0;
+    lotus_bus_queue_t *q = g_bus_queue_for_remote;
+    if (q) {
+        lotus_probe_queue_t *s = &g_probe_queues[n++];
+        size_t head = __atomic_load_n(&q->head, __ATOMIC_RELAXED);
+        size_t tail = __atomic_load_n(&q->tail, __ATOMIC_RELAXED);
+        size_t cap = __atomic_load_n(&q->cap, __ATOMIC_RELAXED);
+        uint64_t pending = tail > head ? (uint64_t)(tail - head) : 0;
+        uint64_t beat = atomic_load_explicit(&q->drains, memory_order_relaxed);
+        if (s->name[0] == '\0') {
+            snprintf(s->name, sizeof s->name, "main");
+            s->moved_at = now;
+            s->heartbeat = beat;
+        }
+        if (beat != s->heartbeat || pending == 0) s->moved_at = now;
+        s->heartbeat = beat;
+        s->pending = pending;
+        s->capacity = cap;
+    }
+    size_t pools = g_coop_pool_count;
+    for (size_t i = 0; i < pools && n < LOTUS_PROBES_MAX_QUEUES; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (!p) continue;
+        lotus_probe_queue_t *s = &g_probe_queues[n++];
+        uint64_t enq = atomic_load_explicit(&p->ring.enqueue_pos, memory_order_relaxed);
+        uint64_t deq = atomic_load_explicit(&p->ring.dequeue_pos, memory_order_relaxed);
+        uint64_t spilled = (uint64_t)atomic_load_explicit(&p->spill.len, memory_order_relaxed);
+        uint64_t pending = (enq > deq ? enq - deq : 0) + spilled;
+        uint64_t beat = atomic_load_explicit(&p->spill.drains, memory_order_relaxed);
+        char name[72];
+        snprintf(name, sizeof name, "pool:%s", p->name);
+        if (strcmp(s->name, name) != 0) {
+            memcpy(s->name, name, sizeof name);
+            s->moved_at = now;
+            s->heartbeat = beat;
+        }
+        if (beat != s->heartbeat || pending == 0) s->moved_at = now;
+        s->heartbeat = beat;
+        s->pending = pending;
+        s->capacity = p->ring.mask + 1;
+    }
+    g_probe_queue_count = n;
+}
+
+/* A JSON string's body for a name (pool names are identifiers; anything
+ * else is dropped rather than escaped). */
+static void lotus_probes_put_name(char *out, size_t cap, size_t *len, const char *s) {
+    for (; *s && *len + 1 < cap; s++) {
+        char c = *s;
+        if (c == '"' || c == '\\' || (unsigned char)c < 0x20) continue;
+        out[(*len)++] = c;
+    }
+    out[*len] = '\0';
+}
+
+static void lotus_probes_appendf(char *out, size_t cap, size_t *len, const char *fmt, ...) {
+    if (*len >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(out + *len, cap - *len, fmt, ap);
+    va_end(ap);
+    if (w > 0) *len = (size_t)w + *len < cap ? *len + (size_t)w : cap - 1;
+}
+
+/* The response for `path`: its status, and its body into `body`. */
+static int lotus_probes_answer(const char *path, char *body, size_t cap, const char **type) {
+    size_t len = 0;
+    body[0] = '\0';
+    *type = "text/plain; charset=utf-8";
+    uint64_t now = lotus_probes_now();
+    int draining = lotus_process_draining();
+    int ready = atomic_load(&g_probes_ready) && !draining;
+    pthread_mutex_lock(&g_probes_lock);
+    lotus_probes_sample();
+    now = lotus_probes_now(); /* not before the sample's own reading */
+    int status = 200;
+    if (strcmp(path, "/healthz") == 0) {
+        int stalled = 0;
+        for (size_t i = 0; i < g_probe_queue_count; i++) {
+            lotus_probe_queue_t *s = &g_probe_queues[i];
+            if (now - s->moved_at > g_probes_stall_ns) {
+                lotus_probes_appendf(body, cap, &len, "%s%s", stalled ? " " : "stalled: ", "");
+                lotus_probes_put_name(body, cap, &len, s->name);
+                stalled = 1;
+            }
+        }
+        if (stalled) {
+            status = 503;
+            lotus_probes_appendf(body, cap, &len, "\n");
+        } else {
+            lotus_probes_appendf(body, cap, &len, "ok\n");
+        }
+    } else if (strcmp(path, "/readyz") == 0) {
+        status = ready ? 200 : 503;
+        lotus_probes_appendf(body, cap, &len, "%s\n", ready ? "ready" : (draining ? "draining" : "starting"));
+    } else if (strcmp(path, "/capacity") == 0) {
+        *type = "application/json";
+        lotus_probes_appendf(body, cap, &len, "{\"ready\":%s,\"draining\":%s,\"queues\":[",
+                             ready ? "true" : "false", draining ? "true" : "false");
+        for (size_t i = 0; i < g_probe_queue_count; i++) {
+            lotus_probe_queue_t *s = &g_probe_queues[i];
+            uint64_t stalled_ms = now - s->moved_at;
+            stalled_ms = stalled_ms > 1000000000ull ? stalled_ms / 1000000ull : 0;
+            lotus_probes_appendf(body, cap, &len, "%s{\"name\":\"", i ? "," : "");
+            lotus_probes_put_name(body, cap, &len, s->name);
+            lotus_probes_appendf(body, cap, &len,
+                                 "\",\"pending\":%llu,\"capacity\":%llu,\"stalled_ms\":%llu}",
+                                 (unsigned long long)s->pending, (unsigned long long)s->capacity,
+                                 (unsigned long long)stalled_ms);
+        }
+        lotus_probes_appendf(body, cap, &len, "]}\n");
+    } else {
+        status = 404;
+        lotus_probes_appendf(body, cap, &len, "no such probe: /healthz, /readyz, /capacity\n");
+    }
+    pthread_mutex_unlock(&g_probes_lock);
+    return status;
+}
+
+/* One connection: its request line, read whole within a second, and one
+ * response; the connection closes. */
+static void lotus_probes_serve_one(int fd) {
+    char req[2048];
+    size_t got = 0;
+    uint64_t until = lotus_probes_now() + 1000000000ull;
+    while (got + 1 < sizeof req) {
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        uint64_t now = lotus_probes_now();
+        if (now >= until || poll(&pfd, 1, (int)((until - now) / 1000000ull) + 1) <= 0) break;
+        ssize_t r = recv(fd, req + got, sizeof req - 1 - got, 0);
+        if (r <= 0) break;
+        got += (size_t)r;
+        req[got] = '\0';
+        if (strstr(req, "\r\n\r\n") || strstr(req, "\n\n")) break;
+    }
+    req[got] = '\0';
+    char path[256] = "";
+    int is_get = strncmp(req, "GET ", 4) == 0 || strncmp(req, "HEAD ", 5) == 0;
+    if (is_get) {
+        const char *p = strchr(req, ' ') + 1;
+        size_t i = 0;
+        while (*p && *p != ' ' && *p != '?' && *p != '\r' && *p != '\n' && i + 1 < sizeof path) path[i++] = *p++;
+        path[i] = '\0';
+    }
+    char body[8192];
+    const char *type = "text/plain; charset=utf-8";
+    int status;
+    if (!is_get) {
+        status = 405;
+        snprintf(body, sizeof body, "a probe answers GET\n");
+    } else {
+        status = lotus_probes_answer(path, body, sizeof body, &type);
+    }
+    const char *reason = status == 200 ? "OK" : status == 503 ? "Service Unavailable"
+                       : status == 404 ? "Not Found" : "Method Not Allowed";
+    char head[256];
+    int hl = snprintf(head, sizeof head,
+                      "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                      status, reason, type, strlen(body));
+    (void)!send(fd, head, (size_t)hl, MSG_NOSIGNAL);
+    if (strncmp(req, "HEAD ", 5) != 0) (void)!send(fd, body, strlen(body), MSG_NOSIGNAL);
+    close(fd);
+}
+
+static void *lotus_probes_thread(void *arg) {
+    int lfd = (int)(intptr_t)arg;
+    for (;;) {
+        struct pollfd pfd = { lfd, POLLIN, 0 };
+        int r = poll(&pfd, 1, 1000);
+        /* the queues are read every second, so a stall is timed from
+         * when it began, not from the first probe after it */
+        pthread_mutex_lock(&g_probes_lock);
+        lotus_probes_sample();
+        pthread_mutex_unlock(&g_probes_lock);
+        if (r <= 0) continue;
+        int fd = accept(lfd, NULL, NULL);
+        if (fd < 0) continue;
+        lotus_probes_serve_one(fd);
+    }
+    return NULL;
+}
+#endif
+
+/* The main locus's births are done: `/readyz` answers 200 from here on
+ * (until the process drains). Called by the main locus of a program that
+ * declares the probes, just before its run(). */
+void lotus_probes_ready(void) {
+#ifndef __wasm__
+    atomic_store(&g_probes_ready, 1);
+#endif
+}
+
+/* A `std::observe::Probes` param's birth: serve the probes on `port`, all
+ * interfaces, from a thread of their own; `/readyz` answers 503 until
+ * `lotus_probes_ready`. One probe set a process (the check allows one,
+ * on the main locus); a second start is a no-op. A port that cannot be
+ * bound is a startup failure, as an unbindable listener is. */
+void lotus_probes_start(int64_t port) {
+#ifdef __wasm__
+    (void)port;
+#else
+    if (atomic_exchange(&g_probes_started, 1)) {
+        return;
+    }
+    const char *stall = getenv("LOTUS_PROBES_STALL_MS");
+    if (stall && *stall) {
+        long long ms = atoll(stall);
+        if (ms > 0) g_probes_stall_ns = (uint64_t)ms * 1000000ull;
+    }
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+    if (lfd < 0 || port < 0 || port > 65535
+        || setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) != 0
+        || bind(lfd, (struct sockaddr *)&addr, sizeof addr) != 0
+        || listen(lfd, 16) != 0) {
+        fprintf(stderr, "probes: cannot serve on port %lld: %s\n", (long long)port, strerror(errno));
+        exit(1);
+    }
+    pthread_mutex_lock(&g_probes_lock);
+    lotus_probes_sample();
+    pthread_mutex_unlock(&g_probes_lock);
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &attr, lotus_probes_thread, (void *)(intptr_t)lfd) != 0) {
+        fprintf(stderr, "probes: cannot start the probe thread\n");
+        exit(1);
+    }
+    pthread_attr_destroy(&attr);
+#endif
 }
 
 /* `std::time::__idle_wait` on the main thread: wait for work on main's

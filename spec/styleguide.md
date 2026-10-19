@@ -161,6 +161,12 @@ fn main() {
   dissolves at fn-return.
 - A lifecycle body short-circuits with `return;` as a method does
   (`birth`, `run` and `dissolve` alike).
+- A process a platform supervises (a service, a worker a deployment
+  runs) declares `probes: std::observe::Probes = std::observe::Probes
+  { port: self.probe_port };` among its main locus's params, the port a
+  param like any other, and lets the runtime answer `/healthz` and
+  `/readyz`; never a hand-written health route, which answers from the
+  very pool it is meant to judge. A CLI or a one-shot job declares none.
 
 ### 2.2 Namespace locus — empty params, methods only
 

@@ -2461,6 +2461,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             start_ingress_ty,
             None,
         );
+        // GH #1477: a `std::observe::Probes` param — its birth serves the
+        // runtime's probes on its port from a thread of their own
+        // (`lotus_probes_start`, through `std::observe::__probes_start`),
+        // and the main locus marks the process ready at its boot/run
+        // boundary, only in a program declaring them.
+        // declare void @lotus_probes_start(i64 port)
+        let probes_start_ty = void_t.fn_type(&[self.context.i64_type().into()], false);
+        self.module.add_function("lotus_probes_start", probes_start_ty, None);
+        // declare void @lotus_probes_ready()
+        self.module.add_function("lotus_probes_ready", void_t.fn_type(&[], false), None);
 
         // declare i32 @lotus_bus_register_remote(ptr subject, ptr url, i32 role)
         let i32_t = self.context.i32_type();

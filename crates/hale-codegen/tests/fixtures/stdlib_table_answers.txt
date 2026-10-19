@@ -996,6 +996,7 @@ std::metrics::labels_two | lookup=metrics@2 | locus=false | effects=pure | sig=-
 std::metrics::metric_key | lookup=metrics@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=metric_key
 std::mth::sqrt | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::mth` — did you mean `std::math`?
 std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
+std::observe::Probes | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::observe`
 std::os::getrandom | lookup=os@2 | locus=false | effects=syscall|entropy | sig=(Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=getrandom
 std::process::Child | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::ProcessOutput | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -1003,6 +1004,7 @@ std::process::SpawnOptions | lookup=process@2 | locus=true | effects=- | sig=- |
 std::process::__kill_escalate | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__kill_escalate
 std::process::__pipe_read | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=__pipe_read
 std::process::__pipe_write | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__pipe_write
+std::process::__probes_start | lookup=process@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::process::__probes_start` | suggest=-
 std::process::__run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__run_with
 std::process::__signal_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__signal_pid
 std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn

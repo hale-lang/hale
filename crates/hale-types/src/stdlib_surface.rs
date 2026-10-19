@@ -1277,6 +1277,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("try_wait", SYSCALL, _, Renamed),
             row!("wait", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Renamed),
             row!("write_stdin", SYSCALL, _, Renamed),
+            // GH #1477: a `std::observe::Probes` param's birth starts the
+            // runtime's probe thread; only the stdlib's seed calls it
+            internal!("__probes_start", _, Intrinsic(ProcessProbesStartRaw)),
         ],
         open_prefixes: &[],
     },
@@ -1829,6 +1832,10 @@ pub enum IntrinsicId {
     ProcessDumpArenaResidency,
     ProcessDumpPoolResidency,
     ProcessExit,
+    /// GH #1477: `std::process::__probes_start(port)`, a
+    /// `std::observe::Probes` param's birth: the runtime's probe thread
+    /// on `port`.
+    ProcessProbesStartRaw,
     ProcessPid,
     ProcessUid,
     ProcessRssBytes,

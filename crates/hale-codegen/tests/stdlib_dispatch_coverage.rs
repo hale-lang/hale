@@ -1361,6 +1361,7 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
     ("std::test::__note_fail", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
     ("std::test::__note_pass", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
     ("std::test::__passes", Position::Expression, &["__test_fail_trailer"]),
+    ("std::process::__probes_start", Position::Statement, &["__StdObserveProbes"]),
 ];
 
 /// Every allowed pair, with the kind it is allowed as.
