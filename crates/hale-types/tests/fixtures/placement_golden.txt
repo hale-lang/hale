@@ -902,7 +902,7 @@ row	M@literal1	M	main	default
 row	M@literal1.r	Recv	main	default
 row	M@literal1.s	Send	main	default
 
-== crates/hale-cli/tests/harness_vault.rs#52ff5935
+== crates/hale-cli/tests/harness_vault.rs#4aaded00
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 

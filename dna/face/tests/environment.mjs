@@ -31,6 +31,9 @@ export function isolatedEnvironment() {
   // GH #1653: and a local habitat beside it, so an organism a fixture
   // births is never a tenant of the developer's habitat
   env.XDG_DATA_HOME = path.join(env.HALE_VAULT_DIR, 'data');
+  // named outright: a HALE_DNA_HABITAT the developer exported wins over
+  // XDG_DATA_HOME, and is never a fixture's
+  env.HALE_DNA_HABITAT = path.join(env.XDG_DATA_HOME, 'hale/habitat/local');
   for (const key of [
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
     'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',

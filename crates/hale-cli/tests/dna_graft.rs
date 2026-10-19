@@ -4,6 +4,8 @@
 
 #[path = "support/habitat.rs"]
 mod habitat;
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/scratch.rs"]
 mod scratch;
 
@@ -26,4 +28,14 @@ fn a_test_grafts_its_organisms_into_a_habitat_of_its_own() {
     let one = std::fs::read_to_string(d.join("one/hale.toml")).unwrap();
     let two = std::fs::read_to_string(d.join("two/hale.toml")).unwrap();
     assert_ne!(one, two, "two organisms, two identities");
+}
+
+/// A test's `hale` names its habitat outright: a `HALE_DNA_HABITAT` the
+/// developer exported is never inherited by it (an explicit variable on
+/// the child wins over the parent's).
+#[test]
+fn a_tests_hale_names_its_own_habitat() {
+    let c = vault::hale();
+    let named = c.get_envs().find(|(k, _)| *k == "HALE_DNA_HABITAT").and_then(|(_, v)| v.map(std::path::PathBuf::from));
+    assert_eq!(named, Some(vault::dir().join("data/hale/habitat/local")), "the test's own habitat, set on every child");
 }

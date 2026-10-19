@@ -22,7 +22,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # is the root's own here (XDG_DATA_HOME under it), never the developer's
 # (a teardown that did not finish keeps the root, and fails the script)
 trap 'if "$here/compose-down-under.sh" "$tmp"; then rm -rf -- "$tmp"; else exit 1; fi' EXIT
-export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
+export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_HABITAT=$tmp/data/hale/habitat/local HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
 iris_dir=$("$hale" iris --where)
 host_bin=$iris_dir/dna/host/host
 # the host's verb program (GH #1490), built beside the body by the same

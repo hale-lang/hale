@@ -411,6 +411,11 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
             // GH #1653: and its own local habitat, beside the vault: a
             // fixture's organisms are never tenants of the developer's
             cmd.env("XDG_DATA_HOME", test_habitat_data(&vault));
+            // and named outright, never the caller's: a `HALE_DNA_HABITAT`
+            // the developer exported would otherwise win over XDG_DATA_HOME
+            // (a slice's habitat is handed over as HALE_DNA_TEST_HABITAT,
+            // and a fixture names it on the graft it makes)
+            cmd.env("HALE_DNA_HABITAT", test_habitat_data(&vault).join("hale/habitat/local"));
             let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
             if std::env::var("HALE_TEST_KEEP_VAULT").is_ok_and(|v| v == "1") {
