@@ -513,3 +513,46 @@ fn the_http_client_timeout_bounds_a_held_response_and_its_retries() {
         assert!(out.contains("statuses 0"), "no truncated response is handed back: {out}");
     }
 }
+
+/// pond's `NatsClient.open_as` dialed with `std::io::tcp::connect`,
+/// ignoring the client's `timeout`, so a blackholed host blocked its
+/// caller for the kernel's ~2 min of SYN retransmits. It dials with
+/// `connect_within(…, timeout)` now, and `last_error` names the timeout.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the full-accept-queue blackhole is Linux's SYN-drop contract")]
+fn the_nats_client_dial_ends_at_its_timeout() {
+    let hole = Blackhole::new();
+    let nats = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond/realtime/nats");
+    let nats = nats.canonicalize().expect("dna/core/pond/realtime/nats");
+    let dir = harness::unique_dir("hale_nats_dial_deadline");
+    let entry = dir.join("main.hl");
+    std::fs::write(
+        &entry,
+        format!(
+            r#"import "{}" as nats;
+fn main() {{
+    let port = std::env::arg(1);
+    let c = nats::NatsClient {{ url: "nats://127.0.0.1:" + port, timeout: 300ms }};
+    let t = std::time::monotonic_ns();
+    let ok = c.open();
+    println("open ok=", ok, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+    println("error ", c.last_error);
+}}
+"#,
+            nats.display()
+        ),
+    )
+    .expect("write main.hl");
+    let bin = harness::unique_bin("hale_nats_dial_deadline_bin");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).arg(hole.port.to_string()).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{:?}: {stdout}{}", out.status, String::from_utf8_lossy(&out.stderr));
+    assert_eq!(field(&stdout, "open", "ok"), "false", "{stdout}");
+    let took = ms(&stdout, "open");
+    assert!((280..1500).contains(&took), "the dial must end at the client's timeout; took {took} ms: {stdout}");
+    let line = stdout.lines().find(|l| l.starts_with("error ")).expect("error line");
+    assert!(line.contains("connect: tcp to 127.0.0.1:") && line.contains("timeout: no connection within 300 ms"), "{line:?}");
+}

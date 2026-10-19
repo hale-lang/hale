@@ -169,8 +169,19 @@ locus NatsClient {
         self.close();
         self.last_error = "";
         if !self.parse_url() { return false; }
-        let h = std::io::tcp::connect(self.host, self.port) or - 1;
-        if h < 0 { self.note("connect", "tcp to " + self.host + ":" + to_string(self.port)); return false; }
+        // the dial is under the timeout too: a host that never answers
+        // (a blackholed address) held `connect` for the kernel's ~2 min
+        // of SYN retransmits
+        let mut timed_out = false;
+        let h = std::io::tcp::connect_within(self.host, self.port, self.timeout) or {
+            timed_out = err.kind == "timeout";
+                -1
+        };
+        if h < 0 {
+            let why = if timed_out { " timeout: no connection within " + to_string(self.timeout / 1ms) + " ms" } else { "" };
+            self.note("connect", "tcp to " + self.host + ":" + to_string(self.port) + why);
+            return false;
+        }
         self.io.sock = h;
         std::io::tcp::set_nodelay(h, true) or discard;
         self.framer.clear();
