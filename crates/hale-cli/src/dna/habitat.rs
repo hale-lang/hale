@@ -22,6 +22,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+                          [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat handover [organism]
        hale habitat status
@@ -70,7 +71,10 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      the organism's) or a repository that is there
                      already. A graft that stopped part way goes on
                      where it stopped when run again; a record born of
-                     anything but this habitat is refused. --with <pack>
+                     anything but this habitat is refused. A new
+                     application takes --profile remote-body --remote
+                     <url> [--body <user@host>]: the record shared over
+                     that remote, the body on that server. --with <pack>
                      proposes a pack from the toolchain's nursery as
                      well, planned on the holes the birth proposed (`hale
                      dna pack apply <pack> --on-holes`, its --set and
@@ -1327,6 +1331,9 @@ fn graft(args: &[String]) -> ExitCode {
     let mut with: Option<String> = None;
     let mut who: Option<String> = None;
     let mut sets = Vec::new();
+    let mut profile: Option<String> = None;
+    let mut remote: Option<String> = None;
+    let mut body: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -1334,6 +1341,18 @@ fn graft(args: &[String]) -> ExitCode {
             "--attach" => attach = true,
             "--no-library" => library = false,
             "--no-pack" => pack = false,
+            "--profile" | "--remote" | "--body" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `{a}` takes a value\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                match a {
+                    "--profile" => profile = Some(v.clone()),
+                    "--remote" => remote = Some(v.clone()),
+                    _ => body = Some(v.clone()),
+                }
+                i += 1;
+            }
             "--with" | "--set" | "--as" => {
                 let Some(v) = args.get(i + 1) else {
                     eprintln!("hale habitat graft: `{a}` takes a value\n{}", usage_text());
@@ -1367,7 +1386,12 @@ fn graft(args: &[String]) -> ExitCode {
         eprintln!("hale habitat graft: `--set` and `--as` go with a pack; name the pack with `--with <pack>`");
         return ExitCode::from(2);
     }
-    match graft_lines(&dir, attach, library, pack) {
+    if attach && (profile.is_some() || remote.is_some() || body.is_some()) {
+        eprintln!("hale habitat graft: `--profile`, `--remote` and `--body` shape a new application; an attached one keeps its own (`hale dna profile` detects it)");
+        return ExitCode::from(2);
+    }
+    let shape = Shape { profile: profile.as_deref(), remote: remote.as_deref(), body: body.as_deref() };
+    match graft_lines(&dir, attach, library, pack, &shape) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -1408,7 +1432,15 @@ fn graft(args: &[String]) -> ExitCode {
 /// it needs allocated to it, and the graft and its needs a row of the
 /// habitat's record. The habitat must be born, and the environment must
 /// agree with its backends.
-fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool) -> Result<Vec<String>, String> {
+/// A new application's profile pieces (`--profile`, `--remote`, `--body`),
+/// as `hale dna new` took them.
+struct Shape<'a> {
+    profile: Option<&'a str>,
+    remote: Option<&'a str>,
+    body: Option<&'a str>,
+}
+
+fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shape) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let Some(parent) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else {
         return Err("the habitat is not born: `hale habitat up` births it, and every other organism is grafted from it".to_string());
@@ -1457,7 +1489,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool) -> Result<Ve
     }
     let needs = needs_of(manifest.as_deref())?;
     let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {}){}", "graft", root.display(), &parent[..12], needs.join(", "), if pinned.is_some() { "; the graft goes on where it stopped" } else { "" })];
-    out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, None, None, None, library, Some(&parent))? });
+    out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, shape.profile, shape.remote, shape.body, library, Some(&parent))? });
     let root = if attach { root } else { project(dir)?.0 };
     let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
     // birth allocated memory and the nerves; the rest of what it needs here

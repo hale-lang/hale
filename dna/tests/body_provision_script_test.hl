@@ -51,8 +51,8 @@ main locus App {
         stub(home + "/.hale/bin/docker", "#!/bin/sh\nexit 0\n");
         stub(home + "/.hale/bin/curl", "#!/bin/sh\nexit 0\n");
 
-        let made = in_dir(scratch, fake, toolchain() + "\ndna\nnew\nprov");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, fake, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nprov"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/prov";
         let g1 = in_dir(app, fake, "git\nconfig\nuser.name\nriley");
         let g2 = in_dir(app, fake, "git\nconfig\nuser.email\nriley@local");
@@ -78,7 +78,7 @@ main locus App {
         std::time::sleep(1100ms);
         let other_dir = scratch + "/elsewhere";
         let r1 = dna::run_tool("mkdir\n-p\n" + other_dir);
-        let made2 = in_dir(other_dir, fake, toolchain() + "\ndna\nnew\nprov");
+        let made2 = in_dir(other_dir, fake, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nprov"));
         std::test::assert_eq_int(made2.code, 0, "a second prov: " + made2.stdout + made2.stderr);
         let other = other_dir + "/prov";
         let o1 = in_dir(other, fake, "git\nremote\nadd\norigin\nhttps://example.invalid/other.git");

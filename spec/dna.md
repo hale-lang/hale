@@ -4524,6 +4524,9 @@ The live half is memory's, projected from the record by the spine
   birth proposed (`hale dna pack apply <pack> --on-holes`), so one
   `review all approve` ratifies the starting organization whole; a
   pack the holes refuse is the graft's failing exit, its organism born.
+  A new application takes the profile pieces `hale dna new` took,
+  `--profile local|remote-body [--remote <url>] [--body <user@host>]`;
+  an attached one keeps its own, and graft refuses them with `--attach`.
   `hale dna new` and `hale dna init` still birth an organism with no
   parent until graft replaces them.
 - **A test's organisms are grafted too** (GH #1653). A DNA fixture
