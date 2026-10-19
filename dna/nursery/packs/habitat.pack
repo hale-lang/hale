@@ -1,0 +1,11 @@
+# habitat: the habitat's fixed positions (GH #1653), proposed when
+# `hale habitat up` births it.
+#   hale dna pack apply habitat [--set holder=<who>]
+open habitat/placement | Decides: where each child organism's body runs, within the capacity the habitat holds. May not: change a child's genome, or place a body on capacity the habitat does not hold. Cites: each child's placement, its readiness and capacity, and the practices in force. Escalates: a child that cannot be placed, to the Board.
+open habitat/backends | Decides: the allocations each child is provisioned (memory, nerves, the senses' store), named for the child and the role, and when each is migrated. May not: provision or migrate anything outside the habitat's own acts, or touch a foreign heart's infrastructure. Cites: the allocations' recorded schema versions and the toolchain's. Escalates: an allocation that cannot be migrated, to the Board.
+open habitat/identity | Decides: each child's record identity at graft, and the roles and accounts it is given on each backend. May not: let an organism assert its own scope or roles. Cites: the child's genesis and the habitat's grants. Escalates: a disputed identity or a role a child asks beyond its grant, to the Board.
+open habitat/admission | Decides: whether a proposed child is grafted, under the ceiling the habitat grants and the Board it seats. May not: graft a child with no parent, or one whose grant exceeds the habitat's. Cites: the proposal, its needs by role and the habitat's capacity. Escalates: a child outside every ceiling, to the Board.
+? fill habitat/placement {holder}
+? fill habitat/backends {holder}
+? fill habitat/identity {holder}
+? fill habitat/admission {holder}

@@ -4343,6 +4343,79 @@ The live half is memory's, projected from the record by the spine
   (`dna/compose.yaml`, `dna/nats.conf`, `dna/nats.secrets.conf`,
   `dna/postgres.secrets`, `dna/senses.yml`) and migrates no container an
   older toolchain started: there is no migration.
+- **The habitat is an organism the toolchain ships** (GH #1653). Its
+  genome is the toolchain's, as the foundational law and the nursery are
+  (`hale_dna::HABITAT_FILES`, `dna/habitat/README.md`): a repository
+  organism whose heart slot is empty, its document's marked `law` items
+  its law with the nursery's `standard` pack, and its fixed positions
+  the nursery's `habitat` pack (`habitat/placement`, `habitat/backends`,
+  `habitat/identity`, `habitat/admission`). It is the one organism born
+  without a parent. `hale habitat up [--foreground] [--profile local]`
+  births it the first time into `<habitat>/genome` (written from the
+  toolchain's files, a repository, then `init` on it, its record in its
+  own memory allocation, and both packs proposed to its Board), then
+  migrates its own memory and nerves (the habitat's schema is its own to
+  move, at bootstrap and at a toolchain's upgrade), brings every tenant's
+  recorded allocation up — migrating none: an organism's allocation moves
+  at its own upgrade or with `hale habitat migrate <organism>`, never
+  under ongoing work — and starts its body, `hale dna dev <genome>`: a
+  systemd user unit named for the habitat's project, or with
+  `--foreground` in the process itself (what a fixture runs, to ready).
+  `up` is idempotent, and the `hosted` profile is not built. **A
+  habitat's backends are chosen at its birth** (`--backends own|operator`,
+  kept beside it and as its `habitat.profile` row, which names no DSN):
+  `own`, the default, provisions memory, the nerves and the senses' store
+  as allocations of its project; `operator` adopts the Postgres and the
+  NATS `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER` name,
+  starts no service of its project, and records each allocation with the
+  service `operator` (what a suite run on an owner's DSN and NATS is).
+  `up` refuses when the environment disagrees with them: an `own`
+  habitat with an operator's server named, an `operator` habitat with
+  either unnamed, or a `--backends` other than the habitat's. A unit of an
+  `operator` habitat reads them from `<habitat>/backends.env` (mode 600),
+  never from its own lines. `hale habitat
+  status` reads the habitat, its genome and body, and each allocation:
+  whether each role's service runs, and the schema version it records
+  against this toolchain's, naming `hale habitat migrate <organism>` (or
+  `hale dna upgrade`) for one behind. `hale habitat down` stops the body
+  and every service of the project and keeps their data, after the body
+  has drained: it is told to stop and waited for, up to its drain grace
+  (`LOTUS_DRAIN_GRACE_MS`, the node's 30 s by default) and a margin, so
+  its drain still reaches its backends; one that outlives that is said
+  and killed, and only then are the services stopped (a unit's
+  `TimeoutStopSec` is the same window). A birth that stops part way —
+  memory or docker failing after the identity is pinned — is resumed by
+  the next `up`; `<habitat>/birth.pending` says a birth is not whole yet
+  (and which of its profile and packs are done), but whether its record
+  was born is memory's to say, never the file's. A pinned identity whose
+  `record.genesis` memory holds is resumed: the rest of `init`, each step
+  of which keeps what is done, against that record — every seed step
+  checks its own completion and runs when it is missing (the seed when
+  the record holds no `application.attached`, the seat when its git
+  config keys are absent, each family for what the record does not hold,
+  the library and the models map when their rows are absent), so a plain
+  `hale dna init` that stopped part way is finished the same way. Only when memory
+  answers that it holds no genesis for the pin, or the identity's memory
+  allocation was never made (docker answers it has no such volume), is
+  the identity drawn again and what was made for it taken down. Memory
+  that cannot be reached is a refusal that destroys nothing. Allocation
+  rows wait for the genesis memory confirms before they are written into
+  the record.
+- **An allocation is a row of the habitat's record.** Every provisioning
+  act is: `habitat.allocated <id>/<role>` the first time an organism's
+  role is provisioned (`organism`, `role`, `service`, `project`, and the
+  vault slots it holds by name, never a value) and `habitat.migrated
+  <id>/<role>` each time its schema version moves (`from`,
+  `schema_version`: memory's `MEMORY_SCHEMA_VERSION`, the nerves'
+  `NERVES_STREAM_VERSION`). A row is keyed by the organism and the role
+  alone, never a checkout: two checkouts of one organism are one tenant.
+  An allocation made before the habitat's record exists (the bootstrap's
+  own memory and nerves, or an organism migrated before the habitat is
+  born) waits in `allocations/<id>/allocation.json`, the local profile's
+  cache of the rows, and is written at birth. `status` reads the rows,
+  and the cache only while the habitat's memory is not up. `hale dna
+  upgrade` migrates an organism's allocation whose recorded version is
+  behind this toolchain's.
 - **The habitat is long-lived, and only its acts provision.** Nothing
   tears the local habitat down when work ends, and organisms are reused
   tenants from run to run: `hale dna dev` and `hale dna work next` run

@@ -262,6 +262,12 @@ fn memory_roles(dir: &Path, args: &[String]) -> Result<MemoryPlan, String> {
         // organism's memory allocation in the local habitat
         let from = if std::env::var(OWNER_DSN_ENV).is_ok_and(|v| !v.is_empty()) { "owner".to_string() } else { memory_allocation_name(&root).unwrap_or_default() };
         write_memory_env(&root, head, &from)?;
+        // GH #1653: a migration into the habitat is recorded in the
+        // allocation's row, with the version it moved the schema to
+        if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+            let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+            habitat::record_allocation(&root, "memory", v, slots, from == "owner")?;
+        }
         return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
     let line = out.trim();
@@ -426,6 +432,13 @@ fn nerves_derive(dir: &Path) -> Result<NervesPlan, String> {
 
 fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
     let out = host_run("nerves-migrate", dir, args)?;
+    // GH #1653: a migration into the habitat is recorded in the
+    // allocation's row, with the version it moved the stream to
+    if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+        let (root, _) = project(dir)?;
+        let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+        habitat::record_allocation(&root, "nerves", v, slots, std::env::var(NATS_OWNER_ENV).is_ok_and(|u| !u.is_empty()))?;
+    }
     let roles: Vec<(String, String)> = out
         .lines()
         .filter(|l| l.starts_with("HALE_DNA_NATS_"))
@@ -1824,7 +1837,13 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     }
     // 7. the record, seeded from the artifact — or, for a repository, with
     //    the purpose's Review and what the repository holds, as the graph
-    if record_seeded(&root)? {
+    // each seed step checks its own completion against the record and
+    // runs when it is missing, so an init that stopped part way (a held
+    // `.git/config.lock`, a failed append) is finished by the next, a step
+    // at a time, never skipped whole because an earlier step ran (GH #1653)
+    let held = record_kinds(&root)?;
+    let has = |kind: &str, entity: Option<&str>| held.iter().any(|(k, e)| k == kind && entity.is_none_or(|x| x == e));
+    if has("application.attached", None) {
         out.push("kept    the record (memory holds it; not reseeded)".to_string());
     } else {
         match (&app, &cut) {
@@ -1832,7 +1851,6 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                 let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
                 out.push(format!("seeded  the record ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
                 push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
                 // the declared purpose's proposal and the graph in one
@@ -1844,26 +1862,34 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                     app_account_name(&project)
                 ));
                 push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&root, true)?);
             }
         }
         // GH #995: the declared purpose was proposed in that seed, a
         // proposal the Board ratifies like every other
         out.push("seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)".to_string());
-        // GH #596 C, #994: the design and the operating practices, as
-        // proposals — one Review per practice, listed by family
-        for (family, practices) in SEEDED {
-            let (d, _, _) = design_upgrade(&root, practices)?;
-            out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
-        }
-        // seed/pull: the nodes knowledge is about, and the smallest library bound to them
-        if library {
-            out.extend(seed_library(&root, app.as_ref())?);
-        } else {
-            out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
-        }
-        // the starting model mapping, from the hosted models this machine
-        // has a key for
+    }
+    // the seat: git config, done when its keys are (it keeps what is there)
+    out.push(seat_initializer(app.as_ref().map(|a| a.root.as_path()).unwrap_or(&root), true)?);
+    // GH #596 C, #994: the design and the operating practices, as
+    // proposals — one Review per practice, listed by family; each family
+    // proposes only what the record does not hold already
+    for (family, practices) in SEEDED {
+        let (d, _, _) = design_upgrade(&root, practices)?;
+        out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
+    }
+    // seed/pull: the nodes knowledge is about, and the smallest library bound to them
+    if !library {
+        out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
+    } else if has("graph.node", Some("language:hale")) {
+        out.push("kept    the library (memory holds it)".to_string());
+    } else {
+        out.extend(seed_library(&root, app.as_ref())?);
+    }
+    // the starting model mapping, from the hosted models this machine
+    // has a key for
+    if has("model.rule", Some("default")) {
+        out.push("kept    the models map (memory holds it)".to_string());
+    } else {
         out.extend(seed_model_map(&root, &found)?);
     }
     // 8. GH #1590: the secrets the seeded record names (the attached
@@ -2204,6 +2230,10 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
+    } else if in_memory {
+        // GH #1653: the habitat's upgrade of this organism's allocation:
+        // each role recorded behind this toolchain's version is migrated
+        out.extend(habitat::upgrade_allocation(&root)?);
     }
     Ok(out)
 }
@@ -3450,15 +3480,13 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
-/// GH #1590: whether the record holds more than its birth (`record.genesis`,
-/// `record.key`): init seeds a record once.
-fn record_seeded(root: &Path) -> Result<bool, String> {
+/// The record's rows as `(kind, entity)`, each seed step's evidence of
+/// itself (GH #1653).
+fn record_kinds(root: &Path) -> Result<Vec<(String, String)>, String> {
     let rows = host_run("record-rows", root, &[])?;
-    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| {
-        let kind = v["kind"].as_str().unwrap_or("");
-        !kind.starts_with("record.")
-    }))
+    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| (v["kind"].as_str().unwrap_or("").to_string(), v["entity"].as_str().unwrap_or("").to_string())).collect())
 }
+
 
 /// GH #1590: the identity `hale.toml` pins, as a TOML parser reads it:
 /// `None` when the file, the `dna` table or its `record` key is absent;

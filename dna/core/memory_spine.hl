@@ -1022,7 +1022,12 @@ fn allocation_service(root: String, role: String) -> String {
 }
 
 // A free loopback port for `service`: candidates from its own hash within
-// `base`..`base`+999, the first that binds.
+// `base`..`base`+999, the first that binds. The port is chosen when the
+// allocation's files are written and bound when its service comes up,
+// which for the senses' store is much later; the bases sit below the
+// kernel's ephemeral range (Linux's `ip_local_port_range` is
+// 32768..60999 by default), so no outgoing connection on the box is
+// handed the port in between, and below `free_port`'s 20000..32767.
 fn allocation_port(service: String, base: Int) -> Int {
     let h = std::crypto::sha256(std::bytes::from_string(local_habitat_project() + "/" + service));
     let start = ((std::bytes::at(h, 0) or 0) * 256 + (std::bytes::at(h, 1) or 0)) % 1000;
@@ -1114,9 +1119,9 @@ fn allocation_compose(root: String) -> String {
     if !std::io::fs::file_exists(ports) {
         let text = "# The host ports these allocations publish on, chosen once (GH #1653).\n"
             + "services:\n"
-            + "  memory-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("memory-" + k, 54000)) + ":5432\"]\n"
-            + "  nerves-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("nerves-" + k, 42000)) + ":4222\"]\n"
-            + "  senses-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("senses-" + k, 39000)) + ":9090\"]\n";
+            + "  memory-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("memory-" + k, 17000)) + ":5432\"]\n"
+            + "  nerves-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("nerves-" + k, 18000)) + ":4222\"]\n"
+            + "  senses-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("senses-" + k, 19000)) + ":9090\"]\n";
         std::io::fs::write_file(ports, text) or discard;
     }
     return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project() + "\n--project-directory\n" + dir + "\n-f\n" + compose + "\n-f\n" + ports;

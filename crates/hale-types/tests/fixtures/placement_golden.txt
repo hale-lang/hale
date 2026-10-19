@@ -11381,6 +11381,13 @@ dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/habitat_operator_test.hl
+
+== dna/tests/habitat_up_test.hl
+shared	dynamic	sites in core #de2fb49b
+shared	dynamic	sites in tests #4bfcca70
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/handed_task_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

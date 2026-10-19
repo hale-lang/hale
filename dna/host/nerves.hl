@@ -64,7 +64,16 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     c.close();
     if !m.ok { return fail("nerves migrate: " + m.why); }
     if len(x) > 0 { return fail("nerves migrate: the exchange: " + x); }
-    return answer(nerves_urls(root, org, url));
+    // GH #1653: the version the stream was moved to, which the habitat
+    // records for the allocation
+    let mut slots = "";
+    let mut roles = dna::NERVES_ROLES + " ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        if sp > 0 { slots = slots + (if len(slots) > 0 { " " } else { "" }) + dna::nerves_vault_name(org, roles[0..sp]); }
+        roles = roles[(sp + 1)..len(roles)];
+    }
+    return answer(nerves_urls(root, org, url) + "allocation.schema_version=" + to_string(dna::NERVES_STREAM_VERSION) + "\nallocation.vault_slots=" + slots + "\n");
 
 }
 
