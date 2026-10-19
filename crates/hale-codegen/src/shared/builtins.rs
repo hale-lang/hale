@@ -879,6 +879,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ],
             false,
         );
+        self.module.add_function("lotus_drain_observer_enter", obs_out_ty, None);
         self.module.add_function("lotus_drain_observer_finished", obs_out_ty, None);
         self.module.add_function("lotus_drain_observer_leave", obs_out_ty, None);
         self.module.add_global(

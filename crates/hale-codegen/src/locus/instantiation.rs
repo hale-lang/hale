@@ -1455,13 +1455,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let route = self.resolve_failure_route(locus_name);
         self.emit_instance_header(&info, self_ptr, locus_name, !is_bare_stmt, route, pending_recpool_release)?;
         // GH #1077: one live drain observer more, if this locus's code
-        // reads `draining` (its arena destroy counts it out) — counted
+        // reads `draining` (its run's end or its teardown counts it out) — counted
         // here, before any param is built: a param's run() starts while
         // the params are built (a pool's is posted, a pinned one's thread
         // created), and a signal it sees in that window must find this
         // instance live, not "nothing can answer a drain" (the signal's
         // default action at once, with no word said).
-        self.emit_drain_observer_count(locus_name, 1)?;
+        self.emit_drain_observer_count(locus_name, self_ptr)?;
 
         // Line 6, a subscriber of a statically built tree (2026-10-12): a
         // cooperative instance whose subscriptions take no key registers

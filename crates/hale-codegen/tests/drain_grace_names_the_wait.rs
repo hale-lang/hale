@@ -324,3 +324,89 @@ fn main() { Root { }; }
     assert!(ran.status.success(), "the parent's loop answered the drain: {:?}\n{e}", ran.status);
     assert!(took < Duration::from_millis(2000), "{took:?}: {e}");
 }
+
+/// The drain observer table, driven through its test surface
+/// (`lotus_drain_observer_step`: 0 enter, 1 finished, 2 teardown, 4 how
+/// many the table holds). An instance leaves the count exactly once,
+/// whichever of its two ends comes first. Teardown's latch can come
+/// before its run's end, since an admitted run outlives it under its run hold, and
+/// `leave` then `finished` used to count the instance out twice, taking
+/// a second, live observer with it: 2 → 1 → 0, and a signal took the
+/// default action at once instead of giving that observer its grace.
+/// Growth and removal run over 200 instances, every entry gone at the
+/// end; under ASan too.
+const OBSERVER_STEPS: &str = r#"
+@ffi("c") fn lotus_drain_observer_step(op: Int, instance: Int) -> Int;
+locus Never {
+    params { n: Int = 0; }
+    fn stopping() -> Bool { return self.draining; }
+}
+fn main() {
+    // teardown first, then the run's end: one count out
+    lotus_drain_observer_step(0, 4096);
+    lotus_drain_observer_step(0, 8192);
+    let left = lotus_drain_observer_step(2, 4096);
+    let finished = lotus_drain_observer_step(1, 4096);
+    // the run's end first, then teardown: one count out
+    lotus_drain_observer_step(0, 12288);
+    let run_end = lotus_drain_observer_step(1, 12288);
+    let again = lotus_drain_observer_step(1, 12288);
+    let torn = lotus_drain_observer_step(2, 12288);
+    println("orders left=", left, " finished=", finished, " run_end=", run_end, " again=", again, " torn=", torn);
+    // many instances, every other one finished first, then all torn down
+    let mut i = 1;
+    while i <= 200 { lotus_drain_observer_step(0, 65536 + i * 64); i = i + 1; }
+    let held = lotus_drain_observer_step(4, 0);
+    i = 1;
+    while i <= 200 { if i % 2 == 0 { lotus_drain_observer_step(1, 65536 + i * 64); } i = i + 1; }
+    i = 1;
+    while i <= 200 { lotus_drain_observer_step(2, 65536 + i * 64); i = i + 1; }
+    println("many held=", held, " live=", lotus_drain_observer_step(3, 0), " tracked=", lotus_drain_observer_step(4, 0));
+    println("up");
+    // 8192 is still live: a signal now waits out the grace
+    while true { std::time::sleep(20ms); }
+}
+"#;
+
+#[test]
+fn a_drain_observer_is_counted_out_once_in_either_order() {
+    for asan in [false, true] {
+        let bin = harness::unique_bin(if asan { "drain_observer_steps_asan" } else { "drain_observer_steps" });
+        let options = hale_codegen::BuildOptions { asan, ..build_opts::options() };
+        build_opts::build_source(OBSERVER_STEPS, &bin, &options).expect("build");
+        let mut child = Command::new(&bin)
+            .env("LOTUS_DRAIN_GRACE_MS", GRACE_MS.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(out.read_line(&mut line).expect("read") > 0, "asan={asan}: the program prints `up`: {lines:?}");
+            if line.trim() == "up" {
+                break;
+            }
+            lines.push(line.trim().to_string());
+        }
+        let sent = std::time::Instant::now();
+        Command::new("kill").args(["-TERM", &child.id().to_string()]).status().expect("kill");
+        let done = child.wait_with_output().expect("wait");
+        let took = sent.elapsed();
+        let _ = std::fs::remove_file(&bin);
+        let stderr = String::from_utf8_lossy(&done.stderr).into_owned();
+        assert_eq!(
+            lines,
+            ["orders left=1 finished=1 run_end=1 again=1 torn=1", "many held=201 live=1 tracked=1"],
+            "asan={asan}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("did not finish within {GRACE_MS} ms")),
+            "asan={asan}: the live observer kept the drain's grace: {stderr}"
+        );
+        assert!(took >= Duration::from_millis(GRACE_MS - 50), "asan={asan}: {took:?}");
+        assert_eq!(done.status.signal(), Some(15), "asan={asan}: {:?}\n{stderr}", done.status);
+        assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+    }
+}

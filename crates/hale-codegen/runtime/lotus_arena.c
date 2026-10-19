@@ -14719,55 +14719,142 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
     lotus_drain_name_count(label, delta);
 }
 
-/* An instance leaves the live observers once, at whichever of its two
- * ends comes first: its run() has returned for good with nothing left
- * to serve (`lotus_drain_observer_finished`, for a locus that reads
- * `draining` in its run() alone), or its arena's destroy
- * (`lotus_drain_observer_leave`). A finished locus has nothing to
- * drain: counted until its parent tore it down, it held a signal's
- * drain for the whole grace while nothing that could end the drain was
- * left running. The instances the first end counted out are kept here
- * until the second, so it does not count them again. A short list
- * under a lock: only finished instances not yet torn down are in it. */
-static pthread_mutex_t g_drain_finished_lock = PTHREAD_MUTEX_INITIALIZER;
-static void **g_drain_finished = NULL;
-static size_t g_drain_finished_len = 0, g_drain_finished_cap = 0;
+/* Each live observer instance, by its `self`, from its instantiation
+ * (`lotus_drain_observer_enter`) until it is counted out: the one table
+ * both of its ends go through, so it leaves the count exactly once in
+ * either order. One end is its run() returning for good with nothing
+ * left to serve (`lotus_drain_observer_finished`, for a locus that
+ * reads `draining` in its run() alone): a finished locus has nothing
+ * to drain, and counted until its parent tore it down it held a
+ * signal's drain for the whole grace. The other is its teardown's
+ * latch (`lotus_drain_observer_leave`), which may come first: an
+ * admitted run outlives the latch under its run hold and reaches its
+ * end after it. Whichever comes first counts the instance out and
+ * marks its entry; teardown removes the entry, so a later `finished`
+ * from a run that outlived the latch finds nothing and counts nothing,
+ * and the table holds only instances not yet torn down. An instance
+ * the table could not hold (out of memory) is counted all the same and
+ * counted out at teardown, as before the table.
+ *
+ * Open addressing with linear probing, deletion by backward shift, so
+ * no tombstones accumulate; under one lock, taken only by loci that
+ * read `draining`. */
+typedef struct { void *self; int finished; } lotus_drain_entry_t;
+static pthread_mutex_t g_drain_table_lock = PTHREAD_MUTEX_INITIALIZER;
+static lotus_drain_entry_t *g_drain_table = NULL;
+static size_t g_drain_table_cap = 0;   /* a power of two, or 0 */
+static size_t g_drain_table_len = 0;
+
+static size_t lotus_drain_slot_of(void *self, size_t cap) {
+    uintptr_t h = (uintptr_t)self;
+    h ^= h >> 33; h *= (uintptr_t)0xff51afd7ed558ccdULL; h ^= h >> 33;
+    return (size_t)h & (cap - 1);
+}
+
+/* The slot holding `self`, or the empty slot it would go in. Lock held. */
+static size_t lotus_drain_find(void *self) {
+    size_t i = lotus_drain_slot_of(self, g_drain_table_cap);
+    while (g_drain_table[i].self && g_drain_table[i].self != self) {
+        i = (i + 1) & (g_drain_table_cap - 1);
+    }
+    return i;
+}
+
+static int lotus_drain_grow(void) {
+    size_t cap = g_drain_table_cap ? g_drain_table_cap * 2 : 64;
+    lotus_drain_entry_t *t = calloc(cap, sizeof(*t));
+    if (!t) return 0;
+    lotus_drain_entry_t *old = g_drain_table;
+    size_t old_cap = g_drain_table_cap;
+    g_drain_table = t;
+    g_drain_table_cap = cap;
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old[i].self) g_drain_table[lotus_drain_find(old[i].self)] = old[i];
+    }
+    free(old);
+    return 1;
+}
+
+static void lotus_drain_remove_at(size_t i) {
+    size_t mask = g_drain_table_cap - 1;
+    g_drain_table[i].self = NULL;
+    g_drain_table_len--;
+    size_t j = (i + 1) & mask;
+    while (g_drain_table[j].self) {
+        size_t home = lotus_drain_slot_of(g_drain_table[j].self, g_drain_table_cap);
+        /* move j back to i when its home is not cyclically in (i, j] */
+        if (((j - home) & mask) >= ((j - i) & mask)) {
+            g_drain_table[i] = g_drain_table[j];
+            g_drain_table[j].self = NULL;
+            i = j;
+        }
+        j = (j + 1) & mask;
+    }
+}
+
+void lotus_drain_observer_enter(void *self, const char *label) {
+    pthread_mutex_lock(&g_drain_table_lock);
+    if ((g_drain_table_len + 1) * 2 > g_drain_table_cap) (void)lotus_drain_grow();
+    if (g_drain_table_cap && (g_drain_table_len + 1) * 2 <= g_drain_table_cap) {
+        size_t i = lotus_drain_find(self);
+        if (!g_drain_table[i].self) {
+            g_drain_table[i].self = self;
+            g_drain_table[i].finished = 0;
+            g_drain_table_len++;
+        }
+    }
+    pthread_mutex_unlock(&g_drain_table_lock);
+    lotus_drain_observer_add(1, label);
+}
 
 void lotus_drain_observer_finished(void *self, const char *label) {
-    pthread_mutex_lock(&g_drain_finished_lock);
-    for (size_t i = 0; i < g_drain_finished_len; i++) {
-        if (g_drain_finished[i] == self) {
-            pthread_mutex_unlock(&g_drain_finished_lock);
-            return;
+    int out = 0;
+    pthread_mutex_lock(&g_drain_table_lock);
+    if (g_drain_table_cap) {
+        size_t i = lotus_drain_find(self);
+        if (g_drain_table[i].self && !g_drain_table[i].finished) {
+            g_drain_table[i].finished = 1;
+            out = 1;
         }
     }
-    if (g_drain_finished_len == g_drain_finished_cap) {
-        size_t cap = g_drain_finished_cap ? g_drain_finished_cap * 2 : 16;
-        void **grown = realloc(g_drain_finished, cap * sizeof(void *));
-        if (!grown) {
-            /* Kept counted: the drain waits its grace, as before. */
-            pthread_mutex_unlock(&g_drain_finished_lock);
-            return;
-        }
-        g_drain_finished = grown;
-        g_drain_finished_cap = cap;
-    }
-    g_drain_finished[g_drain_finished_len++] = self;
-    pthread_mutex_unlock(&g_drain_finished_lock);
-    lotus_drain_observer_add(-1, label);
+    pthread_mutex_unlock(&g_drain_table_lock);
+    if (out) lotus_drain_observer_add(-1, label);
 }
 
 void lotus_drain_observer_leave(void *self, const char *label) {
-    pthread_mutex_lock(&g_drain_finished_lock);
-    for (size_t i = 0; i < g_drain_finished_len; i++) {
-        if (g_drain_finished[i] == self) {
-            g_drain_finished[i] = g_drain_finished[--g_drain_finished_len];
-            pthread_mutex_unlock(&g_drain_finished_lock);
-            return;
+    int out = 1;
+    pthread_mutex_lock(&g_drain_table_lock);
+    if (g_drain_table_cap) {
+        size_t i = lotus_drain_find(self);
+        if (g_drain_table[i].self) {
+            out = !g_drain_table[i].finished;
+            lotus_drain_remove_at(i);
         }
     }
-    pthread_mutex_unlock(&g_drain_finished_lock);
-    lotus_drain_observer_add(-1, label);
+    pthread_mutex_unlock(&g_drain_table_lock);
+    if (out) lotus_drain_observer_add(-1, label);
+}
+
+/* The bookkeeping's test surface, reachable from a program through
+ * `@ffi("c")` (whose Ints are the instance and the answer): `op` 0
+ * enters `instance`, 1 finishes it, 2 tears it down, 3 does nothing;
+ * the answer is the live count, or with `op` 4 how many instances the
+ * table holds. */
+int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
+    void *self = (void *)(uintptr_t)instance;
+    switch (op) {
+    case 0: lotus_drain_observer_enter(self, "probe"); break;
+    case 1: lotus_drain_observer_finished(self, "probe"); break;
+    case 2: lotus_drain_observer_leave(self, "probe"); break;
+    case 4: {
+        pthread_mutex_lock(&g_drain_table_lock);
+        int64_t n = (int64_t)g_drain_table_len;
+        pthread_mutex_unlock(&g_drain_table_lock);
+        return n;
+    }
+    default: break;
+    }
+    return __atomic_load_n(&g_drain_observers, __ATOMIC_ACQUIRE);
 }
 
 /* What the drain is still waiting on, as one line's worth of text: each
@@ -14903,6 +14990,13 @@ void lotus_drain_observer_finished(void *self, const char *label) {
 }
 void lotus_drain_observer_leave(void *self, const char *label) {
     (void)self; (void)label;
+}
+void lotus_drain_observer_enter(void *self, const char *label) {
+    (void)self; (void)label;
+}
+int64_t lotus_drain_observer_step(int64_t op, int64_t instance) {
+    (void)op; (void)instance;
+    return 0;
 }
 #endif /* __wasm__ */
 

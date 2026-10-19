@@ -37047,78 +37047,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(self.cells.emits(Obligation::DrainObserver)?)
     }
 
-    /// GH #1077: count an instance of `locus_name` in (`delta` 1) or
-    /// out (-1) of the live drain observers — behind a private flag
-    /// whose initializer the end of `lower_program` writes, since
-    /// which loci read `draining` is known only once every body has
-    /// lowered. A locus that never reads it folds to nothing.
+    /// GH #1077: count this instance (`self_ptr`) of `locus_name` in to
+    /// the live drain observers (`lotus_drain_observer_enter`), which
+    /// keeps it by `self` until one of its ends counts it out
+    /// ([`Self::emit_drain_observer_out`]) — behind a private flag whose
+    /// initializer the end of `lower_program` writes, since which loci
+    /// read `draining` is known only once every body has lowered. A
+    /// locus that never reads it folds to nothing.
     pub(crate) fn emit_drain_observer_count(
         &mut self,
         locus_name: &str,
-        delta: i64,
+        self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        if !self.drain_observers_emitted()? {
-            return Ok(());
-        }
-        let i64_t = self.context.i64_type();
-        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let gname = format!("lotus.observes_drain.{locus_name}");
-        let g = match self.module.get_global(&gname) {
-            Some(g) => g,
-            None => {
-                let g = self.module.add_global(i64_t, None, &gname);
-                g.set_linkage(inkwell::module::Linkage::Private);
-                g.set_initializer(&i64_t.const_zero());
-                g
-            }
-        };
-        let observes = self
-            .builder
-            .build_load(i64_t, g.as_pointer_value(), "drain.observer.flag")
-            .map_err(e)?
-            .into_int_value();
-        let yes = self
-            .builder
-            .build_int_compare(inkwell::IntPredicate::NE, observes, i64_t.const_zero(), "drain.observer")
-            .map_err(e)?;
-        let func = self
-            .builder
-            .get_insert_block()
-            .and_then(|bb| bb.get_parent())
-            .expect("inside a function");
-        let do_bb = self.context.append_basic_block(func, "drain.observer.count");
-        let cont_bb = self.context.append_basic_block(func, "drain.observer.cont");
-        self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
-        self.builder.position_at_end(do_bb);
-        let add = self
-            .module
-            .get_function("lotus_drain_observer_add")
-            .expect("lotus_drain_observer_add declared");
-        let name = self
-            .builder
-            .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
-            .map_err(e)?
-            .as_pointer_value();
-        self.builder
-            .build_call(
-                add,
-                &[i64_t.const_int(delta as u64, true).into(), name.into()],
-                "drain.observer.add",
-            )
-            .map_err(e)?;
-        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
-        self.builder.position_at_end(cont_bb);
-        Ok(())
+        self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_enter")
     }
 
     /// GH #1077: count this instance (`self_ptr`) of `locus_name` out of
     /// the live drain observers, once whichever of its two ends comes
-    /// first: `finished`, its run() has returned for good with nothing
-    /// left to serve (counted only for a locus that reads `draining` in
-    /// its run() alone), or its arena's destroy. The runtime keeps the
-    /// instances already counted out by the first, so the second is a
-    /// no-op for them. Behind private flags whose initializers the end
-    /// of `lower_program` writes, as [`Self::emit_drain_observer_count`].
+    /// first, in either order: `finished`, its run() has returned for good
+    /// with nothing left to serve (counted only for a locus that reads
+    /// `draining` in its run() alone), or its teardown's latch, which an
+    /// admitted run can outlive. The runtime keeps each instance by `self`
+    /// from its count-in to its teardown, so whichever end comes second
+    /// counts nothing. Behind private flags whose initializers the end of
+    /// `lower_program` writes, as [`Self::emit_drain_observer_count`].
     pub(crate) fn emit_drain_observer_out(
         &mut self,
         locus_name: &str,
@@ -37130,11 +37082,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let i64_t = self.context.i64_type();
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let gname = if finished {
-            format!("lotus.drain_in_run_only.{locus_name}")
-        } else {
-            format!("lotus.observes_drain.{locus_name}")
-        };
+        let gname = format!("{flag}.{locus_name}");
         let g = match self.module.get_global(&gname) {
             Some(g) => g,
             None => {
@@ -37144,32 +37092,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 g
             }
         };
-        let flag = self
+        let on = self
             .builder
-            .build_load(i64_t, g.as_pointer_value(), "drain.observer.out.flag")
+            .build_load(i64_t, g.as_pointer_value(), "drain.observer.flag")
             .map_err(e)?
             .into_int_value();
         let yes = self
             .builder
-            .build_int_compare(inkwell::IntPredicate::NE, flag, i64_t.const_zero(), "drain.observer.out")
+            .build_int_compare(inkwell::IntPredicate::NE, on, i64_t.const_zero(), "drain.observer")
             .map_err(e)?;
         let func = self
             .builder
             .get_insert_block()
             .and_then(|bb| bb.get_parent())
             .expect("inside a function");
-        let do_bb = self.context.append_basic_block(func, "drain.observer.out.count");
-        let cont_bb = self.context.append_basic_block(func, "drain.observer.out.cont");
+        let do_bb = self.context.append_basic_block(func, "drain.observer.count");
+        let cont_bb = self.context.append_basic_block(func, "drain.observer.cont");
         self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
         self.builder.position_at_end(do_bb);
-        let callee = if finished { "lotus_drain_observer_finished" } else { "lotus_drain_observer_leave" };
         let f = self.module.get_function(callee).unwrap_or_else(|| panic!("{callee} declared"));
         let name = self
             .builder
             .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
             .map_err(e)?
             .as_pointer_value();
-        self.builder.build_call(f, &[self_ptr.into(), name.into()], "drain.observer.out.call").map_err(e)?;
+        self.builder.build_call(f, &[self_ptr.into(), name.into()], "drain.observer.call").map_err(e)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
         Ok(())
@@ -37183,6 +37130,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// Caller must already have a positioned builder (entry block
     /// of the method body, after any param/self setup) and must
+    ) -> Result<(), CodegenError> {
+        if finished {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.drain_in_run_only", "lotus_drain_observer_finished")
+        } else {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_leave")
+        }
+    }
+
+    /// `callee(self_ptr, locus_name)` behind the private flag
+    /// `<flag>.<locus_name>` (0 until the end of `lower_program` writes
+    /// its initializer), the shape every drain observer count shares.
+    fn emit_drain_observer_call(
+        &mut self,
+        locus_name: &str,
+        self_ptr: PointerValue<'ctx>,
+        flag: &str,
+        callee: &str,
     /// have set `current_self` to the locus self_ptr — this helper
     /// reads `self.__arena` via the same GEP pattern as
     /// `current_arena_ptr`'s fallback path. The scratch is the

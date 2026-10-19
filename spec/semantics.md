@@ -5174,7 +5174,9 @@ instance** of a locus whose own code reads `draining` (GH #1077):
 the runtime counts each such instance from its instantiation to its
 teardown. A locus whose only `draining` reads are in its own `run()`
 is counted out sooner, once that `run()` has returned for good (no
-restart follows) and it has no subscription left to serve: a finished
+restart follows) and it has no subscription left to serve — exactly once,
+whichever of that and its teardown comes first (an admitted `run()` can
+outlive its teardown's start) — : a finished
 locus has nothing to drain, so a pinned child that already returned no
 longer holds the drain until its parent tears it down. A read anywhere
 else — a handler, a hook, a method another locus calls — keeps the
