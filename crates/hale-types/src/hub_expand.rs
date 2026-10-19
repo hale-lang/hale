@@ -159,7 +159,7 @@ fn find_locus_mut<'a>(items: &'a mut [TopDecl], name: &str) -> Option<&'a mut Lo
 
 /// Run the pass over a bundle's programs. The standard library's hub source
 /// and topics are appended first (once), by the caller.
-pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
+pub fn expand(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) -> Vec<HubExpansion> {
     // ---- the immutable phase: hubs, their streams, the codecs' names ----
     let mut plans: Vec<HubPlan> = Vec::new();
     let confer;
@@ -175,7 +175,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         let mut topics: BTreeMap<&str, &TypeExpr> = BTreeMap::new();
         let mut subjects: BTreeMap<&str, Option<&String>> = BTreeMap::new();
-        let schemas = crate::surfaces::Schemas::of(&ro);
+        let schemas = crate::surfaces::Schemas::of(&ro, renames);
         let mut publishes: BTreeSet<String> = BTreeSet::new();
         for p in &ro {
             for d in flat_decls(&p.items) {
@@ -372,7 +372,7 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
         let first = plans[0].program;
         let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
             builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
-        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins);
+        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins, renames);
     }
 
     // ---- the generated items ----

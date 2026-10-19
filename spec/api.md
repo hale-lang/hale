@@ -2241,16 +2241,24 @@ the description lists it under no `required`: whatever the declaration
 writes for it (a literal, an enum's variant, a record, a value computed
 from others) is what the absent field decodes to, through either codec,
 as the record's own literal would build it, when the codec can evaluate
-it on its own: a default built of literals, constants, fns, qualified
-paths (an enum's variant) and record literals of those, a record
-literal closed only when every field it leaves out has such a default
-too (followed through nested literals; a chain of defaults that reaches
-itself is not closed). A record field
-default is evaluated in the scope of the literal that leaves it, so one
-that reads anything else of that scope (`b: Int = a + 1`, `a` a local
-where the literal is written) is no default a codec can build, and its
-field is required on the wire: the description lists it under
-`required`, and the decoders refuse its absence `missing_field`. A list is the one exception,
+it on its own: when the default resolves with no locals in scope. Every
+name it reads must resolve to a module-level item: a constant, a free fn
+(a module's included), a language builtin (`len`, `to_string`, `min`,
+...), a type's conversion (`OrderId(3)`), an enum's variant, or a stdlib
+path. A type or a constructor resolves through its aliases and through an
+import (`Alias { }`, `l::Inner { }`, `Hue::blue`). A record literal is
+closed only when every field it leaves out has a closed default too,
+followed through nested literals. A field's type is read through its
+aliases before its shape is, so a `bounded` field left out is empty
+however it is spelled. A chain of defaults that reaches itself is not
+closed. A record field default is evaluated in the scope of the literal
+that leaves it, so one that reads anything of that scope (`b: Int = a +
+1`, `a` a local where the literal is written; `compute()`, `compute` a
+fn value bound there) is no default a codec can build. So is any default
+with a name that resolves to nothing above, and such a field is required
+on the wire: the description lists it under `required`, and the decoders
+refuse its absence `missing_field`. The codecs and the description ask
+one table of the bundle's items (`json_gen::DefaultScope`). A list is the one exception,
 by its shape: a `bounded` list left out is empty and a fixed array is
 always sent, a default of either unread (above). A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),

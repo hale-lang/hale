@@ -155,118 +155,235 @@ struct JsonField {
     default_expr: Option<Expr>,
 }
 
-/// The names a module declares that an expression may read wherever it is
-/// evaluated: its constants and its fns, a module's included.
-pub fn global_value_names(items: &[TopDecl], out: &mut HashSet<String>) {
-    for item in items {
-        match item {
-            TopDecl::Const(c) => {
-                out.insert(c.name.name.clone());
-            }
-            TopDecl::Fn(f) => {
-                out.insert(f.name.name.clone());
-            }
-            TopDecl::Module(m) => global_value_names(&m.items, out),
-            _ => {}
-        }
-    }
+/// The bare builtins a default may call: the language's value builtins,
+/// which no binding of a literal's scope reaches first
+/// (`hale_types::builtin_sigs::BARE_BUILTIN_SIGS`, which a test there
+/// holds this list to).
+pub const VALUE_BUILTINS: &[&str] = &["len", "to_string", "Int", "Float", "abs", "min", "max", "starts_with", "contains"];
+
+/// What a field's default may name where a codec builds it (spec/api.md
+/// § Codecs): a bundle's module-level items, resolved with no locals in
+/// scope. A record literal evaluates a field's default in its own scope,
+/// so a default is one a codec can build only when every name it reads
+/// resolves here: a constant or a free fn (a module's included, the flat
+/// namespace it shares), a type or its variant after its aliases, by its
+/// own name or through an import, or a stdlib path. A record literal it
+/// builds is closed only when each field the literal leaves out has a
+/// closed default too, followed through nested literals; a chain of those
+/// defaults that reaches itself is not closed. Anything that does not
+/// resolve leaves its field required. The codecs and the description ask
+/// this one table ([`DefaultScope::is_closed`]).
+pub struct DefaultScope<'a> {
+    /// Every constant and free fn, by its (post-merge) name.
+    values: HashSet<String>,
+    /// Every type declaration, by its (post-merge) name; a later one of
+    /// a name replaces an earlier, as within one program.
+    types: std::collections::BTreeMap<String, &'a crate::ast::TypeDecl>,
+    /// A qualified spelling (`lib::Inner`) → the name its declaration
+    /// is merged under: the build's import renames, and each imported
+    /// type's own `display`.
+    imports: std::collections::BTreeMap<String, String>,
 }
 
-/// Each record a module declares, by name, with its declared fields.
-pub fn record_fields<'a>(items: &'a [TopDecl], out: &mut std::collections::BTreeMap<String, &'a [crate::ast::StructField]>) {
-    for item in items {
-        match item {
-            TopDecl::Type(t) => {
-                if let TypeDeclBody::Struct(fs) = &t.body {
-                    out.insert(t.name.name.clone(), fs.as_slice());
+impl<'a> DefaultScope<'a> {
+    /// Over every program of a bundle, with the build's cross-seed rename
+    /// table (`(["alias", "Name"], mangled)`; empty for one seed).
+    pub fn of(slices: &[&'a [TopDecl]], renames: &[(Vec<String>, String)]) -> DefaultScope<'a> {
+        fn walk<'a>(items: &'a [TopDecl], s: &mut DefaultScope<'a>) {
+            for item in items {
+                match item {
+                    TopDecl::Const(c) => {
+                        s.values.insert(c.name.name.clone());
+                    }
+                    TopDecl::Fn(f) => {
+                        s.values.insert(f.name.name.clone());
+                    }
+                    TopDecl::Type(t) => {
+                        s.types.insert(t.name.name.clone(), t);
+                        if let Some(d) = &t.display {
+                            s.imports.entry(d.clone()).or_insert_with(|| t.name.name.clone());
+                        }
+                    }
+                    TopDecl::Module(m) => walk(&m.items, s),
+                    _ => {}
                 }
             }
-            TopDecl::Module(m) => record_fields(&m.items, out),
-            _ => {}
+        }
+        let mut s = DefaultScope { values: HashSet::new(), types: Default::default(), imports: Default::default() };
+        for items in slices {
+            walk(items, &mut s);
+        }
+        for (path, mangled) in renames {
+            s.imports.insert(path.join("::"), mangled.clone());
+        }
+        s
+    }
+
+    /// Whether `e`, a field's declared default, is one a codec can build
+    /// on its own: it resolves with no locals in scope.
+    pub fn is_closed(&self, e: &Expr) -> bool {
+        self.closed(e, &mut Vec::new())
+    }
+
+    /// The name a type path's declaration has: a bare name as written, a
+    /// qualified one through the imports.
+    fn merged_name(&self, segs: &[&str]) -> Option<String> {
+        match segs {
+            [one] => Some(one.to_string()),
+            _ => self.imports.get(&segs.join("::")).cloned(),
         }
     }
-}
 
-/// Whether a field's default can be evaluated on its own, where a codec
-/// builds it (spec/api.md § Codecs): it names nothing of the scope a
-/// record literal evaluates it in. Literals, constants and fns
-/// (`global`), qualified paths (an enum's variant, a module's name), and
-/// literals, operators and calls built of those. A name `global` does not
-/// know (a caller's local, as a field default may read), `self`, and any
-/// form that binds names of its own (a block, a `match`) are not closed,
-/// and such a field is required on the wire.
-pub fn default_is_closed<'a>(
-    e: &Expr,
-    global: &dyn Fn(&str) -> bool,
-    fields: &dyn Fn(&str) -> Option<&'a [crate::ast::StructField]>,
-) -> bool {
-    closed_in(e, global, fields, &mut Vec::new())
-}
-
-/// [`default_is_closed`], with the record fields whose defaults are being
-/// followed: a literal is closed only if each field it leaves out has a
-/// closed default too (that default is evaluated where the literal is, so
-/// a copy of the literal carries it), followed through nested literals; a
-/// default that reaches itself is not closed.
-fn closed_in<'a>(
-    e: &Expr,
-    global: &dyn Fn(&str) -> bool,
-    fields: &dyn Fn(&str) -> Option<&'a [crate::ast::StructField]>,
-    following: &mut Vec<(String, String)>,
-) -> bool {
-    let closed = |x: &Expr, following: &mut Vec<(String, String)>| closed_in(x, global, fields, following);
-    match e {
-        Expr::Literal(..) | Expr::Path(_) => true,
-        Expr::Ident(i) => global(&i.name),
-        Expr::Call { callee, args, .. } => {
-            let callee_ok = match callee.as_ref() {
-                // a called name is a fn: the module's or the language's
-                Expr::Ident(_) | Expr::Path(_) => true,
-                other => closed(other, following),
-            };
-            callee_ok && args.iter().all(|a| closed(a, following))
-        }
-        Expr::Binary { left, right, .. } => closed(left, following) && closed(right, following),
-        Expr::Unary { operand, .. } => closed(operand, following),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => closed(receiver, following),
-        Expr::Index { receiver, index, .. } => closed(receiver, following) && closed(index, following),
-        Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().all(|x| closed(x, following)),
-        Expr::Struct { path, inits, .. } => {
-            if !inits.iter().all(|i| closed(&i.value, following)) {
-                return false;
+    /// The declaration a type path names, through its aliases; `None`
+    /// for a path that resolves to no declaration, a generic one, or an
+    /// alias chain that reaches itself.
+    fn decl(&self, segs: &[&str]) -> Option<&'a crate::ast::TypeDecl> {
+        let mut name = self.merged_name(segs)?;
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let d = *self.types.get(&name)?;
+            if !d.generics.is_empty() {
+                return None;
             }
-            // the fields the literal leaves out take their defaults where
-            // it is evaluated
-            let [seg] = path.segments.as_slice() else { return true };
-            let Some(declared) = fields(&seg.name) else { return true };
-            for f in declared {
-                if inits.iter().any(|i| i.name.name == f.name.name) {
-                    continue;
+            let TypeDeclBody::Alias(te) = &d.body else { return Some(d) };
+            if seen.contains(&name) {
+                return None;
+            }
+            seen.push(name);
+            let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+            if !generic_args.is_empty() {
+                return None;
+            }
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            name = self.merged_name(&segs)?;
+        }
+    }
+
+    /// A field's type through its aliases, the form a shape rule
+    /// (`bounded`, a fixed array, a map) reads: `te` when it names no
+    /// alias.
+    pub fn dealias(&self, te: &TypeExpr) -> TypeExpr {
+        let mut cur = te.clone();
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let TypeExpr::Named { path, generic_args, .. } = &cur else { return cur };
+            if !generic_args.is_empty() {
+                return cur;
+            }
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            let Some(name) = self.merged_name(&segs) else { return cur };
+            let Some(d) = self.types.get(&name) else { return cur };
+            let TypeDeclBody::Alias(next) = &d.body else { return cur };
+            if !d.generics.is_empty() || seen.contains(&name) {
+                return cur;
+            }
+            seen.push(name);
+            cur = next.clone();
+        }
+    }
+
+    /// Whether a qualified path resolves to an item outside any literal's
+    /// scope: a stdlib path (no local is qualified), a variant of an enum
+    /// it names, an imported constant or fn, or an imported scalar (a
+    /// conversion, as a call).
+    fn path_resolves(&self, segs: &[&str]) -> bool {
+        if segs.first() == Some(&"std") {
+            return true;
+        }
+        if let [ty @ .., variant] = segs {
+            if !ty.is_empty() {
+                if let Some(d) = self.decl(ty) {
+                    if let TypeDeclBody::Enum(vs) = &d.body {
+                        if vs.iter().any(|v| v.name.name == *variant) {
+                            return true;
+                        }
+                    }
                 }
-                let Some(d) = &f.default else {
-                    // a `bounded` field starts empty; any other left out
-                    // is a literal the check refuses
-                    if wire_list(&f.ty).is_some_and(|(_, _, exact)| !exact) {
+            }
+        }
+        let Some(name) = self.imports.get(&segs.join("::")) else { return false };
+        self.values.contains(name) || self.converts(name)
+    }
+
+    /// Whether a called name is a type's conversion: a scalar of the unit
+    /// dialect (`OrderId(3)`), after its aliases.
+    fn converts(&self, name: &str) -> bool {
+        self.decl(&[name]).is_some_and(|d| matches!(d.body, TypeDeclBody::Scalar(_)))
+    }
+
+    fn closed(&self, e: &Expr, following: &mut Vec<(String, String)>) -> bool {
+        let segs_of = |q: &crate::ast::QualifiedName| q.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        match e {
+            Expr::Literal(..) => true,
+            Expr::Ident(i) => self.values.contains(&i.name),
+            Expr::Path(p) => {
+                let segs = segs_of(p);
+                self.path_resolves(&segs.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+            Expr::Call { callee, args, .. } => {
+                let callee_ok = match callee.as_ref() {
+                    // a module fn, a language builtin or a conversion; a
+                    // name the literal's scope binds (a fn value) is not
+                    Expr::Ident(i) => {
+                        self.values.contains(&i.name) || VALUE_BUILTINS.contains(&i.name.as_str()) || self.converts(&i.name)
+                    }
+                    Expr::Path(p) => {
+                        let segs = segs_of(p);
+                        self.path_resolves(&segs.iter().map(String::as_str).collect::<Vec<_>>())
+                    }
+                    other => self.closed(other, following),
+                };
+                callee_ok && args.iter().all(|a| self.closed(a, following))
+            }
+            Expr::Binary { left, right, .. } => self.closed(left, following) && self.closed(right, following),
+            Expr::Unary { operand, .. } => self.closed(operand, following),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.closed(receiver, following),
+            Expr::Index { receiver, index, .. } => self.closed(receiver, following) && self.closed(index, following),
+            Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().all(|x| self.closed(x, following)),
+            Expr::Struct { path, inits, .. } => {
+                if !inits.iter().all(|i| self.closed(&i.value, following)) {
+                    return false;
+                }
+                // the record it builds, through its aliases and imports;
+                // one that does not resolve here (a stdlib record among
+                // them) leaves defaults no one can see
+                let segs = segs_of(path);
+                let Some(d) = self.decl(&segs.iter().map(String::as_str).collect::<Vec<_>>()) else { return false };
+                let TypeDeclBody::Struct(declared) = &d.body else { return false };
+                // the fields the literal leaves out take their defaults
+                // where it is evaluated
+                for f in declared {
+                    if inits.iter().any(|i| i.name.name == f.name.name) {
                         continue;
                     }
-                    return false;
-                };
-                let key = (seg.name.clone(), f.name.name.clone());
-                if following.contains(&key) {
-                    return false;
+                    let Some(dflt) = &f.default else {
+                        // a `bounded` field starts empty, however its type
+                        // is spelled; any other left out is a literal the
+                        // check refuses
+                        if wire_list(&self.dealias(&f.ty)).is_some_and(|(_, _, exact)| !exact) {
+                            continue;
+                        }
+                        return false;
+                    };
+                    let key = (d.name.name.clone(), f.name.name.clone());
+                    if following.contains(&key) {
+                        return false;
+                    }
+                    following.push(key);
+                    let ok = self.closed(dflt, following);
+                    following.pop();
+                    if !ok {
+                        return false;
+                    }
                 }
-                following.push(key);
-                let ok = closed(d, following);
-                following.pop();
-                if !ok {
-                    return false;
-                }
+                true
             }
-            true
+            Expr::Range { lo, hi, .. } => self.closed(lo, following) && self.closed(hi, following),
+            Expr::ArrayRepeat { val, .. } => self.closed(val, following),
+            // a block, a `match`, `self` and the rest bind or read names
+            // of their own
+            _ => false,
         }
-        Expr::Range { lo, hi, .. } => closed(lo, following) && closed(hi, following),
-        Expr::ArrayRepeat { val, .. } => closed(val, following),
-        _ => false,
     }
 }
 
@@ -2207,13 +2324,16 @@ pub fn rewrite_api_codec_calls(programs: &mut [&mut Program], carried: &HashSet<
 /// (spec/api.md § Codecs). `builtins` are the builtin records in `names`
 /// (`IndexError`, …), each with the primitive fields the contract shape
 /// renders: no declaration carries them, so the caller names them.
+/// `renames` is the build's cross-seed rename table, which a field's
+/// default may spell a name through ([`DefaultScope`]).
 pub fn generate_rpc_codecs(
     programs: &mut [&mut Program],
     main_idx: usize,
     names: &[String],
     builtins: &[(String, Vec<(String, PrimType)>)],
+    renames: &[(Vec<String>, String)],
 ) {
-    generate_codecs(programs, main_idx, names, true, builtins, false);
+    generate_codecs(programs, main_idx, names, true, builtins, false, renames);
 }
 
 /// GH #1417 (R8b): the protobuf codecs of the same type set, beside the JSON
@@ -2227,8 +2347,9 @@ pub fn generate_rpc_pb_codecs(
     main_idx: usize,
     names: &[String],
     builtins: &[(String, Vec<(String, PrimType)>)],
+    renames: &[(Vec<String>, String)],
 ) {
-    generate_codecs(programs, main_idx, names, true, builtins, true);
+    generate_codecs(programs, main_idx, names, true, builtins, true, renames);
 }
 
 /// The plain aliases a bundle declares (`type Count = Int;`), by name.
@@ -2265,6 +2386,7 @@ fn generate_codecs(
     units: bool,
     builtins: &[(String, Vec<(String, PrimType)>)],
     protobuf: bool,
+    renames: &[(Vec<String>, String)],
 ) {
     let wanted: HashSet<String> = names.iter().cloned().collect();
     let mut types: Vec<JsonType> = Vec::new();
@@ -2287,19 +2409,13 @@ fn generate_codecs(
     for p in programs.iter() {
         collect_enum_kinds(&p.items, &mut enum_kinds);
     }
-    let mut globals = HashSet::new();
-    for p in programs.iter() {
-        global_value_names(&p.items, &mut globals);
-    }
-    // each record's declared fields, for the defaults a literal leaves
+    // what a field's default may name where the codec builds it
     let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
-    let mut records: std::collections::BTreeMap<String, &[crate::ast::StructField]> = std::collections::BTreeMap::new();
-    for p in &ro {
-        record_fields(&p.items, &mut records);
-    }
+    let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
+    let scope = DefaultScope::of(&slices, renames);
     let mut enums: Vec<JsonEnum> = Vec::new();
     for p in programs.iter() {
-        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &globals, &records, &mut types);
+        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &scope, &mut types);
         collect_api_enums(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &mut enums);
         walk_fns(&p.items, &mut |name| {
             existing_fns.insert(name.to_string());
@@ -2940,8 +3056,7 @@ fn collect_api_types(
     scalars: &std::collections::BTreeMap<String, Conv>,
     aliases: &std::collections::BTreeMap<String, TypeExpr>,
     enums: &std::collections::BTreeMap<String, bool>,
-    globals: &HashSet<String>,
-    records: &std::collections::BTreeMap<String, &[crate::ast::StructField]>,
+    scope: &DefaultScope<'_>,
     out: &mut Vec<JsonType>,
 ) {
     for item in items {
@@ -2991,11 +3106,11 @@ fn collect_api_types(
                     // always sent: spec/api.md § Codecs)
                     // ... when the codec can evaluate it on its own: one that
                     // reads the scope a literal evaluates it in leaves the
-                    // field required (`default_is_closed`)
+                    // field required (`DefaultScope::is_closed`)
                     let default_expr = match &kind {
                         FieldKind::List { .. } => None,
                         _ if default_src.is_some() => None,
-                        _ => f.default.clone().filter(|d| default_is_closed(d, &|n| globals.contains(n), &|t| records.get(t).copied())),
+                        _ => f.default.clone().filter(|d| scope.is_closed(d)),
                     };
                     jfields.push(JsonField {
                         name: f.name.name.clone(),
@@ -3020,7 +3135,7 @@ fn collect_api_types(
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, globals, records, out),
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, scope, out),
             _ => {}
         }
     }

@@ -49,9 +49,10 @@ Each field's shape is a decision about what a caller can say:
   `false`". Most optional inputs are this. A default may be of any
   type, an enum's (`scope: Scope = Scope::key`) or a record's as much as
   a literal: the field is left out of the description's `required`, and
-  a payload without it gets the default. Build it of literals, constants
-  and fns; a default that reads a variable where the record is written
-  is one the decoder cannot evaluate, so that field must be sent.
+  a payload without it gets the default. Build it of literals, constants,
+  module fns and records of those. A default that reads a variable where
+  the record is written, or calls a fn value bound there, is one the
+  decoder cannot evaluate, so that field must be sent.
 - **`since` with `has_since` is a presence pair.** Here "not sent" means
   something different from any time: give me everything. The caller may
   leave `since` out or send `null`, and the handler reads `has_since`.

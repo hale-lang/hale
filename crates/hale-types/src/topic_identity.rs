@@ -274,10 +274,6 @@ pub struct Shapes<'a> {
     imported_names: BTreeMap<&'a str, String>,
     ints: std::collections::BTreeSet<&'a str>,
     quantities: BTreeMap<&'a str, String>,
-    /// The constants and fns the slices declare: what a field's default
-    /// may read and still be one a codec can build
-    /// (`hale_syntax::json_gen::default_is_closed`).
-    globals: std::collections::HashSet<String>,
 }
 
 /// What a type is, as [`Shapes::classify`] reads it.
@@ -417,22 +413,7 @@ impl<'a> Shapes<'a> {
             }
             imported = imported_names(&types, &reserved, &derived);
         }
-        let mut globals = std::collections::HashSet::new();
-        for items in slices {
-            hale_syntax::json_gen::global_value_names(items, &mut globals);
-        }
-        Shapes { types, imported_names: imported, ints, quantities, globals }
-    }
-
-    /// Whether a field's declared default is one a codec can build where
-    /// the field is absent (`hale_syntax::json_gen::default_is_closed`).
-    pub fn default_is_closed(&self, d: &hale_syntax::ast::Expr) -> bool {
-        hale_syntax::json_gen::default_is_closed(d, &|n| self.globals.contains(n), &|t| {
-            self.types.get(t).and_then(|decl| match &decl.body {
-                TypeDeclBody::Struct(fs) => Some(fs.as_slice()),
-                _ => None,
-            })
-        })
+        Shapes { types, imported_names: imported, ints, quantities }
     }
 
     /// The name a document gives the declared type `name` (GH #1417, R8a;

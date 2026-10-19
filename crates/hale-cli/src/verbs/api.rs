@@ -156,7 +156,7 @@ pub(crate) fn with_rows<T>(
         ExitCode::from(1)
     })?;
     let programs: Vec<&hale_syntax::ast::Program> = snap.programs().values().collect();
-    let schemas = Schemas::of(&programs);
+    let schemas = Schemas::of(&programs, snap.import_renames());
     f(rows, &schemas).map_err(|msg| {
         eprintln!("hale api: {msg}");
         ExitCode::from(2)
