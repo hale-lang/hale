@@ -857,6 +857,17 @@ single separators you chose). Write the shape; let the tool make
 it canonical. For agents this is load-bearing: canonical form
 means a model-written diff touches only the lines it changed.
 
+### Embedded text is a block string
+
+Text with a syntax of its own — a Hale program a test writes to disk,
+a SQL query, a JSON body — is a block string (spec/tokens.md § Block
+strings), written as it reads and indented with the code around it,
+never an escaped one-liner of `\"` and `\n`. The block is raw, so the
+embedded text's own escapes (`"a\n"` in a Hale string, `\"` in JSON)
+go in unchanged, and a reviewer reads the program a fixture runs
+instead of decoding it. Leave a blank line before the closing fence
+when the text is a file, which ends with a line break.
+
 ### Rolling the design
 
 The catalog is small on purpose. A new primitive must **roll

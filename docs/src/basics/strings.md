@@ -126,6 +126,48 @@ counts bytes and never truncates — a value too wide for its
 column keeps all of its digits and pushes the column, because a
 silently shortened number in a log is worse than a ragged table.
 
+## Block strings
+
+Text that has a syntax of its own — a Hale program written into a
+test, a SQL query, a JSON document — reads badly as a one-line
+string, where every quote is `\"` and every line break is `\n`.
+Write it as a **block string** instead: three quotes that end their
+line, the text, and three quotes on a line of their own.
+
+```hale
+fn main() {
+    let query = """
+        SELECT id, name
+          FROM people
+         WHERE id = 1
+        """;
+    println(query);
+}
+```
+
+That prints the query as it reads in the source. Four rules make it
+work:
+
+- **Indentation comes from the closing quotes.** Whatever whitespace
+  stands before the closing `"""` is removed from every line, so the
+  text can indent with the code around it. Deeper lines keep the
+  extra (`  FROM` above keeps its two spaces). A line that starts
+  left of the closing quotes is an error.
+- **Nothing is escaped.** A backslash is a backslash and `{` is just a
+  brace, so a program's own `"a\n"` goes in exactly as written.
+  There is no interpolation; join with `+` if you need a value in it.
+- **The line breaks around the text are not part of it.** The value
+  above ends at `= 1`. Leave a blank line before the closing quotes
+  when you want it to end with a line break, as a source file does.
+- **A longer fence holds the quotes.** `"""` in the middle of a line
+  is text. When a line of the text starts with `"""` (a program that
+  uses a block string itself), open and close with four quotes, or
+  more.
+
+`hale fmt` re-indents a block string along with the code that holds
+it and never changes its value. The details are in
+`spec/tokens.md` § Block strings.
+
 ## Length and inspection
 
 `len(s)` is a builtin — the byte length of the string:
