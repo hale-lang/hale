@@ -1112,6 +1112,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("io::unix", STD_NATIVE, STD_NATIVE, WASM_UNIX),
     std_ns("iter", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("json", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("json::Value", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("lang", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("log", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("math", STD_NATIVE, STD_NATIVE, STD_WASM),

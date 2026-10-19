@@ -716,6 +716,12 @@ fn main() {
   and the handler reads `clear_note` before `has_note`. Use it only where
   a caller must be able to clear: on a pair, `null` and "not sent" are
   one answer, which is the right one for every other input.
+- **A `std::json::Value`, when the program carries JSON it never
+  reads.** A seat's configuration, a change's before and after: declare
+  them `std::json::Value` and they cross byte for byte, described as any
+  JSON. Never a `String` holding JSON, which crosses double-encoded
+  (`"config": "{\"a\":1}"`) and is described as text. Reach for a record
+  as soon as the program reads a field of it.
 - **A map, when callers look entries up by name.** `bounded[Check; 16]
   indexed_by name` crosses as `{"db": {…}, "cache": {…}}`, and in the
   program it stays the bounded list it was, in order. A repeated key is

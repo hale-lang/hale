@@ -725,6 +725,10 @@ impl<'a> Shapes<'a> {
     /// and `(<tag>,…)` for the compound forms; `opaque(<type>)` for a type
     /// that names nothing the program declares.
     fn contract_tag(&self, ty: &TypeExpr, stack: &mut Vec<String>) -> String {
+        // free-form JSON is any value, carried as its text
+        if hale_syntax::json_gen::is_json_value(ty) {
+            return "json".to_string();
+        }
         if let Some(t) = self.flat_tag(ty) {
             return t;
         }

@@ -113,7 +113,7 @@ compiler consults, with the reasons it gives.
 | `std::time` | the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
 | `std::ts` | the tree-sitter parser is a native static library the wasm link never reaches | parsing on the host, through an `@ffi("js")` host import |
 
-Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::url`, `std::yaml`.
+Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::json::Value`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::url`, `std::yaml`.
 
 **Placement and the bus.**
 

@@ -203,6 +203,28 @@ same record would cross as `{"db": {"status": "ok"}}`: the arrow is
 what says the value is the map's. The `.proto` makes it a
 `map<string, string>`.
 
+### Free-form JSON
+
+Some fields hold JSON the program never reads into a type of its own: a
+seat's configuration, a change's before and after. Declare them
+`std::json::Value`:
+
+```hale,fragment
+type Seat { name: String; config: std::json::Value; }
+```
+
+`config` crosses as whatever JSON the caller sent, and comes back out
+byte for byte: key order, spacing and `2.50` stay as written. The
+value must be well-formed JSON, at most 64 levels deep and 64 KiB long.
+In the program it is its text: read it with `std::json`'s cursors
+(`std::json::find_field_raw(seat.config.text, "theme")`), and build a new
+one with `std::json::Value::parse(text) or …`, which holds the text to
+the same rules. That is the only way to make one (besides
+`std::json::Value::null()`): a literal and `seat.config.text = …` are
+refused, so a value you hold is always JSON. The description marks the field `{"x-hale-any": true}`,
+the `.proto` makes it a `string`, and the TypeScript client types it
+`unknown`.
+
 ### Instants and durations
 
 A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:

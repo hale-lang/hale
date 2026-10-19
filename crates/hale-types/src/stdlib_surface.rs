@@ -1131,6 +1131,17 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // `std::json::Value::parse(text)`: a program's own `Value`, held to
+    // the codecs' rules (well-formed, 64 levels, 64 KiB)
+    NsSurface {
+        ns: &["json", "Value"],
+        fns: &[
+            row!("parse", PURE, [Str] -> Named("__StdJsonValue") ! "ParseError", Renamed),
+            // the JSON value `null`: what a codec holds before it reads one
+            row!("null", PURE, [] -> Named("__StdJsonValue"), Renamed),
+        ],
+        open_prefixes: &[],
+    },
     // GH #265 / R2 parity: `std::ts` (tree-sitter parsing) and
     // `std::shm` (shared-memory ring reads) are lowered by codegen
     // and called from stdlib `.hl`, but were absent from this table

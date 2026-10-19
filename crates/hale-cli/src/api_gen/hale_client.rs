@@ -32,6 +32,8 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
         FieldSchema::Time => Ok("Time".to_string()),
+        // free-form JSON: the same opaque value the server holds
+        FieldSchema::Any => Ok("std::json::Value".to_string()),
         FieldSchema::List { items, max, exact: false } => Ok(format!("bounded[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::List { items, max, exact: true } => Ok(format!("[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::Enum { name, .. } => Ok(type_ident(name)),
@@ -54,8 +56,10 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
         }),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("{}::api_encode({value})", type_ident(name))),
         FieldSchema::Time => Ok(format!("api_str(std::time::iso8601({value}))")),
-        // a list, a map or an optional field is a record's, never a whole payload
+        // a list, a map, an optional field or a JSON value is a record's,
+        // never a whole payload
         FieldSchema::List { .. }
+        | FieldSchema::Any
         | FieldSchema::Map { .. }
         | FieldSchema::Nullable { .. }
         | FieldSchema::Presence { .. }
@@ -81,7 +85,8 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -
             format!("let {var} = {}::api_decode({json}) or {{ {fail} }};\n", type_ident(name))
         }
         FieldSchema::Time => format!("let {var} = std::time::parse_time(api_scalar_str({json})) or {EPOCH};\n"),
-        FieldSchema::List { .. }
+        FieldSchema::Any
+        | FieldSchema::List { .. }
         | FieldSchema::Map { .. }
         | FieldSchema::Nullable { .. }
         | FieldSchema::Presence { .. }
