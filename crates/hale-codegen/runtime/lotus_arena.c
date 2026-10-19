@@ -14719,6 +14719,57 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
     lotus_drain_name_count(label, delta);
 }
 
+/* An instance leaves the live observers once, at whichever of its two
+ * ends comes first: its run() has returned for good with nothing left
+ * to serve (`lotus_drain_observer_finished`, for a locus that reads
+ * `draining` in its run() alone), or its arena's destroy
+ * (`lotus_drain_observer_leave`). A finished locus has nothing to
+ * drain: counted until its parent tore it down, it held a signal's
+ * drain for the whole grace while nothing that could end the drain was
+ * left running. The instances the first end counted out are kept here
+ * until the second, so it does not count them again. A short list
+ * under a lock: only finished instances not yet torn down are in it. */
+static pthread_mutex_t g_drain_finished_lock = PTHREAD_MUTEX_INITIALIZER;
+static void **g_drain_finished = NULL;
+static size_t g_drain_finished_len = 0, g_drain_finished_cap = 0;
+
+void lotus_drain_observer_finished(void *self, const char *label) {
+    pthread_mutex_lock(&g_drain_finished_lock);
+    for (size_t i = 0; i < g_drain_finished_len; i++) {
+        if (g_drain_finished[i] == self) {
+            pthread_mutex_unlock(&g_drain_finished_lock);
+            return;
+        }
+    }
+    if (g_drain_finished_len == g_drain_finished_cap) {
+        size_t cap = g_drain_finished_cap ? g_drain_finished_cap * 2 : 16;
+        void **grown = realloc(g_drain_finished, cap * sizeof(void *));
+        if (!grown) {
+            /* Kept counted: the drain waits its grace, as before. */
+            pthread_mutex_unlock(&g_drain_finished_lock);
+            return;
+        }
+        g_drain_finished = grown;
+        g_drain_finished_cap = cap;
+    }
+    g_drain_finished[g_drain_finished_len++] = self;
+    pthread_mutex_unlock(&g_drain_finished_lock);
+    lotus_drain_observer_add(-1, label);
+}
+
+void lotus_drain_observer_leave(void *self, const char *label) {
+    pthread_mutex_lock(&g_drain_finished_lock);
+    for (size_t i = 0; i < g_drain_finished_len; i++) {
+        if (g_drain_finished[i] == self) {
+            g_drain_finished[i] = g_drain_finished[--g_drain_finished_len];
+            pthread_mutex_unlock(&g_drain_finished_lock);
+            return;
+        }
+    }
+    pthread_mutex_unlock(&g_drain_finished_lock);
+    lotus_drain_observer_add(-1, label);
+}
+
 /* What the drain is still waiting on, as one line's worth of text: each
  * cooperative pool with its mode, whether a worker is mid-iteration (and
  * on which locus) and how many cells queue behind it, then the live loci
@@ -14846,6 +14897,12 @@ void lotus_drain_signals_install(int64_t observes_drain) {
 }
 void lotus_drain_observer_add(int64_t delta, const char *label) {
     (void)delta; (void)label;
+}
+void lotus_drain_observer_finished(void *self, const char *label) {
+    (void)self; (void)label;
+}
+void lotus_drain_observer_leave(void *self, const char *label) {
+    (void)self; (void)label;
 }
 #endif /* __wasm__ */
 

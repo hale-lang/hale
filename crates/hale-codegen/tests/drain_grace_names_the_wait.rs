@@ -101,9 +101,11 @@ fn main() { Root { }; }
         e.contains("still waiting on: pool `io` (blocking): a worker is mid-iteration, 0 queued in locus `Stuck`"),
         "names the pool and the locus its worker is inside: {e}"
     );
+    // `Root` answered: its loop ended on the drain and its run()
+    // returned, so it is no longer one the drain waits on.
     assert!(
-        e.contains("live loci that read draining: `Root` x1"),
-        "names the locus that could have answered: {e}"
+        e.contains("live loci that read draining: none named"),
+        "names no locus that has already answered: {e}"
     );
     assert_eq!(
         e.matches("did not finish within").count(),
@@ -229,4 +231,96 @@ fn main() { Root { }; }
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{:?}\n{stderr}", out.status);
     assert!(!stderr.contains("did not finish"), "{stderr}");
+}
+
+/// Build `src`, wait for its "up" line, send SIGTERM, and return how it
+/// ended and how long after the signal, under the default grace.
+fn term_after_up_timed(tag: &str, src: &str) -> (Ran, Duration) {
+    let bin = harness::unique_bin(tag);
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin)
+        .env("LOTUS_DRAIN_GRACE_MS", "5000")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    while line.trim() != "up" {
+        line.clear();
+        assert!(out.read_line(&mut line).expect("read") > 0, "the program prints `up` once it runs");
+    }
+    let sent = std::time::Instant::now();
+    Command::new("kill").args(["-TERM", &child.id().to_string()]).status().expect("kill");
+    let out = child.wait_with_output().expect("wait");
+    let took = sent.elapsed();
+    let _ = std::fs::remove_file(&bin);
+    (Ran { status: out.status, stderr: String::from_utf8_lossy(&out.stderr).into_owned() }, took)
+}
+
+/// A finished locus has nothing to drain. Pinned loci that read
+/// `draining` in their run() alone, whose run() has returned, held a
+/// SIGTERM's drain for the whole grace (5 s): each was counted as a live
+/// drain observer until its parent tore it down, which a parent that
+/// never ends did not do. Counted out once their run() returns, they
+/// leave nothing that could answer the drain, so the signal takes its
+/// default action at once.
+#[test]
+fn pinned_loci_whose_run_returned_do_not_hold_the_drain() {
+    let (ran, took) = term_after_up_timed(
+        "drain_finished_pinned",
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    run() {
+        if self.draining { return; }
+        println("worker done");
+    }
+}
+main locus Root {
+    params { a: Worker = Worker { n: 1 }; b: Worker = Worker { n: 2 }; }
+    placement { a: pinned(core = 0); b: pinned(core = 1); }
+    run() {
+        std::time::sleep(300ms);
+        println("up");
+        while true { std::time::sleep(50ms); }
+    }
+}
+fn main() { Root { }; }
+"#,
+    );
+    let e = &ran.stderr;
+    assert!(took < Duration::from_millis(2000), "ended {took:?} after the signal, not after the 5 s grace: {e}");
+    assert_eq!(ran.status.signal(), Some(15), "nothing left could answer the drain: {:?}\n{e}", ran.status);
+    assert!(!e.contains("did not finish"), "{e}");
+}
+
+/// The other side of the rule above: a locus whose `draining` read is
+/// in a method its parent calls still answers a drain after its run()
+/// has returned, so it stays counted, and the parent's loop ends the
+/// drain the ordinary way.
+#[test]
+fn a_finished_locus_read_through_a_method_still_answers_the_drain() {
+    let (ran, took) = term_after_up_timed(
+        "drain_finished_method",
+        r#"
+locus Gate {
+    params { n: Int = 0; }
+    fn stopping() -> Bool { return self.draining; }
+    run() { println("gate done"); }
+}
+main locus Root {
+    params { g: Gate = Gate { }; }
+    run() {
+        println("up");
+        while !self.g.stopping() { std::time::sleep(20ms); }
+        println("drained");
+    }
+}
+fn main() { Root { }; }
+"#,
+    );
+    let e = &ran.stderr;
+    assert!(ran.status.success(), "the parent's loop answered the drain: {:?}\n{e}", ran.status);
+    assert!(took < Duration::from_millis(2000), "{took:?}: {e}");
 }

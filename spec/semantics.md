@@ -5160,9 +5160,16 @@ the default action and ends at the signal with `128 + signal`, as
 if the runtime were not there. **What can answer a drain is a live
 instance** of a locus whose own code reads `draining` (GH #1077):
 the runtime counts each such instance from its instantiation to its
-teardown. A signal that finds none live — the read sits in an
-imported package the program never builds, or every instance that
-could have answered has already ended — takes the signal's default
+teardown. A locus whose only `draining` reads are in its own `run()`
+is counted out sooner, once that `run()` has returned for good (no
+restart follows) and it has no subscription left to serve: a finished
+locus has nothing to drain, so a pinned child that already returned no
+longer holds the drain until its parent tears it down. A read anywhere
+else — a handler, a hook, a method another locus calls — keeps the
+instance counted to its teardown, since it can still answer. A signal
+that finds none live — the read sits in an imported package the
+program never builds, or every instance that could have answered has
+already finished or ended — takes the signal's default
 action at once, exactly as a program without the read does, instead
 of waiting out the grace with nothing to drain. A `draining` read
 outside any locus body (a free function handed a locus) cannot be

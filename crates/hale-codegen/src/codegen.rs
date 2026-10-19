@@ -1611,6 +1611,7 @@ fn build_resolved_lowered(
         reads_draining: false,
         drain_observer_loci: BTreeSet::new(),
         drain_read_outside_locus: false,
+        drain_reads_beyond_run: BTreeSet::new(),
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -3803,6 +3804,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// handed a locus): its reader cannot be counted, so the drain
     /// keeps its grace unconditionally.
     pub(crate) drain_read_outside_locus: bool,
+    /// Of `drain_observer_loci`, those whose code reads `draining`
+    /// somewhere other than their own `run()` (a handler, a hook, a
+    /// method another locus may call). The rest answer a drain only
+    /// from run(), so an instance of one is counted out as soon as its
+    /// run() has returned for good and it has no subscription left to
+    /// serve: a finished locus has nothing to drain.
+    pub(crate) drain_reads_beyond_run: BTreeSet<String>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -8751,6 +8759,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("run_end self_ptr param")
                 .into_pointer_value();
+            // GH #1077: run() has returned for good; with no
+            // subscription to serve, this instance has nothing left to
+            // drain.
+            if info.subscriptions.is_empty() {
+                self.emit_drain_observer_out(locus_name, self_arg, true)?;
+            }
             // 2026-05-30: reclaim this locus when run() completes if
             // EITHER (a) it's a FLOW — some parent declares
             // `release(c: ThisType)`, so run-completion reclaims it (a
@@ -10422,6 +10436,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has lowered.
         for name in self.drain_observer_loci.clone() {
             if let Some(g) = self.module.get_global(&format!("lotus.observes_drain.{name}")) {
+                g.set_initializer(&self.context.i64_type().const_int(1, false));
+            }
+            if self.drain_reads_beyond_run.contains(&name) {
+                continue;
+            }
+            if let Some(g) = self.module.get_global(&format!("lotus.drain_in_run_only.{name}")) {
                 g.set_initializer(&self.context.i64_type().const_int(1, false));
             }
         }
@@ -37021,6 +37041,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(v)
     }
 
+    /// Whether the drain observers' counts are emitted at all (the
+    /// `DrainObserver` obligation): one read for every count site.
+    fn drain_observers_emitted(&self) -> Result<bool, CodegenError> {
+        Ok(self.cells.emits(Obligation::DrainObserver)?)
+    }
+
     /// GH #1077: count an instance of `locus_name` in (`delta` 1) or
     /// out (-1) of the live drain observers — behind a private flag
     /// whose initializer the end of `lower_program` writes, since
@@ -37031,7 +37057,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         delta: i64,
     ) -> Result<(), CodegenError> {
-        if !self.cells.emits(Obligation::DrainObserver)? {
+        if !self.drain_observers_emitted()? {
             return Ok(());
         }
         let i64_t = self.context.i64_type();
@@ -37080,6 +37106,70 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "drain.observer.add",
             )
             .map_err(e)?;
+        self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
+        self.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
+    /// GH #1077: count this instance (`self_ptr`) of `locus_name` out of
+    /// the live drain observers, once whichever of its two ends comes
+    /// first: `finished`, its run() has returned for good with nothing
+    /// left to serve (counted only for a locus that reads `draining` in
+    /// its run() alone), or its arena's destroy. The runtime keeps the
+    /// instances already counted out by the first, so the second is a
+    /// no-op for them. Behind private flags whose initializers the end
+    /// of `lower_program` writes, as [`Self::emit_drain_observer_count`].
+    pub(crate) fn emit_drain_observer_out(
+        &mut self,
+        locus_name: &str,
+        self_ptr: PointerValue<'ctx>,
+        finished: bool,
+    ) -> Result<(), CodegenError> {
+        if !self.drain_observers_emitted()? {
+            return Ok(());
+        }
+        let i64_t = self.context.i64_type();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let gname = if finished {
+            format!("lotus.drain_in_run_only.{locus_name}")
+        } else {
+            format!("lotus.observes_drain.{locus_name}")
+        };
+        let g = match self.module.get_global(&gname) {
+            Some(g) => g,
+            None => {
+                let g = self.module.add_global(i64_t, None, &gname);
+                g.set_linkage(inkwell::module::Linkage::Private);
+                g.set_initializer(&i64_t.const_zero());
+                g
+            }
+        };
+        let flag = self
+            .builder
+            .build_load(i64_t, g.as_pointer_value(), "drain.observer.out.flag")
+            .map_err(e)?
+            .into_int_value();
+        let yes = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, flag, i64_t.const_zero(), "drain.observer.out")
+            .map_err(e)?;
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let do_bb = self.context.append_basic_block(func, "drain.observer.out.count");
+        let cont_bb = self.context.append_basic_block(func, "drain.observer.out.cont");
+        self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
+        self.builder.position_at_end(do_bb);
+        let callee = if finished { "lotus_drain_observer_finished" } else { "lotus_drain_observer_leave" };
+        let f = self.module.get_function(callee).unwrap_or_else(|| panic!("{callee} declared"));
+        let name = self
+            .builder
+            .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
+            .map_err(e)?
+            .as_pointer_value();
+        self.builder.build_call(f, &[self_ptr.into(), name.into()], "drain.observer.out.call").map_err(e)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
         Ok(())

@@ -4224,6 +4224,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_unconditional_branch(pinned_after_run_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(pinned_after_run_bb);
+                // GH #1077: run() has returned for good (or never runs,
+                // quarantined); with no subscription to serve, this
+                // instance has nothing left to drain.
+                if info.subscriptions.is_empty() && info.mailbox_field_idx.is_none() {
+                    self.emit_drain_observer_out(locus_name, thread_self, true)?;
+                }
             }
             }
             // The instantiating thread's steps, emitted above.

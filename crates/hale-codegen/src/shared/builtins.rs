@@ -869,6 +869,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_drain_observer_add", obs_ty, None);
+        // An instance counted out of the drain observers: when its run()
+        // has returned for good, or at its arena's destroy, whichever
+        // comes first (`self`, its locus's name).
+        let obs_out_ty = void_t.fn_type(
+            &[
+                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("lotus_drain_observer_finished", obs_out_ty, None);
+        self.module.add_function("lotus_drain_observer_leave", obs_out_ty, None);
         self.module.add_global(
             self.context.i64_type(),
             None,
