@@ -130,15 +130,43 @@ static void lotus_tls__diag(int level, const char *msg, const char *fields) {
     size_t used = 0;
     queue[0] = '\0';
     unsigned long e;
+    int full = 0;
+    /* The whole queue is drained, whatever the field holds: an entry
+     * left behind is the thread's next SSL_get_error's, which would read
+     * a retryable call on another connection as a fatal one. Once the
+     * text is full, the rest are consumed unrendered. */
     while ((e = ERR_get_error()) != 0) {
+        if (full) continue;
         char one[256];
         ERR_error_string_n(e, one, sizeof one);
         int w = snprintf(queue + used, sizeof queue - used, "%s%s", used ? "; " : "", one);
-        if (w < 0 || (size_t)w >= sizeof queue - used) break;
+        if (w < 0 || (size_t)w >= sizeof queue - used) {
+            used = strlen(queue);
+            full = 1;
+            continue;
+        }
         used += (size_t)w;
     }
     if (used) lotus_diag_field(f, sizeof f, "ssl_error", queue);
     lotus_diag(level, "lotus.tls", msg, f);
+}
+
+/* The record's test surface, reachable by `@ffi("c")`: raise `n`
+ * errors on this thread's OpenSSL queue, write the diagnostic, and
+ * answer how many the queue still holds (then clear it). */
+int64_t lotus_tls_diag_queue_test(int64_t n) {
+    ERR_clear_error();
+    for (int64_t i = 0; i < n; i++) {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+        ERR_raise(ERR_LIB_SSL, SSL_R_BAD_LENGTH);
+#else
+        ERR_put_error(ERR_LIB_SSL, 0, SSL_R_BAD_LENGTH, __FILE__, __LINE__);
+#endif
+    }
+    lotus_tls__diag(3, "queue test", "");
+    int64_t left = 0;
+    while (ERR_get_error() != 0) left++;
+    return left;
 }
 
 /* Local equivalent of lotus_arena.c's static lotus_bytes_empty_global:

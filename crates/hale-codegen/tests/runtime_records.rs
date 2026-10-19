@@ -142,3 +142,29 @@ fn the_runtime_and_the_sinks_render_a_record_to_the_same_bytes() {
         }
     }
 }
+
+/// A TLS failure's record carries OpenSSL's error queue as one
+/// `ssl_error` field, capped in length, and drains the whole queue
+/// however long it is: an entry left behind would be the thread's next
+/// `SSL_get_error`'s, which then reads a retryable call on another
+/// connection as fatal. The rendering used to stop consuming when its
+/// text filled (codex review of #1661).
+#[test]
+fn a_tls_record_drains_the_whole_error_queue() {
+    let src = "@ffi(\"c\") fn lotus_tls_diag_queue_test(n: Int) -> Int;\n\
+               fn main() {\n    println(to_string(lotus_tls_diag_queue_test(2)));\n    \
+               println(to_string(lotus_tls_diag_queue_test(40)));\n}\n";
+    let bin = harness::unique_bin("runtime_records_tls_queue");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env_remove("HALE_LOG_FORMAT").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n0\n", "nothing left on the queue, short or long:\n{err}");
+    let records: Vec<&str> = err.lines().collect();
+    assert_eq!(records.len(), 2, "one record per failure: {err}");
+    for r in &records {
+        assert!(r.contains("logger=lotus.tls msg=\"queue test\" ssl_error="), "{r}");
+    }
+    assert!(records[1].len() < 1100, "the field is capped: {}", records[1].len());
+}
