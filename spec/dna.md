@@ -4648,7 +4648,9 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `fill * <holder>`,
-  `vacate <name> <holder>`, `practice <name> | <text>`, `retire-practice <name>`,
+  `vacate <name> <holder>`, `practice <name> | <text>`, `law <name> |
+  <text>` (a practice its document proposes as law, `law: true`, which
+  the Board ratifies as law or as advice; GH #1591), `retire-practice <name>`,
   `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
@@ -4776,9 +4778,15 @@ The live half is memory's, projected from the record by the spine
   whose `nursery.toml` lists its packs (`[[pack]]`: `name`, `version`,
   `path`, `summary`, `params` with each one's default, `""` for none).
   With no `--from` the nursery is the toolchain's (`dna/nursery`,
-  embedded: `dev-team`, `small-startup`, `content-team`, and `founder`,
+  embedded: `dev-team`, `small-startup`, `content-team`, `founder`,
   `fill * {founder}`, one person in every vacant seat, what `init --with
-  founder --set founder=<who>` proposes); a git
+  founder --set founder=<who>` proposes, and `standard`, the standard
+  practices every organism is to adopt at birth, each a `law` step that
+  extends the foundational law once ratified: its first clause,
+  `standard/logs-are-structured`, is that every line a running part logs
+  is a record, held by the Board in review until the compiler classes the
+  stdio streams, the law can name a `program` group and `std::log` is the
+  logger (GH #1591)); a git
   repository is cloned into `$XDG_CACHE_HOME/hale/nursery/` and read at
   the revision after `#`, its default branch's head without one. The CLI
   renders the pack: every parameter replaced by its `--set` value or its

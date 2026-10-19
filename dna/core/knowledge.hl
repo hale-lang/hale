@@ -29,6 +29,11 @@ type Idea {
     // declining it leaves the other in force. A `retirement` proposal
     // has this and no text of its own.
     supersedes: String = "";
+    // GH #1591: a practice proposed as law (`law <name> | <text>` in a
+    // batch): its document says `law: true`, and the Board ratifies it as
+    // law or as advice. Absent from every other document, whose bytes stay
+    // as they were.
+    law: Bool = false;
 }
 
 type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
@@ -190,6 +195,7 @@ fn knowledge_document(i: Idea, target: String) -> String {
     b.append_str(", \"provenance\": "); b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
     if len(i.name) > 0 { b.append_str(", \"name\": "); b.append_str(record_json_quote(i.name)); }
     if len(i.supersedes) > 0 { b.append_str(", \"supersedes\": "); b.append_str(record_json_quote(i.supersedes)); }
+    if i.law { b.append_str(", \"law\": true"); }
     b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
 }
 

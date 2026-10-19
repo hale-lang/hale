@@ -108,6 +108,12 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 - *Instead of:* series names as string literals, and two channels (the senses and the inspector) that never meet.
 - *Today:* **goal.** The senses and `LOTUS_OBS` are separate, and the todo application serves no readings.
 
+**Logs are structured.** Every line a running part writes to its log is a record (a time, a level, a message and named fields), written through `std::log`, never a bare `print`/`println`/`eprint`/`eprintln`. It is the first clause of the toolchain's `standard` pack (`hale dna pack apply standard`), proposed as law (GH #1591).
+- *Why:* a log the organism and the platform can both read is data; free text is only read by people, after the fact.
+- *Instead of:* lines printed wherever a program happens to be, in whatever shape it chose.
+- *Enforced by:* the Board, in review, until the compiler classes the stdio streams as an effect of their own and the law can name a `program` group; then a claim the law names. A foreign heart declares its log format in its attach manifest, and `attach --check` and the log adapter refuse a line that is not a record.
+- *Today:* **goal.** The pack is in the nursery and proposes the clause; the compiler's half, and adoption at birth, follow.
+
 ## Layout
 
 - **A part is a seed** (a directory of `.hl` with its `hale.toml`), with its tests in `*_test.hl` beside it or under its `tests/`.

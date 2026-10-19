@@ -202,6 +202,7 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/packs/dev-team.pack",
     "dna/nursery/packs/founder.pack",
     "dna/nursery/packs/small-startup.pack",
+    "dna/nursery/packs/standard.pack",
 ];
 
 /// Typed query operations shared by the host and service API. These must
