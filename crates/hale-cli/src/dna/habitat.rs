@@ -61,8 +61,11 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      allocated to it and recorded in the habitat's record,
                      and the `standard` pack is proposed to its Board.
                      <dir> is a new application's directory, or with
-                     --attach an application or a repository that is
-                     there already.
+                     --attach an application (its workspace's manifest is
+                     the organism's) or a repository that is there
+                     already. A graft that stopped part way goes on
+                     where it stopped when run again; a record born of
+                     anything but this habitat is refused.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this
@@ -1204,14 +1207,31 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     if !attach && dir.exists() {
         return Err(format!("{} exists: `--attach` grafts the application or repository that is there", dir.display()));
     }
-    let manifest = std::fs::read_to_string(dir.join("hale.toml")).ok();
-    if manifest.as_deref().is_some_and(|m| manifest_pin_in_text(m).is_some()) {
-        return Err(format!("{} is born already: its hale.toml pins a record", dir.display()));
+    // the organism's root, as its birth resolves it: an attached
+    // application's workspace (its manifest, its pin and its needs are the
+    // workspace's), a repository's own directory, or the new application
+    let root = if attach { super::organism_root(dir)? } else { dir.to_path_buf() };
+    let manifest = std::fs::read_to_string(root.join("hale.toml")).ok();
+    // a genome that pins a record already is this habitat's child whose
+    // graft stopped before its end, or ended: the graft goes on where it
+    // stopped, each step keeping what is done. A record born of anything
+    // else is never grafted, and one memory does not hold is refused by
+    // the birth itself, naming it
+    let pinned = manifest.as_deref().and_then(manifest_pin_in_text);
+    if let Some(id) = &pinned {
+        let born_of = rows_of(&root).iter().find(|r| r["kind"] == "record.genesis").map(|g| {
+            let body: serde_json::Value = g["body"].as_str().and_then(|b| serde_json::from_str(b).ok()).unwrap_or_default();
+            body["parent"].as_str().unwrap_or("").to_string()
+        });
+        if let Some(of) = born_of.filter(|of| *of != parent) {
+            let whose = if of.is_empty() { "no parent".to_string() } else { format!("the record {}…", &of[..12.min(of.len())]) };
+            return Err(format!("{} pins the record {}…, born of {whose}, not of this habitat: an organism is grafted once, at its birth", root.display(), &id[..12.min(id.len())]));
+        }
     }
     let needs = needs_of(manifest.as_deref())?;
-    let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {})", "graft", dir.display(), &parent[..12], needs.join(", "))];
+    let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {}){}", "graft", root.display(), &parent[..12], needs.join(", "), if pinned.is_some() { "; the graft goes on where it stopped" } else { "" })];
     out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, None, None, None, library, Some(&parent))? });
-    let root = project(dir)?.0;
+    let root = if attach { root } else { project(dir)?.0 };
     let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
     // birth allocated memory and the nerves; the rest of what it needs here
     if needs.iter().any(|r| r == "senses") && backends == "own" {
@@ -1227,19 +1247,39 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     if needs.iter().any(|r| r == "database") {
         out.push(provision_database(&root, &backends)?);
     }
-    let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends }).to_string() });
-    let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
-    std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
-    let landed = host_run("record-seed", &genome, &[file.display().to_string(), String::new()]);
-    let _ = std::fs::remove_file(&file);
-    landed?;
-    out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
+    // the graft is complete when the habitat's record holds its row: one
+    // row, however many times the graft goes on
+    if rows_of(&genome).iter().any(|r| r["kind"] == "habitat.grafted" && r["entity"] == &child[..12]) {
+        out.push(format!("{:<8}the graft of {}… (the habitat's record holds it)", "kept", &child[..12]));
+    } else {
+        let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends }).to_string() });
+        let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
+        std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
+        let landed = host_run("record-seed", &genome, &[file.display().to_string(), String::new()]);
+        let _ = std::fs::remove_file(&file);
+        landed?;
+        out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
+    }
     // the standard practices, the law every organism is born under, for
-    // the child's Board (a process of its own: the verb execs the host)
+    // the child's Board (a process of its own: the verb execs the host),
+    // proposed once
+    let proposed = |r: &serde_json::Value| {
+        r["kind"] == "batch.proposed" && r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).is_some_and(|b| b["pack"].as_str().is_some_and(|p| p.starts_with("standard@")))
+    };
+    if pinned.is_some() && rows_of(&root).iter().any(proposed) {
+        out.push(format!("{:<8}the `standard` pack (proposed to the child's Board already)", "kept"));
+        return Ok(out);
+    }
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
     out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("{:<8}the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", "note", root.display()) });
     Ok(out)
+}
+
+/// The rows of the record of the organism at `root`, none when it cannot
+/// be read.
+fn rows_of(root: &Path) -> Vec<serde_json::Value> {
+    host_run("record-rows", root, &[]).map(|rows| rows.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default()
 }
 
 /// GH #1653: the `database` heart role provisioned for the organism at

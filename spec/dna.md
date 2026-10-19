@@ -4404,8 +4404,17 @@ The live half is memory's, projected from the record by the spine
 - **Every other organism is grafted from the habitat** (GH #1653).
   `hale habitat graft <dir> [--attach] [--no-library]` births an
   organism as the habitat's child: a new application at `<dir>`, or with
-  `--attach` the application or repository already there (once: one
-  whose `hale.toml` pins a record is refused). The habitat must be born
+  `--attach` the application or repository already there. An attached
+  application's organism is its workspace's: the manifest the birth
+  reads (the nearest `hale.toml` above the seed) is the one its pin and
+  its needs are read from. A graft is complete when the habitat's record
+  holds its `habitat.grafted` row; one that stopped part way (a pinned
+  genome whose genesis names this habitat, and no such row yet) goes on
+  where it stopped when run again, each step keeping what is done (the
+  birth's seed, the allocations, the row, the `standard` pack, each
+  once). A genome pinning a record born of another parent, or of none, is
+  refused, and one memory holds no record for is refused by the birth,
+  naming it. The habitat must be born
   and its record readable, and the environment must agree with its
   backends. Graft has two halves. **Needs by role** come first: the
   genome declares the roles it needs from the habitat in its manifest,

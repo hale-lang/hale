@@ -82,8 +82,11 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      allocated to it and recorded in the habitat's record,
                      and the `standard` pack is proposed to its Board.
                      <dir> is a new application's directory, or with
-                     --attach an application or a repository that is
-                     there already.
+                     --attach an application (its workspace's manifest is
+                     the organism's) or a repository that is there
+                     already. A graft that stopped part way goes on
+                     where it stopped when run again; a record born of
+                     anything but this habitat is refused.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this

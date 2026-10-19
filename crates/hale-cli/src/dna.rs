@@ -1643,6 +1643,17 @@ fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// The root of the organism born at `app_dir` (GH #1653), as its birth
+/// resolves it: a repository's own directory, or the workspace that holds
+/// an application's seed. Its manifest is the organism's: its pin and its
+/// needs.
+pub(super) fn organism_root(app_dir: &Path) -> Result<PathBuf, String> {
+    Ok(match repository_root(app_dir)? {
+        Some(r) => r,
+        None => locate(app_dir)?.root,
+    })
+}
+
 fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     init_under(app_dir, library, None)
 }
