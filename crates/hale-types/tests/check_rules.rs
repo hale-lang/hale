@@ -3106,6 +3106,22 @@ mod default_scope_tests {
         );
     }
 
+    /// `self` assigned in a record's or a method's default is the caller's
+    /// as a `self` read is, with `=` or `+=`; a locus's params default
+    /// reads its own earlier param through `self.<param>`.
+    #[test]
+    fn a_self_assigned_in_a_default_is_the_callers() {
+        let self_ = vec![SELF.to_string()];
+        let app = "main locus App { params { a: Int = 1; } fn make() -> Int { let r = R { }; return r.b; } }\nfn main() { App { }; }\n";
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a += 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a = 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(
+            errors("locus L { params { k: Int = 1; } fn m(n: Int = { self.k = 2; 0 }) -> Int { return n; } }\nfn main() { }\n"),
+            self_
+        );
+        assert_eq!(errors("locus L { params { a: Int = 1; b: Int = self.a + 1; } }\nfn main() { let l = L { }; }\n"), Vec::<String>::new());
+    }
+
     #[test]
     fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
         let shadow = |name: &str| {

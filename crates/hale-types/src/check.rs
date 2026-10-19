@@ -842,84 +842,6 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
-/// A default reads only its own fields and constants (spec/types.md §
-/// Locus params): a default is evaluated where the literal or call that
-/// leaves it is written, and a name of that scope (a local, a fn value
-/// bound there, a parameter of the caller) is not the declaration's to
-/// read. Every bare name a default reads must resolve to a module-level
-/// item of the bundle (a constant, a free fn, a type, a locus) or a
-/// language builtin, or be bound inside the default itself; a qualified
-/// path names no local. `self` reads the declaration's own fields where
-/// they are spelled that way, a locus's params, whose defaults are typed
-/// where they are written (and so refused there when they name anything
-/// else); a record type's field default and a fn's, method's or hook's
-/// parameter default have no own `self` (one there is the caller's), so
-/// it is refused there too. An
-/// omitted argument's default and a record literal's omitted field are
-/// each held to this rule where they are declared, so a default that
-/// expands another expands nothing of the caller's either.
-fn default_scope_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
-    use crate::listener_window::{visit_expr, Visited};
-    // the names the default reads are the checker's to resolve
-    // (`Checker::judge_defaults_where_declared`); `self` is a keyword
-    let _ = top;
-    let check = |e: &Expr, out: &mut Vec<Diag>| {
-        visit_expr(e, &mut |v| {
-            if let Visited::Expr(Expr::KwSelf(span)) = v {
-                out.push(Diag::ty(
-                    *span,
-                    "a default reads only its own fields and constants; `self` here is the caller's".to_string(),
-                ));
-            }
-        });
-    };
-    let params = |ps: &[Param], out: &mut Vec<Diag>| {
-        for p in ps {
-            if let Some(d) = &p.default {
-                check(d, out);
-            }
-        }
-    };
-    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
-        if let TypeDeclBody::Struct(fs) = &t.body {
-            for f in fs {
-                if let Some(d) = &f.default {
-                    check(d, out);
-                }
-            }
-        }
-    };
-    let mut out = Vec::new();
-    for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
-            match d {
-                TopDecl::Fn(f) => params(&f.params, &mut out),
-                TopDecl::Type(t) => fields(t, &mut out),
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Fn(f) => params(&f.params, &mut out),
-                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
-                            LocusMember::Mode(md) => params(&md.params, &mut out),
-                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
-                            LocusMember::Type(t) => fields(t, &mut out),
-                            _ => {}
-                        }
-                    }
-                }
-                TopDecl::Perspective(pd) => {
-                    for m in &pd.members {
-                        if let PerspectiveMember::Fn(f) = m {
-                            params(&f.params, &mut out);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
 
 /// A record literal in a default that leaves out a field with no default
 /// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
@@ -1511,7 +1433,6 @@ pub fn check_bundle_rules(
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(bounded_return_diags(bundle, top));
     diags.extend(literal_default_missing_field_diags(bundle, top));
-    diags.extend(default_scope_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
@@ -17441,6 +17362,7 @@ impl<'a> Checker<'a> {
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
         let mut ty = if lv.head.name == "self" {
+            self.note_self(lv.head.span);
             self.self_ty()
         } else if let Some(s) = self.binding_of(&lv.head.name) {
             s.ty
@@ -18758,6 +18680,16 @@ impl<'a> Checker<'a> {
     /// A bare name no binding and no module item answers: while a default
     /// is typed where it is declared, the caller's
     /// (`judge_defaults_where_declared`); a builtin callee is no such name.
+    /// `self` read or assigned: while a default is typed where it is
+    /// declared, the caller's (a record field's or a fn's, method's or
+    /// hook's default has no `self` of its own; a locus's params, whose
+    /// `self.<param>` is their own, are not judged this way).
+    fn note_self(&mut self, span: Span) {
+        if let Some(scan) = self.default_scan.as_mut() {
+            scan.push(("self".to_string(), span));
+        }
+    }
+
     fn note_unresolved(&mut self, id: &Ident) {
         if self.generic_fns.contains_key(id.name.as_str()) || BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
             return;
@@ -19825,6 +19757,9 @@ impl<'a> Checker<'a> {
         // (`populate_user_type_fields`).
         self.default_evaluation.push(literal.0);
         self.default_uses.push((self.locals.frames.len(), at));
+        // the defaults this literal leaves are judged where they are
+        // declared, not as names of the default that holds the literal
+        let scan = self.default_scan.take();
         for (default, field, want) in omitted {
             self.struct_defaults_typing.push(default);
             let got = self.check_expr(default);
@@ -19833,6 +19768,7 @@ impl<'a> Checker<'a> {
             }
             self.struct_defaults_typing.pop();
         }
+        self.default_scan = scan;
         self.default_uses.pop();
         self.default_evaluation.pop();
         self.generic_params.truncate(generics);
@@ -20571,6 +20507,8 @@ impl<'a> Checker<'a> {
         }
         let mark = self.walk_mark();
         let judged = std::mem::replace(&mut self.defaults_judged_at_literals, false);
+        // a locus's params read their own `self`, judged where written
+        let scan = self.default_scan.take();
         self.default_uses.push((self.locals.frames.len(), at));
         for d in defaults {
             self.struct_defaults_typing.push(d);
@@ -20578,6 +20516,7 @@ impl<'a> Checker<'a> {
             self.struct_defaults_typing.pop();
         }
         self.default_uses.pop();
+        self.default_scan = scan;
         self.defaults_judged_at_literals = judged;
         self.discard_keeping_unit_errors(mark);
         if opened {
@@ -20637,10 +20576,12 @@ impl<'a> Checker<'a> {
         let mut said: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (name, span) in unresolved {
             if said.insert((span.start.as_usize(), span.end.as_usize())) {
-                self.diags.push(Diag::ty(
-                    span,
-                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope"),
-                ));
+                let message = if name == "self" {
+                    "a default reads only its own fields and constants; `self` here is the caller's".to_string()
+                } else {
+                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope")
+                };
+                self.diags.push(Diag::ty(span, message));
             }
         }
     }
@@ -20709,11 +20650,13 @@ impl<'a> Checker<'a> {
         // (`lower_default_in_caller`).
         self.default_evaluation.push(invocation.0);
         self.default_uses.push((self.locals.frames.len(), callee.span()));
+        let scan = self.default_scan.take();
         for (default, param, te) in defaults {
             let got = self.check_expr(default);
             let want = crate::resolve::resolve_type_expr(te, self.known);
             self.default_flows_into(&format!("param `{param}`"), &want, &got, default);
         }
+        self.default_scan = scan;
         self.default_uses.pop();
         self.default_evaluation.pop();
         self.default_invocations.pop();
@@ -21687,6 +21630,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Path2 { .. } => Ty::Unknown,
             Expr::KwSelf(span) => {
+                self.note_self(*span);
                 if self.current_locus.is_none() {
                     self.diags.push(Diag::ty(
                         *span,
