@@ -68,8 +68,8 @@ fn objects_with(repo: String, needle: String) -> String {
 
 // A project, its genome committed and pushed to a bare remote beside it.
 fn project(scratch: String, name: String, user: String) -> String {
-    let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
-    std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
+    let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n" + name));
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft " + name + ": " + made.stdout + made.stderr);
     let app = scratch + "/" + name;
     let g = in_dir(app, "sh\n-c\ngit init -q --bare -b main \"$2\" && git config user.name \"$1\" && git config user.email \"$1@local\" && git add -A && git commit -q -m 'the app' && git remote add origin \"$2\" && git push -q origin main\nsh\n" + user + "\n" + scratch + "/" + name + ".git");
     std::test::assert_eq_int(g.code, 0, "the genome committed and pushed: " + g.stderr);

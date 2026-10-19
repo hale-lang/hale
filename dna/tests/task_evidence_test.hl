@@ -94,8 +94,8 @@ main locus App {
         std::test::assert(std::str::contains(dna::completion_refusal("mara", true, "", "lost", "Mara"), "someone other than"), "self-authorized, case aside");
 
         let scratch = dna::scratch_root("evidence");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbills");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nbills"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/bills";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");

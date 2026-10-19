@@ -42,7 +42,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 
 ```text
 usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
-       hale habitat graft <dir> [--attach] [--no-library]
+       hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
        hale habitat handover [organism]
        hale habitat status
        hale habitat down
@@ -83,7 +83,8 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      declare `database`, a tenant database of its memory
                      server handed to it as HALE_DNA_DATABASE_DSN) are
                      allocated to it and recorded in the habitat's record,
-                     and the `standard` pack is proposed to its Board.
+                     and the `standard` pack is proposed to its Board
+                     (--no-pack leaves it for `hale dna pack apply`).
                      <dir> is a new application's directory, or with
                      --attach an application (its workspace's manifest is
                      the organism's) or a repository that is there

@@ -4515,7 +4515,10 @@ The live half is memory's, projected from the record by the spine
   needs is allocated to it and recorded in the habitat's record
   (`habitat.allocated`, `habitat.migrated`), the graft is a
   `habitat.grafted <child>` row (`child`, `parent`, `needs`,
-  `backends`), and the `standard` pack is proposed to the child's Board.
+  `backends`), and the `standard` pack is proposed to the child's Board
+  (`--no-pack` leaves it for `hale dna pack apply standard`, as
+  `--no-library` leaves the library: a fixture that counts the record's
+  requests says so).
   `hale dna new` and `hale dna init` still birth an organism with no
   parent until graft replaces them.
 - **A test's organisms are grafted too** (GH #1653). A DNA fixture

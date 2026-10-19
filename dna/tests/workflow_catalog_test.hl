@@ -191,8 +191,8 @@ main locus App {
 
         // ---- through the CLI: new writes the catalog, definitions lists it
         let scratch = dna::scratch_root("workflow-catalog");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nbooks"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/books";
         std::test::assert(std::io::fs::file_exists(app + "/dna/org/workflows.hl"), "dna/org/workflows.hl is written at new");
         std::test::assert(std::str::contains(std::io::fs::read_file(app + "/dna/org/main.hl") or "", "catalog: workflows()"), "and the substrate admits from it");

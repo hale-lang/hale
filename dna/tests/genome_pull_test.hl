@@ -135,8 +135,8 @@ main locus App {
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\npulled");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\npulled"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         self.node = scratch + "/pulled";
         let c0 = in_dir(self.node, "sh\n-c\ngit config user.name node && git config user.email node@local && git add -A && git commit -q -m 'the organization'");
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stdout + c0.stderr);

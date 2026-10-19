@@ -25,8 +25,8 @@ fn journal(app: String) -> String { return in_dir(app, toolchain() + "\ndna\nrec
 main locus App {
     run() {
         let scratch = dna::scratch_root("modelmap");
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nmm\n--no-library");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nmm\n--no-library"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/mm";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");

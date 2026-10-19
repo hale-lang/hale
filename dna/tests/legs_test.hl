@@ -828,8 +828,8 @@ locus App {
 fn main() {
     if std::env::var("HALE_DNA_LEGS_PHASE") == "2" { App { }; return; }
     let scratch = dna::scratch_root("legs");
-    let made = in_dir(scratch, toolchain() + "\ndna\nnew\napp");
-    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\napp\n--no-pack"));
+    std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
     let app = scratch + "/app";
     let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
     let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");

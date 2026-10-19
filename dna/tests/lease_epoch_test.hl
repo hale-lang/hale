@@ -171,8 +171,8 @@ main locus App {
             dna::scratch_done(scratch);
             return;
         }
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nepoch");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nepoch"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let app = scratch + "/epoch";
         std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
         let record = dna::RecordJournal { repo: app }.genesis();
@@ -225,8 +225,8 @@ main locus App {
         // each owner's heads writing as that owner's role
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made2 = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
-        std::test::assert_eq_int(made2.code, 0, "hale dna new: " + made2.stdout + made2.stderr);
+        let made2 = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nshared"));
+        std::test::assert_eq_int(made2.code, 0, "hale habitat graft: " + made2.stdout + made2.stderr);
         let shared = scratch + "/shared";
         // GH #1123: the owners are the graph's, rows in the record
         std::test::assert_eq_str(dna::memory_fixture(shared), "", "the record is born in memory (GH #1590)");

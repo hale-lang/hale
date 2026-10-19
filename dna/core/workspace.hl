@@ -468,6 +468,14 @@ fn test_habitat() -> String {
     return dir;
 }
 
+// `argv` (newline-separated) run under this fixture's habitat: `env
+// HALE_DNA_HABITAT=<it> <argv>`, what a fixture's own runner executes for a
+// graft (`hale habitat graft <name>`) with the environment it gives every
+// other command.
+fn in_habitat(argv: String) -> String {
+    return "env\nHALE_DNA_HABITAT=" + test_habitat() + "\n" + argv;
+}
+
 // `hale habitat graft <args>` (newline-separated) run in `dir`, into this
 // fixture's habitat.
 fn grafted(dir: String, args: String) -> RunResult {
