@@ -5168,7 +5168,9 @@ SIGINT or SIGTERM:
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
-prints one line naming the signal — and what the drain was still
+writes one record (`runtime.md` § Runtime diagnostics are records:
+`logger=lotus.drain`, with `signal`, `grace_ms` and `waiting_on`) naming
+the signal — and what the drain was still
 waiting on: each cooperative pool with its mode, whether a worker is
 mid-iteration and in which locus, and how many cells queue behind it,
 then the live loci that read `draining`, by name — restores the

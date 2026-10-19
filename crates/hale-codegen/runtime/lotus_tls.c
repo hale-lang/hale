@@ -117,6 +117,30 @@ static int64_t lotus_tls__now_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+/* GH #1592 S2: a TLS diagnostic as a runtime record (`lotus_diag`,
+ * logger `lotus.tls`): the message, any fields, and OpenSSL's error
+ * queue, drained into one `ssl_error` field, where it used to be
+ * printed line by line by ERR_print_errors_fp. */
+void lotus_diag(int level, const char *logger, const char *msg, const char *fields);
+void lotus_diag_field(char *buf, size_t cap, const char *key, const char *value);
+static void lotus_tls__diag(int level, const char *msg, const char *fields) {
+    char f[1024];
+    snprintf(f, sizeof f, "%s", fields ? fields : "");
+    char queue[512];
+    size_t used = 0;
+    queue[0] = '\0';
+    unsigned long e;
+    while ((e = ERR_get_error()) != 0) {
+        char one[256];
+        ERR_error_string_n(e, one, sizeof one);
+        int w = snprintf(queue + used, sizeof queue - used, "%s%s", used ? "; " : "", one);
+        if (w < 0 || (size_t)w >= sizeof queue - used) break;
+        used += (size_t)w;
+    }
+    if (used) lotus_diag_field(f, sizeof f, "ssl_error", queue);
+    lotus_diag(level, "lotus.tls", msg, f);
+}
+
 /* Local equivalent of lotus_arena.c's static lotus_bytes_empty_global:
  * the canonical "empty Bytes" return for error / EOF paths. Inline
  * here because the original is `static` in its TU. */
@@ -145,8 +169,7 @@ static SSL_CTX *lotus_tls__ctx_get(void) {
     if (g_tls_ctx) return g_tls_ctx;
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) {
-        fprintf(stderr, "lotus_tls: SSL_CTX_new failed\n");
-        ERR_print_errors_fp(stderr);
+        lotus_tls__diag(3, "SSL_CTX_new failed", "");
         return NULL;
     }
     /* 2026-05-22 PM: SSL_MODE_RELEASE_BUFFERS — release the
@@ -166,9 +189,7 @@ static SSL_CTX *lotus_tls__ctx_get(void) {
     /* System trust store (e.g. /etc/ssl/certs on Debian/Ubuntu,
      * the macOS Keychain via OpenSSL's adapter). */
     if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
-        fprintf(stderr,
-                "lotus_tls: SSL_CTX_set_default_verify_paths warning\n");
-        ERR_print_errors_fp(stderr);
+        lotus_tls__diag(2, "SSL_CTX_set_default_verify_paths failed: verification uses the environment's trust roots", "");
         /* Non-fatal — verification will still attempt against any
          * explicit trust roots set in the environment. */
     }
@@ -449,12 +470,17 @@ static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
     /* SNI + hostname-verification both go through the SSL object,
      * not the context — they're per-connection. */
     if (SSL_set_tlsext_host_name(ssl, host) != 1) {
-        ERR_print_errors_fp(stderr);
+        char f[256];
+        f[0] = '\0';
+        lotus_diag_field(f, sizeof f, "host", host);
+        lotus_tls__diag(2, "SNI not set", f);
     }
     if (verify) {
         if (SSL_set1_host(ssl, host) != 1) {
-            fprintf(stderr, "lotus_tls_upgrade: SSL_set1_host failed\n");
-            ERR_print_errors_fp(stderr);
+            char f[256];
+            f[0] = '\0';
+            lotus_diag_field(f, sizeof f, "host", host);
+            lotus_tls__diag(3, "SSL_set1_host failed", f);
         }
     } else {
         /* Per-connection opt-out of the ctx-level SSL_VERIFY_PEER:
@@ -489,10 +515,16 @@ static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
         return -1;
     }
     if (hs != 1) {
-        fprintf(stderr,
-                "lotus_tls_upgrade: handshake failed (host=%s verify=%d err=%d)\n",
-                host, verify, err);
-        ERR_print_errors_fp(stderr);
+        {
+            char f[512];
+            f[0] = '\0';
+            lotus_diag_field(f, sizeof f, "host", host);
+            lotus_diag_field(f, sizeof f, "verify", verify ? "1" : "0");
+            char e[16];
+            snprintf(e, sizeof e, "%d", err);
+            lotus_diag_field(f, sizeof f, "err", e);
+            lotus_tls__diag(3, "handshake failed", f);
+        }
         SSL_free(ssl);
         /* Caller owns raw_fd — do NOT close it here. */
         errno = ECONNREFUSED;
@@ -573,9 +605,15 @@ int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns
          * (ctx/SSL_new/realloc → ENOMEM), so don't claim "handshake
          * failed" here — that would both mislabel those paths and, on a
          * genuine handshake failure, duplicate upgrade's own line. */
-        fprintf(stderr,
-                "lotus_tls_connect: upgrade failed (host=%s port=%u)\n",
-                host, (unsigned)port);
+        {
+            char f[512];
+            f[0] = '\0';
+            lotus_diag_field(f, sizeof f, "host", host);
+            char pt[16];
+            snprintf(pt, sizeof pt, "%u", (unsigned)port);
+            lotus_diag_field(f, sizeof f, "port", pt);
+            lotus_tls__diag(3, "connect failed: the TLS upgrade failed", f);
+        }
         close(raw_fd);
         errno = saved_errno;
         return -1;
@@ -673,16 +711,16 @@ static int lotus_tls__send_bytes(int handle, const void *bytes_ptr, int64_t unti
             if (w == 1) {
                 /* The send timeout: the blocking write's expiry, a status
                  * like any failed write. */
-                fprintf(stderr,
-                        "lotus_tls_send_bytes: send timed out (SO_SNDTIMEO)\n");
+                lotus_tls__diag(3, "send timed out (SO_SNDTIMEO)", "");
                 errno = EAGAIN;
                 return -1;
             }
         }
-        fprintf(stderr,
-                "lotus_tls_send_bytes: SSL_write failed (err=%d)\n",
-                err);
-        ERR_print_errors_fp(stderr);
+        {
+            char f[64];
+            snprintf(f, sizeof f, "err=%d", err);
+            lotus_tls__diag(3, "SSL_write failed", f);
+        }
         errno = EIO;
         return -1;
     }
@@ -735,8 +773,15 @@ static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
             }
             return -2;
         }
-        fprintf(stderr, "%s: SSL_read failed (err=%d)\n", who, err);
-        ERR_print_errors_fp(stderr);
+        {
+            char f[256];
+            f[0] = '\0';
+            lotus_diag_field(f, sizeof f, "op", who);
+            char e[16];
+            snprintf(e, sizeof e, "%d", err);
+            lotus_diag_field(f, sizeof f, "err", e);
+            lotus_tls__diag(3, "SSL_read failed", f);
+        }
         return -1;
     }
 }

@@ -17,6 +17,8 @@ mod stdlib_fs;
 mod stdlib_list_dir;
 #[path = "stdlib_locus.rs"]
 mod stdlib_locus;
+#[path = "runtime_records.rs"]
+mod runtime_records;
 #[path = "stdlib_log.rs"]
 mod stdlib_log;
 #[path = "stdlib_log_sinks.rs"]

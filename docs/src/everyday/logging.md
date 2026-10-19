@@ -112,6 +112,16 @@ HALE_LOG_FORMAT=json ./myapp   # {"time":"…","level":"warn","logger":"app.db",
 HALE_LOG_FORMAT=text ./myapp   # [WARN app.db] retrying attempt=2 after=2s  (warn and error on stderr)
 ```
 
+The runtime writes its own diagnostics the same way, on stderr: a
+socket that failed, a TLS handshake, a drain that ran out of time each
+come out as a record whose `logger` names the part (`lotus.tcp`,
+`lotus.tls`, `lotus.drain`, …), in the format `HALE_LOG_FORMAT` names,
+so one collector reads the program's logs and the runtime's alike:
+
+```text
+time=2026-10-19T07:31:08Z level=error logger=lotus.tcp msg="accept failed" op="lotus_tcp_accept_one: accept" errno=9 error="Bad file descriptor"
+```
+
 `text` is the format before records, kept for a terminal you read
 yourself (`ConsoleSink` is the colored one). A sink's own `format:`
 param (`"logfmt"`, `"json"`, `"text"`) pins it in code. An unknown

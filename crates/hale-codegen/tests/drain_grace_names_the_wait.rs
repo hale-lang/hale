@@ -98,7 +98,7 @@ fn main() { Root { }; }
     );
     assert!(e.contains(&format!("did not finish within {GRACE_MS} ms")), "{e}");
     assert!(
-        e.contains("still waiting on: pool `io` (blocking): a worker is mid-iteration, 0 queued in locus `Stuck`"),
+        e.contains("waiting_on=\"pool `io` (blocking): a worker is mid-iteration, 0 queued in locus `Stuck`"),
         "names the pool and the locus its worker is inside: {e}"
     );
     // `Root` answered: its loop ended on the drain and its run()
@@ -194,7 +194,7 @@ fn main() { Root { }; }
     let e = &ran.stderr;
     assert_eq!(ran.status.signal(), Some(15), "{:?}\n{e}", ran.status);
     assert!(
-        e.contains("still waiting on: no cooperative pool; live loci that read draining:"),
+        e.contains("waiting_on=\"no cooperative pool; live loci that read draining:"),
         "{e}"
     );
     assert!(e.contains("`Napper` x1"), "names the pinned locus: {e}");
