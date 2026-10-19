@@ -4470,7 +4470,10 @@ The live half is memory's, projected from the record by the spine
   at `hale habitat migrate <organism>` and at `hale dna upgrade`, every
   time: the tool is idempotent and keeps its own ledger, so it decides
   whether anything moved, and the habitat keeps no version of the
-  heart's schema. Each run is a `habitat.migrated <id>/<role>` row with
+  heart's schema. Each run is a habitat act: the role's allocation is
+  brought up and waited for first, as `hale habitat migrate` brings it
+  up, so a `hale dna upgrade` that restarts the nerves for new passwords
+  runs the migration once they are back. Each run is a `habitat.migrated <id>/<role>` row with
   the command, its exit status and its output (its last 4096 bytes); a
   run that fails fails the act that ran it, naming its command, and the
   next act runs it again. A heart that declares none owns its schema

@@ -523,7 +523,11 @@ pub(super) fn run_heart_migrations(root: &Path) -> Result<Vec<String>, String> {
     if migrations.is_empty() {
         return Ok(Vec::new());
     }
-    let handed = handover(root, true)?;
+    // a migration is a habitat act: the role's allocation is brought up
+    // (and waited for) as `hale habitat migrate` brings it up, never
+    // assumed up; an upgrade that just restarted the nerves for new
+    // passwords waits for them here
+    let handed = handover(root, false)?;
     let mut out = Vec::new();
     for m in migrations {
         let mut cmd = Command::new(&m.command[0]);
