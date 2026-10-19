@@ -646,3 +646,26 @@ fn a_truly_unpublished_topic_is_still_reported() {
     assert_eq!(orphans(&msgs).len(), 1, "{msgs:?}");
     assert!(graph(&none).ingress.is_empty());
 }
+
+/// A stdlib subscriber the program builds takes what it subscribes to,
+/// by the claims walk's rule: a `StdoutSink` under `log.**` is the
+/// subscriber of a publish to `log.app`. With no sink, the publish
+/// still goes nowhere.
+#[test]
+fn a_stdlib_subscriber_the_program_builds_is_a_subscriber() {
+    let program = |sink: &str| {
+        format!(
+            "main locus App {{\n    params {{ {sink} }}\n    bus {{ publish \"log.app\" of type std::log::LogEvent; }}\n    run() {{\n        \"log.app\" <- std::log::LogEvent {{ level: 1, msg: \"raw\", path: \"app\", fields: \"\", ts: 0 }};\n    }}\n}}\n"
+        )
+    };
+    let with_sink = check(&program("sink: std::log::StdoutSink = std::log::StdoutSink { };"));
+    assert!(
+        !with_sink.iter().any(|m| m.contains("is published but has no subscriber")),
+        "{with_sink:?}"
+    );
+    let without = check(&program(""));
+    assert!(
+        without.iter().any(|m| m.contains("bus subject `\"log.app\"` is published but has no subscriber")),
+        "{without:?}"
+    );
+}

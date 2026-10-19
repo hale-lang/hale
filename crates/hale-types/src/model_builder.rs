@@ -2754,36 +2754,11 @@ pub fn derive_application_model_over(
     // pattern, locus, handler). A publish inside a stdlib body delivers
     // to them as it does to the program's own subscribers, so the
     // absorption walk follows it into their handlers.
-    let stdlib_subscribers: Vec<(String, String, String)> = {
-        let built: BTreeSet<&str> = inputs
-            .placement
-            .instances
-            .values()
-            .filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.as_str()))
+    let stdlib_subscribers: Vec<(String, String, String)> =
+        crate::stdlib_modules::built_subscribers(inputs.placement)
+            .into_iter()
+            .map(|b| (b.pattern, b.locus, b.handler))
             .collect();
-        let mut out = Vec::new();
-        if let Some(sp) = crate::stdlib_bodies::program() {
-            for item in &sp.items {
-                let TopDecl::Locus(l) = item else { continue };
-                if !built.contains(l.name.name.as_str()) {
-                    continue;
-                }
-                for mem in &l.members {
-                    let LocusMember::Bus(bus) = mem else { continue };
-                    for bm in &bus.members {
-                        if let BusMember::Subscribe { subject, handler, .. } = bm {
-                            out.push((
-                                subject.canonical().to_string(),
-                                l.name.name.clone(),
-                                handler.name.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    };
     let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
         Vec::new();
     // The interior a walk entering the stdlib at `next` traverses:

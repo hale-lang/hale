@@ -1647,7 +1647,7 @@ pub fn check_bundle_rules(
     // synchronous self-dispatch that recurses without bound (error).
     // Rules 9 and 10 are laws over the bus graph (F.40 phase 4, W5).
     let bus_rows =
-        BusLawRows { bundle, top, entry: inputs.entry, bus: inputs.bus, intra_locus: inputs.intra_locus };
+        BusLawRows { bundle, top, entry: inputs.entry, bus: inputs.bus, intra_locus: inputs.intra_locus, placement: inputs.placement };
     bus_graph_laws(&bus_rows, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
@@ -9688,6 +9688,9 @@ struct BusLawRows<'r, 'b> {
     entry: &'r crate::entry::EntryRow,
     bus: &'r crate::bus_graph::BusGraph,
     intra_locus: &'r [hale_syntax::desugar::IntraLocusRewrite],
+    /// Which stdlib subscribers the program builds: a publish one of
+    /// them takes has a subscriber.
+    placement: &'r crate::placement::PlacementTable,
 }
 
 /// Rules 9 and 10 over the bus graph, and between them the wildcard
@@ -9703,7 +9706,7 @@ fn bus_graph_laws(rows: &BusLawRows<'_, '_>, diags: &mut Vec<Diag>) {
 }
 
 fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
-    let BusLawRows { bundle, top, entry, bus, .. } = *rows;
+    let BusLawRows { bundle, top, entry, bus, placement, .. } = *rows;
     // Closed-world gate: only a complete program (one with an entry,
     // F.40 phase 3, E0) has both ends of every channel in-bundle. A
     // seed whose only `main locus` is imported or module-nested has
@@ -9732,6 +9735,13 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         row.is_some_and(|r| {
             r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed || r.ingress
         })
+    };
+    // A stdlib subscriber the program builds (a `std::log::StdoutSink`
+    // under `log.**`) takes what it subscribes to, as the claims walk
+    // reads it.
+    let stdlib_subs = crate::stdlib_modules::built_subscribers(placement);
+    let stdlib_takes = |wire: &str| {
+        stdlib_subs.iter().any(|b| hale_model::subjects_can_overlap(&b.pattern, wire))
     };
     let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
         row.is_some_and(|r| {
@@ -9762,7 +9772,7 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         // program, as a transport binding's does.
         let hub = hub_bound.contains(name.as_str());
         let p = hub || has_pub(row);
-        let s = hub || has_sub(row);
+        let s = hub || has_sub(row) || stdlib_takes(&info.wire_subject);
         if p && !s {
             let span = row.and_then(|r| r.published).unwrap_or(info.span);
             out.push(Violation::warning(
@@ -9807,7 +9817,7 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
             continue;
         }
         let p = has_pub(Some(row));
-        let s = has_sub(Some(row));
+        let s = has_sub(Some(row)) || stdlib_takes(k);
         if p && !s {
             let Some(span) = row.published else { continue };
             out.push(Violation::warning(
