@@ -43,6 +43,7 @@ fn file_sink_rotates_and_console_sink_renders() {
     let bin = harness::unique_bin(&format!("hale_log_sinks_bin_{}", std::process::id()));
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin)
+        .env("HALE_LOG_FORMAT", "text")
         .env("NO_COLOR", "1")
         .output()
         .expect("run");
@@ -87,4 +88,36 @@ fn file_sink_rotates_and_console_sink_renders() {
     assert!(!dir.join("app.log.4").exists(), "chain must cap at keep_files");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// GH #1592: a FileSink writes the same records as the StdoutSink,
+/// logfmt unless a format is asked for, by its `format` param or
+/// `HALE_LOG_FORMAT`.
+#[test]
+fn file_sink_writes_records() {
+    let dir = harness::unique_dir("hale_log_file_records");
+    let logfmt = dir.join("logfmt.log");
+    let json = dir.join("json.log");
+    let src = format!(
+        r#"
+        fn main() {{
+            std::log::FileSink {{ path: "{a}" }};
+            std::log::FileSink {{ path: "{b}", format: "json" }};
+            let log = std::log::Logger {{ name: "app" }};
+            log.warn_kv("slow", std::log::kv("ms", "250"));
+        }}
+    "#,
+        a = logfmt.display(),
+        b = json.display()
+    );
+    let bin = harness::unique_bin("hale_log_file_records_bin");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env_remove("HALE_LOG_FORMAT").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let a = std::fs::read_to_string(&logfmt).expect("logfmt file");
+    let b = std::fs::read_to_string(&json).expect("json file");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(a.starts_with("time=") && a.ends_with(" level=warn logger=app msg=slow ms=250\n"), "{a:?}");
+    assert!(b.starts_with("{\"time\":\"") && b.ends_with("\"level\":\"warn\",\"logger\":\"app\",\"msg\":\"slow\",\"ms\":\"250\"}\n"), "{b:?}");
 }

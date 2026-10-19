@@ -39,7 +39,7 @@ fn logger_basic_levels_print_to_stdout() {
         }
     "#;
     let bin = build_hale("levels", src);
-    let out = Command::new(&bin).output().expect("run");
+    let out = Command::new(&bin).env("HALE_LOG_FORMAT", "text").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -68,7 +68,7 @@ fn logger_cascades_via_parent_path() {
         }
     "#;
     let bin = build_hale("cascade", src);
-    let out = Command::new(&bin).output().expect("run");
+    let out = Command::new(&bin).env("HALE_LOG_FORMAT", "text").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -90,7 +90,7 @@ fn logger_three_level_nesting() {
         }
     "#;
     let bin = build_hale("nest3", src);
-    let out = Command::new(&bin).output().expect("run");
+    let out = Command::new(&bin).env("HALE_LOG_FORMAT", "text").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -128,11 +128,141 @@ fn user_subscriber_can_match_subtree_pattern() {
         }
     "#;
     let bin = build_hale("subtree", src);
-    let out = Command::new(&bin).output().expect("run");
+    let out = Command::new(&bin).env("HALE_LOG_FORMAT", "text").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("db-only: app.db db-event"), "got: {:?}", stdout);
     assert!(!stdout.contains("api-event"), "subscriber should not see peer subtree; got: {:?}", stdout);
     assert!(!stdout.contains("db-only: app root"), "subscriber should not see root; got: {:?}", stdout);
+}
+
+/// GH #1592: a sink writes records. With no format asked for, a
+/// `StdoutSink` writes logfmt on stdout, every level on the one stream:
+/// an RFC 3339 time, the level, the logger's path, the message and the
+/// event's fields, quoted where they need it, and a line break in a value
+/// written `\n`, so a record is one line.
+const RECORDS: &str = r#"
+    fn main() {
+        std::log::StdoutSink { };
+        let log = std::log::Logger { name: "app" };
+        let db = std::log::Logger { name: "db", parent_path: "app" };
+        log.info("starting");
+        db.warn_kv("retrying", std::log::kv("attempt", "2") + " " + std::log::kv("why", "conn \"reset\" by=peer"));
+        log.error("gave up\nfor good");
+    }
+"#;
+
+fn run_records(format: Option<&str>) -> (String, String) {
+    let bin = build_hale(&format!("records_{}", format.unwrap_or("default")), RECORDS);
+    let mut cmd = Command::new(&bin);
+    match format {
+        Some(f) => {
+            cmd.env("HALE_LOG_FORMAT", f);
+        }
+        None => {
+            cmd.env_remove("HALE_LOG_FORMAT");
+        }
+    }
+    let out = cmd.output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+/// `time=<RFC 3339 UTC>` and the rest of the line after it.
+fn split_time(line: &str) -> (&str, &str) {
+    let rest = line.strip_prefix("time=").unwrap_or_else(|| panic!("a record starts with its time: {line:?}"));
+    let (t, rest) = rest.split_once(' ').expect("fields after the time");
+    assert!(t.len() == 20 && t.ends_with('Z') && t.as_bytes()[10] == b'T', "RFC 3339 UTC: {t:?}");
+    (t, rest)
+}
+
+#[test]
+fn a_sink_writes_logfmt_records_by_default() {
+    let (stdout, stderr) = run_records(None);
+    assert!(stderr.is_empty(), "every record on stdout: {stderr:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "one line per record: {stdout:?}");
+    assert_eq!(split_time(lines[0]).1, "level=info logger=app msg=starting");
+    assert_eq!(
+        split_time(lines[1]).1,
+        r#"level=warn logger=app.db msg=retrying attempt=2 why="conn \"reset\" by=peer""#
+    );
+    assert_eq!(split_time(lines[2]).1, r#"level=error logger=app msg="gave up\nfor good""#);
+    // an unknown format is logfmt too
+    let (bogus, _) = run_records(Some("yaml"));
+    assert_eq!(bogus.lines().count(), 3);
+    assert!(bogus.lines().all(|l| l.starts_with("time=")), "{bogus:?}");
+}
+
+#[test]
+fn hale_log_format_json_writes_one_object_per_record() {
+    let (stdout, stderr) = run_records(Some("json"));
+    assert!(stderr.is_empty(), "{stderr:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout:?}");
+    let tail = |l: &str| l.split_once("\",\"level\"").map(|(_, t)| t.to_string()).expect("time, then level");
+    assert!(lines[0].starts_with("{\"time\":\""), "{}", lines[0]);
+    assert_eq!(tail(lines[0]), r#":"info","logger":"app","msg":"starting"}"#);
+    assert_eq!(
+        tail(lines[1]),
+        r#":"warn","logger":"app.db","msg":"retrying","attempt":"2","why":"conn \"reset\" by=peer"}"#
+    );
+    assert_eq!(tail(lines[2]), r#":"error","logger":"app","msg":"gave up\nfor good"}"#);
+}
+
+#[test]
+fn hale_log_format_text_keeps_the_format_before_records() {
+    let (stdout, stderr) = run_records(Some("text"));
+    assert!(stdout.contains("[INFO app] starting"), "{stdout:?}");
+    assert!(stderr.contains(r#"[WARN app.db] retrying attempt=2 why="conn \"reset\" by=peer""#), "{stderr:?}");
+    assert!(stderr.contains("[ERROR app] gave up"), "{stderr:?}");
+}
+
+/// One value per character class a logfmt reader splits on, or a line
+/// break that would end the record: (the value as Hale source spells
+/// it, its logfmt token, its JSON string). Each renders as one
+/// well-formed token and one valid JSON string, in the message and in a
+/// field. The runtime's renderer (`lotus_diag`) is held to this table
+/// too (`runtime_records`).
+pub const ESCAPES: &[(&str, &str, &str)] = &[
+    ("left\\tright", r#""left\tright""#, r#""left\tright""#),
+    ("cr\\rhere", r#""cr\rhere""#, r#""cr\rhere""#),
+    ("back\\\\slash", r#""back\\slash""#, r#""back\\slash""#),
+    ("say \\\"hi\\\"", r#""say \"hi\"""#, r#""say \"hi\"""#),
+    ("ctl\\x01x", r#""ctl\u0001x""#, r#""ctl\u0001x""#),
+    ("del\\x7fx", r#""del\u007fx""#, "\"del\u{7f}x\""),
+    ("", "", r#""""#),
+    ("plain", "plain", r#""plain""#),
+];
+
+#[test]
+fn every_control_character_is_escaped_in_a_record() {
+    let mut body = String::new();
+    for (src, _, _) in ESCAPES {
+        body.push_str(&format!("        log.info_kv(\"{src}\", std::log::kv(\"v\", \"{src}\"));\n"));
+    }
+    let program = format!(
+        "fn main() {{\n        std::log::StdoutSink {{ }};\n        let log = std::log::Logger {{ name: \"app\" }};\n{body}    }}\n"
+    );
+    for format in ["logfmt", "json"] {
+        let bin = build_hale(&format!("escapes_{format}"), &program);
+        let out = Command::new(&bin).env("HALE_LOG_FORMAT", format).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), ESCAPES.len(), "{format}: one line per record: {stdout:?}");
+        for (line, (src, token, json)) in lines.iter().zip(ESCAPES) {
+            assert!(!line.contains('\t') && !line.contains('\r') && !line.contains('\u{1}'), "{format} {src}: no raw control byte: {line:?}");
+            if format == "logfmt" {
+                let want = format!(" level=info logger=app msg={token} v={token}");
+                assert!(line.ends_with(&want), "{src}: {line:?} ends with {want:?}");
+            } else {
+                let want = format!(",\"level\":\"info\",\"logger\":\"app\",\"msg\":{json},\"v\":{json}}}");
+                assert!(line.ends_with(&want), "{src}: {line:?} ends with {want:?}");
+            }
+        }
+    }
 }

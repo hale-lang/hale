@@ -166,8 +166,8 @@ fn main() { App { }; }
     );
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let started = Instant::now();
-    let mut c = Command::new(&bin).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("spawn");
-    let mut err = BufReader::new(c.stderr.take().unwrap());
+    let mut c = Command::new(&bin).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
+    let mut err = BufReader::new(c.stdout.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut line = String::new();
@@ -184,6 +184,6 @@ fn main() { App { }; }
     let _ = c.wait();
     let _ = std::fs::remove_file(&bin);
     let line = got.expect("the pinned locus's log line is written while main serves, with no request");
-    assert!(line.contains("[WARN bg] background says hi"), "{line:?}");
+    assert!(line.contains("level=warn logger=bg msg=\"background says hi\""), "{line:?}");
     assert!(started.elapsed() < Duration::from_secs(3));
 }
