@@ -2713,6 +2713,8 @@ its `KNOWN_OPEN` table, which is empty today.
   complete: a pinned or pool-placed child's `while !self.draining`
   loop no longer holds the process once `main`'s `run()` has returned.
   A `run()` that does not watch it keeps running, as under a signal.
+  Unlike a signal's drain it stops no listener: a server keeps
+  accepting until a signal (`spec/semantics.md` § Drain cascade).
   The tree drain is the flag's second bit, so a signal's drain is
   neither masked nor ended by it; it ends with the main locus's
   teardown (`lotus_tree_drain_end`), so a main locus built afterwards

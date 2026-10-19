@@ -624,8 +624,9 @@ fd-closes, etc.) terminate gracefully.
 
 **Shutdown is a drain, never a cut.** Once the Server's accept loop
 ends — `stop`, `shutdown()`, `max_accepts` reached, or the process's
-drain (a SIGINT / SIGTERM, or `main`'s `run()` returning), which stops
-every named listener (`spec/semantics.md` § Drain cascade) — its `run()`
+drain on a SIGINT / SIGTERM, which stops every named listener
+(`spec/semantics.md` § Drain cascade; `main`'s `run()` returning does
+not) — its `run()`
 returns only after every connection it accepted has been answered, so
 `dissolve()` never tears down a connection mid-request. Inline (one at
 a time) that is the connection being served; on an `async_io` pool it
