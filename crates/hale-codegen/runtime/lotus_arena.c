@@ -21669,6 +21669,41 @@ int lotus_tcp_accept_one(int listen_fd) {
         if (conn >= 0) {
             lotus_set_cloexec(conn);
             int nodelay = 1;
+        /* An accept on the main thread waits on the listen fd and on
+         * main's bus queue together: a cell another thread enqueues
+         * for a main subscriber (a pinned locus's `std::log` line to a
+         * sink on main) is delivered when it arrives, not when the next
+         * connection does. On an idle server it waited for a request
+         * that might never come. The queue's wake fd is written only
+         * while `idle` is set, so the wait costs nothing per enqueue
+         * otherwise. */
+        if (!async && !cpool) {
+#ifndef __wasm__
+            lotus_bus_queue_t *q = t_owned_queue;
+            if (listen_fd >= 0 && q && q->wake_r >= 0 && pthread_equal(pthread_self(), q->owner)) {
+                for (;;) {
+                    lotus_bus_queue_drain(q);
+                    atomic_store_explicit(&q->idle, 1, memory_order_seq_cst);
+                    pthread_mutex_lock(&q->lock);
+                    int ready = q->head < q->tail;
+                    pthread_mutex_unlock(&q->lock);
+                    int listen_ready = 0;
+                    if (!ready) {
+                        struct pollfd pfds[2] = {
+                            { .fd = listen_fd, .events = POLLIN, .revents = 0 },
+                            { .fd = q->wake_r, .events = POLLIN, .revents = 0 },
+                        };
+                        int pr = poll(pfds, 2, -1);
+                        listen_ready = pr > 0 && pfds[0].revents != 0;
+                    }
+                    atomic_store_explicit(&q->idle, 0, memory_order_seq_cst);
+                    uint64_t buf[8];
+                    while (read(q->wake_r, buf, sizeof buf) > 0) {}
+                    if (listen_ready) break;
+                }
+            }
+#endif
+        }
             (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
                              &nodelay, sizeof(nodelay));
             return conn;

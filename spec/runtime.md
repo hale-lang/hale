@@ -1204,7 +1204,11 @@ instantiating function's scope does. So every
 lifecycle body of a locus nested under a pinned one runs on the
 pinned thread, the domain it is placed in, and a yield inside
 one (`std::time::sleep`, an `await`) drains the pinned locus's
-mailbox, as a yield on main drains main's queue. The
+mailbox, as a yield on main drains main's queue. (An accept on main
+waits on main's queue as well as on its listener, and delivers a cell
+another thread enqueues for a subscriber on main when it arrives: a
+pinned locus's `std::log` line to a sink on main is written while main
+serves, not at the next connection; 2026-10-19, downstream handoff.) The
 instantiating thread waits until the params are initialized
 (`lotus_pinned_start_await_ready`), so nothing observes the tree
 before it is built. While it waits it services its own mailbox
