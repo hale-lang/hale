@@ -1005,8 +1005,11 @@ locus Conn {
   **[convention]**
 - **An adapter binding's literal is written whole.** The adapter in
   `bindings { Topic: Relay { ... }; }` is built by the program's prelude,
-  before the `main` locus that declares it, so its fields cannot read
-  that locus's params: `Relay { url: self.url }` is refused at the read.
+  before the `main` locus that declares it, so it is checked as an
+  expression in a free fn is: its fields cannot read that locus's params
+  (`Relay { url: self.url }` is refused at the read), and a statement that
+  acts on an enclosing locus (`terminate`, `violate`, a publish) is
+  refused there too.
   Write the value in the literal, or give the adapter's own `params` the
   default, and read configuration the adapter needs at run time (an
   environment variable, a file) in its `birth()`. **[error]**

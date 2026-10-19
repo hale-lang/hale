@@ -524,7 +524,7 @@ fn claim_an_adapter_binding_literal_reads_no_self() {
     };
     let read = build_errs(&src("self.url"));
     assert!(
-        read.iter().any(|m| m.contains("the `Relay` literal reads `self`")),
+        read.iter().any(|m| m.contains("the `Relay` literal is built by the program's prelude") && m.contains("`self` used outside a locus body")),
         "spec/styleguide.md C5 says an adapter literal reading `self` is refused: {:?}",
         read
     );

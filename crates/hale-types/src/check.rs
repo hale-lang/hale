@@ -9058,41 +9058,12 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
         // the named symbol is a locus and that it
         // structurally satisfies `__StdBusAdapter`
         // (i.e. exposes `fn send(subject: String,
-        // bytes: Bytes)`). Field-init shape is
-        // codegen's job once the locus is
-        // resolved.
+        // bytes: Bytes)`). Its literal is checked
+        // as a free fn's expression, by the
+        // checker's walk of the main locus.
         if let TransportSpec::Adapter { locus, .. } =
             &entry.transport
         {
-            // An adapter binding is built once, by the program's
-            // prelude, before the main locus that declares it is: its
-            // literal has no `self` to read (spec/semantics.md
-            // § Phase 2, "Adapter bindings first instantiate").
-            if let TransportSpec::Adapter { inits, .. } = &entry.transport {
-                // The one exhaustive walk of what an expression spells
-                // (`hale_syntax::names`), so a new kind of expression, or
-                // one an assignment's target index holds, is never missed.
-                let mut reads = Vec::new();
-                for init in inits {
-                    hale_syntax::names::for_each_spelled_in_expr(&init.value, &mut |s| {
-                        if let hale_syntax::names::Spelled::SelfRef(span) = s {
-                            reads.push(span);
-                        }
-                    });
-                }
-                for span in reads {
-                    diags.push(Diag::ty(
-                        span,
-                        format!(
-                            "adapter binding for topic `{}`: the `{}` literal reads `self`, but an \
-                             adapter binding is built by the program's prelude, before the main \
-                             locus that declares it, so there is no `self` to read; give the \
-                             field a value written here, or a default in `{}`'s own `params`",
-                            entry.topic.name, locus.name, locus.name
-                        ),
-                    ));
-                }
-            }
             match top.lookup(&locus.name) {
                 Some(TopSymbol::Locus(_)) => {
                     // Wave B: the bus's adapter contract, by the one
@@ -14646,9 +14617,48 @@ impl<'a> Checker<'a> {
             LocusMember::Contract(_) => {
                 // Already lowered by the resolver.
             }
-            LocusMember::Bindings(_) => {
+            LocusMember::Bindings(bb) => {
                 // Bindings are checked by a separate top-level pass
-                // (validate_bindings); nothing to do here.
+                // (validate_bindings), but for an adapter's literal:
+                // the program's prelude builds it before this locus, so
+                // it is checked as an expression in a free fn is — no
+                // `self`, no enclosing locus, nothing to return to — and
+                // every rule a free fn's body is held to refuses it here,
+                // where lowering would fail: a `self` read, `terminate`,
+                // `violate`, a publish, an unknown name, a field of the
+                // wrong type. Each such diagnostic says why it applies.
+                for entry in &bb.entries {
+                    let TransportSpec::Adapter { locus, inits, span } = &entry.transport else { continue };
+                    let lit = Expr::Struct {
+                        path: QualifiedName {
+                            segments: locus.name.split("::").map(|seg| Ident::new(seg, locus.span)).collect(),
+                            span: locus.span,
+                        },
+                        inits: inits.clone(),
+                        span: *span,
+                        id: NodeId::NONE,
+                    };
+                    let prev_locus = self.current_locus.take();
+                    let prev_fallible = self.fallible_ctx.take();
+                    let prev_return = self.return_ctx.take();
+                    let prev_main = std::mem::replace(&mut self.in_fn_main, false);
+                    let before = self.diags.len();
+                    self.locals.push();
+                    let _ = self.check_expr(&lit);
+                    self.locals.pop();
+                    let main = prev_locus.map_or_else(|| "the main locus".to_string(), |l| l.name.clone());
+                    for d in &mut self.diags[before..] {
+                        d.message = format!(
+                            "adapter binding for topic `{}`: the `{}` literal is built by the program's \
+                             prelude, before `{}`, as an expression of a free fn is: {}",
+                            entry.topic.name, locus.name, main, d.message
+                        );
+                    }
+                    self.current_locus = prev_locus;
+                    self.fallible_ctx = prev_fallible;
+                    self.return_ctx = prev_return;
+                    self.in_fn_main = prev_main;
+                }
             }
             LocusMember::Placement(_) => {
                 // F.31: placement entries are validated by a

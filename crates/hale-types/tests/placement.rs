@@ -4136,15 +4136,16 @@ fn main() { }
 }
 
 /// An adapter binding is built by the program's prelude, before the
-/// `main` locus that declares it, so its literal has no `self`: a read
-/// of the main locus's params there passed the check and then failed
-/// in codegen ("self.url read outside a locus method"). It is refused
-/// at the read; the same literal with the value written in it checks.
-#[test]
-fn an_adapter_binding_literal_that_reads_self_is_refused_at_the_read() {
-    let src = |url: &str| {
-        format!(
-            r#"
+/// `main` locus that declares it, so its literal is checked as an
+/// expression of a free fn is: no `self`, no enclosing locus. A read of
+/// the main locus's params there passed the check and then failed in
+/// codegen ("self.url read outside a locus method"), and so did every
+/// statement that acts on an enclosing locus. Each is refused at check,
+/// at the read or the statement, with the free fn's own diagnostic and
+/// why it applies; the same literal with its value written in it checks.
+fn adapter_literal(init: &str) -> String {
+    format!(
+        r#"
 type Tick {{ n: Int = 0; }}
 topic Ticks {{ payload: Tick; }}
 locus Relay {{
@@ -4152,57 +4153,44 @@ locus Relay {{
     fn send(subject: String, bytes: Bytes) {{ println(self.url); }}
 }}
 main locus App {{
-    params {{ url: String = "nats://127.0.0.1:4222"; }}
-    bindings {{ Ticks: Relay {{ url: {url} }}; }}
+    params {{ url: String = "nats://127.0.0.1:4222"; n: Int = 0; }}
+    bindings {{ Ticks: Relay {{ url: {init} }}; }}
     bus {{ publish Ticks; }}
     run() {{ Ticks <- Tick {{ n: 1 }}; }}
 }}
 fn main() {{ App {{ }}; }}
 "#
-        )
-    };
-    let refused = src("self.url");
-    let errs = check(&refused);
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    assert!(
-        errs[0].starts_with("adapter binding for topic `Ticks`: the `Relay` literal reads `self`"),
-        "{errs:?}"
-    );
-    let prog = parse_source(&refused).expect("parse");
-    let diag = check_program(&prog).into_iter().next().expect("one diagnostic");
-    let at = refused.find("self.url }").expect("the read");
-    assert_eq!(diag.span.start.0 as usize, at, "the diagnostic is at the read");
-    assert_eq!(check(&src("\"nats://127.0.0.1:4222\"")), Vec::<String>::new());
-    assert!(!check(&src("\"x\" + self.url")).is_empty(), "a read inside an expression is refused too");
+    )
 }
 
-/// The walk is the one exhaustive walk of what an expression spells, so
-/// a `self` read anywhere in the literal is found: here in the index of
-/// an assignment's target, inside a block the init holds, which the
-/// first walk skipped (it passed `hale check` and failed in codegen).
+const ADAPTER_PREFIX: &str =
+    "adapter binding for topic `Ticks`: the `Relay` literal is built by the program's prelude, before `App`, as an expression of a free fn is: ";
+
 #[test]
-fn an_adapter_binding_literal_that_reads_self_in_an_assignment_index_is_refused() {
-    let src = |index: &str| {
-        format!(
-            r#"
-type Tick {{ n: Int = 0; }}
-topic Ticks {{ payload: Tick; }}
-locus Relay {{
-    params {{ url: String = ""; }}
-    fn send(subject: String, bytes: Bytes) {{ println(self.url); }}
-}}
-main locus App {{
-    params {{ n: Int = 0; }}
-    bindings {{ Ticks: Relay {{ url: {{ let mut a = ["nats://h:4222"]; a[{index}] = "x"; a[0] }} }}; }}
-    bus {{ publish Ticks; }}
-    run() {{ Ticks <- Tick {{ n: 1 }}; }}
-}}
-fn main() {{ App {{ }}; }}
-"#
-        )
-    };
-    let errs = check(&src("self.n"));
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    assert!(errs[0].starts_with("adapter binding for topic `Ticks`: the `Relay` literal reads `self`"), "{errs:?}");
-    assert_eq!(check(&src("0")), Vec::<String>::new());
+fn an_adapter_binding_literal_is_checked_as_a_free_fns_expression() {
+    for (init, why) in [
+        ("self.url", "`self` used outside a locus body"),
+        ("\"x\" + self.url", "`self` used outside a locus body"),
+        // the review's: an assignment target's index
+        ("{ let mut a = [\"nats://h:4222\"]; a[self.n] = \"x\"; a[0] }", "`self` used outside a locus body"),
+        // the review's: a statement that acts on the enclosing locus
+        ("{ terminate; \"nats://h:4222\" }", "`terminate` is only valid inside a locus method"),
+        ("{ violate nope; \"nats://h:4222\" }", "free fns can't use `violate`"),
+        ("{ Ticks <- Tick { n: 2 }; \"nats://h:4222\" }", "bus send (`<-`) only valid inside a locus body"),
+        ("{ reperspective self.r as Relay; \"nats://h:4222\" }", "`reperspective` is only valid inside a locus method"),
+        ("{ restart(child); \"nats://h:4222\" }", "unknown identifier `child`"),
+    ] {
+        let src = adapter_literal(init);
+        let errs = check(&src);
+        assert!(!errs.is_empty(), "{init}: refused");
+        assert!(errs.iter().all(|e| e.starts_with(ADAPTER_PREFIX)), "{init}: every refusal says why: {errs:?}");
+        assert!(errs.iter().any(|e| e.contains(why)), "{init}: {errs:?}");
+    }
+    let src = adapter_literal("self.url");
+    let prog = parse_source(&src).expect("parse");
+    let diag = check_program(&prog).into_iter().find(|d| d.is_error()).expect("a diagnostic");
+    assert_eq!(diag.span.start.0 as usize, src.find("self.url }").expect("the read"), "at the read");
+    for init in ["\"nats://127.0.0.1:4222\"", "{ let mut a = [\"nats://h:4222\"]; a[0] = \"x\"; a[0] }"] {
+        assert_eq!(check(&adapter_literal(init)), Vec::<String>::new(), "{init}");
+    }
 }

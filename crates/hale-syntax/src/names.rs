@@ -27,9 +27,6 @@ pub enum Spelled<'a> {
     /// reported before each of its segments is reported as a `Name`: a
     /// reader that resolves what a path names needs the segments together.
     Path(&'a [Ident]),
-    /// The enclosing locus's `self`, read (`self`, `self.x`) or written
-    /// (`self.x = …`), at the span of the `self` the program writes.
-    SelfRef(crate::span::Span),
 }
 
 type Visit<'v, 'a> = dyn FnMut(Spelled<'a>) + 'v;
@@ -44,11 +41,6 @@ pub fn for_each_spelled<'a>(items: &'a [TopDecl], f: &mut Visit<'_, 'a>) {
 /// Every name and text in one top-level declaration.
 pub fn for_each_spelled_in_item<'a>(item: &'a TopDecl, f: &mut Visit<'_, 'a>) {
     top_decl(item, f);
-}
-
-/// Every name and text in one expression, the blocks it holds included.
-pub fn for_each_spelled_in_expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
-    expr(e, f);
 }
 
 fn name<'a>(i: &'a Ident, f: &mut Visit<'_, 'a>) {
@@ -740,9 +732,6 @@ fn stmt<'a>(s: &'a Stmt, f: &mut Visit<'_, 'a>) {
         }
         Stmt::Assign { target, op: _, value, span: _, id: _ } => {
             let LValue { head, tail, span: _ } = target;
-            if head.name == "self" {
-                f(Spelled::SelfRef(head.span));
-            }
             name(head, f);
             for seg in tail {
                 match seg {
@@ -886,7 +875,7 @@ fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
         Expr::Literal(l, _) => literal(l, f),
         Expr::Ident(i) => name(i, f),
         Expr::Path(q) => qualified(q, f),
-        Expr::KwSelf(span) => f(Spelled::SelfRef(*span)),
+        Expr::KwSelf(_) => {}
         Expr::Binary { op: _, left, right, span: _ } => {
             expr(left, f);
             expr(right, f);
