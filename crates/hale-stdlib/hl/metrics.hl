@@ -503,20 +503,52 @@ locus __StdMetricsRegistry {
     /// `_bucket{le=...}` / `_sum` / `_count`.
     fn render() -> String {
         let b = std::bytes::BytesBuilder { initial_cap: 8192 };
+        // a family's series together, under its one TYPE line: the
+        // map keeps no order, so each family is written whole when its
+        // first series is met, and the names written are skipped after
+        let mut written = "\x1f";
         for e in self.store.entries {
-            if e.kind == 0 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "counter")));
-                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
-            } else if e.kind == 1 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "gauge")));
-                b.append(std::bytes::from_string(__metrics_render_sample(self.namespace, e.name, e.labels, e.value)));
-            } else if e.kind == 2 {
-                b.append(std::bytes::from_string(__metrics_render_type_line(self.namespace, e.name, "histogram")));
-                let h = self.histograms.get(e.hist_idx) or __StdMetricsHistogramData { };
-                b.append(std::bytes::from_string(__metrics_render_histogram(self.namespace, h)));
+            let mark = e.name + "\x1f";
+            if !std::str::contains(written, "\x1f" + mark) {
+                written = written + mark;
+                let mut first = true;
+                for f in self.store.entries {
+                    if f.name == e.name {
+                        let h = if f.kind == 2 {
+                            self.histograms.get(f.hist_idx) or __StdMetricsHistogramData { }
+                        } else {
+                            __StdMetricsHistogramData { }
+                        };
+                        __metrics_render_series(b, first, self.namespace, f.kind, f.name, f.labels, f.value, h);
+                        first = false;
+                    }
+                }
             }
         }
         return std::str::from_bytes(b.finish() or raise);
+    }
+}
+
+// One series of the exposition into `b`, after its family's `# TYPE`
+// line when it is the family's `first`: `Registry.render()`'s, one
+// series at a time, for any page that renders series. A family is
+// written whole, its TYPE line once (the text format refuses a second
+// one); no HELP line is written, as no series carries help text.
+fn __metrics_render_series(b: std::bytes::BytesBuilder, first: Bool, ns: String, kind: Int, name: String, labels: String, value: Float, h: __StdMetricsHistogramData) {
+    let word = if kind == 0 {
+        "counter"
+    } else if kind == 1 {
+        "gauge"
+    } else {
+        "histogram"
+    };
+    if first {
+        b.append(std::bytes::from_string(__metrics_render_type_line(ns, name, word)));
+    }
+    if kind == 2 {
+        b.append(std::bytes::from_string(__metrics_render_histogram(ns, h)));
+    } else {
+        b.append(std::bytes::from_string(__metrics_render_sample(ns, name, labels, value)));
     }
 }
 

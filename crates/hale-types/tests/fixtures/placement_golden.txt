@@ -654,7 +654,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/log.hl#4469c22a
 
-== crates/hale-stdlib/hl/metrics.hl#19f66cf4
+== crates/hale-stdlib/hl/metrics.hl#d7f6876c
 
 == crates/hale-stdlib/hl/process.hl#e44be954
 
@@ -5180,6 +5180,10 @@ dynamic	__StdIoTcpConnInline	on main
 dynamic	__StdIoTcpConnections	on main
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdMetricsRegistry	on main
+
+== crates/hale-codegen/tests/stdlib_metrics.rs#66a1b4a6
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
 
 == crates/hale-codegen/tests/stdlib_name.rs#83fa822e
 row	__StdNameConvention@main1	__StdNameConvention	main	default
