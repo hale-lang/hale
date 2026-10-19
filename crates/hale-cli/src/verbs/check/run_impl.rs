@@ -79,7 +79,7 @@ fn api_document(
 ) -> Result<String, String> {
     use crate::surface_doc;
     let programs: Vec<&hale_syntax::ast::Program> = snap.programs().values().collect();
-    let schemas = hale_types::surfaces::Schemas::of(&programs, snap.import_renames());
+    let schemas = hale_types::surfaces::Schemas::of(&programs);
     let exposure = flag_value("--exposure")?;
     let caller = flag_value("--caller")?;
     let holds: std::collections::BTreeSet<String> = flag_value("--holds")?

@@ -9051,7 +9051,7 @@ const BUILTIN_CALL_FORMS: &[(&str, Option<&str>)] = &[
 ];
 
 /// The [`BUILTIN_CALL_FORMS`] entry `name` spells, if any.
-fn builtin_call_form(
+pub fn builtin_call_form(
     name: &str,
 ) -> Option<(&'static str, Option<&'static str>)> {
     BUILTIN_CALL_FORMS.iter().copied().find(|(w, _)| *w == name)

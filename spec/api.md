@@ -416,7 +416,7 @@ and everything a walked expression evaluates without writing it:
 | a record literal `T { … }` | the fields it leaves to their defaults, recursively (`type Setup { n: Int = { Spinner { }; 0 }; }` built by `Setup { }` builds a `Spinner`; `Setup { n: 0 }` does not) |
 | a param with no value, typed as a record whose every field has a default | the `T { }` the compiler builds for it, its defaults walked |
 | a call that leaves out arguments | each omitted param's default, evaluated at the call site, of the fn or method the checker resolves the call to (as lowering expands them) |
-| a const that is no literal, read | its value, evaluated where it is read; a read as the checker resolves the name where it is evaluated, so a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not, and a default is resolved in the scope of the literal or call that leaves it (`spec/types.md` § Locus params), each evaluation on its own |
+| a const that is no literal, read | its value, evaluated where it is read; a read as the checker resolves the name where it is evaluated, so a local or a parameter of the same name in scope shadows the const and a binding of a block that has ended does not. A default reads only its own fields and constants, and a caller binding that would shadow one where the default is left out is refused (`spec/types.md` § Locus params), each evaluation on its own |
 | a hook's params | their defaults |
 
 Nothing else runs code at construction: an enum variant's payload has no
@@ -2240,25 +2240,11 @@ ever sees a decoded value. A field with a default may be left out, and
 the description lists it under no `required`: whatever the declaration
 writes for it (a literal, an enum's variant, a record, a value computed
 from others) is what the absent field decodes to, through either codec,
-as the record's own literal would build it, when the codec can evaluate
-it on its own: when the default resolves with no locals in scope. Every
-name it reads must resolve to a module-level item: a constant, a free fn
-(a module's included), a language builtin (`len`, `to_string`, `min`,
-...), a type's conversion (`OrderId(3)`), an enum's variant, or a stdlib
-path. A type or a constructor resolves through its aliases and through an
-import (`Alias { }`, `l::Inner { }`, `Hue::blue`). A record literal is
-closed only when every field it leaves out has a closed default too,
-followed through nested literals. A field's type is read through its
-aliases before its shape is, so a `bounded` field left out is empty
-however it is spelled. A chain of defaults that reaches itself is not
-closed. A record field default is evaluated in the scope of the literal
-that leaves it, so one that reads anything of that scope (`b: Int = a +
-1`, `a` a local where the literal is written; `compute()`, `compute` a
-fn value bound there) is no default a codec can build. So is any default
-with a name that resolves to nothing above, and such a field is required
-on the wire: the description lists it under `required`, and the decoders
-refuse its absence `missing_field`. The codecs and the description ask
-one table of the bundle's items (`json_gen::DefaultScope`). A list is the one exception,
+as the record's own literal would build it. A default reads only its own
+fields and constants, never the scope of the literal that leaves it
+(`spec/types.md` § Locus params), so every default a record can declare
+is one the decoder builds on its own, and the description and both
+decoders agree on each field. A list is the one exception,
 by its shape: a `bounded` list left out is empty and a fixed array is
 always sent, a default of either unread (above). A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),

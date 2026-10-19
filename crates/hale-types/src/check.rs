@@ -842,6 +842,157 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
+/// The bare names a default reads that it does not bind itself (a block's
+/// `let`s, a `for`, a match arm's pattern, an `or` handler's `err`), each
+/// with where it is read: what the default needs of the scope it is
+/// evaluated in.
+fn default_free_names(e: &Expr) -> Vec<(String, Span)> {
+    use crate::listener_window::{visit_expr, Visited};
+    fn pattern_names(p: &Pattern, out: &mut BTreeSet<String>) {
+        match p {
+            Pattern::Binding(i) => {
+                out.insert(i.name.clone());
+            }
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                for a in args {
+                    pattern_names(a, out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+    let mut bound: BTreeSet<String> = BTreeSet::new();
+    let mut words: Vec<Span> = Vec::new();
+    visit_expr(e, &mut |v| match v {
+        Visited::Stmt(Stmt::Let { name, .. }) | Visited::Stmt(Stmt::For { name, .. }) => {
+            bound.insert(name.name.clone());
+        }
+        Visited::Stmt(Stmt::LetTuple { names, .. }) => {
+            bound.extend(names.iter().map(|n| n.name.clone()));
+        }
+        Visited::Expr(Expr::Match(m)) => {
+            for arm in &m.arms {
+                pattern_names(&arm.pattern, &mut bound);
+            }
+        }
+        Visited::Expr(Expr::Or { disposition, .. }) => {
+            bound.insert("err".to_string());
+            // a narrowing's policy word ends its `or` (`Session(70) or
+            // clamp`): no name
+            if let OrDisposition::Substitute(rhs) = disposition {
+                if let Expr::Ident(w) = rhs.as_ref() {
+                    if w.name == "clamp" || w.name == "wrap" || crate::units::RoundPolicy::of(&w.name).is_some() {
+                        words.push(w.span);
+                    }
+                }
+            }
+        }
+        _ => {}
+    });
+    let mut out = Vec::new();
+    visit_expr(e, &mut |v| {
+        if let Visited::Expr(Expr::Ident(i)) = v {
+            if !bound.contains(&i.name) && !words.contains(&i.span) {
+                out.push((i.name.clone(), i.span));
+            }
+        }
+    });
+    out
+}
+
+/// A bare name every scope resolves alike: a builtin (a value builtin, a
+/// printer, any form the parser claims), or a primitive's conversion
+/// (`Time(3ns)`).
+fn default_builtin(n: &str) -> bool {
+    crate::builtin_sigs::bare_builtin_sig(n).is_some()
+        || hale_syntax::parser::builtin_call_form(n).is_some()
+        || hale_syntax::parser::primitive_from_name(n).is_some()
+}
+
+/// A default reads only its own fields and constants (spec/types.md §
+/// Locus params): a default is evaluated where the literal or call that
+/// leaves it is written, and a name of that scope (a local, a fn value
+/// bound there, a parameter of the caller) is not the declaration's to
+/// read. Every bare name a default reads must resolve to a module-level
+/// item of the bundle (a constant, a free fn, a type, a locus) or a
+/// language builtin, or be bound inside the default itself; a qualified
+/// path names no local. `self` reads the declaration's own fields where
+/// they are spelled that way, a locus's params, whose defaults are typed
+/// where they are written (and so refused there when they name anything
+/// else); a record type's field default and a fn's, method's or hook's
+/// parameter default have no own `self` (one there is the caller's), so
+/// it is refused there too. An
+/// omitted argument's default and a record literal's omitted field are
+/// each held to this rule where they are declared, so a default that
+/// expands another expands nothing of the caller's either.
+fn default_scope_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
+    use crate::listener_window::{visit_expr, Visited};
+    let check = |e: &Expr, out: &mut Vec<Diag>| {
+        for (name, span) in default_free_names(e) {
+            if top.lookup(&name).is_none() && !default_builtin(&name) {
+                out.push(Diag::ty(
+                    span,
+                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope"),
+                ));
+            }
+        }
+        visit_expr(e, &mut |v| {
+            if let Visited::Expr(Expr::KwSelf(span)) = v {
+                out.push(Diag::ty(
+                    *span,
+                    "a default reads only its own fields and constants; `self` here is the caller's".to_string(),
+                ));
+            }
+        });
+    };
+    let params = |ps: &[Param], out: &mut Vec<Diag>| {
+        for p in ps {
+            if let Some(d) = &p.default {
+                check(d, out);
+            }
+        }
+    };
+    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
+        if let TypeDeclBody::Struct(fs) = &t.body {
+            for f in fs {
+                if let Some(d) = &f.default {
+                    check(d, out);
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Fn(f) => params(&f.params, &mut out),
+                TopDecl::Type(t) => fields(t, &mut out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) => params(&f.params, &mut out),
+                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
+                            LocusMember::Mode(md) => params(&md.params, &mut out),
+                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
+                            LocusMember::Type(t) => fields(t, &mut out),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(pd) => {
+                    for m in &pd.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            params(&f.params, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// A record literal in a default that leaves out a field with no default
 /// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
 /// field `cap: Int;`). A default is typed where the literal or call that
@@ -1429,6 +1580,7 @@ pub fn check_bundle_rules(
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(bounded_return_diags(bundle, top));
     diags.extend(literal_default_missing_field_diags(bundle, top));
+    diags.extend(default_scope_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
@@ -19643,7 +19795,7 @@ impl<'a> Checker<'a> {
     /// conversion's where a value stands: the default's names mean what
     /// that scope says, and its values flow into what that scope makes of
     /// them. A default no literal leaves is never evaluated.
-    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
+    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit], at: Span) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
         // Typed in every program, scalars or none: besides the conversion
         // rows, the walk is where the `ident_reads` and `omitted_args`
@@ -19665,6 +19817,7 @@ impl<'a> Checker<'a> {
         if omitted.is_empty() {
             return;
         }
+        self.refuse_shadowed_default_names(omitted.iter().map(|(d, _, _)| *d), at);
         // The rows this walk would record (a default's calls typed in the
         // caller's body) are not the caller's: the outermost walk puts
         // the record back as it found it (undoing what the walk wrote,
@@ -20371,6 +20524,35 @@ impl<'a> Checker<'a> {
     /// path and caller monomorph, retaining each default's source site,
     /// and their casts' conversions under the evaluation path that ends
     /// at the invocation (`default_evaluation`).
+    /// A default is evaluated where the literal or call that leaves it is
+    /// written, so a name it reads as a constant or a module fn reads the
+    /// caller's binding instead when the caller binds that name. A default
+    /// reads only its own fields and constants (spec/types.md § Locus
+    /// params): such a use is refused at the literal or call.
+    fn refuse_shadowed_default_names<'e>(&mut self, defaults: impl Iterator<Item = &'e Expr>, at: Span) {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for d in defaults {
+            for (name, _) in default_free_names(d) {
+                let module_level = self.top.lookup(&name).is_some() || default_builtin(&name);
+                if module_level && self.locals.lookup(&name).is_some() && seen.insert(name.clone()) {
+                    // kept through an enclosing default's walk (a literal
+                    // inside a default, the binding the default's own),
+                    // and reported once, as a quantity rule's error is
+                    let d = Diag::ty(
+                        at,
+                        format!(
+                            "a default reads only its own fields and constants; `{name}` here is the caller's binding, \
+                             which a default left out here would read in place of the module's `{name}`: rename the binding \
+                             or pass the value"
+                        ),
+                    );
+                    self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+                    self.diags.push(d);
+                }
+            }
+        }
+    }
+
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -20428,6 +20610,7 @@ impl<'a> Checker<'a> {
         if defaults.is_empty() {
             return;
         }
+        self.refuse_shadowed_default_names(defaults.iter().map(|(d, _, _)| *d), callee.span());
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
         // The call leaves these parameters: one step of the path, pushed
@@ -25055,7 +25238,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.type_omitted_defaults(literal, td, inits);
+                            self.type_omitted_defaults(literal, td, inits, span);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -25168,7 +25351,27 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.type_omitted_defaults(literal, decl, inits);
+                self.type_omitted_defaults(literal, decl, inits, span);
+            }
+        }
+        // a locus's params defaults are evaluated where it is built too
+        if kind_label == "locus" {
+            if let Some(l) = self.locus_decls.get(name).copied() {
+                let omitted: Vec<&'a Expr> = l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(pb) => Some(pb.params.iter()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|p| !inits.iter().any(|i| i.name.name == p.name.name))
+                    .filter_map(|p| match &p.init {
+                        ParamInit::Value(e) if p.serve.is_none() => Some(e),
+                        _ => None,
+                    })
+                    .collect();
+                self.refuse_shadowed_default_names(omitted.into_iter(), span);
             }
         }
 

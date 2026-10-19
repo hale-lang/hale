@@ -2249,20 +2249,12 @@ pub struct TypeSchema {
 /// reads them (law 5's classification).
 pub struct Schemas<'a> {
     shapes: Shapes<'a>,
-    /// What a field's default may name where a codec builds it, the
-    /// table the codecs ask too (`hale_syntax::json_gen::DefaultScope`).
-    defaults: hale_syntax::json_gen::DefaultScope<'a>,
 }
 
 impl<'a> Schemas<'a> {
-    /// Over a bundle's programs, with the build's cross-seed rename table
-    /// (a field's default may spell a name through it).
-    pub fn of(programs: &[&'a Program], renames: &[(Vec<String>, String)]) -> Schemas<'a> {
+    pub fn of(programs: &[&'a Program]) -> Schemas<'a> {
         let slices: Vec<&'a [TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
-        Schemas {
-            shapes: Shapes::of_all(&slices),
-            defaults: hale_syntax::json_gen::DefaultScope::of(&slices, renames),
-        }
+        Schemas { shapes: Shapes::of_all(&slices) }
     }
 
     /// A row's type as a document spells it: the author's spelling of an
@@ -2372,10 +2364,7 @@ impl<'a> Schemas<'a> {
                             continue;
                         }
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
-                        // a default the codec cannot build on its own (one that
-                        // reads a literal's scope) leaves the field required
-                        let builds = f.default.as_ref().is_some_and(|d| self.defaults.is_closed(d));
-                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), builds) {
+                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
                             required.push(key);
                         }
                     }

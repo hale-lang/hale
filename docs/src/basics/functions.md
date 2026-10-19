@@ -70,10 +70,16 @@ Two rules keep the calling convention unambiguous:
 - **Defaults form a trailing suffix.** A required parameter can't
   follow a defaulted one — otherwise it wouldn't be clear which
   slot an omitted argument fills.
-- **Defaults are evaluated at the call site**, in the caller's
-  scope — not baked in when the function is defined. For a constant
-  literal (the common case) that's identical; for an expression
-  that names a caller-visible binding, it sees *that* binding. A
+- **Defaults are evaluated at the call site**, each time a call
+  leaves one, not baked in when the function is defined.
+- **A default reads only constants and the module's items**, never
+  the caller's scope. It may read literals, constants, free functions,
+  types and variants, and builtins. It may not read a caller's local, a
+  function value bound there, or an earlier parameter: `hale check`
+  refuses those where the default is written. A caller binding with
+  the name of a constant the default reads (`let K` beside `const K`)
+  is refused at the call that leaves the default, since the call would
+  read the binding: rename it or pass the value. A
   default that builds a locus builds it in the caller too, so a
   worker on another pool that leaves such an argument out may be
   making a [cross-pool spawn](../services/parents-children.md),
@@ -110,11 +116,10 @@ call and a `Holder<String>` uses the `String` call. Binding the field
 to a local first has the same result. Params defaults use the type
 arguments of the locus declaring them.
 
-Function and method defaults use the caller's scope at each invocation.
-If a default calls `first(value)`, one caller can supply an `Int` binding
-named `value` and another can supply a `String` binding. The compiler
-keeps a separate checked call row for each invocation and caller
-specialization, including defaults that call other defaulted functions.
+Function and method defaults read nothing of the caller, so a default
+that calls `first(42)` is the same call at every invocation. The
+compiler still keeps a checked call row for each invocation, including
+defaults that call other defaulted functions.
 
 ## Functions are values
 

@@ -643,38 +643,31 @@ fn main() {
     );
 }
 
+/// A function's and a method's default call a generic fn, typed at each
+/// call that leaves them; a default reads nothing of the caller (spec/
+/// types.md § Locus params), so a generic caller's specialization changes
+/// nothing of it.
 #[test]
-fn function_and_method_defaults_use_each_caller_scope() {
+fn function_and_method_defaults_type_their_generic_calls() {
     agree(
         "typed_caller_defaults",
         r#"
 fn first<T>(x: T) -> T { return x; }
-fn show(n: String = to_string(first(value))) { println(n); }
+fn show(n: String = to_string(first(42))) { println(n); }
 locus Display {
-    fn show(n: String = to_string(first(value))) { println(n); }
+    fn show(n: String = to_string(first("text"))) { println(n); }
 }
 fn caller<T>(value: T) { show(); }
-fn int_caller() {
-    let value = 42;
-    show();
-    let d = Display { };
-    d.show();
-}
-fn string_caller() {
-    let value = "text";
-    show();
-    let d = Display { };
-    d.show();
-}
 fn main() {
-    int_caller();
-    string_caller();
+    show();
+    let d = Display { };
+    d.show();
     caller(7);
     caller("other");
     show("supplied");
 }
 "#,
-        &Expect::Runs("42\n42\ntext\ntext\n7\nother\nsupplied\n"),
+        &Expect::Runs("42\ntext\n42\n42\nsupplied\n"),
     );
 }
 
@@ -685,15 +678,14 @@ fn nested_defaults_keep_the_outer_invocation_and_helpers_keep_their_own_body() {
         r#"
 fn first<T>(x: T) -> T { return x; }
 fn twice<T>(x: T) -> T { return first(first(x)); }
-fn read(n: Int = twice(value)) -> Int { return n; }
+fn read(n: Int = twice(42)) -> Int { return n; }
 fn nested(n: Int = read()) -> Int { return n; }
 fn main() {
-    let value = 42;
     println(nested());
-    { let value = 7; println(nested()); }
+    { let value = 7; println(nested() + value - 7); }
 }
 "#,
-        &Expect::Runs("42\n7\n"),
+        &Expect::Runs("42\n42\n"),
     );
 }
 
@@ -704,21 +696,20 @@ fn defaults_use_generic_locus_callers_and_addressed_fallible_calls() {
         r#"
 type Fault { n: Int; }
 fn first<T>(x: T) -> T { return x; }
-fn show(n: String = to_string(first(value))) { println(n); }
-fn read(n: Int = first(value)) -> Int fallible(Fault) { return n; }
+fn show(n: String = to_string(first(9))) { println(n); }
+fn read(n: Int = first(9)) -> Int fallible(Fault) { return n; }
 locus Holder<T> {
     params { v: T; }
-    fn show(n: String = to_string(first(value))) { println(n); }
-    run() { let value = self.v; show(); self.show(); }
+    fn show(n: String = to_string(first(3))) { println(n); }
+    run() { show(); self.show(); }
 }
 fn main() {
-    let value = 9;
     println(read() or - 1);
     let i: Holder<Int> = Holder { v: 42 };
     let s: Holder<String> = Holder { v: "text" };
 }
 "#,
-        &Expect::Runs("9\n42\n42\ntext\ntext\n"),
+        &Expect::Runs("9\n9\n3\n9\n3\n"),
     );
 }
 

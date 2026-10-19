@@ -690,11 +690,10 @@ fn main() {
   wherever "not sent" and one value mean the same thing, of any type: an
   enum's (`scope: Scope = Scope::key`), a record's or a computed one is
   read as a literal's is, and the description lists none of them as
-  required. Build it of literals, constants, module fns and record
-  literals of those. A default that reads a name of the scope its literal
-  is written in, a local or a fn value bound there, is one no codec can
-  evaluate, so that field is required on the wire. It costs neither side
-  anything.
+  required. It costs neither side anything. Write it of literals,
+  constants, module fns and records of those: a default never reads
+  the scope of the literal that leaves it (C11), so the decoder builds
+  it on its own.
 - **A presence pair, when "not sent" means not sent.** With `since`
   and `has_since: Bool`, the caller may leave the key out or send
   `null`, and the handler reads the flag. The encoder writes `note`
@@ -1195,6 +1194,34 @@ fn handle(req: std::http::Request) -> std::http::Response {
 
 ---
 
+### C11. A default reads its own fields and constants, nothing of the caller
+
+A default is evaluated where the literal or call that leaves it is
+written, and the check refuses one that reads that scope. Build a field's
+or a parameter's default of literals, constants, free fns, types and
+variants. A locus param's default may also read earlier params through
+`self.<param>`. **[enforced]**
+
+```hale
+const LIMIT: Int = 5;
+type Page { size: Int = LIMIT; from: Int = 0; }
+fn fetch(p: Page = Page { }) -> Int { return p.size + p.from; }
+fn main() { println(fetch()); }
+```
+
+```hale,counter
+type Page { size: Int = limit; }   // refused: `limit` is the caller's
+fn main() { let limit = 9; let p = Page { }; }
+```
+
+**Why:** a default that reads a caller's local means something different
+at every literal. It binds the declaration to names its callers happen to
+use, and no codec can build it, because the decoder has no caller. Pass
+what varies as an argument or a field instead. A caller binding with the
+name of a constant a default reads (`let LIMIT = 9` before `Page { }`) is
+refused at that literal for the same reason: rename it, or write the
+field.
+
 ## 4. Speed rules
 
 **First ask: is this path hot?** Hot means a per-frame/per-message
@@ -1603,7 +1630,7 @@ certify a path — plus one tier you get for free because your
 
 | Tier | Check | Status |
 |---|---|---|
-| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9) | build fails |
+| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9); a default that reads the caller's scope (C11) | build fails |
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |

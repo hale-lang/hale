@@ -30,10 +30,6 @@ type Slot { id: OrderId = OrderId(1); }
 
 type Pair {
     plain: Slot = Slot { };
-    shadowed: Slot = {
-        let OrderId = bump;
-        Slot { }
-    };
 }
 
 @form(hashmap)
@@ -65,10 +61,6 @@ fn caught(e: RangeError) -> Session {
 
 fn add(a: Int, b: Int) -> Int {
     return a + b;
-}
-
-fn bump(n: Int) -> OrderId {
-    return OrderId(n + 10);
 }
 
 fn main() {
@@ -145,18 +137,13 @@ fn main() {
     std::test::assert_eq_str(to_string(o), "4", "an identity prints as its `Int`");
     std::test::assert_eq_str("byte " + b, "byte 200", "a range prints as its `Int`");
 
-    // A default is evaluated in each scope that leaves it: where a local
-    // shadows the type, its `OrderId(1)` is a call of the local.
+    // A default reads only its own fields and constants: `OrderId(1)` is
+    // the conversion wherever the literal is written (a local that would
+    // shadow the type there is refused at the literal).
     let plain = Slot { };
-    {
-        let OrderId = bump;
-        let shadowed = Slot { };
-        std::test::assert_eq_int(Int(shadowed.id), 11, "the shadowed default calls the local");
-    }
-    std::test::assert_eq_int(Int(plain.id), 1, "the default elsewhere is the conversion");
-    // The same inside other defaults: one `Pair { }` evaluates `Slot`'s
-    // default in each of its fields' defaults, each in its own scope.
+    std::test::assert_eq_int(Int(plain.id), 1, "the default is the conversion");
+    // The same inside another default: `Pair { }` evaluates `Slot`'s
+    // default in its field's default.
     let pair = Pair { };
     std::test::assert_eq_int(Int(pair.plain.id), 1, "the nested default is the conversion");
-    std::test::assert_eq_int(Int(pair.shadowed.id), 11, "the nested shadowed default calls the local");
 }

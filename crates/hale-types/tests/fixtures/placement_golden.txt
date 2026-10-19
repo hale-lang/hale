@@ -3474,10 +3474,10 @@ row	Holder_String@main2	Holder_String	main	default
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#06768d69
 dynamic	Holder	on main|unresolved arguments	in the seed
 
-== crates/hale-codegen/tests/generic_monomorph_agreement.rs#17a6d7cc
-dynamic	Display	on main	in the seed
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#aef07c01
+row	Display@main1	Display	main	default
 
-== crates/hale-codegen/tests/generic_monomorph_agreement.rs#2ed79cb2
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#f2b43e62
 row	Holder_Int@main1	Holder_Int	main	default
 row	Holder_String@main2	Holder_String	main	default
 

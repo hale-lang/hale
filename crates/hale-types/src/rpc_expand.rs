@@ -868,7 +868,7 @@ fn expose_api_codecs(programs: &mut [&mut Program], renames: &[(Vec<String>, Str
     }
     let names: Vec<String> = names.into_iter().collect();
     let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> = builtins.into_iter().collect();
-    hale_syntax::json_gen::generate_rpc_codecs(programs, targets[0].0, &names, &builtins, renames);
+    hale_syntax::json_gen::generate_rpc_codecs(programs, targets[0].0, &names, &builtins);
     hale_syntax::json_gen::rewrite_api_codec_calls(programs, &carried, &enums);
 }
 
@@ -1121,7 +1121,7 @@ pub fn expand(
     }
     if hubs {
         inject_hub(programs);
-        crate::hub_expand::expand(programs, renames);
+        crate::hub_expand::expand(programs);
     }
     // ---- the immutable phase: rows, digests, sites ----
     struct Plan {
@@ -1157,7 +1157,7 @@ pub fn expand(
         let mut builtins = BTreeMap::new();
         let mut names_pb = BTreeSet::new();
         let mut builtins_pb = BTreeMap::new();
-        let schemas = crate::surfaces::Schemas::of(&ro, renames);
+        let schemas = crate::surfaces::Schemas::of(&ro);
         let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
         for p in &ro {
             for d in flat_decls(&p.items) {
@@ -1395,13 +1395,13 @@ pub fn expand(
         let first = plans[0].site.program;
         let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
             all_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
-        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins, renames);
+        hale_syntax::json_gen::generate_rpc_codecs(programs, first, &names, &builtins);
         // a gRPC exposure's rows are also carried as protobuf
         if plans.iter().any(|p| p.grpc) {
             let names: Vec<String> = pb_names.iter().cloned().collect();
             let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> =
                 pb_builtins.iter().map(|(n, f)| (n.clone(), f.clone())).collect();
-            hale_syntax::json_gen::generate_rpc_pb_codecs(programs, first, &names, &builtins, renames);
+            hale_syntax::json_gen::generate_rpc_pb_codecs(programs, first, &names, &builtins);
         }
     }
 
@@ -1414,7 +1414,7 @@ pub fn expand(
     let slices: Vec<&[TopDecl]> = ro_refs.iter().map(|p| p.items.as_slice()).collect();
     let shapes = Shapes::of_all(&slices);
     let codec = Codec { shapes: &shapes, convs: &convs };
-    let schemas = crate::surfaces::Schemas::of(&ro_refs, renames);
+    let schemas = crate::surfaces::Schemas::of(&ro_refs);
     let pb = PbCodec { shapes: &shapes, convs: &convs, schemas: &schemas, surface: "" };
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;

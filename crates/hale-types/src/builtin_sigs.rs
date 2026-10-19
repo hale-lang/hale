@@ -140,18 +140,6 @@ mod tests {
         Ty::Prim(p)
     }
 
-    /// A field default may call these with no binding in scope
-    /// (`hale_syntax::json_gen::VALUE_BUILTINS`, the codecs' closed-default
-    /// rule): the same names as this table's.
-    #[test]
-    fn a_closed_default_calls_these_builtins() {
-        let mut ours: Vec<&str> = BARE_BUILTIN_SIGS.iter().map(|s| s.name).collect();
-        let mut theirs = hale_syntax::json_gen::VALUE_BUILTINS.to_vec();
-        ours.sort_unstable();
-        theirs.sort_unstable();
-        assert_eq!(ours, theirs);
-    }
-
     #[test]
     fn the_rows_answer_lowerings_types() {
         let sig = |n| bare_builtin_sig(n).unwrap();

@@ -505,55 +505,27 @@ fn a_bare_narrowing_in_a_default_evaluated_twice_is_refused_once() {
     assert_eq!(judged, ["Session(70)", "Session(71)"]);
 }
 
-/// U2 (review 2): a default's name means what each evaluation's scope
-/// says. Where a local shadows the type, the cast is a call of the
-/// local, and that evaluation has no row: lowering, reading the row by
-/// the evaluation it lowers, lowers the call. The other evaluation of
-/// the same default keeps its conversion.
+/// Whether the check refuses `src` with the defaults rule (spec/types.md
+/// § Locus params: a default reads only its own fields and constants).
+fn refused_by_the_default_rule(src: &str) -> bool {
+    check_program(&parse_source(src).expect("parses"))
+        .into_iter()
+        .any(|d| d.is_error() && d.message.starts_with("a default reads only its own fields and constants"))
+}
+
+/// U2 (reviews 2 and 3): a local that shadows the type where a literal or
+/// a call leaves a default (`OrderId(1)` would be a call of the local) is
+/// refused there, in a fn's body or in another default's own block: a
+/// default reads only its own fields and constants, so each evaluation
+/// means one thing.
 #[test]
-fn a_defaults_evaluation_where_a_local_shadows_the_type_has_no_row() {
-    let src = format!(
+fn a_defaults_evaluation_where_a_local_shadows_the_type_is_refused() {
+    let flat = format!(
         "{DECLS}type S {{ o: OrderId = OrderId(1); }}\n\
          fn bump(n: Int) -> OrderId {{ return OrderId(n + 10); }}\n\
          fn main() {{\n    let a = S {{}};\n    {{\n        let OrderId = bump;\n        let b = S {{}};\n        println(Int(b.o));\n    }}\n    println(Int(a.o));\n}}\n"
     );
-    let program = parse_source(&src).expect("parses");
-    let errors: Vec<String> =
-        check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
-    assert!(errors.is_empty(), "{errors:#?}");
-    let snapshot =
-        Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
-    let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
-    let program = snapshot.program().expect("the program");
-    let literals: Vec<u32> =
-        sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().map(|(id, _)| id).collect();
-    let [a, b] = literals[..] else { panic!("two literals: {literals:?}") };
-    let call = sites_of(program, &src, hale_syntax::sites::SiteKind::Call)
-        .into_iter()
-        .find(|(_, at)| at == "OrderId(1)")
-        .expect("the default's cast")
-        .0;
-    let row = table
-        .conversion(&ConversionSite::new(SiteKind::Cast(call), vec![a]))
-        .expect("`a`'s evaluation is a conversion");
-    assert_eq!((row.kind, row.target.as_str()), (ConversionKind::Total, "OrderId"));
-    assert!(
-        table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![b])).is_none(),
-        "`b`'s evaluation calls the local `OrderId`"
-    );
-    assert!(table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![])).is_none());
-}
-
-/// U2 (review 3): a default evaluated inside another default is keyed by
-/// the whole evaluation path, not the outermost evaluation alone. One
-/// `Outer {}` evaluates `Inner`'s default twice, once in each of its
-/// fields' defaults; `b`'s scope shadows the type, so its path has no
-/// row, while `a`'s keeps the conversion. A parameter default left by a
-/// call in a field default is keyed the same way, the call one step of
-/// the path.
-#[test]
-fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
-    let src = format!(
+    let nested = format!(
         "{DECLS}fn bump(n: Int) -> OrderId {{ return OrderId(n + 10); }}\n\
          type Inner {{ n: OrderId = OrderId(1); }}\n\
          fn take(n: OrderId = OrderId(1)) -> OrderId {{ return n; }}\n\
@@ -561,6 +533,24 @@ fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
          c: OrderId = take();\n    d: OrderId = {{ let OrderId = bump; take() }};\n}}\n\
          fn main() {{\n    let o = Outer {{}};\n    println(Int(o.a.n) + Int(o.b.n) + Int(o.c) + Int(o.d));\n}}\n"
     );
+    assert!(refused_by_the_default_rule(&flat), "{flat}");
+    assert!(refused_by_the_default_rule(&nested), "{nested}");
+}
+
+/// U2 (review 3): a default evaluated inside another default is keyed by
+/// the whole evaluation path, not the outermost evaluation alone. One
+/// `Outer {}` evaluates `Inner`'s default twice, once in each of its
+/// fields' defaults, and each path holds the conversion. A parameter
+/// default left by a call in a field default is keyed the same way, the
+/// call one step of the path.
+#[test]
+fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
+    let src = format!(
+        "{DECLS}type Inner {{ n: OrderId = OrderId(1); }}\n\
+         fn take(n: OrderId = OrderId(1)) -> OrderId {{ return n; }}\n\
+         type Outer {{\n    a: Inner = Inner {{}};\n    b: Inner = Inner {{}};\n    c: OrderId = take();\n}}\n\
+         fn main() {{\n    let o = Outer {{}};\n    println(Int(o.a.n) + Int(o.b.n) + Int(o.c));\n}}\n"
+    );
     let program = parse_source(&src).expect("parses");
     let errors: Vec<String> =
         check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
@@ -569,20 +559,6 @@ fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
         Snapshot::from_program(program, Vec::new(), Config::check(true, false)).unwrap_or_else(|_| panic!("shapes"));
     let table = snapshot.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
     let program = snapshot.program().expect("the program");
-    let row = |at: &str, cast: &str| (at.to_string(), cast.to_string(), None);
-    assert_eq!(
-        rows_of(table, program, &src, "main"),
-        [
-            row("", "Int(o.a.n)"),
-            row("", "Int(o.b.n)"),
-            row("", "Int(o.c)"),
-            row("", "Int(o.d)"),
-            row("Outer {} / Inner {}", "OrderId(1)"),
-            row("Outer {} / take()", "OrderId(1)"),
-        ],
-        "`a`'s and `c`'s paths hold the conversion; `b`'s and `d`'s, where a local shadows the type, hold none"
-    );
-    // By key: the two nested evaluations under one `Outer {}`.
     let literals: Vec<u32> =
         sites_of(program, &src, hale_syntax::sites::SiteKind::StructLiteral).into_iter().map(|(id, _)| id).collect();
     let [inner_a, inner_b, outer] = literals[..] else { panic!("three literals: {literals:?}") };
@@ -591,12 +567,10 @@ fn a_nested_defaults_evaluations_are_keyed_by_their_paths() {
         .find(|(_, at)| at == "OrderId(1)")
         .expect("`Inner`'s default cast")
         .0;
-    let a = table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer, inner_a]));
-    assert_eq!(a.map(|r| (r.kind, r.target.as_str())), Some((ConversionKind::Total, "OrderId")));
-    assert!(
-        table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer, inner_b])).is_none(),
-        "`b`'s evaluation calls the local `OrderId`"
-    );
+    for path in [vec![outer, inner_a], vec![outer, inner_b]] {
+        let row = table.conversion(&ConversionSite::new(SiteKind::Cast(call), path.clone()));
+        assert_eq!(row.map(|r| (r.kind, r.target.as_str())), Some((ConversionKind::Total, "OrderId")), "{path:?}");
+    }
     assert!(table.conversion(&ConversionSite::new(SiteKind::Cast(call), vec![outer])).is_none());
 }
 

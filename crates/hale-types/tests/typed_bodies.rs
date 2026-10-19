@@ -463,18 +463,32 @@ fn main() {
     assert_eq!(calls, 7, "params default, birth, method, three run calls, dissolve");
 }
 
+/// A parameter's default is typed at each call that leaves it, a row per
+/// invocation from the one source site. It reads only constants and the
+/// module's items (spec/types.md § Locus params), so a default naming the
+/// caller's `value` is refused where it is written, and one that reads
+/// nothing of the caller's has the same row at every call.
 #[test]
-fn default_call_rows_preserve_one_source_site_for_each_invocation_and_caller_monomorph() {
-    let src = r#"
+fn default_call_rows_preserve_one_source_site_for_each_invocation() {
+    let refused = r#"
 fn first<T>(x: T) -> T { return x; }
 fn show(n: String = to_string(first(value))) { println(n); }
-fn caller<T>(value: T) { show(); }
 fn main() {
     let value = 42;
     show();
+}
+"#;
+    let program = hale_syntax::parse_source(refused).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else { panic!("snapshot") };
+    let errors: Vec<String> = s.demand_check().unwrap().diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
+    assert_eq!(errors, vec!["a default reads only its own fields and constants; `value` is in the caller's scope".to_string()]);
+
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+fn show(n: String = to_string(first(42))) { println(n); }
+fn main() {
+    show();
     { let value = "text"; show(); }
-    caller(7);
-    caller("other");
 }
 "#;
     let program = hale_syntax::parse_source(src).expect("parses");
@@ -484,27 +498,16 @@ fn main() {
     let main = table.body(id_of(decl(s.program().unwrap(), "main"))).unwrap();
     assert_eq!(main.default_calls.len(), 2);
     let mut source = None;
-    for (evaluation, prim) in main.default_calls.iter().zip([hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String]) {
+    for evaluation in &main.default_calls {
         assert_eq!(evaluation.invocations.len(), 1);
         assert_eq!(evaluation.specialization, None);
         let (&site, row) = evaluation.calls.iter().next().unwrap();
         if let Some(id) = source { assert_eq!(site, id); } else { source = Some(site); }
         let Typed::Known(row) = row else { panic!("{row:?}") };
-        assert_eq!(row.type_args, vec![Ty::Prim(prim)]);
+        assert_eq!(row.type_args, vec![Ty::Prim(hale_syntax::ast::PrimType::Int)]);
         assert!(table.monomorphs().of(row.template, &row.type_args).is_some());
     }
     assert_ne!(main.default_calls[0].invocations, main.default_calls[1].invocations);
-    let caller = table.body(id_of(decl(s.program().unwrap(), "caller"))).unwrap();
-    assert_eq!(caller.default_calls.len(), 3);
-    let generic = &caller.default_calls[0];
-    assert_eq!(generic.specialization, None);
-    assert!(matches!(generic.calls[&source.unwrap()], Typed::Hole(_)));
-    for prim in [hale_syntax::ast::PrimType::Int, hale_syntax::ast::PrimType::String] {
-        let args = vec![Ty::Prim(prim)];
-        let evaluation = caller.default_calls.iter().find(|r| r.specialization.as_ref() == Some(&args)).unwrap();
-        assert_eq!(evaluation.invocations, generic.invocations);
-        assert!(matches!(table.default_generic_call(&evaluation.invocations, Some(&args), NodeId(source.unwrap())), Some(Typed::Known(row)) if row.type_args == args));
-    }
 }
 
 /// The `param_accesses` column (F.40 phase 4, W4): every read and write

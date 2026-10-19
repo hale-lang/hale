@@ -2770,9 +2770,9 @@ assume the others in a build:
   cannot resolve passing such an argument makes every method of that
   name, or (through a function value) every free fn, carry every
   field. A parameter a call leaves takes its default, which Hale
-  evaluates in the caller's scope, so the call passes what the default
-  reads there (`= old` with the caller's `let old = self.log` carries
-  `log`); a call resolved only after the walk (an interface's
+  evaluates where the call is written. A default reads only constants
+  and the module's items (`spec/types.md` § Locus params), so it
+  carries nothing of the caller's `self`. A call resolved only after the walk (an interface's
   conformer, a function value) leaves its defaults unknown, and they
   carry every field. A struct or locus literal's left fields likewise
   take their defaults where the literal is written. A parameter no call

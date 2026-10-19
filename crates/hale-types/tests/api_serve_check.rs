@@ -396,7 +396,6 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const ARG_READS_K: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn pick_k(n: Int = K) -> Int { return n; }";
     // a call in a record default on a receiver the caller's scope binds:
     // `s` is whichever locus the literal's scope holds
-    const PROBES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nlocus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick(n: Int = settle()) -> Int { return n; } }\ntype Probe { n: Int = s.pick(); }";
     const PINGS: &str = "type Ping { id: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }";
     const SUB_SPINS: &str = "locus Sub {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { while !self.draining { } }\n}";
     const SUB_RETURNS: &str = "locus Sub {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { println(\"ping\"); }\n}";
@@ -491,7 +490,6 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // walked on the path the checker typed it on (the Holder literal's)
         ("built in a record default, under a shadowing let", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { let K = 0; App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", None),
         ("built in a record default, reading the const", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
-        ("built in a record default left twice, one shadowing", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn quiet() -> Int { let K = 0; let h = Holder { }; return h.n; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
         // a call in a default resolved in each evaluation's scope
         // recursion: the window cannot prove one ends, so it refuses any
         // the step reaches, finite or not
@@ -514,26 +512,16 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // a fn used as a value: judged as a call of it
         ("a looping fn passed as a value", "", "n: Int = apply(spin1, 1); server: Server = Server { };", "fn spin1(n: Int) -> Int { while true { } return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", Some("`spin1`")),
         ("a returning fn passed as a value", "", "n: Int = apply(same, 1); server: Server = Server { };", "fn same(n: Int) -> Int { return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", None),
-        // a call that leaves nothing on this evaluation is that answer, not
-        // a missing one: the declaration's const `s` is a Fast whose pick
-        // leaves its param, the literal's local `s` a Slow whose pick
-        // leaves none
-        ("a default's fully supplied call on the caller's looping Slow", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", "locus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick() -> Int { while true { } return 0; } }\nconst s: Fast = Fast { };\ntype Probe { n: Int = s.pick(); }", "", Some("the default of `Probe.n`, through `Slow::pick`")),
-        ("a default's fully supplied call on the caller's returning Slow", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", "locus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick() -> Int { return 0; } }\nconst s: Fast = Fast { };\ntype Probe { n: Int = s.pick(); }", "", None),
-        ("a default's call on the caller's Fast, Slow elsewhere", "", "n: Int = { let s = Fast { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Slow {{ }}; let p = Probe {{ }}; return p.n; }}"), "", None),
-        ("a default's call on the caller's Slow, Fast elsewhere", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Fast {{ }}; let p = Probe {{ }}; return p.n; }}"), "", Some("the default of `Probe.n`, through the default of `Slow::pick`'s param `n`")),
         // a const read is the checker's resolution: a binding in scope shadows it
         ("a let shadows the const", "", "n: Int = { let K = 0; K }; server: Server = Server { };", CONST_SETTLES, "", None),
         ("a fn's let shadows the const", "", "n: Int = quick(); server: Server = Server { };", SHADOW_FN_LOCAL, "", None),
         ("a fn's param shadows the const", "", "n: Int = twice(1); server: Server = Server { };", SHADOW_FN_PARAM, "", None),
         ("a match binding shadows the const", "", "n: Int = match Boxed::Of(1) { Boxed::Of(K) -> K, Boxed::Empty -> 0, }; server: Server = Server { };", SHADOW_MATCH, "", None),
         ("a for binding shadows the const", "", "n: Int = { let mut t = 0; for K in 0..3 { t = t + K; } t }; server: Server = Server { };", CONST_SETTLES, "", None),
-        // a default is evaluated, and resolved, in each scope that leaves
-        // it (spec/types.md): one evaluation's answer is not another's
-        ("a record default read under a caller's shadowing let", "", "n: Int = { let K = 0; let s = Setup { }; s.n }; server: Server = Server { };", &format!("{SETUP_READS_K}\nfn unused() -> Int {{ let s = Setup {{ }}; return s.n; }}"), "", None),
-        ("a record default read with no shadow, shadowed elsewhere", "", "n: Int = { let s = Setup { }; s.n }; server: Server = Server { };", &format!("{SETUP_READS_K}\nfn other() -> Int {{ let K = 0; let s = Setup {{ }}; return s.n; }}"), "", Some("the default of `Setup.n`, through the value of the const `K`")),
-        ("a param default read under a caller's shadowing let", "", "n: Int = { let K = 0; pick_k() }; server: Server = Server { };", &format!("{ARG_READS_K}\nfn unused() -> Int {{ return pick_k(); }}"), "", None),
-        ("a param default read with no shadow, shadowed elsewhere", "", "n: Int = pick_k(); server: Server = Server { };", &format!("{ARG_READS_K}\nfn other() -> Int {{ let K = 0; return pick_k(); }}"), "", Some("the default of `pick_k`'s param `n`, through the value of the const `K`")),
+        // a default reads only its own fields and constants (spec/types.md):
+        // a caller binding that would shadow one is refused at the check
+        ("a record default reads a sleeping const", "", "n: Int = { let s = Setup { }; s.n }; server: Server = Server { };", &format!("{SETUP_READS_K}\nfn other() -> Int {{ let s = Setup {{ }}; return s.n; }}"), "", Some("the default of `Setup.n`, through the value of the const `K`")),
+        ("a param default reads a sleeping const", "", "n: Int = pick_k(); server: Server = Server { };", &format!("{ARG_READS_K}\nfn other() -> Int {{ return pick_k(); }}"), "", Some("the default of `pick_k`'s param `n`, through the value of the const `K`")),
         ("a const read after a block whose let shadowed it", "", "n: Int = { { let K = 0; println(to_string(K)); } K }; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
         ("a fn's const read after its shadowing block", "", "n: Int = later(); server: Server = Server { };", &format!("{CONST_SETTLES}\nfn later() -> Int {{ {{ let K = 0; println(to_string(K)); }} return K; }}"), "", Some("the default of `App.n`, through the value of the const `K`")),
         // a subscription's key: evaluated where its locus is built
