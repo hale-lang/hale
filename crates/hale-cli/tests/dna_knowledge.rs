@@ -134,9 +134,10 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         .and_then(|r| r.split(' ').next())
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("init seeded no library:\n{out}"));
-    // init wrote the compose file, a named volume per repository
+    // init wrote the compose file: the seed's services, which each checkout
+    // runs as a compose project, with volumes and host ports, of its own
     let compose = std::fs::read_to_string(app.join("dna/compose.yaml")).expect("dna/compose.yaml");
-    assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("name: hale-dna-knowing-knowledge") && compose.contains("127.0.0.1:54"), "{compose}");
+    assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("x-hale-dna-seed: knowing") && !compose.contains("127.0.0.1:54"), "{compose}");
 
     // the record: a proposal, made by a position, then the Board's verdict
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();

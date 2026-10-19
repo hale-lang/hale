@@ -250,7 +250,15 @@ refuses it if its mode lets anyone else read it.
 
 With no `HALE_DNA_MEMORY_DSN_OWNER` it brings up the `knowledge-db`
 service of `dna/compose.yaml` (it needs `docker compose` on `PATH`)
-and migrates that. The migration is one transaction and can be run
+and migrates that. That database is the checkout's own: each checkout
+runs the seed's services as a compose project of its own,
+`hale-dna-<seed>-<checkout>` (the seed, and a short hash of the
+checkout's path), with its own volumes and its own host ports, kept in
+`.hale/dna/compose.local.yaml`. Two worktrees of one project never share
+a container; they share the record's identity, which the genome pins,
+and nothing else of memory's on your machine. `hale dna status` names the project. To reach the services by
+hand, name the same project and files:
+`docker compose -p <project> -f dna/compose.yaml -f .hale/dna/compose.local.yaml ps`. The migration is one transaction and can be run
 again at any time. It writes a schema version, and every
 store checks it when it opens: a host whose memory is at another
 version refuses to start, naming both versions and

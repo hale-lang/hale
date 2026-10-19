@@ -125,7 +125,7 @@ main locus App {
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
         let compose = std::io::fs::read_file(self.app + "/dna/compose.yaml") or "";
-        std::test::assert(std::str::contains(compose, "\nname: hale-dna-" + name + "\n"), "the seed's compose is a project of its own: " + compose);
+        std::test::assert(std::str::contains(compose, "\nx-hale-dna-seed: " + name + "\n") && std::str::starts_with(dna::local_compose_project(self.app), "hale-dna-" + name + "-"), "the seed's compose is this checkout's project of its own: " + compose);
         let conf = std::io::fs::read_file(self.app + "/dna/nats.conf") or "";
         std::test::assert(std::str::contains(conf, "user: spine") && std::str::contains(conf, "jetstream"), "init writes the nerves' server configuration: " + conf);
         // GH #989: the conf is tracked and holds no password; the secrets
@@ -177,7 +177,7 @@ main locus App {
         // ---- the heart's pulse stops (GH #989): its durable deleted, as the
         // owner, while the spine's connection holds. The spine records it
         // once, makes the durable again, and goes on
-        let hp = dna::trim_nl(in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\nport\nnerves\n4222").stdout);
+        let hp = dna::trim_nl(dna::run_tool(dna::local_compose(self.app) + "\nport\nnerves\n4222").stdout);
         let stopped_the_heart = if reading { self.stop_the_heart(org, scratch, hp) } else { "not reading" };
         let pulse_said = reading && len(stopped_the_heart) == 0 && self.logged("the heart's pull on its durable heart was refused", 60, host);
         let board = if pulse_said { self.board_with("pulse_stopped heart (", 30) } else { in_dir(self.app, toolchain() + "\ndna\nboard\n.") };
@@ -195,7 +195,7 @@ main locus App {
         // ---- the stream dropped as the owner, over the authenticated server
         // the stream is dropped as the owner, so the server that restarted
         // for the removal is up; then the application's account is refused
-        let dropped = if reading { in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"nats://$(docker compose -f dna/compose.yaml port nerves 4222)\" \"$0\" dna nerves drop .\n" + toolchain()) } else { dna::RunResult { code: -1 } };
+        let dropped = if reading { in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"nats://$1\" \"$0\" dna nerves drop .\n" + toolchain() + "\n" + dna::trim_nl(dna::run_tool(dna::local_compose(self.app) + "\nport\nnerves\n4222").stdout)) } else { dna::RunResult { code: -1 } };
 
         let revoked = if removed.code == 0 && dropped.code == 0 { self.app_publish(org, app_name, hp, app_name) } else { -3 };
 
@@ -208,7 +208,7 @@ main locus App {
         let org_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/org.pid") or "");
         let app_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/app.pid") or "");
         let stop = dna::run_tool("sh\n-c\nh=$1; lim=$2; shift 2; w=''; for p in \"$@\"; do [ -n \"$p\" ] || continue; c=$(ps -o comm= -p \"$p\" 2>/dev/null); [ -n \"$c\" ] && w=\"$w $p:$c\"; done; kill \"$h\" 2>/dev/null; i=0; while kill -0 \"$h\" 2>/dev/null && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; for e in $w; do p=${e%%:*}; c=${e#*:}; i=0; while [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && kill -9 \"$p\" 2>/dev/null && echo \"pid $p ($c) outlived its host\"; done; true\nsh\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid + "\n" + app_pid);
-        let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
+        let down = dna::run_tool(dna::local_compose(self.app) + "\ndown\n-v");
 
         std::test::assert(reading, "the organization reads its facts from compose's nerves, as the spine: " + self.log());
         std::test::assert(std::str::contains(asked.stdout, "born for intent"), "a task asked from the clone is born over them: " + asked.stdout + asked.stderr + self.log());

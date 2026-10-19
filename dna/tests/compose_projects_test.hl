@@ -1,11 +1,12 @@
 // dna/tests/compose_projects_test.hl — each seed's compose is a project
 // of its own, and its database's password is the vault's (GH #989).
 //
-// Two seeds on one machine used to share one compose project, `dna`,
-// named after the directory their compose files sit in, so the second
-// seed's `up` replaced the first seed's containers. Each seed's
-// dna/compose.yaml now names its own, `hale-dna-<seed>`, the token its
-// volumes already carried, and `upgrade` rewrites an older file to it.
+// Two seeds on one machine used to share one compose project, and then
+// two checkouts of one seed did: their containers and database were one.
+// Each checkout now runs its seed's compose as a project of its own
+// (GH #1653), `hale-dna-<seed>-<checkout>`, with its own volumes and host
+// ports; dna/compose.yaml names the seed (`x-hale-dna-seed`) and no
+// project, and `upgrade` rewrites an older file to it.
 // The database's superuser password is drawn by the bootstrap into the
 // vault (`postgres-owner-<seed>`) and into dna/postgres.secrets, which
 // compose mounts for the server and git never tracks; no committed file
@@ -28,21 +29,6 @@ fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
-// The host port a compose file publishes a service's `inner` port on
-// (`"127.0.0.1:<host>:<inner>"`), -1 when it names none.
-fn published(compose: String, inner: String) -> Int {
-    let mut rest = compose;
-    while true {
-        let at = std::str::index_of(rest, "\"127.0.0.1:");
-        if at < 0 { return -1; }
-        rest = rest[(at + 11)..len(rest)];
-        let colon = std::str::index_of(rest, ":");
-        if colon < 0 { return -1; }
-        if std::str::starts_with(rest[(colon + 1)..len(rest)], inner + "\"") { return std::str::parse_int(rest[0..colon]) or - 1; }
-    }
-    return -1;
-}
-
 fn main() {
     let scratch = dna::scratch_root("compose-projects");
     let vault = scratch + "/vault";
@@ -55,17 +41,12 @@ fn main() {
     let root_a = scratch + "/" + a;
     let root_b = scratch + "/" + b;
 
-    // ---- two seeds, two compose projects
+    // ---- two seeds, two compose projects; two checkouts of one seed, two
+    // more (GH #1653): the project is the checkout's
     let compose_a = text_of(root_a + "/dna/compose.yaml");
     let compose_b = text_of(root_b + "/dna/compose.yaml");
-    std::test::assert(std::str::contains(compose_a, "\nname: hale-dna-" + a + "\n") && std::str::contains(compose_b, "\nname: hale-dna-" + b + "\n"), "each seed's compose names its own project: " + compose_a + compose_b);
-    if dna::run_tool("docker\ncompose\nversion").code == 0 {
-        let seen_a = in_dir(root_a, vault, "docker\ncompose\n-f\ndna/compose.yaml\nconfig");
-        let seen_b = in_dir(root_b, vault, "docker\ncompose\n-f\ndna/compose.yaml\nconfig");
-        std::test::assert(std::str::starts_with(seen_a.stdout, "name: hale-dna-" + a + "\n") && std::str::starts_with(seen_b.stdout, "name: hale-dna-" + b + "\n"), "and compose resolves two distinct projects: " + seen_a.stdout + seen_a.stderr + seen_b.stderr);
-    } else {
-        eprintln("compose_projects_test: docker compose is not on PATH; the resolved project names are not checked");
-    }
+    std::test::assert(std::str::contains(compose_a, "\nx-hale-dna-seed: " + a + "\n") && std::str::contains(compose_b, "\nx-hale-dna-seed: " + b + "\n"), "each seed's compose names its seed: " + compose_a + compose_b);
+    std::test::assert(!std::str::contains(compose_a, "\nname: ") && !std::str::contains(compose_a, "127.0.0.1:"), "and no project name or host port of its own: the checkout's are: " + compose_a);
 
     // ---- the database's password: the vault's, never a committed value
     std::test::assert(!std::str::contains(compose_a, "POSTGRES_PASSWORD:") && std::str::contains(compose_a, "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner") && std::str::contains(compose_a, "./postgres.secrets:/run/secrets/postgres-owner:ro"), "the compose file names the password's file, never the password: " + compose_a);
@@ -99,27 +80,37 @@ fn main() {
     let drift = in_dir(scratch + "/elsewhere", vault, "git\nstatus\n--porcelain\ndna/compose.yaml");
     std::test::assert(cloned.code == 0 && len(dna::trim_nl(drift.stdout)) == 0 && text_of(scratch + "/elsewhere/dna/compose.yaml") == compose_a, "the clone's compose is the seed's, unchanged: " + cloned.stdout + cloned.stderr + drift.stdout);
     std::test::assert_eq_str(text_of(scratch + "/elsewhere/dna/postgres.secrets"), pw_a, "and its password file is the vault's entry, not a new draw");
+    // the clone is another checkout of the same seed: its compose project,
+    // its volumes and its host ports are its own (GH #1653)
+    let clone_a = scratch + "/elsewhere";
+    let p_a = dna::local_compose_project(root_a);
+    let p_b = dna::local_compose_project(root_b);
+    let p_clone = dna::local_compose_project(clone_a);
+    std::test::assert(std::str::starts_with(p_a, "hale-dna-" + a + "-") && std::str::starts_with(p_b, "hale-dna-" + b + "-") && std::str::starts_with(p_clone, "hale-dna-" + a + "-"), "each checkout's project carries its seed: " + p_a + " " + p_b + " " + p_clone);
+    std::test::assert(p_a != p_clone && p_a != p_b, "and is the checkout's own: " + p_a + " " + p_clone);
+    std::test::assert_eq_str(dna::local_compose_project(root_a), p_a, "the same on every run of the same checkout");
+    let argv_a = dna::local_compose(root_a);
+    let argv_clone = dna::local_compose(clone_a);
+    let ports_a = text_of(root_a + "/" + dna::LOCAL_COMPOSE_FILE);
+    let ports_clone = text_of(clone_a + "/" + dna::LOCAL_COMPOSE_FILE);
+    std::test::assert(std::str::contains(ports_a, ":5432\"]") && std::str::contains(ports_a, ":4222\"]") && std::str::contains(ports_a, ":9090\"]") && ports_a != ports_clone, "each checkout publishes on host ports of its own: " + ports_a + ports_clone);
+    std::test::assert_eq_str(text_of(root_a + "/" + dna::LOCAL_COMPOSE_FILE), ports_a, "chosen once, and kept");
+    std::test::assert_eq_int(in_dir(clone_a, vault, "git\ncheck-ignore\n-q\n" + dna::LOCAL_COMPOSE_FILE).code, 0, "and never tracked");
+    if dna::run_tool("docker\ncompose\nversion").code == 0 {
+        let seen_a = dna::run_tool(argv_a + "\nconfig");
+        let seen_clone = dna::run_tool(argv_clone + "\nconfig");
+        std::test::assert(std::str::starts_with(seen_a.stdout, "name: " + p_a + "\n") && std::str::starts_with(seen_clone.stdout, "name: " + p_clone + "\n"), "compose resolves each checkout's project: " + seen_a.stdout + seen_a.stderr + seen_clone.stdout + seen_clone.stderr);
+        std::test::assert(std::str::contains(seen_a.stdout, "name: " + p_a + "_knowledge-db") && std::str::contains(seen_clone.stdout, "name: " + p_clone + "_knowledge-db"), "and each its own memory volume");
+    } else {
+        eprintln("compose_projects_test: docker compose is not on PATH; the resolved project names are not checked");
+    }
 
     // ---- an older compose file, rewritten by upgrade (a hard cut)
-    let old = std::str::replace(std::str::replace(compose_b, "name: hale-dna-" + b + "\n", ""), "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner", "POSTGRES_PASSWORD: dna");
+    let old = std::str::replace(std::str::replace(compose_b, "x-hale-dna-seed: " + b + "\n", "name: hale-dna-" + b + "\n"), "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner", "POSTGRES_PASSWORD: dna");
     std::io::fs::write_file(root_b + "/dna/compose.yaml", old) or discard;
     let upgraded = in_dir(root_b, vault, toolchain() + "\ndna\nupgrade\n.");
     let now = text_of(root_b + "/dna/compose.yaml");
     std::test::assert(upgraded.code == 0 && std::str::contains(upgraded.stdout, "rewrote") && now == compose_b, "upgrade rewrites an older compose file to the seed's own project and the vault's password: " + upgraded.stdout + upgraded.stderr);
 
-    // ---- a port something on this machine already listens on is stepped
-    // past: a seed takes its host ports at seed time, from its own name's
-    // candidate, never one another server holds (a CI runner's NATS on 4222)
-    let held = published(compose_a, "4222");
-    std::test::assert(held > 0, "the seed's compose publishes the nerves on a host port: " + compose_a);
-    let fd = std::io::tcp::__listen_socket("127.0.0.1", held);
-    std::test::assert(fd >= 0, "the fixture holds the first seed's nerves port, " + to_string(held));
-    let made_again = in_dir(scratch, vault, "sh\n-c\nmkdir -p again && cd again && exec \"$0\" dna new \"$1\"\n" + toolchain() + "\n" + a);
-    std::io::tcp::__close_fd(fd);
-    std::test::assert_eq_int(made_again.code, 0, "the same seed made again elsewhere: " + made_again.stdout + made_again.stderr);
-    let compose_again = text_of(scratch + "/again/" + a + "/dna/compose.yaml");
-    let again = published(compose_again, "4222");
-    std::test::assert(again > 0 && again != held, "its nerves take another port than the one held, " + to_string(held) + ": " + compose_again);
-    std::test::assert(published(compose_again, "5432") > 0 && published(compose_again, "9090") > 0, "and it publishes memory and the senses too: " + compose_again);
     dna::scratch_done(scratch);
 }

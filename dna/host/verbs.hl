@@ -160,7 +160,7 @@ fn profile_verb(root: String, memory: dna::Memory) -> Answer {
     out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
     let owner = std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER");
     let compose = std::io::fs::file_exists(root + "/dna/compose.yaml");
-    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
+    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "compose (dna/compose.yaml, under `hale dna dev`: this checkout's project " + dna::local_compose_project(root) + ")" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
     out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
     // GH #648: the forge the host found, whichever it is
     out = out + "github:      " + forge_name(root) + "\n";

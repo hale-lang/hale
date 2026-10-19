@@ -68,7 +68,7 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
-        "d4409560c6deee83",
+        "586fa9817d7900dd",
         "transport_kind",
     ),
     ("scram", "", "salted_password", "pq::salted_password", "6ba4677d29db543e", "compute_client_final"),

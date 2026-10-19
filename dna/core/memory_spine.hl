@@ -924,3 +924,86 @@ locus MemoryVault {
         return VaultRead { present: true, class: p.class, text: p.text };
     }
 }
+
+// ---- the local compose project, one per checkout (GH #1653) -------------
+
+// A checkout's local memory, nerves and senses are compose services of a
+// project of its own: two checkouts of one project (two worktrees, two
+// clones) never share a container or a volume. The record identity is
+// still the genome's, shared by every checkout; only where this
+// checkout's local database lives is its own. The project is
+// `hale-dna-<seed>-<checkout>`: the seed dna/compose.yaml names
+// (`x-hale-dna-seed`), and the first eight hex digits of the sha256 of the
+// checkout's real path, so the same checkout finds the same project on
+// every run. Its volumes are the project's (`<project>_knowledge-db`, …).
+// The host ports it publishes on are the checkout's too, chosen once and
+// kept in `.hale/dna/compose.local.yaml`, which git ignores and every
+// compose call layers over dna/compose.yaml.
+const LOCAL_COMPOSE_FILE: String = ".hale/dna/compose.local.yaml";
+
+// The seed dna/compose.yaml names, "" when there is no file or it names
+// none.
+fn local_compose_seed(root: String) -> String {
+    let text = std::io::fs::read_file(root + "/dna/compose.yaml") or "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, "x-hale-dna-seed: ") { return trim_nl(line[17..len(line)]); }
+    }
+    return "";
+}
+
+// The checkout's real path (`pwd -P`), `root` itself when it is not one.
+fn checkout_path(root: String) -> String {
+    let r = run_tool("sh\n-c\ncd -- \"$1\" && pwd -P\nsh\n" + root);
+    let real = trim_nl(r.stdout);
+    return if r.code == 0 && len(real) > 0 { real } else { root };
+}
+
+// The checkout's compose project, "" when dna/compose.yaml names no seed.
+fn local_compose_project(root: String) -> String {
+    let seed = local_compose_seed(root);
+    if len(seed) == 0 { return ""; }
+    return "hale-dna-" + seed + "-" + hex(std::crypto::sha256(std::bytes::from_string(checkout_path(root))))[0..8];
+}
+
+// A free loopback port for `service` of `project`: candidates from the
+// project's own hash within `base`..`base`+999, the first that binds.
+fn local_compose_port(project: String, service: String, base: Int) -> Int {
+    let h = std::crypto::sha256(std::bytes::from_string(project + "/" + service));
+    let start = ((std::bytes::at(h, 0) or 0) * 256 + (std::bytes::at(h, 1) or 0)) % 1000;
+    let mut i = 0;
+    while i < 1000 {
+        let port = base + (start + i) % 1000;
+        let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
+        if fd >= 0 { std::io::tcp::__close_fd(fd); return port; }
+        i = i + 1;
+    }
+    return base + start;
+}
+
+// `docker compose` on the checkout's project, newline-separated, with its
+// ports' file made the first time: the arguments go after it. "" when
+// dna/compose.yaml names no seed.
+fn local_compose(root: String) -> String {
+    let project = local_compose_project(root);
+    if len(project) == 0 { return ""; }
+    let ports = root + "/" + LOCAL_COMPOSE_FILE;
+    if !std::io::fs::file_exists(ports) {
+        std::io::fs::mkdir(root + "/.hale") or discard;
+        std::io::fs::mkdir(root + "/.hale/dna") or discard;
+        let text = "# The host ports this checkout's compose project publishes on (GH #1653),\n"
+            + "# chosen once: the checkout's own, never committed.\n"
+            + "services:\n"
+            + "  knowledge-db:\n    ports: [\"127.0.0.1:" + to_string(local_compose_port(project, "knowledge-db", 54000)) + ":5432\"]\n"
+            + "  nerves:\n    ports: [\"127.0.0.1:" + to_string(local_compose_port(project, "nerves", 42000)) + ":4222\"]\n"
+            + "  senses:\n    ports: [\"127.0.0.1:" + to_string(local_compose_port(project, "senses", 39000)) + ":9090\"]\n";
+        std::io::fs::write_file(ports, text) or discard;
+    }
+    // by the checkout's real path, which compose records as the project's
+    // working directory (`com.docker.compose.project.working_dir`)
+    let real = checkout_path(root);
+    return "docker\ncompose\n-p\n" + project + "\n-f\n" + real + "/dna/compose.yaml\n-f\n" + real + "/" + LOCAL_COMPOSE_FILE;
+}

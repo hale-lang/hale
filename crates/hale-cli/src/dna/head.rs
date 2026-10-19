@@ -215,9 +215,15 @@ fn memory_down(project: &Path) -> Option<String> {
     if !compose.is_file() {
         return Some("no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER".to_string());
     }
-    let out = Command::new("docker").args(["compose", "-f"]).arg(&compose).args(["ps", "--status", "running", "--services"]).output();
+    // the checkout's own compose project (GH #1653): the running
+    // `knowledge-db` compose started from this checkout's dna/
+    let dir = compose.parent().map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf())).unwrap_or_default();
+    let out = Command::new("docker")
+        .args(["ps", "-q", "--filter", "status=running", "--filter", "label=com.docker.compose.service=knowledge-db", "--filter"])
+        .arg(format!("label=com.docker.compose.project.working_dir={}", dir.display()))
+        .output();
     match out {
-        Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == "knowledge-db") => None,
+        Ok(o) if o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty() => None,
         Ok(_) => Some("the project's memory (compose's `knowledge-db`) is not running".to_string()),
         Err(e) => Some(format!("docker: {e}")),
     }

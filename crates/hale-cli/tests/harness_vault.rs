@@ -68,13 +68,10 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(d.join("probes")).unwrap();
-    // The organizations are this run's own: `hale dna new` with no owner's
-    // DSN brings memory up as the compose project `hale-dna-<name>`, whose
-    // containers and volume are named after the seed machine-wide, so a
-    // fixed name collided with the same test running anywhere else on the
-    // box ("the container name /hale-dna-probea-knowledge-db-1 is already
-    // in use") and failed one of the two runs.
-    let orgs = [format!("probea{}", std::process::id()), format!("probeb{}", std::process::id())];
+    // Two runs of this test on one machine are two checkouts, and each
+    // has its own local compose project (GH #1653), so the organizations'
+    // names need not be the run's own.
+    let orgs = ["probea", "probeb"];
     for org in &orgs {
         std::fs::write(d.join(format!("probes/{org}_test.hl")), PROBE.replace("ORG", org)).unwrap();
     }

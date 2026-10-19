@@ -4286,21 +4286,29 @@ The live half is memory's, projected from the record by the spine
   `intent.offered` with no admission naming it is noted
   (`intent.unrecovered`) and never re-offered: work may already have
   run.
-- **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
-  (its own compose project, `name: hale-dna-<project>`, so two seeds
-  on one machine never share a container; the `knowledge-db` service,
-  `pgvector/pgvector:pg16`, a named volume
-  `hale-dna-<project>-knowledge`, a host port in 54xx). Each service's
-  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx)
-  is taken at seed time: a candidate from the project's name, stepped past
-  any port something on the machine already listens on, as
-  `dna::free_port` takes a fixture's, so a seed never publishes on one
-  another server holds (a CI runner's NATS on 4222). The file is part of
-  the genome, and `upgrade` rewrites it to the template, keeping the ports
-  the file already publishes, so a clone's upgrade regenerates the same
-  file. With no
-  `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
-  dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
+- **Dev relies on docker compose.** `init` writes `dna/compose.yaml`:
+  the seed's services (the `knowledge-db` service,
+  `pgvector/pgvector:pg16`, the nerves and the senses' store) and the seed
+  they are for (`x-hale-dna-seed: <project>`), but no compose project, no
+  volume name and no host port. **A checkout's local database is its own**
+  (GH #1653): each checkout runs the services as the compose project
+  `hale-dna-<project>-<checkout>`, the seed and the first eight hex digits
+  of the sha256 of the checkout's real path, so two checkouts (two
+  worktrees, two clones) or two seeds on one machine never share a
+  container or a database, and the same checkout finds the same project on
+  every run. Its volumes are the project's (`<project-name>_knowledge-db`,
+  …), and its host ports (memory's in 54000s, the nerves' in 42000s, the
+  senses' in 39000s, a candidate from the project's name stepped past any
+  port something already listens on) are chosen at its first bring-up and
+  kept in `.hale/dna/compose.local.yaml`, which git ignores and every
+  compose call layers over `dna/compose.yaml`. The record's identity is
+  still the genome's, shared by every checkout; only where a checkout keeps
+  its local copy of memory is its own. A container an older file started
+  under the seed's name alone is not used again (no migration). The file is
+  part of the genome, and `upgrade` rewrites it to the template. With no
+  `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -p
+  <project-name> -f dna/compose.yaml -f .hale/dna/compose.local.yaml up -d
+  --wait knowledge-db` and derives the owner's
   DSN from the published port and the vault's `postgres-owner-<project>`
   (**The organism's secrets**), which a database made with another
   password adopts first; an operator's

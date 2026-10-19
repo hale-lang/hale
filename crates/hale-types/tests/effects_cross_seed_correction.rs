@@ -216,7 +216,7 @@ fn host() {
     pinned(
         "host",
         512,
-        517,
+        518,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -272,6 +272,7 @@ fn host() {
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
         compose_key  does={alloc}
+        compose_seed  does={syscall,alloc}
         compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
@@ -316,6 +317,7 @@ fn host() {
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
+        nerves_restart_hint  does={syscall,block,alloc}
         node_main  does={syscall,env,alloc}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
