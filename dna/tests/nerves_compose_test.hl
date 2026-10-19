@@ -17,8 +17,9 @@
 // a vault with nothing in it is refused. The application the record
 // attaches holds an account of its own (GH #989): it publishes on its own
 // subjects and no other application's, and `hale dna application remove`
-// revokes it. Without docker compose, or without memory's owner DSN,
-// nothing here is exercised.
+// revokes it. The organism is grafted from the file's habitat, born here
+// on its own backends, so its memory is an allocation too. Without docker
+// compose, nothing here is exercised.
 
 import "../core" as dna;
 import "../core/pond/realtime/nats" as nats;
@@ -28,12 +29,12 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// Run `argv` (newline-separated) in `dir`, with no NATS server named: the
-// nerves are the organism's allocation in the local habitat, this test
-// file's own (`hale test` gives each file one). The vault is this run's
+// Run `argv` (newline-separated) in `dir`, with no server of anyone else's
+// named: memory and the nerves are the organism's allocations in the local
+// habitat, this test file's own (`hale test` gives each file one). The vault is this run's
 // own (HALE_VAULT_DIR under the scratch root).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + root_of(dir) + "/vault\n" + argv);
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + root_of(dir) + "/vault\n" + argv);
 }
 
 // The scratch root: `/tmp/dna-nerves-compose-<pid>`.
@@ -121,14 +122,15 @@ main locus App {
         return false;
     }
     run() {
-        if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { eprintln("nerves_compose_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
         if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("nerves_compose_test: not exercised (docker compose is not on PATH)"); return; }
         if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("nerves_compose_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); return; }
         let scratch = dna::scratch_root("nerves-compose");
         dna::reap_on_exit(scratch);
         let name = "nervous" + to_string(std::process::pid());
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--backends\nown");
+        std::test::assert_eq_int(born.code, 0, "the file's habitat is born: " + born.stdout + born.stderr);
+        let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\n" + name);
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
         let alloc = allocation_of(self.app);
         let nerves = "nerves-" + dna::allocation_key(self.app);
@@ -199,6 +201,19 @@ main locus App {
         let own = if lent { self.app_publish(org, app_name, hp, app_name) } else { -3 };
         let other = if lent { self.app_publish(org, app_name, hp, "someone") } else { -3 };
         let removed = if lent { in_dir(self.app, toolchain() + "\ndna\napplication\nremove\n.\n--as\nriley") } else { dna::RunResult { code: -1 } };
+        let mut detached = 0;
+        // the record read through the toolchain while the allocations are
+        // up: it is in the organism's memory allocation, its password in
+        // this run's vault
+        let after = in_dir(self.app, toolchain() + "\ndna\nrecord-rows\n.");
+        let mut left = after.stdout;
+        while len(left) > 0 {
+            let nl = std::str::index_of(left, "\n");
+            let line = if nl < 0 { left } else { left[0..nl] };
+            left = if nl < 0 { "" } else { left[(nl + 1)..len(left)] };
+            let body = std::json::find_string_field(line, "body");
+            if std::json::find_string_field(line, "kind") == "application.detached" && std::json::find_string_field(body, "name") == app_name && std::json::find_string_field(body, "by") == "riley" { detached = detached + 1; }
+        }
         let conf_after = std::io::fs::read_file(alloc + "/nats.conf") or "";
         let secrets_after = std::io::fs::read_file(alloc + "/nats.secrets.conf") or "";
 
@@ -218,7 +233,9 @@ main locus App {
         let org_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/org.pid") or "");
         let app_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/app.pid") or "");
         let stop = dna::run_tool("sh\n-c\nh=$1; lim=$2; shift 2; w=''; for p in \"$@\"; do [ -n \"$p\" ] || continue; c=$(ps -o comm= -p \"$p\" 2>/dev/null); [ -n \"$c\" ] && w=\"$w $p:$c\"; done; kill \"$h\" 2>/dev/null; i=0; while kill -0 \"$h\" 2>/dev/null && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; for e in $w; do p=${e%%:*}; c=${e#*:}; i=0; while [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && kill -9 \"$p\" 2>/dev/null && echo \"pid $p ($c) outlived its host\"; done; true\nsh\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid + "\n" + app_pid);
-        let down = dna::run_tool(compose_of(self.app) + "\ndown\n-v");
+        // the nerves' service goes; memory stays up, the record upgrade
+        // reads below (the file's habitat takes it down with the file)
+        let down = dna::run_tool(compose_of(self.app) + "\nrm\n--stop\n--force\n-v\n" + nerves);
 
         std::test::assert(reading, "the organization reads its facts from the habitat's nerves, as the spine: " + self.log());
         std::test::assert(std::str::contains(asked.stdout, "born for intent"), "a task asked from the clone is born over them: " + asked.stdout + asked.stderr + self.log());
@@ -232,19 +249,14 @@ main locus App {
         std::test::assert(own > 0, "the application publishes under its own name (" + to_string(own) + "): " + self.refused);
         std::test::assert_eq_int(other, -1, "and not under another application's");
         std::test::assert(removed.code == 0 && std::str::contains(removed.stdout, "`" + app_name + "` detached"), "hale dna application remove detaches it: " + removed.stdout + removed.stderr);
-        let mut detached = 0;
-        // read as the owner: the head's kept DSN names entries in the
-        // organism's vault, not this process's
-        let rec = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
-        let mut r = 0;
-        while r < rec.revision() { let e = rec.read(r); if e.kind == "application.detached" && std::json::find_string_field(e.body, "name") == app_name && std::json::find_string_field(e.body, "by") == "riley" { detached = detached + 1; } r = r + 1; }
+        std::test::assert(after.code == 0, "the record reads after the removal: " + after.stderr);
         std::test::assert_eq_int(detached, 1, "one application.detached row in the record, naming it and who");
         std::test::assert(!std::str::contains(conf_after, "app-" + app_name) && !std::str::contains(secrets_after, "NATS_APP_") && std::str::contains(secrets_after, "NATS_SPINE_PASSWORD"), "its user leaves the conf and its password the include, and the roles' stay: " + conf_after);
         std::test::assert(!std::io::fs::file_exists(scratch + "/vault/" + dna::nerves_app_vault(org, app_name)), "its entry leaves the vault");
         std::test::assert(revoked == -2 && std::str::contains(self.refused, "Authorization"), "the server refuses the revoked account (" + to_string(revoked) + "): " + self.refused);
         std::test::assert(len(org_pid) > 0 && len(app_pid) > 0, "the host named its organization's and its expression's pids: " + self.log());
         std::test::assert_eq_str(stop.stdout, "", "the organization and the expression went with their host: " + self.log());
-        std::test::assert_eq_int(down.code, 0, "the allocations' services and volumes go: " + down.stderr);
+        std::test::assert_eq_int(down.code, 0, "the nerves' service goes: " + down.stderr);
 
         // ---- a regenerated seed rotates the passwords
         let upgraded = in_dir(self.app, toolchain() + "\ndna\nupgrade\n.");

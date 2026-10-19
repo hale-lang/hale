@@ -137,8 +137,11 @@ main locus App {
         // record identity of this run's, which the allocations are named
         // for
         let name = "sensing" + to_string(std::process::pid());
-        let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        // grafted from the file's habitat, born here on its own backends
+        let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--backends\nown");
+        std::test::assert_eq_int(born.code, 0, "the file's habitat is born: " + born.stdout + born.stderr);
+        let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\n" + name);
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
         let alloc = allocation_of(self.app);
         let compose = text_of(alloc + "/compose.yaml");
@@ -148,6 +151,10 @@ main locus App {
         std::test::assert(std::str::contains(senses_yml, "host.docker.internal:9465") && std::str::contains(senses_yml, "honor_labels: true"), "the allocation names what the store scrapes: " + senses_yml);
         let told = std::str::replace(std::str::replace(senses_yml, "host.docker.internal:9464", "host.docker.internal:" + to_string(spine_port)), "host.docker.internal:9465", "host.docker.internal:" + to_string(node_port));
         std::io::fs::write_file(alloc + "/senses.yml", told) or discard;
+        // the graft brought the store up on the allocation's own list: it
+        // reads this one when it starts again
+        let reread = dna::run_tool(compose_of(self.app) + "\nrestart\nsenses-" + dna::allocation_key(self.app));
+        std::test::assert_eq_int(reread.code, 0, "the store restarted on this run's ports: " + reread.stderr);
         let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
         std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
         // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it

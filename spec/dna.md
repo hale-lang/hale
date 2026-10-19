@@ -4541,7 +4541,11 @@ The live half is memory's, projected from the record by the spine
   file's own, born the first time. A CLI test does the same through
   `tests/support/habitat.rs` (`habitat()`, `graft(cwd, dir, args)`), in
   the habitat of its process's vault. `HALE_DNA_HABITAT` names a
-  habitat's directory outright.
+  habitat's directory outright. A fixture whose subject is the
+  allocations themselves (their compose project, the nerves' or the
+  senses' servers) births the test file's own habitat under its own
+  vault (`hale habitat up --no-body --backends own`, or `operator` when it
+  only reads the allocations' files) and grafts into that.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the

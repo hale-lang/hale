@@ -16,8 +16,11 @@
 // The database's superuser password is drawn by the bootstrap into the
 // vault (`postgres-owner-<id>`) and into the allocation's postgres.secrets,
 // which compose mounts for the server; no committed file holds it.
-// Nothing here starts a container: `docker compose config` shows the
-// project and services compose resolves, when docker compose is on PATH.
+// The organisms are grafted from this test file's own habitat, born here
+// on the operator's backends when an owner's DSN and NATS are named (and
+// then nothing here starts a container), else on its own. `docker compose
+// config` shows the project and services compose resolves, when docker
+// compose is on PATH.
 
 import "../core" as dna;
 
@@ -42,10 +45,15 @@ fn main() {
     if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("compose_projects_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); dna::scratch_done(scratch); return; }
     let a = "twin-a" + to_string(std::process::pid());
     let b = "twin-b" + to_string(std::process::pid());
-    let made_a = in_dir(scratch, vault, toolchain() + "\ndna\nnew\n" + a);
-    std::test::assert_eq_int(made_a.code, 0, "hale dna new " + a + ": " + made_a.stdout + made_a.stderr);
-    let made_b = in_dir(scratch, vault, toolchain() + "\ndna\nnew\n" + b);
-    std::test::assert_eq_int(made_b.code, 0, "hale dna new " + b + ": " + made_b.stdout + made_b.stderr);
+    let operator = len(dna::trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0 && len(dna::trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
+    if !operator && dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("compose_projects_test: not exercised (no owner's servers, and docker compose is not on PATH)"); dna::scratch_done(scratch); return; }
+    // the file's habitat, under this run's vault, which every graft reads
+    let born = in_dir(scratch, vault, toolchain() + "\nhabitat\nup\n--no-body\n--backends\n" + (if operator { "operator" } else { "own" }));
+    std::test::assert_eq_int(born.code, 0, "the file's habitat is born: " + born.stdout + born.stderr);
+    let made_a = in_dir(scratch, vault, toolchain() + "\nhabitat\ngraft\n" + a);
+    std::test::assert_eq_int(made_a.code, 0, "hale habitat graft " + a + ": " + made_a.stdout + made_a.stderr);
+    let made_b = in_dir(scratch, vault, toolchain() + "\nhabitat\ngraft\n" + b);
+    std::test::assert_eq_int(made_b.code, 0, "hale habitat graft " + b + ": " + made_b.stdout + made_b.stderr);
     let root_a = scratch + "/" + a;
     let root_b = scratch + "/" + b;
     let key_a = dna::allocation_key(root_a);
