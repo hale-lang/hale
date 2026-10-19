@@ -122,7 +122,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-cli/src/dna.rs",
-        "init",
+        "init_under",
         "the `kept    <path>` / `cut     <path>` outcome column, and \
          the `hale check --matrix <dir>   # …` next-step lines",
     ),

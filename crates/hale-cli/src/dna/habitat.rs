@@ -1181,7 +1181,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
         return Err(format!("{} is born already: its hale.toml pins a record", dir.display()));
     }
     let needs = needs_of(manifest.as_deref())?;
-    let mut out = vec![format!("graft   {} as the habitat's child (parent {}…; needs {})", dir.display(), &parent[..12], needs.join(", "))];
+    let mut out = vec![format!("{:<8}{} as the habitat's child (parent {}…; needs {})", "graft", dir.display(), &parent[..12], needs.join(", "))];
     out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, None, None, None, library, Some(&parent))? });
     let root = project(dir)?.0;
     let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
@@ -1192,8 +1192,8 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
                 record_allocation(&root, "senses", 0, "", false)?;
                 out.push(format!("senses  allocated ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL=")));
             }
-            Ok(o) => out.push(format!("note    senses not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim()))),
-            Err(e) => out.push(format!("note    senses not up: {e}")),
+            Ok(o) => out.push(format!("{:<8}senses not up: {}", "note", o.trim().strip_prefix("none: ").unwrap_or(o.trim()))),
+            Err(e) => out.push(format!("{:<8}senses not up: {e}", "note")),
         }
     }
     if needs.iter().any(|r| r == "database") {
@@ -1210,7 +1210,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     // the child's Board (a process of its own: the verb execs the host)
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
-    out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("note    the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", root.display()) });
+    out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("{:<8}the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", "note", root.display()) });
     Ok(out)
 }
 
