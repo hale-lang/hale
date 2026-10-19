@@ -11416,9 +11416,14 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/habitat_operator_test.hl
 
 == dna/tests/habitat_up_test.hl
+row	__StdSecretCredential@main1	__StdSecretCredential	main	default
+shared	__lib_dna__core__pond__realtime__nats___client__NatsClient@main2	__lib_dna__core__pond__realtime__nats___client__NatsClient #9d66cf8c
+shared	__lib_dna__core__pond__realtime__nats___client__NatsClient@main3	__lib_dna__core__pond__realtime__nats___client__NatsClient #9d66cf8c
+shared	__lib_dna__core__pond__realtime__nats___client__NatsClient@main4	__lib_dna__core__pond__realtime__nats___client__NatsClient #9d66cf8c
 shared	dynamic	sites in core #de2fb49b
+shared	dynamic	sites in core/pond/realtime/nats #164fddea
 shared	dynamic	sites in tests #4bfcca70
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/handed_task_test.hl
 root	App	the entry
@@ -15015,7 +15020,7 @@ dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no instance)
+dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main|unknown (no caller)
@@ -17534,6 +17539,24 @@ row	~.pending.data_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	pi
 row	~.pending.starts	__lib_dna__core__pond__realtime__nats___log__NatsInts	pinned:~	inherited
 row	~.pending.subj_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	pinned:~	inherited
 row	~.queued	__lib_dna__core__pond__realtime__nats___log__NatsInts	pinned:~	inherited
+
+== shared __lib_dna__core__pond__realtime__nats___client__NatsClient #9d66cf8c
+row	~	__lib_dna__core__pond__realtime__nats___client__NatsClient	main	default
+row	~.credential	__StdSecretCredential	main	inherited
+row	~.framer	__lib_dna__core__pond__realtime__nats___proto__NatsFramer	main	inherited
+row	~.framer.rx	__StdBytesBytesBuilder	main	inherited
+row	~.io	__lib_dna__core__pond__realtime__nats___client__NatsTransport	main	inherited
+row	~.stash	__lib_dna__core__pond__realtime__nats___log__NatsMsgLog	main	inherited
+row	~.stash.buf	__StdBytesBytesBuilder	main	inherited
+row	~.stash.data_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash.starts	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash.subj_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash_meta	__lib_dna__core__pond__realtime__nats___log__NatsMsgLog	main	inherited
+row	~.stash_meta.buf	__StdBytesBytesBuilder	main	inherited
+row	~.stash_meta.data_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash_meta.starts	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash_meta.subj_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
+row	~.stash_sids	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
 
 == shared __lib_dna__core__pond__realtime__nats___fake__NatsFake #724ab7ce
 row	~	__lib_dna__core__pond__realtime__nats___fake__NatsFake	main	default

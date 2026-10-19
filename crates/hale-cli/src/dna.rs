@@ -859,20 +859,20 @@ pub fn run(args: &[String]) -> ExitCode {
             // GH #1653: a heart whose genome declares the `database` role is
             // handed its DSN (which names its vault slot), derived: nothing
             // is provisioned here
-            let database = if habitat::needs_at(&dir).iter().any(|r| r == "database") {
-                match host_run("database-provision", &dir, &["--derive".to_string()]) {
-                    Ok(o) => o.lines().find_map(|l| l.strip_prefix("HALE_DNA_DATABASE_DSN=")).map(str::to_string),
-                    Err(e) => {
-                        eprintln!("hale dna dev: database: {e}");
-                        None
-                    }
+            // GH #1653: the attach handover, which the host's heart inherits:
+            // the head, the application, the issuer and its service client,
+            // and each heart role the genome declares (a secret only ever
+            // by its vault slot's name), derived: nothing is provisioned here
+            let handed: Vec<(String, String)> = match habitat::handover(&dir, true) {
+                Ok(lines) => lines,
+                Err(e) => {
+                    eprintln!("hale dna dev: handover: {e}");
+                    Vec::new()
                 }
-            } else {
-                None
             };
             let mut env: Vec<(&str, &OsStr)> = Vec::new();
-            if let Some(d) = &database {
-                env.push(("HALE_DNA_DATABASE_DSN", OsStr::new(d.as_str())));
+            for (k, v) in &handed {
+                env.push((k.as_str(), OsStr::new(v.as_str())));
             }
             if let Some(spine) = &spine {
                 env.push(("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(spine.as_str())));
