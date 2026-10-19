@@ -45,9 +45,14 @@ if [[ -s "$host_bin" && ! -s "$host_bin.ir-size" ]] || [[ -s "$verb_bin" && ! -s
 fi
 # the habitat's birth runs the first host verb (GH #1653): on the owner's
 # servers when they are named, else its own allocations
-backends=own; [[ -n "${HALE_DNA_MEMORY_DSN_OWNER:-}" && -n "${HALE_DNA_NATS_URL_OWNER:-}" ]] && backends=operator
-LOTUS_DUMP_IR=1 "$hale" habitat up --no-body --backends "$backends" >/dev/null
-"$hale" habitat graft "$tmp/warm" --no-pack >/dev/null
+if [[ -n "${HALE_DNA_MEMORY_DSN_OWNER:-}" && -n "${HALE_DNA_NATS_URL_OWNER:-}" ]]; then
+    backends=operator; clear_owner=()
+else
+    # a lone owner endpoint is refused beside `own`: clear both
+    backends=own; clear_owner=(env -u HALE_DNA_MEMORY_DSN_OWNER -u HALE_DNA_NATS_URL_OWNER)
+fi
+LOTUS_DUMP_IR=1 "${clear_owner[@]}" "$hale" habitat up --no-body --backends "$backends" >/dev/null
+"${clear_owner[@]}" "$hale" habitat graft "$tmp/warm" --no-pack >/dev/null
 for bin in "$host_bin" "$verb_bin"; do
     if [[ -f "$bin.ll" ]]; then
         echo "lines=$(( $(wc -l < "$bin.ll") )) defines=$(grep -c '^define ' "$bin.ll")" \
