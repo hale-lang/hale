@@ -75,7 +75,8 @@ Hale program is built from.
 A few switches worth knowing from day one:
 
 - **The rest of the loop:** `hale fmt` keeps your code canonical
-  (zero config), `hale test` runs `*_test.hl`, `hale verify` is
+  (zero config; `hale fmt --wrap` also breaks lines wider than 100
+  columns, by their shape), `hale test` runs `*_test.hl`, `hale verify` is
   `check` with teeth (any advisory fails — what CI runs), and
   `hale doc` renders API references from `///` comments. Agent
   hosts without a shell get all of it via `hale mcp`.

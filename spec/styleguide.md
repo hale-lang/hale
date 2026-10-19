@@ -218,7 +218,7 @@ A let-bound locus literal lives for the fn body and dissolves at
 scope exit (the m82 dissolve-timing rule).
 
 ```hale
-fn handle_one_connection(conn_fd: Int, on_conn: fn(std::io::tcp::Stream)) {
+fn handle_one_connection(conn_fd: Int, on_conn: fn (std::io::tcp::Stream)) {
     let s = std::io::tcp::Stream { conn_fd: conn_fd, owns_fd: false };
     on_conn(s);
 }
@@ -847,15 +847,52 @@ this list — run the tool:
   columns, they churn every diff); exactly one trailing newline.
 - Comments stay where you put them: own-line comments indent with
   the code, trailing comments sit one space after it.
+- Lines are 100 columns (`hale fmt --wrap`). A wider line is broken
+  by its shape: an `&&`/`||` chain one term per line with the
+  operator leading and the block's `{` on its own line after it, a
+  `+` chain at the operator, a call or a record literal one argument
+  or field per line with a trailing comma, a block written on one
+  line one statement per line.
 
-What fmt deliberately does **not** decide stays yours, and is
-where the rest of this guide applies: *where lines break* (fmt
-preserves your line structure, gofmt-style — there is no
-max-line-length rewrap), naming, comment content, and blank-line
-placement (it collapses runs, it never inserts or removes the
-single separators you chose). Write the shape; let the tool make
-it canonical. For agents this is load-bearing: canonical form
-means a model-written diff touches only the lines it changed.
+**Line structure.** fmt shapes long statements. Write a statement
+on one line and let `hale fmt --wrap` break it when it is too wide:
+it breaks every shape one way, so don't hand-wrap, and a line that
+fits it leaves alone (it never joins lines, so where a line that
+fits breaks is still yours). What fmt cannot do is name things, and
+one rule of line structure is about names: **a condition of more
+than three terms is extracted into a named predicate**, a `fn` whose
+name says what the terms decide. Four terms wrap into a column fmt
+can format but no reader can take in at a glance; the predicate's
+name is the rule the `if` applies, and its body is where the terms
+are listed, once:
+
+```hale
+// The four classes the board decides, named once.
+fn needs_board(change_class: String) -> Bool {
+    return change_class == "organization"
+        || change_class == "constitutional"
+        || change_class == "process-policy"
+        || change_class == "topology";
+}
+
+fn required_authority(change_class: String) -> String {
+    if needs_board(change_class) {
+        return "board";
+    }
+    return "leader";
+}
+
+fn main() {
+    println(required_authority("topology"));
+}
+```
+
+The rest of what fmt does not decide is where the rest of this
+guide applies: naming, comment content, and blank-line placement
+(it collapses runs, it never inserts or removes the single
+separators you chose). Write the shape; let the tool make it
+canonical. For agents this is load-bearing: canonical form means a
+model-written diff touches only the lines it changed.
 
 ### Embedded text is a block string
 

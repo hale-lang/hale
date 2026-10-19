@@ -99,3 +99,28 @@ fn unlexable_file_is_skipped_with_error() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn fmt_stdin(args: &[&str], src: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child.stdin.as_mut().expect("stdin").write_all(src.as_bytes()).expect("write");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success(), "{args:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// `--wrap` breaks a line wider than 100 columns by its shape (a call:
+/// one argument per line, a trailing comma); without it the line
+/// structure is the author's.
+#[test]
+fn wrap_flag_breaks_a_wide_line() {
+    let wide = "fn main() {\n    let r = build_the_record(alpha_argument_value, beta_argument_value, gamma_argument_value, delta);\n}\n";
+    let wrapped = "fn main() {\n    let r = build_the_record(\n        alpha_argument_value,\n        beta_argument_value,\n        gamma_argument_value,\n        delta,\n    );\n}\n";
+    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wide);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wide), wrapped);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wrapped), wrapped);
+}
