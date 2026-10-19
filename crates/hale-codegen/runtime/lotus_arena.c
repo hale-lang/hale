@@ -14639,6 +14639,7 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
  * the program reads `draining` somewhere (the codegen passes that
  * in): a program that cannot observe a drain keeps the default
  * action and dies at the signal, as before. */
+void lotus_tcp_stop_all_listeners(void);
 #ifndef __wasm__
 static int g_drain_pipe[2] = {-1, -1};
 static volatile sig_atomic_t g_drain_signal = 0;
@@ -14775,6 +14776,8 @@ static void *lotus_drain_watcher(void *arg) {
         _exit(128 + (int)g_drain_signal);
     }
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_SIGNAL, __ATOMIC_RELEASE);
+    /* A server stops accepting and drains what it accepted. */
+    lotus_tcp_stop_all_listeners();
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -14859,6 +14862,7 @@ void lotus_drain_observer_add(int64_t delta, const char *label) {
  * is torn down: main loci are built one after another. */
 void lotus_tree_drain_raise(void) {
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TREE, __ATOMIC_RELEASE);
+    lotus_tcp_stop_all_listeners();
 #if LOTUS_HAVE_ASYNC_IO
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -21665,10 +21669,6 @@ int lotus_tcp_accept_one(int listen_fd) {
                 break;                    /* readable (or POLLNVAL) → accept */
             }
         }
-        int conn = accept(listen_fd, NULL, NULL);
-        if (conn >= 0) {
-            lotus_set_cloexec(conn);
-            int nodelay = 1;
         /* An accept on the main thread waits on the listen fd and on
          * main's bus queue together: a cell another thread enqueues
          * for a main subscriber (a pinned locus's `std::log` line to a
@@ -21704,6 +21704,10 @@ int lotus_tcp_accept_one(int listen_fd) {
             }
 #endif
         }
+        int conn = accept(listen_fd, NULL, NULL);
+        if (conn >= 0) {
+            lotus_set_cloexec(conn);
+            int nodelay = 1;
             (void)setsockopt(conn, IPPROTO_TCP, TCP_NODELAY,
                              &nodelay, sizeof(nodelay));
             return conn;
@@ -22350,6 +22354,21 @@ int64_t lotus_tcp_listener_stop(const char *name) {
     if (fd >= 0) lotus_tcp_shutdown_listen_socket(fd);
     pthread_mutex_unlock(&g_tcp_named_lock);
     return fd >= 0 ? 1 : 0;
+}
+
+/* Shut every named listener's socket down: what a drain does to the
+ * process's servers (`lotus_drain_watcher` on a signal,
+ * `lotus_tree_drain_raise` when `main`'s run() returns). Each accept
+ * loop's accept returns, its loop ends, and the server's run() returns
+ * once the connections it accepted are answered (spec/stdlib.md
+ * § Shutdown is a drain): it used to keep accepting, so a server held a
+ * drain for the whole grace. Under the registry's lock, as `stop` is. */
+void lotus_tcp_stop_all_listeners(void) {
+    pthread_mutex_lock(&g_tcp_named_lock);
+    for (int i = 0; i < g_tcp_named_len; i++) {
+        if (g_tcp_named[i].fd >= 0) lotus_tcp_shutdown_listen_socket(g_tcp_named[i].fd);
+    }
+    pthread_mutex_unlock(&g_tcp_named_lock);
 }
 
 int lotus_tcp_close_fd(int fd) {

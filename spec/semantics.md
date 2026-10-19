@@ -5133,14 +5133,22 @@ SIGINT or SIGTERM:
    `drain()` or `dissolve()` body pacing a flush — runs its full
    length. A receive blocked in the kernel on a pinned or classic
    thread returns at its own timeout, not earlier; an untimed wait
-   (a plain `accept`) is not interrupted.
-3. Each `run()` that watches `self.draining` returns; one that
+   (a plain `recv`) is not interrupted.
+3. The process's listeners stop: every named listener's socket is
+   shut down (as `std::io::tcp::stop(name)` does), so each accept
+   loop — a `std::http::Server`'s, a `std::io::tcp::Listener`'s, the
+   api runtime's — ends wherever it waits, on main, a pinned thread or
+   a pool, and its `run()` returns once the connections it accepted
+   are answered (`stdlib.md` § "Shutdown is a drain, never a cut").
+   A server used to keep accepting, and held the drain for the whole
+   grace. (2026-10-19, downstream handoff.)
+4. Each `run()` that watches `self.draining` returns; one that
    does not keeps running.
-4. Leaves dissolve first, each parent after its children, the
+5. Leaves dissolve first, each parent after its children, the
    root last — the ordinary end-of-program teardown, which also
    runs the runtime's own (schedulers, bus router, allocator,
    the atexit hooks).
-5. Process exits 0.
+6. Process exits 0.
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
@@ -5188,8 +5196,10 @@ or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
 wait. A `main` that declares no `run()` and holds an exposure's listener
 is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
-alive until it returns, as under a signal; an `async_io` child parked
-on an untimed wait (a plain `accept`) is abandoned at its pool's
+alive until it returns, as under a signal; the tree's drain stops the
+process's listeners as a signal's does (step 3 above), so a server
+child's accept loop ends; an `async_io` child parked
+on an untimed wait (a plain `recv`) is abandoned at its pool's
 shutdown (`runtime.md` § the wakeable park). The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,
 and a signal's drain is neither masked nor ended by it. (Before
