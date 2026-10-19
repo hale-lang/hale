@@ -1392,22 +1392,50 @@ pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, 
     Ok(format!("database a tenant database of the organism's memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
 }
 
-/// GH #1653: the `broker` heart role recorded as the organism's
-/// allocation: its user, subject space and inbox were written into its
-/// nerves server's configuration with its other secrets at birth.
+/// GH #1653: the `broker` heart role, recorded as the organism's
+/// allocation and then provisioned from that row: its two users, their
+/// subject space and their passwords, written into its nerves server's
+/// configuration with its other secrets.
 fn provision_broker(root: &Path) -> Result<String, String> {
+    // the names the broker is handed by, before its row is written: the
+    // role is named, as the habitat has not recorded it yet
+    let named = handover_with(root, true, "broker")?;
+    let name = |k: &str| named.iter().find_map(|(n, v)| (n == k).then(|| v.clone())).unwrap_or_default();
+    let vault = name("HALE_DNA_BROKER_VAULT");
+    let node_vault = name("HALE_DNA_BROKER_NODE_VAULT");
+    if vault.is_empty() || node_vault.is_empty() {
+        return Err("the broker's vault slots are not named by the handover".to_string());
+    }
+    // the habitat's decision is its row: every reader of the organism's
+    // heart roles (its secrets, its nerves server's users, its handover)
+    // reads the row, never the manifest again
+    record_allocation(root, "broker", 0, &format!("{vault} {node_vault}"), false)?;
+    // its two users and their passwords, drawn with the organism's other
+    // secrets now the allocation names the role; the server rereads them
+    let drawn = host_run("secrets-provision", root, &[])?;
+    if let Some(why) = drawn.trim().strip_prefix("none: ") {
+        return Err(format!("the broker's users were not provisioned: {why}"));
+    }
     let lines = handover(root, false)?;
     let get = |k: &str| lines.iter().find_map(|(n, v)| (n == k).then(|| v.clone())).unwrap_or_default();
-    let vault = get("HALE_DNA_BROKER_VAULT");
-    let node_vault = get("HALE_DNA_BROKER_NODE_VAULT");
-    record_allocation(root, "broker", 0, &format!("{vault} {node_vault}"), false)?;
     Ok(format!("{:<8}{} and its nodes' {} on the organism's nerves server, confined to {} (HALE_DNA_BROKER_*, their passwords in the vault slots {vault} and {node_vault})", "broker", get("HALE_DNA_BROKER_USER"), get("HALE_DNA_BROKER_NODE_USER"), get("HALE_DNA_BROKER_SUBJECTS")))
 }
 
 /// The handover the habitat gives the heart of the organism at `root`,
 /// `(name, value)`; `derive` provisions nothing.
 pub(super) fn handover(root: &Path, derive: bool) -> Result<Vec<(String, String)>, String> {
-    let args: Vec<String> = if derive { vec!["--derive".to_string()] } else { Vec::new() };
+    handover_with(root, derive, "")
+}
+
+/// [`handover`], with heart roles named beside the ones the habitat
+/// allocated (`with`, words): a graft names the role it is provisioning
+/// before the role's row is written.
+fn handover_with(root: &Path, derive: bool, with: &str) -> Result<Vec<(String, String)>, String> {
+    let mut args: Vec<String> = if derive { vec!["--derive".to_string()] } else { Vec::new() };
+    if !with.is_empty() {
+        args.push("--with".to_string());
+        args.push(with.to_string());
+    }
     let o = host_run("heart-handover", root, &args)?;
     if let Some(why) = o.trim().strip_prefix("none: ") {
         return Err(why.to_string());

@@ -103,7 +103,10 @@ fn database_provision_verb(root: String, derive: Bool) -> Answer {
 // `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER` and `_NODE_VAULT`. `derive` provisions
 // nothing (what `dev` and `hale habitat handover` ask); without it the
 // heart roles are provisioned, at graft.
-fn heart_handover_verb(root: String, derive: Bool) -> Answer {
+// `with`: heart roles named beside the ones the habitat allocated (a
+// graft names the role it is provisioning before its row is written),
+// one word each.
+fn heart_handover_verb(root: String, derive: Bool, with: String) -> Answer {
     let id = record_identity(root);
     if len(id) == 0 { return fail("heart handover: the record has no identity yet"); }
     let rec = dna::MemoryRecord { repo: root };
@@ -116,13 +119,14 @@ fn heart_handover_verb(root: String, derive: Bool) -> Answer {
         + "HALE_DNA_OIDC_ISSUER=" + (if len(issuer) > 0 { issuer } else { "http://127.0.0.1:8794" }) + "\n"
         + "HALE_DNA_OIDC_CLIENT=" + client + "\n"
         + "HALE_DNA_OIDC_CLIENT_VAULT=oidc-service-" + client + "\n";
-    if dna::genome_needs(root, "database") {
+    let named = " " + with + " ";
+    if dna::allocated_role(root, "database") || std::str::contains(named, " database ") {
         let d = database_provision_verb(root, derive);
         if !d.ok { return d; }
         if std::str::starts_with(d.text, "none: ") { return d; }
         out = out + d.text;
     }
-    if dna::genome_needs(root, "broker") {
+    if dna::allocated_role(root, "broker") || std::str::contains(named, " broker ") {
         if std::env::var_exists(dna::NATS_OWNER_URL_ENV) && len(std::env::var(dna::NATS_OWNER_URL_ENV)) > 0 { return answer("none: the broker heart role is a user of the organism's own nerves server, which the habitat configures; the operator's NATS is not the habitat's to configure\n"); }
         let infra = ReferenceInfrastructure { root: root };
         let server = if derive { infra.nerves_if_up() } else { infra.nerves_server(root).dsn };

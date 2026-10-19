@@ -4467,8 +4467,8 @@ The live half is memory's, projected from the record by the spine
   by default), `HALE_DNA_OIDC_ISSUER` (`dna.oidc.issuer`, the local stub's
   `http://127.0.0.1:8794` by default), `HALE_DNA_OIDC_CLIENT` (the
   service client the heart signs in as, its application's name) and
-  `HALE_DNA_OIDC_CLIENT_VAULT` (`oidc-service-<client>`); for a declared
-  `database`, `HALE_DNA_DATABASE_DSN`; for a declared `broker`,
+  `HALE_DNA_OIDC_CLIENT_VAULT` (`oidc-service-<client>`); for an
+  allocated `database`, `HALE_DNA_DATABASE_DSN`; for an allocated `broker`,
   `HALE_DNA_BROKER_URL` (the nerves server, no credential),
   `HALE_DNA_BROKER_USER`, `HALE_DNA_BROKER_VAULT`,
   `HALE_DNA_BROKER_SUBJECTS`, and the nodes' `HALE_DNA_BROKER_NODE_USER`
@@ -4479,7 +4479,12 @@ The live half is memory's, projected from the record by the spine
   --add dna.oidc.service <client>=<client>`) and draws its secret, so
   none of it is written by hand. `hale dna dev` hands the set to the
   host, which the heart inherits, derived (nothing provisioned); `hale
-  habitat handover [organism]` prints it. Where a heart runs and on what
+  habitat handover [organism]` prints it. The manifest is read once, by
+  graft (a TOML parser: `needs` on one line or several, with comments
+  and a trailing comma); every reader after it (the handover, the
+  organism's secrets, its nerves server's users) reads the roles the
+  habitat allocated, its rows as the allocation keeps them
+  (`allocation.json`), never the manifest again. Where a heart runs and on what
   port is the deployment's (#1477), not the handover's. **Then birth satisfies them**: the record's
   genesis names its parent (`parent`, the habitat's record identity, in
   the first row's body, and so in the child's identity), each role it
@@ -5991,12 +5996,12 @@ otherwise.
 | `HALE_DNA_OIDC_ISSUER=<url>` | set by `hale dna dev` | The attach handover: the OIDC issuer the heart's service client asks (`dna.oidc.issuer`, `http://127.0.0.1:8794` by default). |
 | `HALE_DNA_OIDC_CLIENT=<id>` | set by `hale dna dev` | The attach handover: the heart's service client id, mapped at graft as `dna.oidc.service <id>=<id>`. |
 | `HALE_DNA_OIDC_CLIENT_VAULT=<slot>` | set by `hale dna dev` | The attach handover: the vault slot holding the service client's secret (`oidc-service-<id>`), never the secret. |
-| `HALE_DNA_BROKER_URL=<url>` | set for a heart that declares `broker` | The attach handover: the organism's nerves server, with no credential. |
-| `HALE_DNA_BROKER_USER=<user>` | set for a heart that declares `broker` | The attach handover: the heart's broker user, `heart-<id>`. |
-| `HALE_DNA_BROKER_VAULT=<slot>` | set for a heart that declares `broker` | The attach handover: the vault slot of the broker user's password, `nats-<org>-heart`. |
-| `HALE_DNA_BROKER_SUBJECTS=<subjects>` | set for a heart that declares `broker` | The attach handover: the heart's own subject space, `heart.<id>.>`. |
-| `HALE_DNA_BROKER_NODE_USER=<user>` | set for a heart that declares `broker` | The attach handover: the user the heart's nodes connect as, `heart-<id>-node`. |
-| `HALE_DNA_BROKER_NODE_VAULT=<slot>` | set for a heart that declares `broker` | The attach handover: the vault slot of the nodes' broker password, `nats-<org>-heart-node`, which the heart passes a node at enrollment. |
+| `HALE_DNA_BROKER_URL=<url>` | set for a heart the habitat allocated `broker` | The attach handover: the organism's nerves server, with no credential. |
+| `HALE_DNA_BROKER_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the heart's broker user, `heart-<id>`. |
+| `HALE_DNA_BROKER_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the broker user's password, `nats-<org>-heart`. |
+| `HALE_DNA_BROKER_SUBJECTS=<subjects>` | set for a heart the habitat allocated `broker` | The attach handover: the heart's own subject space, `heart.<id>.>`. |
+| `HALE_DNA_BROKER_NODE_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the user the heart's nodes connect as, `heart-<id>-node`. |
+| `HALE_DNA_BROKER_NODE_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the nodes' broker password, `nats-<org>-heart-node`, which the heart passes a node at enrollment. |
 | `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
 | `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |

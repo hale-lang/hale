@@ -173,7 +173,10 @@ fn main() {
     // of its memory server, its DSN naming its vault slot, working
     std::io::fs::mkdir(scratch + "/keeper") or discard;
     std::io::fs::write_file(scratch + "/keeper/README.md", "# keeper\n\nA repository whose heart keeps a store.\n") or discard;
-    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\", \"broker\"]\n") or discard;
+    // its needs over several lines, with comments and a trailing comma:
+    // the habitat reads the manifest once, at graft, and every reader
+    // after it reads the rows it recorded
+    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\n# what the heart needs from the habitat\nneeds = [\n    \"memory\",\n    \"nerves\",   # the organization's\n    \"database\",\n    \"broker\",\n]\n") or discard;
     let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--attach\n--no-library");
     std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database, broker)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
     let kkey = dna::allocation_key(scratch + "/keeper");
@@ -235,6 +238,26 @@ fn main() {
     owner.close();
     heart.close();
     node.close();
+    // the same needs on one line, and over several lines with no
+    // comment: each heart is handed exactly the roles its graft provisioned
+    std::io::fs::mkdir(scratch + "/sender") or discard;
+    std::io::fs::write_file(scratch + "/sender/README.md", "# sender\n\nA repository whose heart talks over a broker.\n") or discard;
+    std::io::fs::write_file(scratch + "/sender/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"broker\"]\n") or discard;
+    std::io::fs::mkdir(scratch + "/storer") or discard;
+    std::io::fs::write_file(scratch + "/storer/README.md", "# storer\n\nA repository whose heart keeps a store.\n") or discard;
+    std::io::fs::write_file(scratch + "/storer/hale.toml", "[dna]\nneeds = [\n  \"memory\",\n  \"nerves\",\n  \"database\"\n]\n") or discard;
+    let sent = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsender\n--attach\n--no-library");
+    let stored = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nstorer\n--attach\n--no-library");
+    std::test::assert(sent.code == 0 && std::str::contains(sent.stdout, "needs memory, nerves, broker)") && stored.code == 0 && std::str::contains(stored.stdout, "needs memory, nerves, database)"), "both grafted with the roles they declare: " + sent.stdout + sent.stderr + stored.stdout + stored.stderr);
+    let skey = dna::allocation_key(scratch + "/sender");
+    let tkey2 = dna::allocation_key(scratch + "/storer");
+    let to_sender = in_dir(scratch + "/sender", toolchain() + "\nhabitat\nhandover\n.").stdout;
+    let to_storer = in_dir(scratch + "/storer", toolchain() + "\nhabitat\nhandover\n.").stdout;
+    std::test::assert(len(line_value(to_sender, "HALE_DNA_BROKER_USER")) > 0 && len(line_value(to_sender, "HALE_DNA_DATABASE_DSN")) == 0, "the sender is handed its broker and no database: " + to_sender);
+    std::test::assert(len(line_value(to_storer, "HALE_DNA_DATABASE_DSN")) > 0 && len(line_value(to_storer, "HALE_DNA_BROKER_USER")) == 0, "the storer is handed its database and no broker: " + to_storer);
+    std::test::assert(len(line_value(handed, "HALE_DNA_DATABASE_DSN")) > 0 && len(line_value(handed, "HALE_DNA_BROKER_USER")) > 0, "and the keeper, its needs over several lines, both: " + handed);
+    let allocated = rows_of(genome, "habitat.allocated");
+    std::test::assert(std::str::contains(allocated, "\"entity\": \"" + skey + "/broker\"") && !std::str::contains(allocated, "\"entity\": \"" + skey + "/database\"") && std::str::contains(allocated, "\"entity\": \"" + tkey2 + "/database\"") && !std::str::contains(allocated, "\"entity\": \"" + tkey2 + "/broker\""), "each handover is the rows the graft recorded: " + allocated);
     let undeclared = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(!std::str::contains(undeclared, "database-" + tkey) && !std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + tkey + "/database\""), "an undeclared genome gets no database: " + undeclared);
     // a whole graft grafted again goes on where it stopped, which is its

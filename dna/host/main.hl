@@ -135,7 +135,7 @@ fn parse_args(raw: String, valued: String) -> Args {
 
 // The flags that take a value, for every verb of both programs.
 fn verb_args() -> Args {
-    return parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at --pack --steps --retire-pack --record --key ");
+    return parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --rows --app --description --size --permit --price-in --price-out --mandate --under --at --pack --steps --retire-pack --record --key --with ");
 }
 
 // The host's body: `run` and `dev` start the `main locus` (`Host`), `node`

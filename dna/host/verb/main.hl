@@ -101,7 +101,7 @@ fn main() {
         ans = host::answer("memory=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\nnerves=" + to_string(dna::NERVES_STREAM_VERSION) + "\n");
     } else if verb == "heart-handover" {
         // GH #1653: what the habitat hands a habitat-scoped heart
-        ans = host::heart_handover_verb(root, host::has_flag(a, "--derive"));
+        ans = host::heart_handover_verb(root, host::has_flag(a, "--derive"), host::flag(a, "--with"));
     } else if verb == "database-provision" {
         // GH #1653: the `database` heart role, at graft (with --derive, its DSN)
         ans = host::database_provision_verb(root, host::has_flag(a, "--derive"));

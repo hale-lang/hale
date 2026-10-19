@@ -191,20 +191,18 @@ fn heart_broker_node_vault(org: String) -> String { return nerves_vault_name(org
 const HEART_PASSWORD_VAR: String = "NATS_HEART_PASSWORD";
 const HEART_NODE_PASSWORD_VAR: String = "NATS_HEART_NODE_PASSWORD";
 
-// Whether the genome at `root` declares the heart role `role` among its
-// needs (`[dna] needs = [...]` in its hale.toml; the CLI checks the list
-// whole at graft).
-@bounded_by(root)
-fn genome_needs(root: String, role: String) -> Bool {
-    let text = std::io::fs::read_file(root + "/hale.toml") or "";
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::starts_with(line, "needs") && std::str::contains(line, "\"" + role + "\"") { return true; }
-    }
-    return false;
+// Whether the habitat allocated the heart role `role` to the organism at
+// `root` (GH #1653). The habitat decided what the organism needs when it
+// grafted it, reading its manifest once, and recorded each role it
+// provisioned as a row of its record; the allocation keeps those rows
+// beside it (`allocation.json`), and that is what is read here, never the
+// manifest again.
+fn allocated_role(root: String, role: String) -> Bool {
+    let dir = allocation_dir(root);
+    if len(dir) == 0 { return false; }
+    let row = std::io::fs::read_file(dir + "/allocation.json") or "";
+    let roles = std::json::find_field_raw(row, "roles");
+    return len(roles) > 0 && len(std::json::find_field_raw(roles, role)) > 0;
 }
 
 // The heart's users on the nerves server, "" when none is declared.
