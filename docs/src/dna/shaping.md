@@ -179,7 +179,10 @@ Roles are authorities, not identities: the person who proposed a
 practice may ratify it with the Board's authority, and the record keeps
 who proposed and who decided. `--supersedes <digest>` names the
 version it replaces: ratifying the new one retires the old, declining
-it leaves the old in force. What an acceptance practice such as this
+it leaves the old in force. The digest may be the short form the list
+shows (`sha256:3122d`): it is resolved to the full digest when you
+propose, and one that names no practice, several practices, or a
+version not in force is refused then, not at ratification. What an acceptance practice such as this
 one does to a person's job is on [One task, end to end](./workflow.md).
 
 `hale dna practice` lists every practice with its state (`awaiting

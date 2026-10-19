@@ -29,13 +29,11 @@
 //! teardown never takes it down. A test's `hale` runs under a habitat of
 //! its own (`hale test` gives each file one beside its vault,
 //! `support/vault.rs` each test process; a script keeps `XDG_DATA_HOME`
-//! under its root), and every teardown — `dna::scratch_done`,
-//! `support/reap.rs`, `scripts/compose-down-under.sh` — refuses the
+//! under its root). `hale test`, `support/reap.rs` and
+//! `scripts/compose-down-under.sh` tear a habitat down through one
+//! teardown, `hale habitat sweep` (its behavior is that module's unit
+//! tests'), and `dna::scratch_done` keeps the same refusal of the
 //! developer's habitat's project whatever a root's file names.
-
-#[allow(dead_code)]
-#[path = "support/reap.rs"]
-mod reap;
 
 use std::path::{Path, PathBuf};
 
@@ -212,22 +210,17 @@ fn the_matchers_see_what_they_name() {
     assert_eq!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\n\"$hale\" dna new \"$tmp/w\"\n").len(), 1);
 }
 
-/// GH #1653: a teardown under a root takes down the projects run from under
-/// it — a test's own habitat among them — and never the developer's
-/// habitat, even when a root's file names it.
+/// GH #1653: the three Rust and shell teardowns are one, `hale habitat
+/// sweep`, so they cannot drift apart; the fixtures' carries the same
+/// refusal of the developer's habitat.
 #[test]
 fn a_teardown_never_takes_the_developers_habitat() {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let developers = reap::habitat_project_at(&format!("{home}/.local/share/hale/habitat/local"));
-    let root = Path::new("/tmp/dna-guard-root");
-    let tests = reap::habitat_project_at("/tmp/dna-guard-root/data/hale/habitat/local");
-    let listed = format!("{developers}|{home}/.local/share/hale/habitat/local\n{tests}|/tmp/dna-guard-root/data/hale/habitat/local\nother|/elsewhere\n");
-    let found = reap::projects_rooted_in(&listed, root, &format!("{developers}\n"));
-    assert_eq!(found, vec![tests], "the test's habitat comes down, the developer's never");
-    // the shell teardown and the fixtures' carry the same refusal
     let repo = repo_root();
-    let script = std::fs::read_to_string(repo.join("scripts/compose-down-under.sh")).unwrap();
-    assert!(script.contains("$HOME/.local/share/hale/habitat/local") && script.contains("grep -v -x -F -e \"$mine\""), "compose-down-under.sh refuses the developer's habitat");
-    let workspace = std::fs::read_to_string(repo.join("dna/core/workspace.hl")).unwrap();
-    assert!(workspace.contains("project == mine"), "dna::scratch_projects_in refuses the developer's habitat");
+    let read = |p: &str| std::fs::read_to_string(repo.join(p)).unwrap();
+    assert!(read("scripts/compose-down-under.sh").contains("habitat sweep \"$root\""), "compose-down-under.sh sweeps through the toolchain");
+    assert!(read("crates/hale-cli/tests/support/reap.rs").contains(".args([\"habitat\", \"sweep\"])"), "the CLI tests' reap sweeps through the toolchain");
+    assert!(read("crates/hale-cli/src/verbs/test.rs").contains("crate::dna::habitat::down_under(dir)"), "hale test's teardown is the sweep's");
+    let habitat = read("crates/hale-cli/src/dna/habitat.rs");
+    assert!(habitat.contains("*p != mine && Some(p) != current.as_ref()"), "the sweep refuses the developer's habitat");
+    assert!(read("dna/core/workspace.hl").contains("project == mine"), "dna::scratch_projects_in refuses the developer's habitat");
 }

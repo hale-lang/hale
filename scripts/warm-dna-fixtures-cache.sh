@@ -50,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 
 # the organism's habitat is the root's own (GH #1653), never the developer's
-export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_DISCOVER=off GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_BIN=$hale HALE_DNA_DISCOVER=off GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 "$hale" dna new "$tmp/warm" >/dev/null
 # --no-iris: this run exists for the build side effect alone. iris
 # attached (the default) means fuse-hl, which grows without bound on

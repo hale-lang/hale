@@ -42,6 +42,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 
 ```text
 usage: hale habitat migrate [organism]
+       hale habitat sweep <root>
 
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
@@ -58,6 +59,15 @@ migrate [organism]   bring the organism's allocations up and migrate them:
                      set, that server of your own is migrated instead.
                      Idempotent. The organism defaults to the current
                      directory.
+
+sweep <root>         take down every compose project run from under <root>,
+                     a test's habitat: its containers, networks and
+                     volumes, confirmed gone by the project's label. The
+                     projects are named in <root>/.dna-compose-projects
+                     until they are, so a teardown that did not finish is
+                     retried. Never the developer's habitat (under $HOME),
+                     nor the one XDG_DATA_HOME names outside <root>. Exit 1
+                     names what survived; nothing is done without docker.
 
 Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
 and `work` run on what is up and migrated, and name this command when it

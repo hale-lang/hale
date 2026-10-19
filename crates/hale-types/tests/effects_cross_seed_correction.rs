@@ -215,8 +215,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        522,
-        527,
+        523,
+        528,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}

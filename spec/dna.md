@@ -676,6 +676,13 @@ sync.
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  `--supersedes` takes the digest whole or as any prefix of it, as
+  `hale dna practice` abbreviates it (`sha256:3122d`), and the CLI
+  resolves it before it requests anything (`dna::superseded_digest`):
+  the row carries the full digest of the one practice in force it
+  begins, and a prefix that begins no practice's digest, several
+  practices' digests, or the digest of one not in force is refused
+  there, by name, never accepted and then refused at ratification.
   **Roles are authorities, not identities.** The person who proposed
   a practice may ratify it: the proposal is in their name (`by`), the
   verdict carries the Board's authority, and the record keeps both, so
@@ -4364,9 +4371,16 @@ The live half is memory's, projected from the record by the spine
   Postgres of the operator's. Only a test's habitat is ever taken down: a
   test's `hale` runs under a habitat of its own (`hale test` gives each
   file one beside its vault, the CLI tests one per process), which comes
-  down with the vault, and every teardown (`dna::scratch_done`, the CLI
-  tests' reap, `scripts/compose-down-under.sh`) refuses the developer's
-  habitat's project whatever a file under a root names.
+  down with the vault. `hale test`, the CLI tests' reap and
+  `scripts/compose-down-under.sh` share one teardown, `hale habitat sweep
+  <root>`: it names every project rooted in the root in the root's
+  `.dna-compose-projects` before it takes any down, and drops a name
+  only once the project's containers and volumes are confirmed gone, so
+  a teardown that did not finish (a volume docker would not remove) is
+  found again by name and retried by the next — a vault whose habitat
+  did not come down is kept for the next sweep. It, and
+  `dna::scratch_done`, refuse the developer's habitat's project whatever
+  a file under a root names.
 - **Knowledge changes later work (K2).** The substrate holds a
   `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
   spine's role), the owner's line to memory; the editor never holds

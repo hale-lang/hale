@@ -280,8 +280,14 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
 /// Remove each `<pid>` / `<pid>-<n>` vault under `root` whose process
 /// no longer runs. The Rust tests' `support/vault.rs` keeps its vaults
 /// under the same root, one per test module and process, and sweeps them
-/// the same way.
+/// the same way. GH #1653: a vault's habitat comes down first, and a vault
+/// whose habitat does not is kept, its projects named in it, for the next
+/// sweep to retry.
 pub(crate) fn sweep_dead_test_vaults(root: &Path) {
+    sweep_dead_test_vaults_with(root, &mut |dir| habitat_down(dir));
+}
+
+fn sweep_dead_test_vaults_with(root: &Path, down: &mut dyn FnMut(&Path) -> Result<(), String>) {
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -292,7 +298,7 @@ pub(crate) fn sweep_dead_test_vaults(root: &Path) {
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         #[cfg(not(unix))]
         let gone = false;
-        if gone && habitat_down(&e.path()).is_ok() {
+        if gone && down(&e.path()).is_ok() {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -307,44 +313,17 @@ pub(crate) fn test_habitat_data(vault: &Path) -> PathBuf {
 }
 
 /// Take down every compose project run from under `dir` (a test file's
-/// habitat lives there): its containers, networks and volumes, confirmed
-/// by the project's label. Never the developer's own habitat, which no
-/// test's teardown touches; nothing to do where there is no docker.
-/// `Err` names what survived, and the caller keeps `dir`.
+/// habitat lives there), as `hale habitat sweep` does: the one teardown
+/// the CLI tests' reap and `scripts/compose-down-under.sh` share, which
+/// names the projects under `dir` until they are confirmed gone and never
+/// touches the developer's habitat. `Err` names what survived, and the
+/// caller keeps `dir`.
 pub(crate) fn habitat_down(dir: &Path) -> Result<(), String> {
-    let docker = |args: &[&str]| std::process::Command::new("docker").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-    if !test_habitat_data(dir).exists() {
+    // a file whose programs started nothing in docker has nothing to ask
+    if !test_habitat_data(dir).exists() && !dir.join(crate::dna::habitat::COMPOSE_FILE).exists() {
         return Ok(());
     }
-    let Some(listed) = docker(&["ps", "-a", "--filter", "label=com.docker.compose.project", "--format", "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}"]) else { return Ok(()) };
-    let text = dir.display().to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mine = {
-        let h = openssl::sha::sha256(format!("{home}/.local/share/hale/habitat/local").as_bytes());
-        format!("hale-habitat-local-{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
-    };
-    let mut projects: Vec<&str> = listed
-        .lines()
-        .filter_map(|l| l.split_once('|'))
-        .filter(|(p, wd)| !p.is_empty() && *p != mine && (*wd == text || wd.starts_with(&format!("{text}/"))))
-        .map(|(p, _)| p)
-        .collect();
-    projects.sort();
-    projects.dedup();
-    let mut left = Vec::new();
-    for p in projects {
-        let _ = docker(&["compose", "-p", p, "down", "-v", "--remove-orphans"]);
-        let label = format!("label=com.docker.compose.project={p}");
-        let stays = docker(&["ps", "-a", "-q", "--filter", &label]).is_none_or(|o| !o.trim().is_empty()) || docker(&["volume", "ls", "-q", "--filter", &label]).is_none_or(|o| !o.trim().is_empty());
-        if stays {
-            left.push(p.to_string());
-        }
-    }
-    if left.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("the test habitat's compose projects did not come down: {}", left.join(", ")))
-    }
+    crate::dna::habitat::down_under(dir)
 }
 
 /// Compile and run one `_test.hl` file and judge it by the
@@ -631,5 +610,31 @@ pub(crate) fn run_test(args: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod habitat_sweep_tests {
+    use super::*;
+
+    /// GH #1653: a gone process's vault whose habitat did not come down is
+    /// kept for the next sweep, and goes once it does.
+    #[test]
+    fn a_vault_whose_habitat_survives_is_kept_for_the_next_sweep() {
+        let root = std::env::temp_dir().join(format!("hale_vault_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // no process has this pid: the vault is a gone one's
+        let vault = root.join("2147483646-0");
+        std::fs::create_dir_all(vault.join("data")).unwrap();
+        sweep_dead_test_vaults_with(&root, &mut |_| Err("compose project p still has volumes after its teardown".into()));
+        assert!(vault.exists(), "kept while its habitat survives");
+        let mut asked = Vec::new();
+        sweep_dead_test_vaults_with(&root, &mut |d| {
+            asked.push(d.to_path_buf());
+            Ok(())
+        });
+        assert_eq!(asked, vec![vault.clone()], "retried by the next sweep");
+        assert!(!vault.exists(), "and removed once it came down");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

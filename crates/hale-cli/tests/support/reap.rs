@@ -28,36 +28,8 @@ pub fn failed_teardown(dir: &Path, why: &str) {
     }
 }
 
-/// The file under a root naming the compose projects found rooted in it,
-/// one per line, kept until their teardown is confirmed — as
-/// `dna::scratch_compose_down` keeps it: a volume carries its project's
-/// name but not the directory it ran from.
-pub const COMPOSE_FILE: &str = ".dna-compose-projects";
-
 fn keep_scratch() -> bool {
     std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0")
-}
-
-enum Docker {
-    Answered(String),
-    // no CLI, or no daemon: nothing compose started can be running there
-    Absent,
-    Failed(String),
-}
-
-fn docker(args: &[&str]) -> Docker {
-    match Command::new("docker").args(args).output() {
-        Err(_) => Docker::Absent,
-        Ok(o) if o.status.success() => Docker::Answered(String::from_utf8_lossy(&o.stdout).into_owned()),
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr).into_owned();
-            if err.contains("Cannot connect to the Docker daemon") || err.contains("Is the docker daemon running") {
-                Docker::Absent
-            } else {
-                Docker::Failed(format!("docker {}: {}", args.join(" "), err.trim()))
-            }
-        }
-    }
 }
 
 /// Take down every compose project whose working directory is `dir` or
@@ -70,59 +42,24 @@ pub fn compose_down(dir: &Path) -> Result<(), String> {
 
 /// Take down every compose project rooted in one of `roots`: a verb with
 /// no owner's DSN brings the organism's memory up as an allocation of the
-/// local habitat, which a test keeps under its root (`XDG_DATA_HOME` there),
-/// and nothing else takes it down. Never the developer's own habitat
-/// ([`projects_rooted_in`]). A project is found
-/// by the `com.docker.compose.project.working_dir` label on any container,
-/// running or not, or by name in the root's [`COMPOSE_FILE`]; `down` by
-/// project name needs no compose file, and a teardown is confirmed by the
-/// project's label on containers and on volumes. `Err` names what failed
-/// or survived, and the projects stay named in the root's file.
-/// `HALE_DNA_KEEP_SCRATCH` keeps everything, as it keeps the directory;
-/// nothing is done where there is no docker to ask.
+/// local habitat, which a test keeps under its root, and nothing else takes
+/// it down. GH #1653: through `hale habitat sweep <root>`, the one teardown
+/// `hale test` and `scripts/compose-down-under.sh` share — the projects are
+/// named under the root (`.dna-compose-projects`) until they are confirmed
+/// gone, by label on containers and on volumes, and the developer's habitat
+/// is never one of them. `Err` names what failed or survived, and the
+/// projects stay named in the root's file. `HALE_DNA_KEEP_SCRATCH` keeps
+/// everything, as it keeps the directory.
 pub fn compose_down_all(roots: &[PathBuf]) -> Result<(), String> {
-    if keep_scratch() || roots.is_empty() {
+    if keep_scratch() {
         return Ok(());
     }
-    let listed = match docker(&[
-        "ps",
-        "-a",
-        "--filter",
-        "label=com.docker.compose.project",
-        "--format",
-        "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}",
-    ]) {
-        Docker::Absent => return Ok(()),
-        Docker::Failed(why) => return Err(why),
-        Docker::Answered(out) => out,
-    };
     let mut failed = Vec::new();
     for root in roots {
-        let file = root.join(COMPOSE_FILE);
-        let projects = projects_rooted_in(&listed, root, &std::fs::read_to_string(&file).unwrap_or_default());
-        if projects.is_empty() {
-            continue;
-        }
-        let _ = std::fs::create_dir_all(root);
-        let _ = std::fs::write(&file, projects.iter().map(|p| format!("{p}\n")).collect::<String>());
-        let mut left = Vec::new();
-        for project in &projects {
-            if let Docker::Failed(why) = docker(&["compose", "-p", project, "down", "-v", "--remove-orphans"]) {
-                left.push(why);
-            }
-            let label = format!("label=com.docker.compose.project={project}");
-            for (what, args) in [("containers", vec!["ps", "-a", "-q", "--filter", &label]), ("volumes", vec!["volume", "ls", "-q", "--filter", &label])] {
-                match docker(&args) {
-                    Docker::Answered(out) if !out.trim().is_empty() => left.push(format!("compose project {project} still has {what} after its teardown")),
-                    Docker::Failed(why) => left.push(why),
-                    _ => {}
-                }
-            }
-        }
-        if left.is_empty() {
-            let _ = std::fs::remove_file(&file);
-        } else {
-            failed.extend(left);
+        match Command::new(env!("CARGO_BIN_EXE_hale")).args(["habitat", "sweep"]).arg(root).output() {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => failed.push(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+            Err(e) => failed.push(format!("hale habitat sweep {}: {e}", root.display())),
         }
     }
     if failed.is_empty() {
@@ -156,40 +93,4 @@ impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         reap(&self.0);
     }
-}
-
-/// The local habitat's compose project for the habitat at `dir`, as
-/// `dna::habitat_project_at` names it.
-#[allow(dead_code)]
-pub fn habitat_project_at(dir: &str) -> String {
-    let h = openssl::sha::sha256(dir.as_bytes());
-    format!("hale-habitat-local-{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
-}
-
-/// The projects of docker's `listed` (`<project>|<working dir>` lines)
-/// rooted in `root`, and the ones `recorded` names, as
-/// `dna::scratch_projects_in` finds them. GH #1653: never the developer's
-/// own local habitat (under `$HOME`), nor the one this process's
-/// `XDG_DATA_HOME` names when it lives outside `root`: the machine's
-/// long-lived habitat is no test's to take down, whatever a file under a
-/// root says.
-pub fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> Vec<String> {
-    let text = root.display().to_string();
-    let under = format!("{text}/");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mine = habitat_project_at(&format!("{home}/.local/share/hale/habitat/local"));
-    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
-    let here = format!("{data}/hale/habitat/local");
-    let current = if here == text || here.starts_with(&under) { None } else { Some(habitat_project_at(&here)) };
-    let mut projects: Vec<String> = listed
-        .lines()
-        .filter_map(|l| l.split_once('|'))
-        .filter(|(p, wd)| !p.is_empty() && (*wd == text || wd.starts_with(&under)))
-        .map(|(p, _)| p.to_string())
-        .chain(recorded.lines().filter(|l| !l.is_empty()).map(str::to_string))
-        .filter(|p| *p != mine && Some(p) != current.as_ref())
-        .collect();
-    projects.sort();
-    projects.dedup();
-    projects
 }
