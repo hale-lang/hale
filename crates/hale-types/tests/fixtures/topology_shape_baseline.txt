@@ -570,6 +570,9 @@ crates/hale-codegen/tests/drain_grace_names_the_wait.rs#0 ba8576b3a6a69d7f
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#1 546011eca41c2186
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 13f189cff0982ac7
 crates/hale-codegen/tests/drain_grace_names_the_wait.rs#3 f93ba90ecbf2502e
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#4 175086526ecb053d
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#5 ed7bbf66802fb150
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#6 5b290388d7c1a683
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
 crates/hale-codegen/tests/dump_pool_residency.rs#1 7d5cf57defcf548e
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 1da3ae7aef880cc6
@@ -1517,6 +1520,8 @@ crates/hale-codegen/tests/tcp_connect_deadline.rs#1 816bc984f3b8c584
 crates/hale-codegen/tests/tcp_connect_deadline.rs#3 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_connect_deadline.rs#4 e6a6288b544acf86
 crates/hale-codegen/tests/tcp_connect_deadline.rs#5 f9c6d04e3ec0250f
+crates/hale-codegen/tests/tcp_connect_deadline.rs#6 f9c6d04e3ec0250f
+crates/hale-codegen/tests/tcp_connect_deadline.rs#8 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_listener.rs#1 05203a1c9cfc5d28
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295
@@ -1662,7 +1667,7 @@ crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
-crates/hale-stdlib/hl/http_client.hl fc9af504447f4ebf
+crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/json.hl 2d2ace32481d2bb5

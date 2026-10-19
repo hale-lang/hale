@@ -740,8 +740,15 @@ fn main() { App { }; }
         "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
         "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
     ]);
-    let s = snapshot(&src.replace("Beat: Adapter { }", "Beat: Adapter { leaf: self.leaf }"));
+    // The explicit held field this pinned was `Adapter { leaf: self.leaf }`,
+    // which never built — an adapter binding is built by the prelude,
+    // before `App`, so there is no `self` — and is refused at check now
+    // (`placement::an_adapter_binding_literal_that_reads_self_is_refused_at_the_read`).
+    // An explicit literal is the field's one construction: the default's
+    // `Leaf { }` does not run beside it.
+    let s = snapshot(&src.replace("Beat: Adapter { }", "Beat: Adapter { leaf: Leaf { } }"));
     assert_eq!(locus_holes(model(&s)), [
         "Adapter instance born outside the arrangement: owner and placement resolve at runtime",
+        "Leaf instance born outside the arrangement: owner and placement resolve at runtime",
     ]);
 }

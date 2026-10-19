@@ -5,7 +5,8 @@
 //! SYN retransmits). `connect_within(host, port, timeout)` bounds the one
 //! attempt (tls: the dial and the handshake), `connect_wait`'s `wait`
 //! bounds the whole dial, `std::http::Client`'s `timeout_ms` bounds each
-//! attempt's dial, and every expiry is the IoError kind `timeout`. On an
+//! call's dials (and, since 2026-10-18, the rest of the call: the test at
+//! the end of this file), and every expiry is the IoError kind `timeout`. On an
 //! `async_io` pool the pending connect parks the coroutine.
 //!
 //! The host that never answers is made here, deterministically, without
@@ -437,4 +438,174 @@ fn the_one_shot_http_fns_dial_under_a_30_s_deadline() {
         );
     }
     let _ = std::fs::remove_file(&bin);
+}
+
+/// A server that accepts every connection and then holds it: it reads
+/// the request and answers nothing, or (`partial`) answers the status
+/// line, headers and the first bytes of a body it never finishes. The
+/// connections stay open while it lives.
+struct Holder {
+    port: u16,
+    _accepting: std::thread::JoinHandle<()>,
+}
+
+impl Holder {
+    fn new(partial: bool) -> Holder {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let port = addr.port();
+        let accepting = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                if partial {
+                    use std::io::Write;
+                    let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc");
+                }
+                held.push(conn);
+            }
+        });
+        Holder { port, _accepting: accepting }
+    }
+}
+
+/// `std::http::Client`'s `timeout_ms` bounded only the dial: a server that
+/// accepted and then held the response blocked the caller indefinitely,
+/// and the default three retries repeated it (a request took 120 s
+/// against a server holding each call 30 s). It bounds the call whole
+/// now — the dial, the writes, the headers and the body, and the retries
+/// — on both the one-shot and the keep-alive path, and a body the
+/// deadline cuts short is no response.
+#[test]
+fn the_http_client_timeout_bounds_a_held_response_and_its_retries() {
+    let src = r#"
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let url = "http://127.0.0.1:" + to_string(port) + "/";
+            let empty = std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            let c = std::http::Client { timeout_ms: 300 };
+            let t = std::time::monotonic_ns();
+            let r = c.get(url) or { println("plain kind=", err.kind, " ms=", (std::time::monotonic_ns() - t) / 1000000); println("plain_detail ", err.detail); empty };
+            let k = std::http::Client { timeout_ms: 300, keep_alive: true };
+            let t2 = std::time::monotonic_ns();
+            let r2 = k.get(url) or { println("pooled kind=", err.kind, " ms=", (std::time::monotonic_ns() - t2) / 1000000); println("pooled_detail ", err.detail); empty };
+            let t3 = std::time::monotonic_ns();
+            let r3 = c.post(url, b"x=1", "application/x-www-form-urlencoded") or { println("post kind=", err.kind, " ms=", (std::time::monotonic_ns() - t3) / 1000000); empty };
+            println("statuses ", r.status + r2.status + r3.status);
+        }
+    "#;
+    for partial in [false, true] {
+        let holder = Holder::new(partial);
+        let port = holder.port.to_string();
+        let out = run(&format!("hale_http_client_held_{partial}"), src, &[&port]);
+        for tag in ["plain ", "pooled ", "post "] {
+            assert_eq!(field(&out, tag, "kind"), "retries_exhausted", "partial={partial} {tag}: {out}");
+            let took = ms(&out, tag);
+            assert!(
+                (280..1500).contains(&took),
+                "partial={partial} {tag}: the call must end at timeout_ms, retries included; took {took} ms: {out}"
+            );
+        }
+        for tag in ["plain_detail ", "pooled_detail "] {
+            let line = out.lines().find(|l| l.starts_with(tag)).expect(tag);
+            assert!(line.contains("timeout: no complete response within 300 ms"), "partial={partial}: {line:?}");
+        }
+        assert!(out.contains("statuses 0"), "no truncated response is handed back: {out}");
+    }
+}
+
+/// pond's `NatsClient.open_as` dialed with `std::io::tcp::connect`,
+/// ignoring the client's `timeout`, so a blackholed host blocked its
+/// caller for the kernel's ~2 min of SYN retransmits. It dials with
+/// `connect_within(…, timeout)` now, and `last_error` names the timeout.
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the full-accept-queue blackhole is Linux's SYN-drop contract")]
+fn the_nats_client_dial_ends_at_its_timeout() {
+    let hole = Blackhole::new();
+    let nats = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond/realtime/nats");
+    let nats = nats.canonicalize().expect("dna/core/pond/realtime/nats");
+    let dir = harness::unique_dir("hale_nats_dial_deadline");
+    let entry = dir.join("main.hl");
+    std::fs::write(
+        &entry,
+        format!(
+            r#"import "{}" as nats;
+fn main() {{
+    let port = std::env::arg(1);
+    let c = nats::NatsClient {{ url: "nats://127.0.0.1:" + port, timeout: 300ms }};
+    let t = std::time::monotonic_ns();
+    let ok = c.open();
+    println("open ok=", ok, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+    println("error ", c.last_error);
+}}
+"#,
+            nats.display()
+        ),
+    )
+    .expect("write main.hl");
+    let bin = harness::unique_bin("hale_nats_dial_deadline_bin");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).arg(hole.port.to_string()).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{:?}: {stdout}{}", out.status, String::from_utf8_lossy(&out.stderr));
+    assert_eq!(field(&stdout, "open", "ok"), "false", "{stdout}");
+    let took = ms(&stdout, "open");
+    assert!((280..1500).contains(&took), "the dial must end at the client's timeout; took {took} ms: {stdout}");
+    let line = stdout.lines().find(|l| l.starts_with("error ")).expect("error line");
+    assert!(line.contains("connect: tcp to 127.0.0.1:") && line.contains("timeout: no connection within 300 ms"), "{line:?}");
+}
+
+/// A peer that accepts a large request a slice at a time — 64 KiB every
+/// 200 ms, each slice well inside any stall window — kept a POST alive
+/// long past `timeout_ms`: the send's SO_SNDTIMEO is a stall window that
+/// restarts on every partial write, so arming it once before the send
+/// bounded each stall, not the send. The send gets the call's absolute
+/// deadline now, plain and keep-alive alike.
+#[test]
+fn the_http_client_timeout_bounds_a_post_its_peer_drains_slowly() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    let port = addr.port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match conn.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => std::thread::sleep(Duration::from_millis(200)),
+                    }
+                }
+            });
+        }
+    });
+    let src = r#"
+        fn main() {
+            let port = std::str::parse_int(std::env::arg(1)) or 0;
+            let url = "http://127.0.0.1:" + to_string(port) + "/upload";
+            let chunk = std::bytes::from_string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+            let b = std::bytes::BytesBuilder { initial_cap: 33554432 };
+            let mut i = 0;
+            while i < 524288 { b.append(chunk); i = i + 1; }
+            let body = b.snapshot() or b"";
+            let empty = std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            let c = std::http::Client { timeout_ms: 600, max_retries: 0 };
+            let t = std::time::monotonic_ns();
+            let r = c.post(url, body, "application/octet-stream") or { println("plain kind=", err.kind, " ms=", (std::time::monotonic_ns() - t) / 1000000); empty };
+            let k = std::http::Client { timeout_ms: 600, max_retries: 0, keep_alive: true };
+            let t2 = std::time::monotonic_ns();
+            let r2 = k.post(url, body, "application/octet-stream") or { println("pooled kind=", err.kind, " ms=", (std::time::monotonic_ns() - t2) / 1000000); empty };
+            println("bytes ", len(body), " statuses ", r.status + r2.status);
+        }
+    "#;
+    let out = run("hale_http_client_slow_drain", src, &[&port.to_string()]);
+    assert!(out.contains("bytes 33554432 statuses 0"), "{out}");
+    for tag in ["plain ", "pooled "] {
+        let took = ms(&out, tag);
+        assert!((550..2000).contains(&took), "{tag}: the send must end at timeout_ms however the peer drains it; took {took} ms: {out}");
+    }
 }

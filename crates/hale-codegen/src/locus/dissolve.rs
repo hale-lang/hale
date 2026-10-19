@@ -260,6 +260,15 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // receiver is read.
             match self.current_self.as_ref().map(|cs| cs.locus_name.clone()) {
                 Some(reader) => {
+                    // Read in the reader's own run()? Anywhere else (a
+                    // handler, a hook, a method another locus calls) it
+                    // can answer a drain after run() has returned.
+                    let in_run = self.current_fn.is_some_and(|f| {
+                        self.user_loci.get(&reader).and_then(|r| r.methods.get("run")).is_some_and(|r| *r == f)
+                    });
+                    if !in_run {
+                        self.drain_reads_beyond_run.insert(reader.clone());
+                    }
                     self.drain_observer_loci.insert(reader);
                 }
                 None => self.drain_read_outside_locus = true,
@@ -2108,7 +2117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.emit_accepted_children_reclaim(info, self_ptr, locus_name)?;
                 }
                 ReclaimStep::Latch => {
-                    self.emit_drain_observer_count(locus_name, -1)?;
+                    self.emit_drain_observer_out(locus_name, self_ptr, false)?;
                     self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
                 }
                 ReclaimStep::CancelQueuedRuns => {
