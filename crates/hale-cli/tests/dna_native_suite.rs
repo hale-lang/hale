@@ -33,16 +33,16 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Twenty slices of ~8 fixtures, so the
+/// contention (GH #795). Twenty-four slices of ~7 fixtures, so the
 /// round-robin (`count:`) partition over the test list spreads them
-/// evenly across five jobs
+/// evenly across six jobs
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
 /// fifteen minutes a slice had then, when graph_holes ran on the git
 /// record. One wedged fixture still ends in a named failure within the
 /// group's timeout.
-const SLICES: usize = 20;
+const SLICES: usize = 24;
 
 /// The fixtures that take minutes of a slice on CI's runners: an
 /// organization run through dozens of Board decisions (GH #995:
@@ -65,12 +65,16 @@ const SLICES: usize = 20;
 ///
 /// The ORDER of this list is the deal. Slice `i` is the test
 /// `dna_fixtures_slice_<ii>` (zero-padded, so nextest's alphabetical
-/// listing is slice order), and CI's `--partition count:N/5` deals that
-/// listing round-robin over five jobs, each of which starts its slices
+/// listing is slice order), and CI's `--partition count:N/6` deals that
+/// listing round-robin over six jobs, each of which starts its slices
 /// in listing order, two at a time. Three of the suite's other tests
-/// sort before the slices, so slice `i` runs in job `(i + 3) % 5 + 1`
-/// with every fifth slice from it: each job gets two of these ten and
-/// two of the light slices 10-19. So a heavy fixture's position picks its job
+/// sort before the slices, so slice `i` runs in job `(i + 3) % 6 + 1`
+/// with every sixth slice from it: each job gets two of the heavy slices
+/// 0-11 and two of the light slices 12-23 (one heavy slot is free, for
+/// the next heavy fixture). GH #1653 added `habitat_up_test`, which
+/// births a habitat on its own backends, stops it, drains it and brings
+/// it back, and the sixth job with it: the job count and HEAVY move
+/// together. So a heavy fixture's position picks its job
 /// and how early it starts there. They are placed so the five jobs'
 /// slice minutes come out level (610-770 s each, from the slice times
 /// of CI's runs on 2026-10-12), each job starts its two longest slices
@@ -79,7 +83,7 @@ const SLICES: usize = 20;
 /// fixtures, which need the host's bound to themselves, sit in
 /// different jobs (slices 0 and 6: jobs 4 and 5). Move one only with a
 /// look at those runs' per-slice times.
-const HEAVY: [&str; 10] = [
+const HEAVY: [&str; 11] = [
     "graph_holes_test.hl",
     "dogfood_voice_test.hl",
     "legs_test.hl",
@@ -90,6 +94,7 @@ const HEAVY: [&str; 10] = [
     "body_lease_blocked_test.hl",
     "senses_reflex_test.hl",
     "receipt_retention_test.hl",
+    "habitat_up_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -717,6 +722,7 @@ fixture_slices! {
     dna_fixtures_slice_08 => 8, dna_fixtures_slice_09 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
     dna_fixtures_slice_16 => 16, dna_fixtures_slice_17 => 17, dna_fixtures_slice_18 => 18, dna_fixtures_slice_19 => 19,
+    dna_fixtures_slice_20 => 20, dna_fixtures_slice_21 => 21, dna_fixtures_slice_22 => 22, dna_fixtures_slice_23 => 23,
 }
 
 /// The slice's own memory database is reached by editing exactly the
@@ -899,7 +905,7 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
 /// or marked `@bounded_by(<input>)` with what bounds it, or `@unbounded`
 /// with an issue while it is not yet understood (docs/src/dna/standard.md).
 ///
-/// One test, not one per target: CI's `--partition count:N/4` deals this
+/// One test, not one per target: CI's `--partition count:N/6` deals this
 /// binary's alphabetical test list round-robin, and a test sorted before
 /// `dna_fixtures_slice_00` moves every slice to another part.
 #[test]
