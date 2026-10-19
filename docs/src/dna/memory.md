@@ -295,6 +295,19 @@ away from the host. Without the spine's DSN the host says so and runs
 with no memory, projecting and admitting nothing; on a record that has
 adopted the ledger, `run` refuses to start at all.
 
+The habitat is itself an organism, the one the toolchain ships and the
+one born without a parent. `hale habitat up` births it the first time
+(its genome under the habitat directory, its record in its own memory
+allocation, its positions and law proposed to its Board), brings every
+recorded allocation back up, and runs its body: a systemd user unit, or
+`--foreground` in your terminal. It migrates only its own memory and
+nerves; an organism's allocation moves when you upgrade that organism or
+run `hale habitat migrate` on it. `hale habitat status` lists each
+allocation as the habitat's record holds it, one row per organism and
+role with the schema version it was migrated to, and says which are
+behind this toolchain. `hale habitat down` stops everything and keeps
+the data.
+
 ### Shared records
 
 Over a record several organizations share, each owner's heads write as

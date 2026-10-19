@@ -201,9 +201,17 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/packs/content-team.pack",
     "dna/nursery/packs/dev-team.pack",
     "dna/nursery/packs/founder.pack",
+    "dna/nursery/packs/habitat.pack",
     "dna/nursery/packs/small-startup.pack",
     "dna/nursery/packs/standard.pack",
 ];
+
+/// GH #1653: the habitat's genome, which ships with the toolchain as the
+/// foundational law and the nursery do: what `hale habitat up` births the
+/// habitat from, the one organism that may be born without a parent. Its
+/// positions are the nursery's `habitat` pack, and its law the `standard`
+/// pack and the `law` items its document marks.
+pub const HABITAT_FILES: &[EmbeddedFile] = at!["dna/habitat/README.md"];
 
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.

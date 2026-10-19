@@ -41,7 +41,10 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 --help`:
 
 ```text
-usage: hale habitat migrate [organism]
+usage: hale habitat up [--foreground] [--profile local]
+       hale habitat status
+       hale habitat down
+       hale habitat migrate [organism]
        hale habitat sweep <root>
 
 The local habitat holds every organism's infrastructure on this machine:
@@ -51,6 +54,22 @@ record identity), under ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local.
 It is long-lived: nothing tears it down when work ends, and two checkouts
 of one organism are the same tenant.
 
+up                   birth the habitat the first time, from the genome the
+                     toolchain ships (its positions the nursery's `habitat`
+                     pack, its law the `standard` pack and its document's
+                     `law` items), the one organism born without a parent;
+                     then bring every recorded allocation up, migrating any
+                     whose recorded schema version is behind this
+                     toolchain's, and start the habitat's body: a systemd
+                     user unit named for the habitat, or, with
+                     --foreground, in this process. Idempotent. The hosted
+                     profile (backends the platform runs) is not built.
+status               the habitat, its genome and body, and each
+                     allocation: its organism, whether each role's service
+                     runs, and the schema version it records against this
+                     toolchain's.
+down                 stop the habitat's body and every service of its
+                     project; their data is kept, and `up` brings them back.
 migrate [organism]   bring the organism's allocations up and migrate them:
                      memory's schema and the nerves' stream move to this
                      toolchain's, and the head's DSN is kept in the
@@ -58,7 +77,8 @@ migrate [organism]   bring the organism's allocations up and migrate them:
                      HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER
                      set, that server of your own is migrated instead.
                      Idempotent. The organism defaults to the current
-                     directory.
+                     directory. Each role's version is recorded in the
+                     allocation's allocation.json.
 
 sweep <root>         take down every compose project run from under <root>,
                      a test's habitat: its containers, networks and

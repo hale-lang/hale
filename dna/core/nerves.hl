@@ -273,6 +273,12 @@ fn nerves_heart_filter_of(org: String) -> String { return if len(org) == 0 { "" 
 fn nerves_heart_prefix() -> String { return nerves_heart_prefix_of(nerves_org()); }
 fn nerves_heart_filter() -> String { return nerves_heart_filter_of(nerves_org()); }
 
+// GH #1653: the version of the stream's configuration this toolchain
+// creates, recorded per allocation by the habitat beside memory's schema
+// version; it moves with `nerves_stream_config`, and a habitat whose
+// nerves allocation records an older one migrates it at upgrade.
+const NERVES_STREAM_VERSION: Int = 1;
+
 // The stream's configuration.
 fn nerves_stream_config(org: String) -> String {
     let b = std::json::Builder { };

@@ -262,6 +262,14 @@ fn memory_roles(dir: &Path, args: &[String]) -> Result<MemoryPlan, String> {
         // organism's memory allocation in the local habitat
         let from = if std::env::var(OWNER_DSN_ENV).is_ok_and(|v| !v.is_empty()) { "owner".to_string() } else { memory_allocation_name(&root).unwrap_or_default() };
         write_memory_env(&root, head, &from)?;
+        // GH #1653: a migration into the habitat is recorded in the
+        // allocation's row, with the version it moved the schema to
+        if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+            if from != "owner" {
+                let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+                habitat::record_allocation(&root, "memory", v, slots)?;
+            }
+        }
         return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
     let line = out.trim();
@@ -426,6 +434,15 @@ fn nerves_derive(dir: &Path) -> Result<NervesPlan, String> {
 
 fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
     let out = host_run("nerves-migrate", dir, args)?;
+    // GH #1653: a migration into the habitat is recorded in the
+    // allocation's row, with the version it moved the stream to
+    if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
+        if !std::env::var(NATS_OWNER_ENV).is_ok_and(|u| !u.is_empty()) {
+            let (root, _) = project(dir)?;
+            let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+            habitat::record_allocation(&root, "nerves", v, slots)?;
+        }
+    }
     let roles: Vec<(String, String)> = out
         .lines()
         .filter(|l| l.starts_with("HALE_DNA_NATS_"))
@@ -2204,6 +2221,10 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
+    } else if in_memory {
+        // GH #1653: the habitat's upgrade of this organism's allocation:
+        // each role recorded behind this toolchain's version is migrated
+        out.extend(habitat::upgrade_allocation(&root)?);
     }
     Ok(out)
 }

@@ -38,3 +38,10 @@ version = "1"
 path = "packs/standard.pack"
 summary = "the standard practices every organism adopts at birth, each proposed as law: first, logs are structured"
 params = {}
+
+[[pack]]
+name = "habitat"
+version = "1"
+path = "packs/habitat.pack"
+summary = "the habitat's fixed positions: placement, backends, identity and admission"
+params = { holder = "" }

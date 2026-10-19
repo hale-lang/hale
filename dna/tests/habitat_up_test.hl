@@ -1,0 +1,123 @@
+// dna/tests/habitat_up_test.hl — the local habitat, born, read, stopped and
+// brought back (GH #1653).
+//
+// `hale habitat up` births the habitat the first time from the genome the
+// toolchain ships, the one organism with no parent: its record lives in its
+// own memory allocation, and the allocations it holds are rows of that
+// record, `habitat.allocated` and `habitat.migrated` by organism and role,
+// never by checkout. `--foreground` runs its body in the process. An
+// organism born beside it is its tenant, recorded in the same record.
+// `status` reads the rows; `down` stops the body and every service and
+// keeps their data; `up` again brings them back and migrates only the
+// habitat's own memory and nerves, never a tenant's. The habitat is this
+// test file's own (`hale test` gives each file one). Without docker compose
+// nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir` with no server of anyone else's named: the habitat's
+// memory and nerves are its own allocations.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// `hale habitat up --foreground` in the background, its output in `log`;
+// its pid.
+fn up(dir: String, log: String) -> String {
+    let started = in_dir(dir, "sh\n-c\nnohup timeout --foreground 900 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + log);
+    return dna::trim_nl(started.stdout);
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// Whether `log` comes to say `text` within `secs`.
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// The record rows of `kind` the habitat's record holds, a line each.
+@bounded_by(genome)
+fn rows_of(genome: String, kind: String) -> String {
+    let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout + "\n";
+    let mut out = "";
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::json::find_string_field(line, "kind") == kind { out = out + line + "\n"; }
+    }
+    return out;
+}
+
+// The services of the habitat's project, running (`all` false) or not.
+fn containers(all: Bool) -> Int {
+    let r = dna::run_tool("docker\nps\n" + (if all { "-a\n" } else { "" }) + "-q\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project());
+    let mut n = 0;
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { break; }
+        if nl > 0 { n = n + 1; }
+        rest = rest[(nl + 1)..len(rest)];
+    }
+    return n;
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("habitat_up_test: not exercised (docker compose is not on PATH)"); return; }
+    if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("habitat_up_test: not exercised (outside `hale test`, the habitat would be the developer's)"); return; }
+    let scratch = dna::scratch_root("habitat-up");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- born, without a parent, its body in the foreground
+    let first = scratch + "/up.log";
+    let body = up(scratch, first);
+    std::test::assert(len(body) > 0 && logged(first, "body    the habitat's body runs in this process", 600), "the habitat is born and its body runs: " + text_of(first));
+    std::test::assert(std::str::contains(text_of(first), "born    the habitat at " + genome + " (the one organism with no parent)"), "born from the toolchain's genome: " + text_of(first));
+    std::test::assert(std::str::contains(text_of(genome + "/README.md"), "`law` **Only the habitat's acts provision.**"), "whose document carries its law");
+    let key = dna::allocation_key(genome);
+    std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(std::str::contains(status, "body    up (pid ") && std::str::contains(status, "allocations, as the habitat's record:") && std::str::contains(status, "memory  memory-" + key + " running, schema ") && std::str::contains(status, "(this toolchain's)"), "status reads the habitat's own allocation from its record: " + status);
+    let allocated = rows_of(genome, "habitat.allocated");
+    std::test::assert(std::str::contains(allocated, "\"entity\": \"" + key + "/memory\"") && std::str::contains(allocated, "\"entity\": \"" + key + "/nerves\""), "its bootstrap allocations are rows of its record: " + allocated);
+    std::test::assert(!std::str::contains(allocated, genome) && std::str::contains(allocated, "postgres-owner-" + key), "keyed by organism and role, naming vault slots, never a checkout: " + allocated);
+
+    // ---- a tenant: an organism born beside it is recorded in its record
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\ntenant\n--no-library");
+    std::test::assert_eq_int(made.code, 0, "the tenant is born: " + made.stdout + made.stderr);
+    let tenant = scratch + "/tenant";
+    let tkey = dna::allocation_key(tenant);
+    let with_tenant = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(std::str::contains(with_tenant, "allocation " + tkey + " (" + tenant + ")") && std::str::contains(with_tenant, "memory  memory-" + tkey + " running"), "status names the tenant's allocation: " + with_tenant);
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.migrated"), "\"entity\": \"" + tkey + "/memory\""), "the tenant's migration is a row of the habitat's record");
+
+    // ---- down keeps the data; up brings it back, migrating no tenant
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert(down.code == 0 && std::str::contains(down.stdout, "its data is kept"), "down stops the habitat: " + down.stdout + down.stderr);
+    std::test::assert(containers(false) == 0 && containers(true) > 0, "every service stopped, none removed");
+    let second = scratch + "/up2.log";
+    let again = up(scratch, second);
+    std::test::assert(len(again) > 0 && logged(second, "body    the habitat's body runs in this process", 300), "up brings the habitat back: " + text_of(second));
+    let back = text_of(second);
+    std::test::assert(!std::str::contains(back, "born    ") && std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")"), "born once, and its tenant brought up: " + back);
+    std::test::assert(!std::str::contains(back, tenant + "/.hale/dna/memory.env"), "and the tenant is not migrated by up: " + back);
+    let after = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(std::str::contains(after, "memory  memory-" + tkey + " running"), "the tenant runs again: " + after);
+
+    let stopped = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert_eq_int(stopped.code, 0, "and down again: " + stopped.stderr);
+    dna::scratch_done(scratch);
+}
