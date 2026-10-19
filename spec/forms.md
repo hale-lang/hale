@@ -169,6 +169,9 @@ name;`, is the hashmap model's value-level projection (2026-10-17): no
 form and no storage of its own, a bounded list whose elements carry their
 key, which the api codecs carry as a map keyed by it (spec/api.md §
 Codecs, spec/types.md § bounded[T; N]). Its key is a `String` field.
+`indexed_by name -> status` names the element's one other field, which
+crosses alone as each key's value: a map of values, whose element is a
+record of the key and that value.
 `@form(heap)`'s `ordered_by min <field>` / `ordered_by max <field>`
 is one for the same reason: the order decides where every cell sits.
 `ordered_by` on a slot of any other locus is a type error.

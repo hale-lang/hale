@@ -83,9 +83,10 @@ pub enum Ty {
     /// An `enum` of the file (a payload-free Hale enum), by its name.
     Enum(String),
     /// `map<string, value>`: a wire map (spec/api.md § Codecs), its value the
-    /// record's message; `entry` the implicit entry message protoc names
-    /// after the field (`checks` -> `ChecksEntry`).
-    Map { value: String, entry: String },
+    /// record's message, or a map of values' scalar or enum; `entry` the
+    /// implicit entry message protoc names after the field (`checks` ->
+    /// `ChecksEntry`).
+    Map { value: Box<Ty>, entry: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,7 +433,8 @@ fn refs_of<'a>(f: &'a FieldSchema, out: &mut Vec<&'a str>) {
         FieldSchema::Ref(r) => out.push(r),
         FieldSchema::List { items, .. } => refs_of(items, out),
         FieldSchema::Nullable { inner, .. } => refs_of(inner, out),
-        FieldSchema::Map { name, .. } => out.push(name),
+        FieldSchema::Map { name, of: None, .. } => out.push(name),
+        FieldSchema::Map { of: Some((_, v)), .. } => refs_of(v, out),
         FieldSchema::Enum { variants, .. } => {
             for (_, values) in variants {
                 for v in values {
@@ -573,9 +575,31 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
             // a wire map: `map<string, T>`, its value the whole record (the
             // key carried in it too: the record's own message, shared with
             // every other use of the type)
-            FieldSchema::Map { name, key: k, max, .. } => {
-                let mut p = field(key, number, Ty::Map { value: message_name(name, surface), entry: map_entry_name(key) }, Label::Repeated);
+            FieldSchema::Map { name, key: k, max, of: None, .. } => {
+                let value = Box::new(Ty::Message(message_name(name, surface)));
+                let mut p = field(key, number, Ty::Map { value, entry: map_entry_name(key) }, Label::Repeated);
                 p.comment = Some(format!("Hale: keyed by `{k}`; at most {max}"));
+                p
+            }
+            // a map of values: `map<string, V>`, its value the scalar or the
+            // payload-free enum each element crosses as
+            FieldSchema::Map { key: k, max, of: Some((v, schema)), .. } => {
+                let value = match schema.as_ref() {
+                    FieldSchema::Scalar { json, .. } => {
+                        let Some(s) = scalar_of(json) else {
+                            return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
+                        };
+                        Ty::Scalar(s)
+                    }
+                    FieldSchema::Time => Ty::Scalar(Scalar::Int64),
+                    FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
+                        ty @ Ty::Enum(_) => ty,
+                        _ => return Err(format!("{display}.{key}: a map's value `{name}` has payloads, which no map value carries")),
+                    },
+                    _ => return Err(format!("{display}.{key}: a map's value `{v}` is no scalar")),
+                };
+                let mut p = field(key, number, Ty::Map { value: Box::new(value), entry: map_entry_name(key) }, Label::Repeated);
+                p.comment = Some(format!("Hale: keyed by `{k}`, each the `{v}`; at most {max}"));
                 p
             }
             FieldSchema::Time => {
@@ -790,6 +814,11 @@ fn field_text(f: &PField) -> String {
         Ty::Message(m) | Ty::Enum(m) => m.clone(),
         Ty::Map { value, .. } => {
             let tail = f.comment.as_ref().map_or(String::new(), |c| format!(" // {c}"));
+            let value = match value.as_ref() {
+                Ty::Scalar(s) => s.keyword().to_string(),
+                Ty::Message(m) | Ty::Enum(m) => m.clone(),
+                Ty::Map { .. } => unreachable!("a map's value is no map"),
+            };
             return format!("map<string, {value}> {} = {};{tail}", f.name, f.number);
         }
     };
@@ -929,8 +958,18 @@ impl ProtoFile {
                 put_str(1, "value", &mut vd);
                 put_varint(3, 2, &mut vd);
                 put_varint(4, 1, &mut vd);
-                put_varint(5, 11, &mut vd);
-                put_str(6, &q(value), &mut vd);
+                match value.as_ref() {
+                    Ty::Scalar(s) => put_varint(5, s.descriptor_type(), &mut vd),
+                    Ty::Message(n) => {
+                        put_varint(5, 11, &mut vd);
+                        put_str(6, &q(n), &mut vd);
+                    }
+                    Ty::Enum(n) => {
+                        put_varint(5, 14, &mut vd);
+                        put_str(6, &q(n), &mut vd);
+                    }
+                    Ty::Map { .. } => unreachable!("a map's value is no map"),
+                }
                 put_str(10, "value", &mut vd);
                 put_bytes(2, &vd, &mut nd);
                 let mut opts = Vec::new();

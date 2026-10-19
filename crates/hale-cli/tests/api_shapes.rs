@@ -409,3 +409,73 @@ fn a_field_with_a_default_is_described_optional() {
     assert_eq!(doc["schemas"]["Inner"]["required"], json!(["a"]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A map of values (`indexed_by name -> status`, spec/api.md § Codecs) is
+/// described as an object of the value's schema, naming the value
+/// (`x-hale-value`), and `map<string, string>` in the `.proto`. The Hale
+/// client declares the same map and its codec reads and writes the server's
+/// wire (`{"db":"ok"}`); the TypeScript client keeps the records and puts
+/// each one's value alone on the wire.
+#[test]
+fn a_map_of_values_is_described_and_carried_by_the_clients() {
+    let dir = unique_dir("value_map");
+    let src = dir.join("levels.hl");
+    std::fs::write(
+        &src,
+        "type Level { name: String; status: String; }\n\
+         type Gauge { name: String; depth: Int; }\n\
+         type Health { checks: bounded[Level; 3] indexed_by name -> status; gauges: bounded[Gauge; 2] indexed_by name -> depth; }\n\
+         locus L {\n    fn echo(h: Health) -> Health { return h; }\n}\n\
+         api Levels { rpc L::echo; }\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        l: L = L { };\n        h: api::Exposure = api::serve(Levels, unix::Rpc { path: \"/tmp/hale-levels.sock\", roles: Nobody { } }, as: \"levels\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let out = dir.join("out");
+    let e = hale().args(["api", "export", "--surface", "Levels", "--out"]).arg(&out).arg(&src).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let doc = json_of(&std::fs::read_to_string(out.join("Levels.description.json")).unwrap());
+    assert_eq!(
+        doc["schemas"]["Health"]["properties"]["checks"],
+        json!({"type": "object", "additionalProperties": {"type": "string"}, "maxProperties": 3, "x-hale-key": "name", "x-hale-value": "status"})
+    );
+    assert_eq!(
+        doc["schemas"]["Health"]["properties"]["gauges"],
+        json!({"type": "object", "additionalProperties": {"type": "integer"}, "maxProperties": 2, "x-hale-key": "name", "x-hale-value": "depth"})
+    );
+    let proto = std::fs::read_to_string(out.join("Levels.proto")).unwrap();
+    assert!(proto.contains("map<string, string> checks = 1;") && proto.contains("map<string, int64> gauges = 2;"), "{proto}");
+
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Levels", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    assert!(text.contains("checks: bounded[Level; 3] indexed_by name -> status;"), "the client declares the map of values: {text}");
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn main() {\n    let h = Health::api_decode(\"{\\\"checks\\\":{\\\"db\\\":\\\"ok\\\",\\\"nats\\\":\\\"down\\\"},\\\"gauges\\\":{\\\"q\\\":3}}\") or { println(err.kind); return; };\n    println(to_string(count(h.checks)) + \" \" + Health::api_encode(h));\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "2 {\"checks\":{\"db\":\"ok\",\"nats\":\"down\"},\"gauges\":{\"q\":3}}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let ts = dir.join("client.ts");
+    let o = hale().args(["api", "client", "--surface", "Levels", "--lang", "ts", "--out"]).arg(&ts).arg(&src).output().expect("ts client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&ts).unwrap();
+    assert!(text.contains("checks: __Array<Level>;"), "a map of values is its records: {text}");
+    assert!(text.contains("encode_Level, \"status\")") && text.contains("decode_Level, \"status\")"), "each record's value alone on the wire: {text}");
+    let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
+    if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");
+        assert!(c.status.success(), "tsc refused the client:\n{}{}", String::from_utf8_lossy(&c.stdout), String::from_utf8_lossy(&c.stderr));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

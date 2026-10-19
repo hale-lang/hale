@@ -207,11 +207,16 @@ fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String
             default_of(model, f).map_or(String::new(), |d| format!(" = {d}"))
         };
         // a map keys its records by the client's name of the lifted field
+        // (and a map of values names the value's too)
         let keyed = match value {
-            FieldSchema::Map { name: record, lifted, .. } => {
+            FieldSchema::Map { name: record, lifted, of, .. } => {
                 let rt = model.types.get(record).ok_or_else(|| unformed(&format!("{name}.{key}")))?;
-                let at = rt.properties.iter().position(|(k, _)| k == lifted).ok_or_else(|| unformed(&format!("{name}.{key}")))?;
-                format!(" indexed_by {}", field_idents(rt)[at])
+                let place = |k: &str| rt.properties.iter().position(|(p, _)| p == k).ok_or_else(|| unformed(&format!("{name}.{key}")));
+                let idents = field_idents(rt);
+                match of {
+                    Some((v, _)) => format!(" indexed_by {} -> {}", idents[place(lifted)?], idents[place(v)?]),
+                    None => format!(" indexed_by {}", idents[place(lifted)?]),
+                }
             }
             _ => String::new(),
         };

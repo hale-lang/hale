@@ -191,9 +191,10 @@ fn type_label(doc: &Value, schema: &Value) -> String {
                 _ => format!("[{item}]"),
             }
         }
-        Some("object") => match schema.get("x-hale-key").and_then(Value::as_str) {
-            Some(k) => format!("{{map by {k}}}"),
-            None => "{record}".to_string(),
+        Some("object") => match (schema.get("x-hale-key").and_then(Value::as_str), schema.get("x-hale-value").and_then(Value::as_str)) {
+            (Some(k), Some(v)) => format!("{{map by {k} of {v}}}"),
+            (Some(k), None) => format!("{{map by {k}}}"),
+            (None, _) => "{record}".to_string(),
         },
         _ => "JSON".to_string(),
     };

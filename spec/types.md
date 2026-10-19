@@ -1323,7 +1323,12 @@ Semantics:
   `Health.checks`: key `Check.n` is a `Int`: a wire map's key is a
   `String` ... ``). Nothing keeps the keys distinct in the program; a
   duplicate key is refused when a payload is decoded, and an encoder
-  writes what the list holds.
+  writes what the list holds. `indexed_by name -> status` (2026-10-19)
+  names the value of a map of values, each element crossing as its
+  `status` alone. The element has the key and that field and no other,
+  and the value is a scalar, a `Time` or a payload-free enum. Anything
+  else is refused at the clause (`` `indexed_by` on `Health.checks`, its
+  value `-> status`: `Check` has other fields (detail), ... ``).
 
 ## Generics
 

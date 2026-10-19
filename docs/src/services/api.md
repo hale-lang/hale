@@ -187,6 +187,22 @@ and one with more entries than the list holds with `too_long`. The key
 must be a `String` field of a struct, as a `@form(hashmap)` cell's key
 is named; the `.proto` makes the field a `map<string, Check>`.
 
+When each entry is one value, name it after an arrow, and the map
+carries the values alone:
+
+```hale,fragment
+type Check { name: String; status: String; }
+type Health { checks: bounded[Check; 16] indexed_by name -> status; }
+```
+
+Now `checks` is `{"db": "ok", "nats": "unavailable"}`, and in the
+program it is still a list of `Check`s, each the key and its status.
+The record holds those two fields and no others, and the value is a
+scalar, a `Time` or an enum without payloads. Without the arrow, the
+same record would cross as `{"db": {"status": "ok"}}`: the arrow is
+what says the value is the map's. The `.proto` makes it a
+`map<string, string>`.
+
 ### Instants and durations
 
 A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:
@@ -1070,6 +1086,7 @@ export type Shape = "Empty" | { Circle: number } | { Rect: [number, number] };
 A wire map stays a list of records on both sides (`bounded[Check; 16]
 indexed_by name` in Hale, `Check[]` in TypeScript); the client keys it
 into the wire's object on the way out and back into records on the way in.
+A map of values does the same, each record's value alone on the wire.
 
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
 `ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the

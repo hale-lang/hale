@@ -432,6 +432,59 @@ fn main() { }
     );
 }
 
+/// A map of values (`indexed_by <key> -> <value>`, spec/api.md § Codecs):
+/// the element is the key and the value alone, the value a field of it
+/// other than the key, of a scalar, a `Time` or a payload-free enum.
+#[test]
+fn a_map_of_values_is_a_record_of_its_key_and_a_scalar() {
+    let decls = "
+type Level = enum { low, high };
+type Check { name: String; status: String; }
+type Gauge { name: String; depth: Int; }
+type Mark { name: String; level: Level; }
+type Stamp { name: String; at: Time; }
+type Ok1 {
+    checks: bounded[Check; 4] indexed_by name -> status;
+    gauges: bounded[Gauge; 4] indexed_by name -> depth;
+    marks: bounded[Mark; 4] indexed_by name -> level;
+    stamps: bounded[Stamp; 4] indexed_by name -> at;
+}
+fn main() { }
+";
+    assert!(map_errors(decls).is_empty(), "maps of values: {:?}", map_errors(decls));
+    let refused = |decls: &str, field: &str| map_errors(&format!("{decls}\ntype Bad {{ {field} }}\nfn main() {{ }}\n"));
+    assert_eq!(
+        refused("type Check { name: String; status: String; }", "checks: bounded[Check; 4] indexed_by name -> state;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> state`: the element type `Check` has no field `state`"]
+    );
+    assert_eq!(
+        refused("type Check { name: String; status: String; }", "checks: bounded[Check; 4] indexed_by name -> name;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> name`: the value is the key; a map's value is the element's other field"]
+    );
+    assert_eq!(
+        refused("type Check { name: String; status: String; detail: String = \"\"; }", "checks: bounded[Check; 4] indexed_by name -> status;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> status`: `Check` has other fields (detail), which a map of values would drop: its element is the key and the value alone"]
+    );
+    assert_eq!(
+        refused("type Inner { n: Int; }\ntype Check { name: String; inner: Inner; }", "checks: bounded[Check; 4] indexed_by name -> inner;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> inner`: `Check.inner` is a `Inner`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+    // the value read through its aliases: an aliased list is a list
+    assert_eq!(
+        refused("type Tags = bounded[Int; 2];\ntype Check { name: String; tags: Tags; }", "checks: bounded[Check; 4] indexed_by name -> tags;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> tags`: `Check.tags` is a `Tags`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+    // an aliased scalar is the scalar
+    assert_eq!(
+        refused("type Status = String;\ntype Check { name: String; status: Status; }", "checks: bounded[Check; 4] indexed_by name -> status;"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        refused("type Shape = enum { Dot, Circle(Float) };\ntype Check { name: String; shape: Shape; }", "checks: bounded[Check; 4] indexed_by name -> shape;"),
+        vec!["`indexed_by` on `Bad.checks`, its value `-> shape`: `Check.shape` is a `Shape`: a map's value is a scalar, a `Time` or a payload-free enum; a map of records is `indexed_by name` alone, each element crossing as the record without its key"]
+    );
+}
+
 /// A program calls the api codec of a record or an enum the codec carries
 /// (`T::api_decode` / `T::api_encode`, spec/api.md § Codecs); a call of
 /// any other type is refused at the call.

@@ -2231,7 +2231,11 @@ pub enum FieldSchema {
     /// N, "x-hale-key": "<key>"}`, the value the record `name`'s schema
     /// without its key (lifted out of each value, the object's key): `key`
     /// the record's field, `lifted` its JSON key (its `json:` tag, or its name).
-    Map { name: String, key: String, lifted: String, value: TypeSchema, max: u64 },
+    /// A map of values (`indexed_by <key> -> <value>`) has `of`: the value
+    /// field's JSON key in the record and its schema, each element crossing
+    /// as it alone
+    /// (`"additionalProperties": <its schema>`, `"x-hale-value": "<value>"`).
+    Map { name: String, key: String, lifted: String, value: TypeSchema, max: u64, of: Option<(String, Box<FieldSchema>)> },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2345,7 +2349,18 @@ impl<'a> Schemas<'a> {
                                 let mut value = out.get(&elem_name).cloned().unwrap_or(TypeSchema { properties: Vec::new(), required: Vec::new() });
                                 value.properties.retain(|(p, _)| *p != lifted);
                                 value.required.retain(|r| *r != lifted);
-                                map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), lifted, value, max });
+                                // a map of values: each element its value alone
+                                // (its JSON key in the record, as `lifted` is the key's)
+                                let of = f.map_value.as_ref().and_then(|v| {
+                                    let g = elem_fields.iter().find(|g| g.name.name == v.name)?;
+                                    let vkey = g
+                                        .tag
+                                        .as_deref()
+                                        .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
+                                        .unwrap_or_else(|| v.name.clone());
+                                    Some((vkey, Box::new(self.type_ref(&g.ty, out))))
+                                });
+                                map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), lifted, value, max, of });
                             }
                         }
                         // an optional field (a map among them) is its value's
