@@ -48,8 +48,8 @@ developer's stays the default).
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
-`hale dna new` and `hale dna init` are retired: each exits 2 naming the
-graft that replaces it.
+The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
+exits 2 naming the graft that replaces it.
 
 ## Backends
 
