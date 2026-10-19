@@ -287,7 +287,9 @@ vault directory come down before it is removed (one that does not
 keeps the directory for the next run's sweep). `HALE_TEST_KEEP_VAULT=1`
 keeps every file's vault and habitat and prints where, to look at what
 a test provisioned; a run killed before it removed its vaults has them
-swept by the next, habitats with them. A
+swept by the next, habitats with them, and a habitat whose vault was
+removed before it came down is found by its compose working directory
+and taken down too (`hale habitat sweep --test-vaults`). A
 test that shares a fixed resource
 with another test — a port, a path, a record — is a test that races
 under the default; a fixture takes its port and scratch directory

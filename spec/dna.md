@@ -4489,7 +4489,14 @@ The live half is memory's, projected from the record by the spine
   found again by name and retried by the next — a vault whose habitat
   did not come down is kept for the next sweep. It, and
   `dna::scratch_done`, refuse the developer's habitat's project whatever
-  a file under a root names.
+  a file under a root names. The test vaults of gone processes are
+  swept by `hale habitat sweep --test-vaults [<root>]` (`hale test`'s
+  first vault runs it, as do the CLI tests'): each vault's habitat comes
+  down before the vault goes, and a habitat whose vault went first —
+  every toolchain before this one removes a gone process's vault
+  without its habitat, and they share `<tmp>/hale-test-vaults-<uid>` —
+  is found by its compose working directory under a gone process's
+  vault and taken down by its project's name.
 - **Knowledge changes later work (K2).** The substrate holds a
   `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
   spine's role), the owner's line to memory; the editor never holds

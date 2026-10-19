@@ -11,10 +11,6 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-#[allow(dead_code)]
-#[path = "reap.rs"]
-mod reap;
-
 /// The root every test vault sits under, this user's alone:
 /// `<tmp>/hale-test-vaults-<uid>`, made mode 700 and refused (loudly)
 /// when it is not a directory this user owns, so another user's root or
@@ -42,20 +38,12 @@ pub fn dir() -> PathBuf {
     static MADE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     MADE.get_or_init(|| {
         let root = root();
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
-                let gone = pid > 0
-                    && unsafe { libc::kill(pid, 0) } != 0
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-                // and its habitat with it (GH #1653), the dir kept when
-                // that does not come down
-                let keep = std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0");
-                if gone && !keep && reap::compose_down_all(&[e.path()]).is_ok() {
-                    let _ = std::fs::remove_dir_all(e.path());
-                }
-            }
+        // the vaults of gone processes, each habitat down before its vault
+        // goes, and a habitat whose vault went first (GH #1653): `hale
+        // test`'s sweep, the one both share
+        let keep = std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0");
+        if !keep {
+            let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["habitat", "sweep", "--test-vaults"]).arg(&root).output();
         }
         // a gone process whose pid this one reuses left nothing behind
         let module = module_path!().replace("::", ".");

@@ -248,7 +248,7 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     let uid = unsafe { libc::getuid() };
     #[cfg(not(unix))]
     let uid = 0;
-    let root = std::env::temp_dir().join(format!("hale-test-vaults-{uid}"));
+    let root = test_vault_root();
     let _ = std::fs::create_dir(&root);
     let meta = std::fs::symlink_metadata(&root).map_err(|e| format!("test vault root {}: {e}", root.display()))?;
     #[cfg(unix)]
@@ -263,7 +263,7 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     #[cfg(not(unix))]
     let _ = meta;
     if n == 0 {
-        sweep_dead_test_vaults(&root);
+        let _ = sweep_dead_test_vaults(&root);
     }
     let dir = root.join(format!("{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
@@ -277,31 +277,76 @@ pub(crate) fn test_vault_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The root every test vault sits under, this user's alone:
+/// `<tmp>/hale-test-vaults-<uid>`. `hale test`'s vaults and the Rust
+/// tests' (`support/vault.rs`) share it.
+pub(crate) fn test_vault_root() -> PathBuf {
+    #[cfg(unix)]
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0;
+    std::env::temp_dir().join(format!("hale-test-vaults-{uid}"))
+}
+
 /// Remove each `<pid>` / `<pid>-<n>` vault under `root` whose process
 /// no longer runs. The Rust tests' `support/vault.rs` keeps its vaults
 /// under the same root, one per test module and process, and sweeps them
-/// the same way. GH #1653: a vault's habitat comes down first, and a vault
-/// whose habitat does not is kept, its projects named in it, for the next
-/// sweep to retry.
-pub(crate) fn sweep_dead_test_vaults(root: &Path) {
-    sweep_dead_test_vaults_with(root, &mut |dir| habitat_down(dir));
+/// through this one (`hale habitat sweep --test-vaults`). GH #1653: a
+/// vault's habitat comes down first, and a vault whose habitat does not
+/// is kept, its projects named in it, for the next sweep to retry. A
+/// habitat whose vault is already gone (a toolchain before GH #1653
+/// removes a gone process's vault without taking its habitat down, and
+/// they share the root) is found by its compose working directory, under
+/// a gone process's vault, and taken down by its project's name. `Err`
+/// names what was kept.
+pub(crate) fn sweep_dead_test_vaults(root: &Path) -> Result<(), String> {
+    let listed = crate::dna::habitat::compose_projects_listed()?;
+    sweep_dead_test_vaults_with(root, &listed, &|pid| process_gone(pid), &mut |dir| {
+        if dir.exists() {
+            habitat_down(dir)
+        } else {
+            crate::dna::habitat::down_under(dir)
+        }
+    })
 }
 
-fn sweep_dead_test_vaults_with(root: &Path, down: &mut dyn FnMut(&Path) -> Result<(), String>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
-        #[cfg(unix)]
-        let gone = pid > 0
-            && unsafe { libc::kill(pid, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        #[cfg(not(unix))]
-        let gone = false;
-        if gone && down(&e.path()).is_ok() {
-            let _ = std::fs::remove_dir_all(e.path());
+/// Whether no process has `pid`.
+fn process_gone(pid: i32) -> bool {
+    #[cfg(unix)]
+    return pid > 0 && unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    #[cfg(not(unix))]
+    return false;
+}
+
+/// The sweep over `root`, with docker's `listed` compose projects
+/// (`<project>|<working dir>` lines), `gone` telling a gone process's pid
+/// and `down` taking a vault's habitat down.
+fn sweep_dead_test_vaults_with(root: &Path, listed: &str, gone: &dyn Fn(i32) -> bool, down: &mut dyn FnMut(&Path) -> Result<(), String>) -> Result<(), String> {
+    let pid_of = |name: &str| name.split('-').next().unwrap_or("").parse::<i32>().ok();
+    let mut vaults: Vec<PathBuf> = std::fs::read_dir(root)
+        .map(|entries| entries.flatten().filter(|e| pid_of(&e.file_name().to_string_lossy()).is_some_and(gone)).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    // the habitats whose vault went before they came down
+    let under = format!("{}/", root.display());
+    for (_, wd) in listed.lines().filter_map(|l| l.split_once('|')) {
+        let Some(rest) = wd.strip_prefix(&under) else { continue };
+        let name = rest.split('/').next().unwrap_or("");
+        let vault = root.join(name);
+        if !name.is_empty() && pid_of(name).is_some_and(gone) && !vaults.contains(&vault) {
+            vaults.push(vault);
         }
     }
+    vaults.sort();
+    let mut kept = Vec::new();
+    for vault in vaults {
+        match down(&vault) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&vault);
+            }
+            Err(why) => kept.push(format!("{} is kept for the next sweep: {why}", vault.display())),
+        }
+    }
+    if kept.is_empty() { Ok(()) } else { Err(kept.join("\n")) }
 }
 
 /// The local habitat a test file's programs run under (GH #1653): its
@@ -626,15 +671,47 @@ mod habitat_sweep_tests {
         // no process has this pid: the vault is a gone one's
         let vault = root.join("2147483646-0");
         std::fs::create_dir_all(vault.join("data")).unwrap();
-        sweep_dead_test_vaults_with(&root, &mut |_| Err("compose project p still has volumes after its teardown".into()));
+        let gone = |pid: i32| pid == 2147483646;
+        assert!(sweep_dead_test_vaults_with(&root, "", &gone, &mut |_| Err("compose project p still has volumes after its teardown".into())).is_err());
         assert!(vault.exists(), "kept while its habitat survives");
         let mut asked = Vec::new();
-        sweep_dead_test_vaults_with(&root, &mut |d| {
+        let swept = sweep_dead_test_vaults_with(&root, "", &gone, &mut |d| {
             asked.push(d.to_path_buf());
             Ok(())
         });
+        assert!(swept.is_ok());
         assert_eq!(asked, vec![vault.clone()], "retried by the next sweep");
         assert!(!vault.exists(), "and removed once it came down");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// GH #1653: a habitat whose vault was removed before it came down (by
+    /// a toolchain that did not take it down first) is found by its
+    /// compose working directory under a gone process's vault, and only
+    /// then: a live process's, or one outside the root, is left alone.
+    #[test]
+    fn a_habitat_whose_vault_is_gone_is_found_by_its_working_directory() {
+        let root = std::env::temp_dir().join(format!("hale_vault_orphans_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let r = root.display();
+        let listed = format!(
+            "hale-habitat-local-aaaa|{r}/2147483646-dna_projects.dna_new.vault/data/hale/habitat/local/allocations/e1e8\n\
+             hale-habitat-local-aaaa|{r}/2147483646-dna_projects.dna_new.vault/data/hale/habitat/local/allocations/f2f9\n\
+             hale-habitat-local-bbbb|{r}/2147483645-0/data/hale/habitat/local/allocations/0000\n\
+             hale-habitat-local-cccc|/elsewhere/2147483646-0/data\n\
+             hale-habitat-local-dddd|{r}/not-a-pid/data\n"
+        );
+        let gone = |pid: i32| pid == 2147483646;
+        let mut asked = Vec::new();
+        let swept = sweep_dead_test_vaults_with(&root, &listed, &gone, &mut |d| {
+            asked.push(d.to_path_buf());
+            std::fs::create_dir_all(d).unwrap();
+            Ok(())
+        });
+        assert!(swept.is_ok());
+        assert_eq!(asked, vec![root.join("2147483646-dna_projects.dna_new.vault")], "the gone process's habitat, once");
+        assert!(!root.join("2147483646-dna_projects.dna_new.vault").exists(), "and nothing of it is left");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

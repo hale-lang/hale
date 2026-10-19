@@ -25,7 +25,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
-       hale habitat sweep <root>
+       hale habitat sweep <root> | --test-vaults [<root>]
 
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
@@ -87,6 +87,11 @@ sweep <root>         take down every compose project run from under <root>,
                      retried. Never the developer's habitat (under $HOME),
                      nor the one XDG_DATA_HOME names outside <root>. Exit 1
                      names what survived; nothing is done without docker.
+                     --test-vaults sweeps the test vaults of processes
+                     that are gone (<tmp>/hale-test-vaults-<uid>, or
+                     <root>): each one's habitat comes down before the
+                     vault goes, and a habitat whose vault went first is
+                     found by its compose working directory.
 
 Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
 and `work` run on what is up and migrated, and name this command when it
@@ -105,6 +110,16 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("graft") => graft(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
+        Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
+            let root = args.get(2).map(PathBuf::from).unwrap_or_else(crate::verbs::test::test_vault_root);
+            match crate::verbs::test::sweep_dead_test_vaults(&root) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(why) => {
+                    eprintln!("hale habitat sweep: {why}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("sweep") if args.len() == 2 => match down_under(Path::new(&args[1])) {
             Ok(()) => ExitCode::SUCCESS,
             Err(why) => {
@@ -1020,6 +1035,19 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
 /// `Err` names what failed or survived; the caller keeps `root`. The one
 /// teardown `hale test`, the CLI tests' reap and
 /// `scripts/compose-down-under.sh` share (`hale habitat sweep`).
+/// docker's compose containers, `<project>|<working dir>` a line.
+const COMPOSE_LISTING: [&str; 6] = ["ps", "-a", "--filter", "label=com.docker.compose.project", "--format", "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}"];
+
+/// Every compose container's project and working directory, as
+/// [`down_under`] reads them; "" without docker.
+pub(crate) fn compose_projects_listed() -> Result<String, String> {
+    match docker(&COMPOSE_LISTING) {
+        Docker::Absent => Ok(String::new()),
+        Docker::Failed(why) => Err(why),
+        Docker::Answered(out) => Ok(out),
+    }
+}
+
 pub(crate) fn down_under(root: &Path) -> Result<(), String> {
     down_under_with(root, &mut |args| docker(args))
 }
@@ -1027,7 +1055,7 @@ pub(crate) fn down_under(root: &Path) -> Result<(), String> {
 pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Docker) -> Result<(), String> {
     let file = root.join(COMPOSE_FILE);
     let recorded = std::fs::read_to_string(&file).unwrap_or_default();
-    let listed = match docker(&["ps", "-a", "--filter", "label=com.docker.compose.project", "--format", "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}"]) {
+    let listed = match docker(&COMPOSE_LISTING) {
         Docker::Absent => return Ok(()),
         Docker::Failed(why) => return Err(why),
         Docker::Answered(out) => out,

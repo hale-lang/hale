@@ -1,4 +1,4 @@
-//! The `dna_projects` integration-test binary: 10 test files of this area, kept
+//! The `dna_projects` integration-test binary: 11 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -25,3 +25,5 @@ mod dna_status;
 mod dna_twelve_steps;
 #[path = "dna_ui.rs"]
 mod dna_ui;
+#[path = "dna_vault_sweep.rs"]
+mod dna_vault_sweep;

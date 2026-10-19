@@ -46,7 +46,7 @@ usage: hale habitat up [--foreground] [--profile local] [--backends own|operator
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
-       hale habitat sweep <root>
+       hale habitat sweep <root> | --test-vaults [<root>]
 
 The local habitat holds every organism's infrastructure on this machine:
 one docker compose project, named for the habitat, with a service per
@@ -108,6 +108,11 @@ sweep <root>         take down every compose project run from under <root>,
                      retried. Never the developer's habitat (under $HOME),
                      nor the one XDG_DATA_HOME names outside <root>. Exit 1
                      names what survived; nothing is done without docker.
+                     --test-vaults sweeps the test vaults of processes
+                     that are gone (<tmp>/hale-test-vaults-<uid>, or
+                     <root>): each one's habitat comes down before the
+                     vault goes, and a habitat whose vault went first is
+                     found by its compose working directory.
 
 Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
 and `work` run on what is up and migrated, and name this command when it
