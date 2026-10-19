@@ -6617,8 +6617,13 @@ impl<'a> Walker<'a> {
                         })
                     }
                     // A declared topic name (`Sig <- v`) parses as a
-                    // bare identifier.
-                    Expr::Ident(id) => Some(PublishSubject {
+                    // bare identifier — unless the name is a binding
+                    // in scope (`let subj = "log." + p; subj <- v`),
+                    // whose value is a subject computed at run time.
+                    // Read as a topic it named a topic called `subj`,
+                    // with no subscriber, and every judgment walked
+                    // past a publish it could not see.
+                    Expr::Ident(id) if self.local(&id.name).is_none() => Some(PublishSubject {
                         text: id.name.clone(),
                         literal: false,
                     }),

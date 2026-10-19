@@ -6203,6 +6203,12 @@ row	App@literal1.q	Quote	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
+== crates/hale-types/tests/claims.rs#93c95e48
+root	App	the entry
+row	App@entry	App	main	default
+row	App@entry.sink	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+
 == crates/hale-types/tests/claims_edges.rs#d860fd18
 root	App	the entry
 row	App@literal1	App	main	default

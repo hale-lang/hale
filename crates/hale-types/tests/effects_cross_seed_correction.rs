@@ -188,15 +188,15 @@ fn api() {
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
-        Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use}
-        CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Commands::__rpc_row_1_12  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Commands::__rpc_row_2_12  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
-        ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_12  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_12  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
-        launch_token  does={syscall,block,alloc}
+        launch_token  does={syscall,block,alloc,stdio}
         ",
     );
 }
@@ -218,27 +218,27 @@ fn host() {
         527,
         533,
         "
-        GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
+        GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
-        Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use}
-        Host::build_genome  does={syscall,block,env,alloc}
-        Host::build_seed  does={syscall,block,env,alloc}
+        Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
+        Host::build_genome  does={syscall,block,env,alloc,stdio}
+        Host::build_seed  does={syscall,block,env,alloc,stdio}
         Host::cut_artifact  does={syscall,block,alloc}
         Host::nerves_read_now  does={syscall,block,time,entropy,env,alloc}
         Host::no_application  does={syscall,block,alloc}
-        Host::say_nerves_read  does={syscall,env,alloc}
+        Host::say_nerves_read  does={syscall,env,alloc,stdio}
         Host::sha12  does={syscall,block,alloc}
-        Host::start_memory  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Host::start_organization_launch  does={syscall,block,time,env,alloc}
-        Host::stop_started  does={syscall,block,alloc}
-        Host::wait_nerves  does={syscall,block,time,entropy,env,alloc}
+        Host::start_memory  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Host::start_organization_launch  does={syscall,block,time,env,alloc,stdio}
+        Host::stop_started  does={syscall,block,alloc,stdio}
+        Host::wait_nerves  does={syscall,block,time,entropy,env,alloc,stdio}
         LocalTransport::execute  does={syscall,block,alloc}
         LocalTransport::probe  does={syscall,block,alloc}
         NatsExchange::birth  does={env,alloc}
         NatsExchange::deliver  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Node::build  does={syscall,block,env,alloc}
+        Node::build  does={syscall,block,env,alloc,stdio}
         Projection::build_digest  does={syscall,block,alloc}
-        Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::allocated  does={syscall,env,alloc}
         ReferenceInfrastructure::allocation  does={syscall,block,alloc}
         ReferenceInfrastructure::credential  does={syscall,block,env,alloc}
@@ -269,7 +269,7 @@ fn host() {
         allocation_files  does={syscall,block,env,alloc}
         apply_drops  does={syscall,block,alloc}
         attached_application  does={syscall,block,alloc}
-        base_of  does={syscall,block,time,entropy,env,alloc,secret_use}
+        base_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         body_holder  does={syscall,block,env,alloc}
         body_key  does={syscall,block,alloc}
         build_cache_dir  does={syscall,block,env,alloc}
@@ -279,7 +279,7 @@ fn host() {
         build_seed_at  does={syscall,block,env,alloc}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
-        database_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
+        database_provision_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
@@ -291,8 +291,8 @@ fn host() {
         exit_code  does={syscall,block,alloc}
         fence_compose_down  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
-        fill_check  does={syscall,block,time,entropy,env,alloc,secret_use}
-        fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use}
+        fill_check  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
         genome_candidate  does={syscall,block,alloc}
@@ -310,14 +310,14 @@ fn host() {
         genome_root  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
-        heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
+        heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
-        held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
-        host_main  does={syscall,env,alloc}
+        held_state  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        host_main  does={syscall,env,alloc,stdio}
         include_names  does={syscall,block,env,alloc}
         input_digests  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
-        memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use}
+        memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
@@ -329,8 +329,8 @@ fn host() {
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
         nerves_restart_hint  does={syscall,env,alloc}
         nerves_urls  does={syscall,block,alloc}
-        node_main  does={syscall,env,alloc}
-        nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
+        node_main  does={syscall,env,alloc,stdio}
+        nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         organism_here  does={syscall,block,time,env,alloc}
         organism_secrets  does={syscall,block,alloc}
         own_nerves  does={syscall,block,env,alloc}
@@ -345,13 +345,13 @@ fn host() {
         record_genesis_verb  does={syscall,block,env,alloc,secret_use}
         record_identity  does={syscall,alloc}
         record_identity_verb  does={syscall,alloc}
-        route_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
-        seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use}
+        route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         senses_up_verb  does={syscall,block,env,alloc}
-        signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
+        signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
-        under_node  does={syscall,block,time,entropy,env,alloc,secret_use}
+        under_node  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         work_verb  does={syscall,block,alloc}
         ",
     );
@@ -397,7 +397,7 @@ fn operations() {
         held_machine  does={alloc}
         hold_person  does={alloc}
         hole_role_position  does={alloc}
-        under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use}
+        under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );
 }

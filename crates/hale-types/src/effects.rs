@@ -173,6 +173,16 @@ pub(crate) fn close(a: &str, b: &str) -> bool {
     common * 2 >= x.len().min(y.len())
 }
 
+/// Whether a closed set (`only:`, `@phase_effects`) admits `class`:
+/// it names it, or it names the class `class` is a sub-class of.
+/// `stdio` is a kind of `syscall`, so `only: {syscall}` admits a
+/// `println` as it always has; `only: {stdio}` admits a print and no
+/// other syscall.
+fn admitted(allowed: &[EffectClass], class: EffectClass) -> bool {
+    allowed.contains(&class)
+        || (class == EffectClass::Stdio && allowed.contains(&EffectClass::Syscall))
+}
+
 /// Every effect class that EXISTS for this program: the built-ins
 /// plus each declared user class. `only:` is checked against this
 /// rather than against a written-down list, so a class added later is
@@ -198,6 +208,7 @@ fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass
         // it reads. Adding a built-in without adding it here is the
         // integration seam to check.
         EffectClass::SecretUse,
+        EffectClass::Stdio,
     ];
     out.extend(declared.iter().map(|i| EffectClass::User(*i)));
     out
@@ -391,6 +402,7 @@ fn phase_effects_diags(
                     // reject it. `@phase_effects(run: {})` admitted
                     // `secret_use` during run.
                     EffectClass::SecretUse,
+                    EffectClass::Stdio,
                 ];
                 classes.extend(
                     table
@@ -403,7 +415,7 @@ fn phase_effects_diags(
                 let phase_before = out.len();
                 let cert_start = out.len();
                 for class in classes {
-                    if allowed.contains(&class) {
+                    if admitted(&allowed, class) {
                         continue;
                     }
                     let before = out.len();
@@ -877,7 +889,7 @@ fn effect_report_three_way_over(
                         allowed.iter().map(|c| table.display(*c)).collect();
                     let only_before = sink.len();
                     for c in class_universe(table.declared()) {
-                        if allowed.contains(&c) {
+                        if admitted(allowed, c) {
                             continue;
                         }
                         // The complement quantifies over ATOMIC
@@ -1206,6 +1218,10 @@ fn check_class(
         EffectClass::SecretUse => (
             EffectSet::SECRET_USE,
             "a privileged operation over confined secret material",
+        ),
+        EffectClass::Stdio => (
+            EffectSet::STDIO,
+            "a write to standard output or standard error",
         ),
         // #345: a user class queries the frontier exactly like a
         // built-in — the bit differs, the machinery does not.

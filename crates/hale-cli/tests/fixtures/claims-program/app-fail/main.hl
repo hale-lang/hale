@@ -1,0 +1,18 @@
+// Adopts the policy's law and calls the seed that prints: the path
+// leaves the program through the import.
+import "../policy" as policy;
+import "../shout" as shout;
+
+main locus App {
+    params {
+        sink: std::log::StdoutSink = std::log::StdoutSink { };
+        log: std::log::Logger = std::log::Logger { name: "app" };
+    }
+    claims {
+        adopt Logs;
+    }
+    run() {
+        self.log.info("started");
+        shout::shout(3);
+    }
+}

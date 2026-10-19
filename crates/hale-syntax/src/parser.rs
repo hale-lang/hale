@@ -1995,8 +1995,31 @@ impl Parser {
                 }
                 TokenKind::Ident(s) if s == "avoiding" => {
                     self.bump();
-                    avoiding =
-                        Some(self.expect_ident("group name after `avoiding`")?);
+                    // A group's name, or a stdlib module inline
+                    // (`avoiding std::log::*`): the module is the gate
+                    // itself, so naming it needs no group of its own.
+                    // It stands for the implicit group of that one
+                    // member, named by its spelling.
+                    if matches!(self.peek_at(1), TokenKind::ColonColon) {
+                        let m = self.parse_group_member()?;
+                        if !m.glob || m.segments.first().map(|s| s.name.as_str()) != Some("std") {
+                            return Err(Diag::parse(
+                                m.span,
+                                format!(
+                                    "`avoiding {}`: an inline gate names a \
+                                     stdlib module (`avoiding std::log::*`); \
+                                     name any other set as a group \
+                                     (`group gate = {{ … }};`, `avoiding gate`)",
+                                    m.display()
+                                ),
+                            ));
+                        }
+                        avoiding = Some(Ident::new(m.display(), m.span));
+                    } else {
+                        avoiding = Some(
+                            self.expect_ident("group name after `avoiding`")?,
+                        );
+                    }
                 }
                 _ => break,
             }

@@ -1,3 +1,7 @@
+--- crates/hale-cli/tests/fixtures/claims-program/app-fail/main.hl ---
+Claim [361..365] unknown constitution `Logs` — nothing declares it
+--- crates/hale-cli/tests/fixtures/claims-program/app-pass/main.hl ---
+Claim [358..362] unknown constitution `Logs` — nothing declares it
 --- crates/hale-cli/tests/fixtures/imported-main-claims/app-policy/main.hl ---
 Claim [731..736] unknown constitution `House` — nothing declares it
 --- crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl ---
@@ -60,7 +64,7 @@ Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `t
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [4..8] claim `iso`: the forbidden destination `leak` is declared here
 --- crates/hale-cli/tests/topology_graph_cli.rs#21 ---
-Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
+Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`, `stdio`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
 --- crates/hale-cli/tests/topology_graph_cli.rs#23 ---
 Claim [235..238] claim `iso` is declared more than once — the name is the contract-of-record and must be unique
 --- crates/hale-cli/tests/topology_v2.rs#0 ---
@@ -157,6 +161,8 @@ Claim [257..260] claim `iso` violated: `b_side` reaches `a_side` — witness: `A
 Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 --- crates/hale-types/tests/claims.rs#13 ---
 Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/claims.rs#20 ---
+Claim [568..569] claim `c` cannot be certified: `Writer::write` (reachable from `writers`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
 --- crates/hale-types/tests/claims_edges.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here

@@ -225,3 +225,13 @@ record's rows and its Ledger's: the record is born with
 `record.genesis` and `record.key` (its nonce and the
 identity drawn from it are normalized), and the readings' subject names
 the record's identity where it named a commit.
+
+#1672 gave the effect lattice a `stdio` class, which every program that
+prints now carries beside `syscall`, so a topology's `shape_hash` moved.
+The baseline review's context carries the semantic diff's header line,
+`classification: source-only (shape_hash <h> -> <h>)`, and that hash is
+the only change to it. The review (`9f645a42de8b…`, was
+`cbebcc1016a6…`) is re-keyed for the changed context alone. The old
+context was reproduced by a build that leaves `stdio` out of the
+rendering, which hit the old entry, and the two contexts differ in that
+one line. No fresh model call was made; the answer is unchanged.

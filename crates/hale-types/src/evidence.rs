@@ -472,6 +472,7 @@ pub fn model_fanout<'a>(
                     // cannot finish, is not countable from here.
                     hale_model::AbsorbedEvent::Publish { .. }
                     | hale_model::AbsorbedEvent::PublishHole { .. }
+                    | hale_model::AbsorbedEvent::Deliver { .. }
                     | hale_model::AbsorbedEvent::Truncated
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         seen.pop();

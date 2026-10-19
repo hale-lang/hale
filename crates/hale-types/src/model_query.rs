@@ -408,6 +408,7 @@ pub fn effect_class_atoms(e: &Entities, name: &str) -> BTreeSet<String> {
             "env" => "env",
             "alloc" => "alloc",
             "secret_use" => "secret_use",
+            "stdio" => "stdio",
             _ => return None,
         })
     }
@@ -452,6 +453,7 @@ pub fn render_effect_classes(
         "env",
         "alloc",
         "secret_use",
+        "stdio",
     ];
     let mut out: Vec<String> = Vec::new();
     for b in BUILTINS {

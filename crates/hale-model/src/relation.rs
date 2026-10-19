@@ -232,6 +232,16 @@ pub enum SelectorForm {
     /// call, resolved into `GroupMember` rows as method-grained
     /// `Function` members (`role reader`).
     Role { role: String, display: String },
+    /// `std::log::*`, kept as authored: a stdlib module, whose bodies
+    /// are absorbed stdlib interiors rather than entities, so it adds
+    /// no `GroupMember` row. A walk masks (`avoiding`) or stops at
+    /// (a `forbid reaches` target) every absorbed node the module
+    /// declares, by [`crate::AbsorbedNode::decl`].
+    StdModule { module: String, display: String },
+    /// `program`, the built-in group: every fn-bearing declaration of
+    /// the closing entrypoint's own seed, resolved into `GroupMember`
+    /// rows like a named member.
+    Program,
 }
 
 /// `group_selector(group, ordinal)` — the authored selector list.

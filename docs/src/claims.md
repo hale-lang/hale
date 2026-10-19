@@ -174,6 +174,15 @@ pattern-matched.
 | `alias::Name` | an imported declaration. Canonicalized to the merged declaration at the mangle stage — the same path qualified topic references take — never by name-suffix matching. |
 | `alias::*` | every locus and free fn the seed imported as `alias` declares, enumerated through the same rename table `alias::Name` resolves through. Trailing-only, single level: `a::*::b` and `a::b::*` (nested) are rejected. |
 | `role R` | the handler of every surface row a caller holding `R` may call — see [Role groups](#role-groups). |
+| `std::m::*` | every locus and free fn of the stdlib seed files behind the module `std::m` (`std::log::*` is the whole of `log.hl`, its sinks and their helpers). Only a module the stdlib declares in Hale source has members; a namespace lowered natively (`std::math`) is refused. A stdlib body is no path source and no counted endpoint, so a group holding one may stand only as a `forbid reaches` target or an `avoiding` gate. |
+
+**The built-in group `program`.** Every claim may name `program`
+without declaring it: every locus and free fn of the closing
+entrypoint's own seed, and nothing it imports. It resolves wherever
+the clause is evaluated, so a constitution in a policy seed that names
+it reads each adopting entrypoint's own declarations (see
+[One law, many entrypoints](#one-law-many-entrypoints)). Declaring a
+group named `program` is an error.
 
 Types, topics, and constants matched by a glob are silently skipped
 — they are not path vertices, so they contribute nothing a
@@ -403,7 +412,13 @@ and composes two edge kinds:
   handler of that subject — including subscribers whose `**`
   wildcard pattern covers it (a `log.**` sink is an edge from
   every `log.x` publish; more edges is the conservative
-  direction).
+  direction). A publish inside a stdlib body reaches subscribers the
+  same way, the stdlib's own included: a `std::log::Logger` call
+  reaches the `StdoutSink` the program builds, and through it
+  `println` — and so does your own publish to `log.app`. A sink the
+  program never builds is no path. A stdlib body's computed subject reaches every subscriber
+  its locus's declared `**` pattern can address; a computed subject in
+  your own code (a publish through a variable) fails closed.
 
 `via { calls }` or `via { bus }` restricts the composition;
 omitting `via` selects both — the conservative default. `via { }`
@@ -444,6 +459,22 @@ is literally "no path from A to B exists while G is masked". The
 mask must be disjoint from both endpoints: masking the target
 would hold vacuously, masking a source silently drops roots, and
 either overlap is an error.
+
+**A stdlib module as the gate.** `avoiding std::log::*` masks a
+stdlib module inline, without a group of its own: the walk neither
+enters nor tests any body the module declares. It is the shape of the
+structured-logs law —
+
+```hale,fragment
+logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;
+```
+
+— nothing the program declares reaches a write to standard output or
+standard error except through `std::log`, whose sinks are the ones
+that print. A bare `println` violates it, with the fn that writes as
+the witness; a call into an imported seed that prints violates it with
+the path (`App::run -> shout::shout`). A module the stdlib does not
+declare is an error with a did-you-mean.
 
 Modifiers stack in any order:
 `forbid reaches(a, b) via { calls } during birth avoiding gate;`.
@@ -1235,6 +1266,13 @@ same seed that declares both the constitution and its groups — then
 the vocabulary arrives with the law. An entrypoint that deliberately
 lacks a component writes the empty group explicitly, which is a line
 a reviewer can see rather than an absence they must infer.
+
+The built-in group `program` is the one name a constitution needs no
+adopter to declare: it is every adopting entrypoint's own
+declarations by definition, so a policy seed can state a law over the
+whole program (`forbid reaches(program, effects(stdio)) avoiding
+std::log::*`) and every entrypoint that adopts it is judged over its
+own code.
 
 Leaving a name for the adopter to answer is the job of a **policy
 seed** — one that declares no `main locus`, so it closes no world and

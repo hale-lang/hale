@@ -262,7 +262,7 @@ fn a_failed_check_writes_no_manifest_and_exits_with_the_checks_code() {
 fn a_clean_check_and_a_warning_only_check_still_dump_the_manifest() {
     let d = workdir("well-typed");
     let app = d.join("app.hl");
-    for (src, row) in [(WELL_TYPED, "main  does={syscall}"), (WARNS_ONLY, "Worker::run  does={alloc}")] {
+    for (src, row) in [(WELL_TYPED, "main  does={syscall,stdio}"), (WARNS_ONLY, "Worker::run  does={alloc}")] {
         std::fs::write(&app, src).unwrap();
         let out = hale().arg("check").arg(&app).arg("--dump-effects-manifest").output().expect("dump");
         let (text, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

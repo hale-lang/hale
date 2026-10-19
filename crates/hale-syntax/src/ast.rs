@@ -717,6 +717,38 @@ pub enum ClaimSet {
     },
 }
 
+impl ClaimForm {
+    /// Every operand of the clause that names a group, in source
+    /// order: the sets of `forbid reaches` (an `effects(C)` operand is
+    /// no group), its `avoiding` gate, and each group the other forms
+    /// quantify over. A `cover`'s alias names a seed, not a group.
+    pub fn group_operands(&self) -> Vec<&Ident> {
+        match self {
+            ClaimForm::ForbidReaches { src, dst, avoiding, .. } => {
+                let mut out = Vec::new();
+                for s in [src, dst] {
+                    if let ClaimSet::Group(g) = s {
+                        out.push(g);
+                    }
+                }
+                out.extend(avoiding.iter());
+                out
+            }
+            ClaimForm::OnlyEdges { src, dst, .. } => vec![src, dst],
+            ClaimForm::Bound { from, .. } => vec![from],
+            ClaimForm::Require { group, .. }
+            | ClaimForm::RequireSealed { group }
+            | ClaimForm::Cover { group, .. }
+            | ClaimForm::RouteCoverage { group, .. }
+            | ClaimForm::RequireNoSilentLossGroup { group } => vec![group],
+            ClaimForm::RequireSeparateDomains { left, right } => vec![left, right],
+            ClaimForm::RequireAttributed { .. }
+            | ClaimForm::RequireNoSilentLossTopic { .. }
+            | ClaimForm::Count { .. } => Vec::new(),
+        }
+    }
+}
+
 impl ClaimSet {
     pub fn display(&self) -> String {
         match self {
@@ -2678,6 +2710,15 @@ pub enum EffectClass {
     /// over the class. Applications do not write `effect secret_use;`
     /// — and may not, since the name now resolves to a built-in.
     SecretUse,
+    /// A write to the process's standard output or standard error
+    /// (`println`, `print`, `eprintln`, `eprint`, and every stdlib
+    /// leaf writing fd 1 or 2). A SUB-CLASS of `syscall`: every
+    /// carrier of it carries `syscall` too, so a contract over
+    /// `syscall` covers it and one admitting `syscall` admits it. It
+    /// exists so a law can single out the unstructured channel
+    /// (`forbid reaches(program, effects(stdio)) avoiding
+    /// std::log::*`) without forbidding every other syscall.
+    Stdio,
 }
 
 impl EffectClass {
@@ -2705,6 +2746,7 @@ impl EffectClass {
             "recursion" => EffectClass::Recursion,
             "alloc" => EffectClass::Alloc,
             "secret_use" => EffectClass::SecretUse,
+            "stdio" => EffectClass::Stdio,
             _ => return None,
         })
     }
@@ -2721,6 +2763,7 @@ impl EffectClass {
             EffectClass::Recursion => "recursion",
             EffectClass::Alloc => "alloc",
             EffectClass::SecretUse => "secret_use",
+            EffectClass::Stdio => "stdio",
             // resolved against `Program::effect_names` by the checker
             EffectClass::User(_) => "<user effect>",
         }
@@ -3694,6 +3737,22 @@ pub fn unscoped_alias(head: &str) -> &str {
 /// keyed off real renames and would have nothing to say about one).
 pub fn unbound_group_sentinel(seed_id: &str, name: &str) -> String {
     format!("__unbound${}${}", name, seed_id)
+}
+
+/// The built-in group: every fn-bearing declaration of the closing
+/// entrypoint's own seed, resolved in the world that evaluates the
+/// clause (an adopting entrypoint's, for a constitution's). It needs
+/// no declaration, and a program may not declare a group of its own
+/// under the name.
+pub const PROGRAM_GROUP: &str = "program";
+
+/// Whether a group operand names a group nobody declares: the built-in
+/// [`PROGRAM_GROUP`], or a stdlib module written inline
+/// (`avoiding std::log::*`), which stands for the group of that one
+/// member. Neither is a name the rename table or the unbound sentinel
+/// may touch.
+pub fn is_implicit_group_name(name: &str) -> bool {
+    name == PROGRAM_GROUP || name.starts_with("std::")
 }
 
 /// The author's spelling inside an [`unbound_group_sentinel`], or

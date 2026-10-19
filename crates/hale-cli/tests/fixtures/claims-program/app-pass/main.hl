@@ -1,0 +1,17 @@
+// Adopts the policy's law and logs through `std::log`; imports a seed
+// that prints, and never calls it.
+import "../policy" as policy;
+import "../shout" as shout;
+
+main locus App {
+    params {
+        sink: std::log::StdoutSink = std::log::StdoutSink { };
+        log: std::log::Logger = std::log::Logger { name: "app" };
+    }
+    claims {
+        adopt Logs;
+    }
+    run() {
+        self.log.info("started");
+    }
+}

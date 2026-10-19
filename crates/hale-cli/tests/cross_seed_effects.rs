@@ -290,7 +290,7 @@ fn the_manifest_carries_no_merged_symbols() {
     // Non-vacuous: the app's OWN fns must still be listed, carrying
     // what the far side does.
     assert!(
-        text.contains("reaches_far_syscall  does={syscall}")
+        text.contains("reaches_far_syscall  does={syscall,stdio}")
             && text.contains("reaches_far_alloc  does={alloc}")
             && text.contains("control_clean  none={syscall}"),
         "the app's own rows must survive the filter:\n{}",

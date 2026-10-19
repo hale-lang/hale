@@ -90,6 +90,8 @@ crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bu
 crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None
 crates/hale-types/tests/claims.rs#13	iso	forbid reaches(a_side, b_side)	Uncertified	None
 crates/hale-types/tests/claims.rs#2	read_only	forbid reaches(quote_api, effects(money))	Violated	None
+crates/hale-types/tests/claims.rs#20	c	forbid reaches(writers, effects(syscall))	Uncertified	None
+crates/hale-types/tests/claims.rs#22	logs_structured	forbid reaches(program, effects(stdio)) avoiding std::log::*	Holds	None
 crates/hale-types/tests/claims.rs#3	read_only	forbid reaches(quote_api, effects(money))	Holds	None
 crates/hale-types/tests/claims.rs#8	iso	forbid reaches(a_side, b_side)	Invalid	None
 crates/hale-types/tests/claims.rs#9	m	forbid reaches(a_side, effects(monye))	Invalid	None

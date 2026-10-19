@@ -244,6 +244,7 @@ pub fn render_effects_named(e: EffectSet, names: &[String]) -> Vec<String> {
         (EffectSet::ENV, "env"),
         (EffectSet::ALLOC, "alloc"),
         (EffectSet::SECRET_USE, "secret_use"),
+        (EffectSet::STDIO, "stdio"),
     ] {
         if e.contains(mask) {
             out.push(name.to_string());
@@ -445,7 +446,12 @@ fn causes_inner(
         // surface); direct effects are the `none:` form's job.
         let direct = infer_effects(&summary, key, &ffi);
         let caused_only = EffectSet(actual.0 & !direct.0);
-        let excess = EffectSet(caused_only.0 & !allowed.0);
+        let mut excess = EffectSet(caused_only.0 & !allowed.admitted().0);
+        // `syscall` already says what `stdio` would: it is a kind of
+        // syscall.
+        if excess.contains(EffectSet::SYSCALL) {
+            excess = EffectSet(excess.0 & !EffectSet::STDIO.0);
+        }
         let diag = if excess.0 != 0 {
             Some(Diag::ty(
                 *span,
@@ -489,6 +495,7 @@ pub(crate) fn class_mask(c: EffectClass) -> EffectSet {
         EffectClass::Env => EffectSet::ENV,
         EffectClass::Alloc => EffectSet::ALLOC,
         EffectClass::SecretUse => EffectSet::SECRET_USE,
+        EffectClass::Stdio => EffectSet::STDIO,
         EffectClass::Ffi => EffectSet::SYSCALL,
         EffectClass::Spawn | EffectClass::Recursion => EffectSet::PURE,
         // #345: user classes occupy the bits above the built-ins.

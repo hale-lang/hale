@@ -243,6 +243,12 @@ pub struct StdlibAbsorption {
     pub entry_group: Option<u32>,
     /// The entry call's authored span.
     pub entry_provenance: ProvenanceId,
+    /// `Some(subject)` when the entry is no call but a DELIVERY: the
+    /// program's publish at `site` (a publish site of `from`, numbered
+    /// among its publishes, not its calls) reaching the handler of a
+    /// stdlib subscriber the program builds, node 0. A walk enters it
+    /// as a bus step from the publish, never at a call site.
+    pub entry_bus: Option<String>,
     /// Interior vertices, discovery order; node 0 is the entry.
     pub nodes: Vec<AbsorbedNode>,
 }
@@ -257,6 +263,11 @@ pub struct AbsorbedNode {
     /// e.g. `std::io::tcp::Stream::send` (demangled like every
     /// witness spelling).
     pub display: String,
+    /// The stdlib declaration the fn belongs to, in the stdlib's own
+    /// spelling: its locus (`__StdLogStdoutSink`) for a method, else
+    /// the fn (`__log_clock`). What a `std::log::*` group member
+    /// matches ([`crate::SelectorForm::StdModule`]).
+    pub decl: String,
     /// The stdlib fn's declared carrier classes (rendered) — the
     /// `bound` count's per-node contribution (GH #476 Change 5d;
     /// `std::secret` bodies carry `secret_use`).
@@ -320,6 +331,21 @@ pub enum AbsorbedEvent {
     /// Empty means unconstrained: no pattern was recoverable, so the
     /// hole addresses anything, as before.
     PublishHole { patterns: Vec<String> },
+    /// A delivery from a publish of this body (the `Publish` or the
+    /// bounded `PublishHole` just before it) to a STDLIB subscriber the
+    /// program instantiates: the subscriber's handler is an interior
+    /// vertex of this entry (fans out under `via { bus }`). A stdlib
+    /// handler is no model function, so without this the walk lost the
+    /// path at the publish (`Logger.info` → `log.**` →
+    /// `StdoutSink::on_event` → `println`).
+    Deliver {
+        /// Index into `nodes`: the subscriber's handler.
+        target: u32,
+        /// The subscription's subject, as the stdlib declares it.
+        subject: String,
+        /// The publish sits inside a loop.
+        in_loop: bool,
+    },
     /// The absorption walk hit its step ceiling before settling —
     /// explicit residue, never silent exhaustion (a judgment
     /// treating a truncated interior as fully explored would
@@ -1990,7 +2016,9 @@ impl ApplicationModel {
                 SelectorForm::SeedGlob { seed, .. } => {
                     seed.index() < seeds
                 }
-                SelectorForm::Role { .. } => true,
+                SelectorForm::Role { .. }
+                | SelectorForm::StdModule { .. }
+                | SelectorForm::Program => true,
             };
             if x.group.index() >= groups_len || !sel_ok {
                 return Err(ModelError::DanglingId {
@@ -2196,7 +2224,9 @@ impl ApplicationModel {
                 };
                 join((c.from.0, c.site), pair);
             }
-            for a in &self.analyses.stdlib_absorption {
+            // A delivery entry sits at a publish site, which is no
+            // call site: it joins no dispatch class.
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none()) {
                 join(
                     (a.from.0, a.site),
                     a.entry_dispatch.clone(),
@@ -2345,6 +2375,16 @@ impl ApplicationModel {
                                         index: i,
                                     },
                                 );
+                            }
+                        }
+                        // A delivery names an interior vertex of
+                        // this entry.
+                        crate::AbsorbedEvent::Deliver { target, .. } => {
+                            if (*target as usize) >= a.nodes.len() {
+                                return Err(ModelError::DanglingId {
+                                    table: "legacy.stdlib_absorption",
+                                    index: i,
+                                });
                             }
                         }
                         // The TYPED publish identity judgments

@@ -83,7 +83,9 @@ enum StepIr {
     Bus {
         subject: String,
         publish_provenance: Option<ProvenanceId>,
-        subscribe_provenance: ProvenanceId,
+        /// `None` for a stdlib subscription, whose declaration has
+        /// no position in the program.
+        subscribe_provenance: Option<ProvenanceId>,
         from_stdlib: bool,
     },
 }
@@ -307,6 +309,19 @@ pub fn judge_forbid_reaches(
             group_fns.entry(GroupId(gi as u32)).or_default();
         }
     }
+    // Group → the stdlib declarations its `std::…::*` members name:
+    // absorbed interiors, which a walk masks or stops at by
+    // `AbsorbedNode::decl`.
+    let mut group_std: BTreeMap<GroupId, BTreeSet<&'static str>> = BTreeMap::new();
+    for gs in &r.group_selectors {
+        if let hale_model::SelectorForm::StdModule { module, .. } = &gs.selector {
+            if let Some(decls) = crate::stdlib_modules::module_decls(module) {
+                group_std.entry(gs.group).or_default().extend(decls.iter().map(String::as_str));
+            }
+        }
+    }
+    let no_std: BTreeSet<&'static str> = BTreeSet::new();
+    let std_of = |g: GroupId| group_std.get(&g).unwrap_or(&no_std);
     // The evaluator iterates fn sets in FnKey order — free fns
     // (locus: None) BEFORE methods — and search halts at the first
     // hole, so seeding order is verdict-relevant.
@@ -364,7 +379,15 @@ pub fn judge_forbid_reaches(
     // (from fn) → absorption entries (site, index).
     let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
         BTreeMap::new();
+    // (from fn, publish site) → delivery entries: the program's publish
+    // reaching a stdlib subscriber it builds.
+    let mut deliveries_of: BTreeMap<(FunctionId, u32), Vec<u32>> =
+        BTreeMap::new();
     for (ai, a) in absorption.iter().enumerate() {
+        if a.entry_bus.is_some() {
+            deliveries_of.entry((a.from, a.site)).or_default().push(ai as u32);
+            continue;
+        }
         absorb_of
             .entry(a.from)
             .or_default()
@@ -682,13 +705,21 @@ pub fn judge_forbid_reaches(
                 // group's `Function` member) and its enclosing locus
                 // (a named group's `LocusDecl`) are seen to share it.
                 let av_fns = &group_fns[&av_gid];
+                let av_std = std_of(av_gid);
                 for set in [src, dst] {
                     let SetIr::Group(n) = set else { continue };
                     let Some(gid) = n.group else { continue };
-                    let shared: Vec<String> = av_fns
+                    // a stdlib module's bodies are endpoints too: a
+                    // gate over the target's module masks its target
+                    let mut shared: Vec<String> = av_fns
                         .intersection(&group_fns[&gid])
                         .map(|f| e.functions[f.index()].name.clone())
                         .collect();
+                    shared.extend(
+                        av_std
+                            .intersection(std_of(gid))
+                            .map(|d| crate::stdlib_bodies::demangle_str(d, &[])),
+                    );
                     if !shared.is_empty() {
                         diags.push(Diag::ty(
                             claim_span(a.provenance),
@@ -826,20 +857,25 @@ pub fn judge_forbid_reaches(
         let mask: Option<&BTreeSet<FunctionId>> = avoiding
             .as_ref()
             .and_then(|a| a.group.map(|g| &group_fns[&g]));
+        let mask_std: &BTreeSet<&'static str> = avoiding
+            .as_ref()
+            .and_then(|a| a.group)
+            .map_or(&no_std, std_of);
         enum DstIr<'x> {
-            Group(&'x BTreeSet<FunctionId>),
+            Group(&'x BTreeSet<FunctionId>, &'x BTreeSet<&'static str>),
             Effects(BTreeSet<String>),
         }
         let dst_test = match dst {
-            SetIr::Group(g) => DstIr::Group(
-                &group_fns[&g.group.expect("validated above")],
-            ),
+            SetIr::Group(g) => {
+                let gid = g.group.expect("validated above");
+                DstIr::Group(&group_fns[&gid], std_of(gid))
+            }
             SetIr::EffectCarriers(c) => {
                 DstIr::Effects(class_atoms(&c.name))
             }
         };
-        if let DstIr::Group(g) = &dst_test {
-            if g.is_empty() {
+        if let DstIr::Group(g, std) = &dst_test {
+            if g.is_empty() && std.is_empty() {
                 out.push(Judged {
                     ordinal: row.ordinal,
                     verdict: Verdict::Holds,
@@ -1052,9 +1088,26 @@ pub fn judge_forbid_reaches(
                                 diags.push(Diag::ty(row_span, msg));
                                 return Visit::hole(());
                             }
-                            for (_, sid, topic, written, ppid) in
+                            for (psite, sid, topic, written, ppid) in
                                 pubs_of.get(f).into_iter().flatten()
                             {
+                                // A stdlib subscriber the program
+                                // builds takes it too.
+                                for ai in deliveries_of
+                                    .get(&(*f, *psite))
+                                    .into_iter()
+                                    .flatten()
+                                {
+                                    edges.push((
+                                        V::Interior(*ai, 0),
+                                        StepIr::Bus {
+                                            subject: written.clone(),
+                                            publish_provenance: Some(*ppid),
+                                            subscribe_provenance: None,
+                                            from_stdlib: false,
+                                        },
+                                    ));
+                                }
                                 // A hole covering this publish's
                                 // TYPED identity — its declared
                                 // topic or its wire subject — means
@@ -1089,7 +1142,7 @@ pub fn judge_forbid_reaches(
                                                 *ppid,
                                             ),
                                             subscribe_provenance:
-                                                spid,
+                                                Some(spid),
                                             from_stdlib: false,
                                         },
                                     ));
@@ -1272,10 +1325,67 @@ pub fn judge_forbid_reaches(
                                                     publish_provenance:
                                                         None,
                                                     subscribe_provenance:
-                                                        spid,
+                                                        Some(spid),
                                                     from_stdlib: true,
                                                 },
                                             ));
+                                        }
+                                    }
+                                }
+                                AbsorbedEvent::Deliver {
+                                    target,
+                                    subject,
+                                    ..
+                                } => {
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    edges.push((
+                                        V::Interior(*ai, *target),
+                                        StepIr::Bus {
+                                            subject: subject.clone(),
+                                            publish_provenance: None,
+                                            subscribe_provenance: None,
+                                            from_stdlib: true,
+                                        },
+                                    ));
+                                }
+                                AbsorbedEvent::PublishHole { patterns }
+                                    if !patterns.is_empty() =>
+                                {
+                                    // Bounded: the subject is one a
+                                    // declared pattern admits, so the
+                                    // program's subscribers it can
+                                    // reach are those whose
+                                    // subscription overlaps one (the
+                                    // stdlib's follow as `Deliver`).
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    for p in patterns {
+                                        if bus_holes.blocks(
+                                            hale_model::RelationSet::SUBSCRIBES,
+                                            None,
+                                            Some(p.as_str()),
+                                        ) && bus_unknown.is_none()
+                                        {
+                                            bus_unknown = Some((display(*v), p.clone()));
+                                        }
+                                        for (pattern, subs) in &subs_by_pattern {
+                                            if !hale_model::subjects_can_overlap(pattern, p) {
+                                                continue;
+                                            }
+                                            for (handler, spid) in subs {
+                                                edges.push((
+                                                    V::User(*handler),
+                                                    StepIr::Bus {
+                                                        subject: p.clone(),
+                                                        publish_provenance: None,
+                                                        subscribe_provenance: Some(*spid),
+                                                        from_stdlib: true,
+                                                    },
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -1318,7 +1428,7 @@ pub fn judge_forbid_reaches(
             },
             |v: &V| match v {
                 V::User(f) => match &dst_test {
-                    DstIr::Group(g) => g.contains(f),
+                    DstIr::Group(g, _) => g.contains(f),
                     DstIr::Effects(atoms) => direct_of(*f)
                         .iter()
                         .any(|c| atoms.contains(c)),
@@ -1328,7 +1438,9 @@ pub fn judge_forbid_reaches(
                 // destination can be satisfied inside a stdlib body
                 // (review: stdlib effect sinks).
                 V::Interior(a, n) => match &dst_test {
-                    DstIr::Group(_) => false,
+                    DstIr::Group(_, std) => std.contains(
+                        absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                    ),
                     DstIr::Effects(atoms) => absorption[*a as usize]
                         .nodes[*n as usize]
                         .direct_effects
@@ -1338,7 +1450,9 @@ pub fn judge_forbid_reaches(
             },
             |v: &V| match v {
                 V::User(f) => mask.is_some_and(|m| m.contains(f)),
-                V::Interior(..) => false,
+                V::Interior(a, n) => mask_std.contains(
+                    absorption[*a as usize].nodes[*n as usize].decl.as_str(),
+                ),
             },
             Some(crate::callgraph::MAX_STEPS),
             HolePolicy::Halt,
@@ -1567,14 +1681,16 @@ fn render_violation_ir(
                         ));
                     }
                 }
-                diags.push(Diag::ty(
-                    model_span(*subscribe_provenance),
-                    format!(
-                        "claim `{}`: delivered at this \
-                         subscription",
-                        row.name
-                    ),
-                ));
+                if let Some(spid) = subscribe_provenance {
+                    diags.push(Diag::ty(
+                        model_span(*spid),
+                        format!(
+                            "claim `{}`: delivered at this \
+                             subscription",
+                            row.name
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -2699,7 +2815,7 @@ pub fn judge_endpoints(
                             "claim `{}`: `require attributed` takes a \
                              built-in class with countable DIRECT sites — \
                              `syscall`, `block`, `publish`, `time`, \
-                             `entropy`, `env`, `alloc`, `secret_use`. `{}` \
+                             `entropy`, `env`, `alloc`, `secret_use`, `stdio`. `{}` \
                              is not one of those: a user class would be \
                              trivially true, and `ffi` / `spawn` / \
                              `recursion` are structural properties with no \
@@ -3432,7 +3548,15 @@ pub fn judge_bound(
     }
     let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
         BTreeMap::new();
+    // (from fn, publish site) → delivery entries: the program's publish
+    // reaching a stdlib subscriber it builds.
+    let mut deliveries_of: BTreeMap<(FunctionId, u32), Vec<u32>> =
+        BTreeMap::new();
     for (ai, a) in absorption.iter().enumerate() {
+        if a.entry_bus.is_some() {
+            deliveries_of.entry((a.from, a.site)).or_default().push(ai as u32);
+            continue;
+        }
         absorb_of
             .entry(a.from)
             .or_default()
@@ -3735,6 +3859,7 @@ pub fn judge_bound(
         struct Ctx<'x> {
             calls_of: &'x BTreeMap<FunctionId, Vec<CallRow>>,
             absorb_of: &'x BTreeMap<FunctionId, Vec<(u32, u32)>>,
+            deliveries_of: &'x BTreeMap<(FunctionId, u32), Vec<u32>>,
             pubs_of: &'x BTreeMap<
                 FunctionId,
                 Vec<(
@@ -3955,6 +4080,23 @@ pub fn judge_bound(
                                 topic: *topic,
                                 wire: cx.wire_of(*sid),
                             });
+                            // Each stdlib subscriber the program builds
+                            // takes the publish: its handler's sites
+                            // count like a callee's.
+                            let psite = pubs[i].0;
+                            for ai in cx
+                                .deliveries_of
+                                .get(&(f, psite))
+                                .into_iter()
+                                .flatten()
+                            {
+                                evs.push(Ev::Call {
+                                    to: V::Interior(*ai, 0),
+                                    in_loop: *in_loop,
+                                    group: None,
+                                    prov: Some(*pprov),
+                                });
+                            }
                         }
                     }
                 }
@@ -4004,6 +4146,16 @@ pub fn judge_bound(
                             AbsorbedEvent::PublishHole { .. } => {
                                 evs.push(Ev::Computed(None))
                             }
+                            // A delivery to a stdlib subscriber: its
+                            // handler's sites count like a callee's.
+                            AbsorbedEvent::Deliver {
+                                target, in_loop, ..
+                            } => evs.push(Ev::Call {
+                                to: V::Interior(ai, *target),
+                                in_loop: *in_loop,
+                                group: None,
+                                prov: None,
+                            }),
                             AbsorbedEvent::Truncated => {
                                 evs.push(Ev::Truncated)
                             }
@@ -4162,6 +4314,7 @@ pub fn judge_bound(
         let cx = Ctx {
             calls_of: &calls_of,
             absorb_of: &absorb_of,
+            deliveries_of: &deliveries_of,
             pubs_of: &pubs_of,
             holes_of: &holes_of,
             absorption,
@@ -4943,7 +5096,9 @@ pub fn judge_causes_witnessed(
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         interior_unknown.insert(a.from.0);
                     }
-                    hale_model::AbsorbedEvent::Call { .. } => {}
+                    // The handler's own publishes are its node's events.
+                    hale_model::AbsorbedEvent::Call { .. }
+                    | hale_model::AbsorbedEvent::Deliver { .. } => {}
                 }
             }
         }
@@ -5164,10 +5319,18 @@ pub fn judge_causes_witnessed(
         for c in classes {
             allowed.extend(effect_class_atoms(e, &c.name));
         }
-        let excess: BTreeSet<String> = caused
+        // A declared `syscall` admits its sub-class `stdio`.
+        if allowed.contains("syscall") {
+            allowed.insert("stdio".to_string());
+        }
+        let mut excess: BTreeSet<String> = caused
             .into_iter()
             .filter(|c| !allowed.contains(c))
             .collect();
+        // `syscall` already says what `stdio` would.
+        if excess.contains("syscall") {
+            excess.remove("stdio");
+        }
         let verdict = if !excess.is_empty() {
             // A KNOWN excess is an answer, whatever else is unknown.
             diags.push(Diag::ty(

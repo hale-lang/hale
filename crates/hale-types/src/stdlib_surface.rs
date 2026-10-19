@@ -182,6 +182,10 @@ impl EffectSet {
     /// Bits 7-9 sit below `BUILTIN_BITS`, so this costs no user
     /// capacity.
     pub const SECRET_USE: EffectSet = EffectSet(1 << 7);
+    /// A write to fd 1 or 2. A sub-class of `SYSCALL`: no leaf carries
+    /// it alone (`stdio_is_a_syscall` pins that), so every contract
+    /// over `syscall` still sees it.
+    pub const STDIO: EffectSet = EffectSet(1 << 8);
     /// Not yet classified (#265 step 4 turns the surface; until
     /// then queries must treat this as "may do anything").
     pub const UNCLASSIFIED: EffectSet = EffectSet(u64::MAX);
@@ -194,6 +198,17 @@ impl EffectSet {
     }
     pub fn is_unclassified(self) -> bool {
         self.0 == u64::MAX
+    }
+    /// What a declared set ADMITS: its classes and their sub-classes.
+    /// A set naming `syscall` admits `stdio`, a kind of syscall, so a
+    /// contract that allowed every syscall before `stdio` existed
+    /// allows the same operations now.
+    pub fn admitted(self) -> EffectSet {
+        if self.contains(EffectSet::SYSCALL) {
+            self.union(EffectSet::STDIO)
+        } else {
+            self
+        }
     }
 }
 
@@ -850,7 +865,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "stdout"],
         fns: &[
-            row!("write_bytes", SYSCALL, [Str] -> Int, Intrinsic(IoStdoutWriteBytes)),
+            row!("write_bytes", SYSCALL | STDIO, [Str] -> Int, Intrinsic(IoStdoutWriteBytes)),
         ],
         open_prefixes: &[],
     },
@@ -1239,8 +1254,8 @@ pub const SURFACES: &[NsSurface] = &[
             // Closes the parent's end of the child's stdin (its EOF);
             // a statement, through its rename like `adopt`.
             row!("close_stdin", SYSCALL, _, Renamed),
-            row!("dump_arena_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
-            row!("dump_pool_residency", SYSCALL, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
+            row!("dump_arena_residency", SYSCALL | STDIO, [] -> Int, Intrinsic(ProcessDumpArenaResidency)),
+            row!("dump_pool_residency", SYSCALL | STDIO, [] -> Int, Intrinsic(ProcessDumpPoolResidency)),
             row!("exit", SYSCALL, [Int] -> Unit, Intrinsic(ProcessExit)),
             row!("kill", SYSCALL, [Int] -> Unit ! "IoError", Renamed),
             row!("pid", SYSCALL, [] -> Int, Intrinsic(ProcessPid)),
@@ -2152,7 +2167,7 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
 pub fn builtin_effects(name: &str) -> Option<EffectSet> {
     match name {
         "println" | "print" | "eprintln" | "eprint" => {
-            Some(EffectSet::SYSCALL)
+            Some(EffectSet::SYSCALL.union(EffectSet::STDIO))
         }
         _ => None,
     }
@@ -2298,6 +2313,22 @@ mod tests {
 
     fn path(s: &NsSurface, f: &StdFn) -> String {
         format!("std::{}::{}", s.ns.join("::"), f.name)
+    }
+
+    /// `stdio` is a sub-class of `syscall`: no leaf, row or builtin,
+    /// carries it alone, so a law or contract over `syscall` sees every
+    /// write to fd 1 or 2.
+    #[test]
+    fn stdio_is_a_syscall() {
+        for (s, f) in rows() {
+            if !f.effects.is_unclassified() && f.effects.contains(EffectSet::STDIO) {
+                assert!(f.effects.contains(EffectSet::SYSCALL), "{} carries stdio without syscall", path(s, f));
+            }
+        }
+        for b in ["println", "print", "eprintln", "eprint"] {
+            let e = builtin_effects(b).unwrap();
+            assert!(e.contains(EffectSet::STDIO) && e.contains(EffectSet::SYSCALL), "{b}");
+        }
     }
 
     #[test]
