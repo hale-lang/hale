@@ -149,7 +149,7 @@ export async function startService(options = {}) {
   const isolated = isolatedEnvironment();
   const env = Object.fromEntries([
     'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
-    'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'HALE_DNA_TRUSTED_LOCAL',
+    'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'XDG_DATA_HOME', 'HALE_DNA_HABITAT', 'HALE_DNA_TRUSTED_LOCAL',
   ].filter(key => isolated[key] !== undefined).map(key => [key, isolated[key]]));
   const principal = options.actor || 'alice';
   assert(principal && !/[\x00-\x1f\x7f]/u.test(principal), 'Expected a nonempty control-free local principal');
