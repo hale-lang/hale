@@ -127,14 +127,28 @@ fn main() {
     std::test::assert(std::str::contains(rows_of(genome, "habitat.migrated"), "\"entity\": \"" + tkey + "/memory\""), "the tenant's migration is a row of the habitat's record");
 
     // ---- down keeps the data; up brings it back, migrating no tenant
+    // a birth whose local marker was lost after its genesis reached
+    // memory resumes that same identity, its rows intact: memory decides,
+    // never the marker
+    let rows_before = rows_of(genome, "habitat.allocated");
+    std::io::fs::write_file(dna::local_habitat_dir() + "/birth.pending", "") or discard;
+    let resumed = in_dir(scratch, toolchain() + "\nhabitat\nup");
+    std::test::assert(resumed.code == 0 && std::str::contains(resumed.stdout, "resume  the habitat's record is in memory") && !std::str::contains(resumed.stdout, "born again"), "a born record is resumed, never drawn again: " + resumed.stdout + resumed.stderr);
+    std::test::assert(dna::allocation_key(genome) == key && rows_of(genome, "habitat.allocated") == rows_before && !std::io::fs::file_exists(dna::local_habitat_dir() + "/birth.pending"), "the same identity, its rows intact, the birth whole again");
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert(down.code == 0 && std::str::contains(down.stdout, "its data is kept"), "down stops the habitat: " + down.stdout + down.stderr);
     std::test::assert(containers(false) == 0 && containers(true) > 0, "every service stopped, none removed");
+    // memory that cannot be reached, with a birth marked pending, destroys
+    // nothing: up refuses, and the identity and its volumes stay
+    std::io::fs::write_file(dna::local_habitat_dir() + "/birth.pending", "") or discard;
+    let blind = in_dir(scratch, "sh\n-c\nDOCKER_HOST=unix:///nonexistent/docker.sock exec \"$1\" habitat up\nsh\n" + toolchain());
+    std::test::assert(blind.code != 0 && std::str::contains(blind.stderr, "nothing is undone on a guess"), "unreachable memory is a refusal: " + blind.stdout + blind.stderr);
+    std::test::assert(dna::allocation_key(genome) == key && containers(true) > 0, "and nothing is undone");
     let second = scratch + "/up2.log";
     let again = up(scratch, second);
     std::test::assert(len(again) > 0 && logged(second, "body    the habitat's body runs in this process", 300), "up brings the habitat back: " + text_of(second));
     let back = text_of(second);
-    std::test::assert(!std::str::contains(back, "born    ") && std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")"), "born once, and its tenant brought up: " + back);
+    std::test::assert(!std::str::contains(back, "born    ") && std::str::contains(back, "resume  the habitat's record is in memory") && std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")"), "born once, resumed against its record, and its tenant brought up: " + back);
     std::test::assert(!std::str::contains(back, tenant + "/.hale/dna/memory.env"), "and the tenant is not migrated by up: " + back);
     // the first body drained onto its backends before they stopped: its
     // lease went back in memory

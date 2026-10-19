@@ -4385,10 +4385,17 @@ The live half is memory's, projected from the record by the spine
   and killed, and only then are the services stopped (a unit's
   `TimeoutStopSec` is the same window). A birth that stops part way —
   memory or docker failing after the identity is pinned — is resumed by
-  the next `up`: each step done is written to `<habitat>/birth.pending`
-  (genesis, profile, each pack) until the birth is whole, and a pin whose
-  genesis never reached memory is drawn again, the allocations made for
-  it taken down with it.
+  the next `up`; `<habitat>/birth.pending` says a birth is not whole yet
+  (and which of its profile and packs are done), but whether its record
+  was born is memory's to say, never the file's. A pinned identity whose
+  `record.genesis` memory holds is resumed: the rest of `init`, each step
+  of which keeps what is done, against that record. Only when memory
+  answers that it holds no genesis for the pin, or the identity's memory
+  allocation was never made (docker answers it has no such volume), is
+  the identity drawn again and what was made for it taken down. Memory
+  that cannot be reached is a refusal that destroys nothing. Allocation
+  rows wait for the genesis memory confirms before they are written into
+  the record.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the

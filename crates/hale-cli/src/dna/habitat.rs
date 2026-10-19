@@ -613,23 +613,30 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     }
     let done = std::fs::read_to_string(birth_pending()).unwrap_or_default();
     let have: Vec<&str> = done.lines().collect();
-    if !have.contains(&"genesis") {
-        // a pin with no record behind it names a genesis that was never
-        // written: it is unpinned and the record born afresh
-        let manifest = genome.join("hale.toml");
-        if let Some(drawn) = manifest_pin(&manifest).ok().flatten() {
-            // the allocations made for the identity that was never born go
-            // with it: they belong to no organism, and nothing is recorded
+    // whether the record was born is memory's to say, never a local
+    // marker's: a genesis memory holds is resumed, never drawn again
+    let manifest = genome.join("hale.toml");
+    match genesis_state(genome)? {
+        Genesis::Unpinned => {
+            out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
+            out.extend(super::init(genome, false)?);
+        }
+        Genesis::Present => {
+            // born: the rest of its init, each step of which keeps what
+            // is done, against the record memory holds
+            out.push(format!("{:<8}the habitat's record is in memory; its birth goes on where it stopped", "resume"));
+            out.extend(super::init(genome, false)?);
+        }
+        Genesis::Never(drawn) => {
+            // memory answered that this identity's record was never born
+            // (or its memory was never provisioned): the identity is drawn
+            // again, and what was made for it, holding no record, goes
             forget_allocation(&drawn[..12.min(drawn.len())]);
             unpin(&manifest)?;
             out.push(format!("{:<8}the habitat's earlier birth stopped before its record reached memory: born again", "resume"));
+            out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
+            out.extend(super::init(genome, false)?);
         }
-        out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
-        out.extend(super::init(genome, false)?);
-        birth_done("genesis")?;
-    } else {
-        // born, but not whole: its own memory and nerves up again first
-        out.extend(migrate_lines(genome)?);
     }
     // the bootstrap's allocations, the habitat's own memory and nerves,
     // made before its record existed: their rows, now it does
@@ -675,8 +682,58 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// Whether the habitat's record was born, as memory says.
+enum Genesis {
+    /// no identity pinned yet
+    Unpinned,
+    /// memory holds the pinned identity's genesis
+    Present,
+    /// memory answered that it holds no genesis for the pinned identity,
+    /// or the identity's memory allocation was never provisioned (no
+    /// volume of it exists): what was made for it holds no record
+    Never(String),
+}
+
+/// GH #1653: the pinned identity's genesis, asked of memory. Memory that is
+/// not up is brought up (the habitat's own, a habitat act) and asked again;
+/// memory that still cannot be reached is a refusal, and nothing is
+/// destroyed on a guess.
+fn genesis_state(genome: &Path) -> Result<Genesis, String> {
+    let Some(id) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else { return Ok(Genesis::Unpinned) };
+    let key = id[..12.min(id.len())].to_string();
+    let asked = super::record_exists(genome);
+    if let Ok(present) = asked {
+        return Ok(if present { Genesis::Present } else { Genesis::Never(id) });
+    }
+    // memory could not say: the habitat's own allocation that never had a
+    // volume never held a record
+    if !own_servers() && !memory_volume_exists(&key) {
+        return Ok(Genesis::Never(id));
+    }
+    let up = memory_migrate(genome);
+    match (up, super::record_exists(genome)) {
+        (_, Ok(true)) => Ok(Genesis::Present),
+        (_, Ok(false)) => Ok(Genesis::Never(id)),
+        (Err(e), Err(_)) | (_, Err(e)) => Err(format!("the habitat's memory cannot be reached to say whether its record ({key}…) was born, and nothing is undone on a guess: {e}")),
+    }
+}
+
+/// Whether the memory volume of the allocation keyed `key` may exist in
+/// the habitat's project: false only when docker answers that it has no
+/// such volume; anything else (no docker, no daemon, an error) is taken as
+/// "it may", so nothing is drawn again on a guess.
+fn memory_volume_exists(key: &str) -> bool {
+    let name = format!("{}_memory-{key}", local_habitat_project());
+    match Command::new("docker").args(["volume", "inspect", &name]).output() {
+        Ok(o) if !o.status.success() => !String::from_utf8_lossy(&o.stderr).to_lowercase().contains("no such volume"),
+        _ => true,
+    }
+}
+
 /// The allocation keyed `key` taken down whole (its services and volumes)
 /// and its cache removed: what a birth that never reached memory leaves.
+/// Only ever called once memory has answered that the identity holds no
+/// record (`genesis_state`).
 fn forget_allocation(key: &str) {
     let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
     if dir.join("compose.yaml").is_file() && dir.join("ports.yaml").is_file() {

@@ -3473,7 +3473,9 @@ fn record_seeded(root: &Path) -> Result<bool, String> {
     let rows = host_run("record-rows", root, &[])?;
     Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| {
         let kind = v["kind"].as_str().unwrap_or("");
-        !kind.starts_with("record.")
+        // the habitat's own provisioning rows land beside its genesis
+        // before it is seeded (GH #1653), and are no seeding
+        !kind.starts_with("record.") && !kind.starts_with("habitat.")
     }))
 }
 
