@@ -18,7 +18,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner, graftEnvironment, habitatUp, graft } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 import { recordIdentity, recordState, receiptBody, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced, settle } from './command-wire.mjs';
@@ -54,10 +54,9 @@ export function scaffoldProject({ hale, root, env, actor }) {
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(parent, { recursive: true });
   const grafting = graftEnvironment(env);
-  for (const argv of [habitatUp(), graft(name)]) {
-    const bounded = boundedNative(hale, argv, { build: true, lock: false });
-    execFileSync(bounded.command, bounded.args, { cwd: parent, env: grafting, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-  }
+  ensureHabitat(hale, env);
+  const bounded = boundedNative(hale, graft(name), { build: true, lock: false });
+  execFileSync(bounded.command, bounded.args, { cwd: parent, env: grafting, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const org = path.join(root, 'dna/org');
   for (const entry of fs.readdirSync(org)) fs.rmSync(path.join(org, entry), { recursive: true, force: true });
   fs.writeFileSync(path.join(org, 'main.hl'), organizationSource());

@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { isolatedEnvironment, boundedNative, memoryOwner, graftEnvironment, habitatUp, graft } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { freePort } from './command-wire.mjs';
 import { recordIdentity } from './record-memory.mjs';
 
@@ -71,7 +71,6 @@ const test = base.extend({
     // at the end. Only the habitat's acts hold the owner's servers.
     const owner = memoryOwner(), drop = process.env.HALE_FACE_MEMORY_BIN;
     if (!owner || !drop) throw new Error('The record is memory\'s: run through the native browser test launcher with HALE_DNA_MEMORY_DSN_OWNER set.');
-    const habitat = boundedNative(env.HALE_BIN, habitatUp(), { build: true });
     const generated = boundedNative(env.HALE_BIN, graft(root), { build: true });
     const children = [], stateDirs = [], launches = [];
     const stopRecordedChildren = async () => {
@@ -100,7 +99,7 @@ const test = base.extend({
     };
     try {
       const grafting = graftEnvironment(env);
-      await execute(habitat.command, habitat.args, { env: grafting, timeout: 300000, maxBuffer: 2097152 });
+      ensureHabitat(env.HALE_BIN, env);
       await execute(generated.command, generated.args, { env: grafting, timeout: 300000, maxBuffer: 2097152 });
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
       // Organization inspection is explicitly committed-source inspection.

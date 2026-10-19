@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment, boundedNative, memoryOwner, launchToken, graftEnvironment, habitatUp, graft } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, launchToken, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
 import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced } from './command-wire.mjs';
@@ -139,7 +139,7 @@ export const test = base.extend({
         if (process.env.XDG_CACHE_HOME) birthEnv.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME;
         else delete birthEnv.XDG_CACHE_HOME;
         const grafting = graftEnvironment(birthEnv);
-        await executeNative(env.HALE_BIN, habitatUp(), { env: grafting, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
+        ensureHabitat(env.HALE_BIN, birthEnv);
         await executeNative(env.HALE_BIN, graft(root), { env: grafting, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
