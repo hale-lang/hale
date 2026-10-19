@@ -4378,7 +4378,17 @@ The live half is memory's, projected from the record by the spine
   whether each role's service runs, and the schema version it records
   against this toolchain's, naming `hale habitat migrate <organism>` (or
   `hale dna upgrade`) for one behind. `hale habitat down` stops the body
-  and every service of the project and keeps their data.
+  and every service of the project and keeps their data, after the body
+  has drained: it is told to stop and waited for, up to its drain grace
+  (`LOTUS_DRAIN_GRACE_MS`, the node's 30 s by default) and a margin, so
+  its drain still reaches its backends; one that outlives that is said
+  and killed, and only then are the services stopped (a unit's
+  `TimeoutStopSec` is the same window). A birth that stops part way —
+  memory or docker failing after the identity is pinned — is resumed by
+  the next `up`: each step done is written to `<habitat>/birth.pending`
+  (genesis, profile, each pack) until the birth is whole, and a pin whose
+  genesis never reached memory is drawn again, the allocations made for
+  it taken down with it.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the

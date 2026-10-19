@@ -60,6 +60,19 @@ fn rows_of(genome: String, kind: String) -> String {
     return out;
 }
 
+// Whether the habitat's Ledger holds the body lease `token` given back.
+@bounded_by(genome)
+fn released(genome: String, token: Int) -> Bool {
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: genome }, ledger: dna::MemoryLedger { repo: genome } };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "body.released" && std::json::find_int_field(e.body, "token") == token { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
 // The services of the habitat's project, running (`all` false) or not.
 fn containers(all: Bool) -> Int {
     let r = dna::run_tool("docker\nps\n" + (if all { "-a\n" } else { "" }) + "-q\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project());
@@ -81,11 +94,20 @@ fn main() {
     dna::reap_on_exit(scratch);
     let genome = dna::local_habitat_dir() + "/genome";
 
+    // ---- a birth that stops part way, after the identity is pinned
+    // (docker unreachable when memory comes up), is resumed by the next
+    // `up`, which births it whole
+    let stopped = in_dir(scratch, "sh\n-c\nDOCKER_HOST=unix:///nonexistent/docker.sock exec \"$1\" habitat up\nsh\n" + toolchain());
+    std::test::assert(stopped.code != 0 && len(dna::allocation_key(genome)) == 12, "the first birth stops after pinning an identity: " + stopped.stdout + stopped.stderr);
+    let first_key = dna::allocation_key(genome);
+
     // ---- born, without a parent, its body in the foreground
     let first = scratch + "/up.log";
     let body = up(scratch, first);
     std::test::assert(len(body) > 0 && logged(first, "body    the habitat's body runs in this process", 600), "the habitat is born and its body runs: " + text_of(first));
-    std::test::assert(std::str::contains(text_of(first), "born    the habitat at " + genome + " (the one organism with no parent)"), "born from the toolchain's genome: " + text_of(first));
+    std::test::assert(std::str::contains(text_of(first), "born    the habitat at " + genome + " (the one organism with no parent)") && std::str::contains(text_of(first), "resume  the habitat's earlier birth stopped"), "born from the toolchain's genome, the stopped birth resumed: " + text_of(first));
+    std::test::assert(dna::allocation_key(genome) != first_key, "under an identity drawn again, its record in memory");
+    std::test::assert(len(rows_of(genome, "habitat.profile")) > 0 && std::str::contains(rows_of(genome, "batch.proposed"), "habitat@1") && std::str::contains(rows_of(genome, "batch.proposed"), "standard@1"), "born whole: its profile and both packs");
     std::test::assert(std::str::contains(text_of(genome + "/README.md"), "`law` **Only the habitat's acts provision.**"), "whose document carries its law");
     let key = dna::allocation_key(genome);
     std::test::assert_eq_int(len(key), 12, "the habitat has a record identity");
@@ -114,6 +136,9 @@ fn main() {
     let back = text_of(second);
     std::test::assert(!std::str::contains(back, "born    ") && std::str::contains(back, "up      allocation " + tkey + " (" + tenant + ")"), "born once, and its tenant brought up: " + back);
     std::test::assert(!std::str::contains(back, tenant + "/.hale/dna/memory.env"), "and the tenant is not migrated by up: " + back);
+    // the first body drained onto its backends before they stopped: its
+    // lease went back in memory
+    std::test::assert(released(genome, 1), "the body drained before its backends stopped: its lease went back in memory");
     let after = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(std::str::contains(after, "memory  memory-" + tkey + " running"), "the tenant runs again: " + after);
 

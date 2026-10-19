@@ -494,14 +494,14 @@ fn up(args: &[String]) -> ExitCode {
     let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "hale".into());
     if foreground {
         let _ = std::fs::write(pid_file(), format!("{}\n", std::process::id()));
-        println!("body    the habitat's body runs in this process (`hale dna dev {}`)", genome.display());
+        println!("{:<8}the habitat's body runs in this process (`hale dna dev {}`)", "body", genome.display());
         use std::os::unix::process::CommandExt;
         let e = Command::new(&me).args(["dna", "dev"]).arg(&genome).arg("--no-iris").env("HALE_DNA_COMPOSE", "off").current_dir(&genome).exec();
         eprintln!("hale habitat up: cannot run {me}: {e}");
         return ExitCode::from(1);
     }
     if let Some(state) = body_state() {
-        println!("body    {state}");
+        println!("{:<8}{state}", "body");
         return ExitCode::SUCCESS;
     }
     match start_unit(&me, &genome, &backends) {
@@ -524,12 +524,18 @@ fn up(args: &[String]) -> ExitCode {
 fn bring_up(backends: &str) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let mut out = vec![format!("habitat local at {} (compose project {}; {backends} backends)", local_habitat_dir(), local_habitat_project())];
-    if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_none() {
-        std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
-        std::fs::write(backends_file(), format!("{backends}\n")).map_err(|e| format!("write {}: {e}", backends_file().display()))?;
-        out.extend(birth(&genome, backends)?);
-    } else {
+    // born whole once its identity is pinned and no birth is pending: a
+    // birth that stopped part way left its steps in `birth.pending`, and is
+    // resumed from them (memory that is merely down is never mistaken for
+    // a birth that did not happen)
+    if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_some() && !birth_pending().exists() {
         out.extend(migrate_lines(&genome)?);
+    } else {
+        std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
+        if !backends_file().exists() {
+            std::fs::write(backends_file(), format!("{backends}\n")).map_err(|e| format!("write {}: {e}", backends_file().display()))?;
+        }
+        out.extend(birth(&genome, backends)?);
     }
     let own = allocation_dir(&genome);
     let versions = toolchain_versions(&genome);
@@ -555,20 +561,37 @@ fn bring_up(backends: &str) -> Result<Vec<String>, String> {
             .output()
             .map_err(|e| format!("docker compose: {e}"))?;
         if !up.status.success() {
-            out.push(format!("note    allocation {key}: did not come up: {}", String::from_utf8_lossy(&up.stderr).trim()));
+            out.push(format!("{:<8}allocation {key}: did not come up: {}", "note", String::from_utf8_lossy(&up.stderr).trim()));
             continue;
         }
         let moved = behind(&row, &versions);
         let root = row["root"].as_str().unwrap_or("<organism>");
-        out.push(format!("up      allocation {key} ({root}){}", if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) }));
+        out.push(format!("{:<8}allocation {key} ({root}){}", "up", if moved.is_empty() { String::new() } else { format!("; behind this toolchain ({}): `hale habitat migrate {root}` or `hale dna upgrade` migrates it", moved.join(", ")) }));
     }
     Ok(out)
+}
+
+/// The steps of a birth not yet whole, one a line as each is done
+/// (`genesis`, `profile`, `habitat`, `standard`): written when a birth
+/// begins and removed when it is whole.
+fn birth_pending() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("birth.pending")
+}
+
+fn birth_done(step: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).create(true).open(birth_pending()).map_err(|e| format!("write {}: {e}", birth_pending().display()))?;
+    writeln!(f, "{step}").map_err(|e| format!("write {}: {e}", birth_pending().display()))
 }
 
 /// GH #1653: the habitat's birth, the one with no parent: its genome
 /// written from the toolchain's, made a repository, born as an organism
 /// (its record in its own memory allocation) and given its positions and
-/// its law as the Board's to ratify.
+/// its law as the Board's to ratify. Each step is taken only when it is
+/// not done already, so a birth that stopped part way (memory or docker
+/// failing after the identity was pinned) is resumed by the next `up`: a
+/// pin whose record never reached memory is a birth that did not happen,
+/// and is drawn again.
 fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(genome).map_err(|e| format!("create {}: {e}", genome.display()))?;
     for f in hale_dna::HABITAT_FILES {
@@ -584,36 +607,103 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     }
     git(&["add", "-A"])?;
     let _ = git(&["commit", "-q", "-m", "the habitat's genome"])?;
-    let mut out = vec![format!("born    the habitat at {} (the one organism with no parent)", genome.display())];
-    out.extend(super::init(genome, false)?);
+    let mut out = Vec::new();
+    if !birth_pending().exists() {
+        std::fs::write(birth_pending(), "").map_err(|e| format!("write {}: {e}", birth_pending().display()))?;
+    }
+    let done = std::fs::read_to_string(birth_pending()).unwrap_or_default();
+    let have: Vec<&str> = done.lines().collect();
+    if !have.contains(&"genesis") {
+        // a pin with no record behind it names a genesis that was never
+        // written: it is unpinned and the record born afresh
+        let manifest = genome.join("hale.toml");
+        if let Some(drawn) = manifest_pin(&manifest).ok().flatten() {
+            // the allocations made for the identity that was never born go
+            // with it: they belong to no organism, and nothing is recorded
+            forget_allocation(&drawn[..12.min(drawn.len())]);
+            unpin(&manifest)?;
+            out.push(format!("{:<8}the habitat's earlier birth stopped before its record reached memory: born again", "resume"));
+        }
+        out.push(format!("{:<8}the habitat at {} (the one organism with no parent)", "born", genome.display()));
+        out.extend(super::init(genome, false)?);
+        birth_done("genesis")?;
+    } else {
+        // born, but not whole: its own memory and nerves up again first
+        out.extend(migrate_lines(genome)?);
+    }
     // the bootstrap's allocations, the habitat's own memory and nerves,
     // made before its record existed: their rows, now it does
     let n = flush_pending()?;
     if n > 0 {
         out.push(format!("recorded {n} allocation row(s) in the habitat's record"));
     }
-    // and its profile: the backends it was born on, a row as every
-    // provisioning choice is (never a DSN or a URL)
-    let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
-    let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project() }).to_string() });
-    std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
-    let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
-    let _ = std::fs::remove_file(&profile);
-    landed?;
+    if !have.contains(&"profile") {
+        // its profile: the backends it was born on, a row as every
+        // provisioning choice is (never a DSN or a URL)
+        let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
+        let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project() }).to_string() });
+        std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
+        let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
+        let _ = std::fs::remove_file(&profile);
+        landed?;
+        birth_done("profile")?;
+    }
     // each pack is proposed by its own `hale dna pack apply`, a process of
     // its own: the verb hands itself over to the host (exec), and the
     // habitat's birth goes on after it
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut proposed = 0;
     for (pack, args) in [("habitat", vec!["apply", "habitat", "--on-holes"]), ("standard", vec!["apply", "standard"])] {
+        if have.contains(&pack) {
+            continue;
+        }
         let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         a.push(genome.display().to_string());
         let ok = Command::new(&me).arg("dna").arg("pack").args(&a).status().is_ok_and(|s| s.success());
-        if !ok {
-            out.push(format!("note    the `{pack}` pack was not proposed to the habitat's Board: `hale dna pack {}` proposes it", a.join(" ")));
+        if ok {
+            proposed += 1;
+            birth_done(pack)?;
+        } else {
+            return Err(format!("the `{pack}` pack was not proposed to the habitat's Board (`hale habitat up` tries again)"));
         }
     }
-    out.push("proposed the habitat's positions (`habitat`) and its law (`standard`): `hale dna review all approve` ratifies them".to_string());
+    if proposed > 0 {
+        out.push("proposed the habitat's positions (`habitat`) and its law (`standard`): `hale dna review all approve` ratifies them".to_string());
+    }
+    // whole
+    let _ = std::fs::remove_file(birth_pending());
     Ok(out)
+}
+
+/// The allocation keyed `key` taken down whole (its services and volumes)
+/// and its cache removed: what a birth that never reached memory leaves.
+fn forget_allocation(key: &str) {
+    let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
+    if dir.join("compose.yaml").is_file() && dir.join("ports.yaml").is_file() {
+        let _ = Command::new("env")
+            .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
+            .arg(local_habitat_project())
+            .arg("--project-directory")
+            .arg(&dir)
+            .arg("-f")
+            .arg(dir.join("compose.yaml"))
+            .arg("-f")
+            .arg(dir.join("ports.yaml"))
+            .args(["down", "-v"])
+            .output();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The record identity taken out of the manifest's `dna` table, every
+/// other line kept.
+fn unpin(manifest: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(manifest).map_err(|e| format!("read {}: {e}", manifest.display()))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} does not parse: {e}", manifest.display()))?;
+    if let Some(t) = doc.get_mut("dna").and_then(|d| d.as_table_like_mut()) {
+        t.remove("record");
+    }
+    std::fs::write(manifest, doc.to_string()).map_err(|e| format!("write {}: {e}", manifest.display()))
 }
 
 fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String> {
@@ -632,9 +722,12 @@ fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String>
         vault.push_str(&format!("EnvironmentFile={}\n", env.display()));
     }
     let unit = format!(
-        "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec={stop}\n\n[Install]\nWantedBy=default.target\n",
         dir = local_habitat_dir(),
-        g = genome.display()
+        g = genome.display(),
+        // `systemctl stop` waits for the body's drain, which reaches its
+        // backends before `down` stops them
+        stop = drain_window().as_secs()
     );
     let path = unit_path();
     if let Some(parent) = path.parent() {
@@ -644,7 +737,7 @@ fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String>
     let systemctl = |args: &[&str]| Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}")).and_then(|o| if o.status.success() { Ok(()) } else { Err(format!("systemctl --user {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim())) });
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--now", &unit_name()])?;
-    Ok(format!("body    up (systemd user unit {}, {})", unit_name(), path.display()))
+    Ok(format!("{:<8}up (systemd user unit {}, {})", "body", unit_name(), path.display()))
 }
 
 fn status() -> ExitCode {
@@ -654,7 +747,7 @@ fn status() -> ExitCode {
         Some(id) => println!("genome  {} (record {}…)", genome.display(), &id[..12.min(id.len())]),
         None => println!("genome  not born: `hale habitat up` births it"),
     }
-    println!("body    {}", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
+    println!("{:<8}{}", "body", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
     let (rows, from) = match recorded_allocations() {
         Some(rows) => (rows, "the habitat's record"),
         None => (allocations(), "the allocations' cache (the habitat's record is not readable: its memory is not up)"),
@@ -694,12 +787,39 @@ fn running_services() -> Vec<String> {
     }
 }
 
+/// How long the habitat's body may take to drain once told to stop: the
+/// host's drain grace (the organization's and its lease's, up to
+/// `LOTUS_DRAIN_GRACE_MS`, the node default otherwise) and a margin. Its
+/// backends are stopped only after it has gone, so the drain still reaches
+/// them.
+fn drain_window() -> std::time::Duration {
+    let grace: u64 = std::env::var("LOTUS_DRAIN_GRACE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| super::NODE_DRAIN_GRACE_MS.parse().unwrap_or(30000));
+    std::time::Duration::from_millis(grace + 15000)
+}
+
+fn alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
+}
+
 fn down() -> ExitCode {
     let mut said = Vec::new();
     if let Ok(pid) = std::fs::read_to_string(pid_file()) {
         if let Ok(pid) = pid.trim().parse::<i32>() {
-            if pid > 0 && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
-                said.push(format!("stopped the habitat's body (pid {pid})"));
+            if alive(pid) && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+                // the body drains on SIGTERM, onto its backends: wait for it
+                // (the pid file stays while it lives), and only then stop them
+                let deadline = std::time::Instant::now() + drain_window();
+                while alive(pid) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                if alive(pid) {
+                    eprintln!("hale habitat down: the habitat's body (pid {pid}) did not drain within {}s; killed", drain_window().as_secs());
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    while alive(pid) {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+                said.push(format!("stopped the habitat's body (pid {pid}), drained"));
             }
         }
         let _ = std::fs::remove_file(pid_file());
