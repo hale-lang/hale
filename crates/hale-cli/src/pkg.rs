@@ -122,6 +122,11 @@ pub struct DnaManifest {
     /// (`dna::habitat::needs_of` reads and checks it).
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
     pub needs: Option<Vec<String>>,
+    /// GH #1653: `[dna.migrations.<role>] command = [...]` — a heart's
+    /// own migration for a heart role it declares, which the habitat runs
+    /// when the heart opts in (`dna::habitat::heart_migrations`).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub migrations: Option<toml::Table>,
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and plan path

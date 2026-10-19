@@ -99,8 +99,9 @@ handover [organism]  what the habitat hands the organism's heart, one
                      heart the same.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
-                     runs, and the schema version it records against this
-                     toolchain's.
+                     runs, the schema version memory and the nerves record
+                     against this toolchain's, and how a heart's declared
+                     migration last ran.
 down                 stop the habitat's body and every service of its
                      project; their data is kept, and `up` brings them back.
 migrate [organism]   bring the organism's allocations up and migrate them:

@@ -4460,6 +4460,30 @@ The live half is memory's, projected from the record by the spine
   role, is provisioned on either. `cache` and `object-store` are
   refused by name at graft until a heart needs one, as is a role the
   habitat does not know.
+- **A heart may hand its migrations to the habitat** (GH #1653). It is
+  the heart's choice. A Hale heart that owns the schema of a heart role
+  it declares may say how to migrate it, in its genome's manifest:
+  `[dna.migrations.<role>]` with `command`, the argv of its own
+  migration tool, run in the organism's directory with that role's
+  handover (`HALE_DNA_DATABASE_DSN`, the broker's) and the rest of the
+  attach handover in its environment. The habitat then runs it at graft,
+  at `hale habitat migrate <organism>` and at `hale dna upgrade`, every
+  time: the tool is idempotent and keeps its own ledger, so it decides
+  whether anything moved, and the habitat keeps no version of the
+  heart's schema. Each run is a habitat act: the role's allocation is
+  brought up and waited for first, as `hale habitat migrate` brings it
+  up, so a `hale dna upgrade` that restarts the nerves for new passwords
+  runs the migration once they are back. Each run is a `habitat.migrated <id>/<role>` row with
+  the command, its exit status and its output (its last 4096 bytes); a
+  run that fails fails the act that ran it, naming its command, and the
+  next act runs it again. A heart that declares none owns its schema
+  however it likes, migrating on boot included; a foreign heart declares
+  none; and the habitat migrates nothing of a heart's on its own. A
+  declaration for a role the genome does not need, one with no
+  `command`, or one with any other key (`schema_version` among them) is
+  refused by name. A heart role's allocation carries no schema version:
+  "behind the toolchain" is said only of the organism's own memory and
+  nerves, whose schemas are the toolchain's.
 - **The attach handover** (GH #1653). What the habitat hands a
   habitat-scoped heart, a secret only ever by its vault slot's name:
   `HALE_DNA_APPLICATION_ID` (the record's identity), `HALE_DNA_HEAD_URL`
@@ -4498,9 +4522,10 @@ The live half is memory's, projected from the record by the spine
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the
   vault slots it holds by name, never a value) and `habitat.migrated
-  <id>/<role>` each time its schema version moves (`from`,
+  <id>/<role>` each time an organism role's schema version moves (`from`,
   `schema_version`: memory's `MEMORY_SCHEMA_VERSION`, the nerves'
-  `NERVES_STREAM_VERSION`). A row is keyed by the organism and the role
+  `NERVES_STREAM_VERSION`), or each time a heart's declared migration runs
+  (`command`, `status`, `output`; a heart role carries no version). A row is keyed by the organism and the role
   alone, never a checkout: two checkouts of one organism are one tenant.
   An allocation made before the habitat's record exists (the bootstrap's
   own memory and nerves, or an organism migrated before the habitat is

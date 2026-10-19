@@ -75,6 +75,18 @@ fn rows_of(genome: String, kind: String) -> String {
     return out;
 }
 
+// How many newlines `s` holds.
+@bounded_by(s)
+fn newlines(s: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < len(s) {
+        if s[i..(i + 1)] == "\n" { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
 // Whether `s` is exactly 32 lowercase hex digits.
 @bounded_by(s)
 fn hex32(s: String) -> Bool {
@@ -176,10 +188,16 @@ fn main() {
     // its needs over several lines, with comments and a trailing comma:
     // the habitat reads the manifest once, at graft, and every reader
     // after it reads the rows it recorded
-    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\n# what the heart needs from the habitat\nneeds = [\n    \"memory\",\n    \"nerves\",   # the organization's\n    \"database\",\n    \"broker\",\n]\n") or discard;
+    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\n# what the heart needs from the habitat\nneeds = [\n    \"memory\",\n    \"nerves\",   # the organization's\n    \"database\",\n    \"broker\",\n]\n\n[dna.migrations.database]\ncommand = [\"sh\", \"-c\", \"test ! -e fail || exit 3; printf '%s\\\\n' \\\"$HALE_DNA_DATABASE_DSN\\\" >> migrated.txt\"]\n") or discard;
     let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--attach\n--no-library");
     std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database, broker)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
     let kkey = dna::allocation_key(scratch + "/keeper");
+    // the heart's own migration ran at graft, with its role's DSN, and is a
+    // row of the habitat's record
+    let ran = text_of(scratch + "/keeper/migrated.txt");
+    std::test::assert(std::str::starts_with(ran, "postgres://heart_") && std::str::contains(keeper.stdout, "heart   the heart's database migration ran") && std::str::contains(keeper.stdout, "exit 0)"), "the heart's migration is the habitat's act at graft, with its DSN: " + ran + keeper.stdout);
+    let runs = "\"entity\": \"" + kkey + "/database\"";
+    std::test::assert(occurrences(rows_of(genome, "habitat.migrated"), runs) == 1 && std::str::contains(rows_of(genome, "habitat.migrated"), "exit 0"), "and the run is a row, with its exit status: " + rows_of(genome, "habitat.migrated"));
     std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + kkey + "/database\""), "and recorded as its allocation");
     let hp = dna::trim_nl(dna::run_tool(dna::allocation_compose(scratch + "/keeper") + "\nport\nmemory-" + kkey + "\n5432").stdout);
     let role = dna::heart_role(kkey);
@@ -189,6 +207,21 @@ fn main() {
     let read = if opened.ok { c.query_one("SELECT n FROM kept") } else { db::Row { } };
     if opened.ok { c.close(); }
     std::test::assert(opened.ok && wrote.ok && read.ok && std::str::contains(read.data, "7"), "the DSN reaches the heart's own database through its slot: " + opened.err.detail + wrote.err.detail + read.err.detail);
+    // the heart opted in, so the habitat runs its tool at every trigger
+    // (the tool keeps its own ledger; the habitat keeps no version): at
+    // `hale habitat migrate`, and at `hale dna upgrade`, a row each time
+    let again = in_dir(scratch, toolchain() + "\nhabitat\nmigrate\nkeeper");
+    std::test::assert(again.code == 0 && newlines(text_of(scratch + "/keeper/migrated.txt")) == 2 && occurrences(rows_of(genome, "habitat.migrated"), runs) == 2, "migrate runs it again, a row: " + again.stdout + again.stderr);
+    let upgraded = in_dir(scratch + "/keeper", toolchain() + "\ndna\nupgrade\n.");
+    std::test::assert(upgraded.code == 0 && newlines(text_of(scratch + "/keeper/migrated.txt")) == 3 && occurrences(rows_of(genome, "habitat.migrated"), runs) == 3, "upgrade runs it again, a row: " + upgraded.stdout + upgraded.stderr);
+    // a failing run fails the act, and is a row with its status; the next
+    // act runs it again
+    std::io::fs::write_file(scratch + "/keeper/fail", "") or discard;
+    let failed = in_dir(scratch, toolchain() + "\nhabitat\nmigrate\nkeeper");
+    std::test::assert(failed.code != 0 && std::str::contains(failed.stderr, "migration (`sh -c") && std::str::contains(failed.stderr, "failed (exit 3)") && occurrences(rows_of(genome, "habitat.migrated"), runs) == 4 && std::str::contains(rows_of(genome, "habitat.migrated"), "exit 3"), "a failing migration fails the act, recorded: " + failed.stdout + failed.stderr);
+    let fixed = dna::run_tool("rm\n" + scratch + "/keeper/fail");
+    let retried = in_dir(scratch, toolchain() + "\nhabitat\nmigrate\nkeeper");
+    std::test::assert(fixed.code == 0 && retried.code == 0 && newlines(text_of(scratch + "/keeper/migrated.txt")) == 4 && occurrences(rows_of(genome, "habitat.migrated"), runs) == 5, "and the next act runs it again: " + retried.stdout + retried.stderr);
     // the attach handover, and the broker: a user with its own subjects and
     // its own inbox, which reads no other user's reply
     let handed = in_dir(scratch + "/keeper", toolchain() + "\nhabitat\nhandover\n.").stdout;
@@ -251,6 +284,9 @@ fn main() {
     std::test::assert(sent.code == 0 && std::str::contains(sent.stdout, "needs memory, nerves, broker)") && stored.code == 0 && std::str::contains(stored.stdout, "needs memory, nerves, database)"), "both grafted with the roles they declare: " + sent.stdout + sent.stderr + stored.stdout + stored.stderr);
     let skey = dna::allocation_key(scratch + "/sender");
     let tkey2 = dna::allocation_key(scratch + "/storer");
+    // a heart that declares no migration has nothing run, and its role
+    // no migration row of the habitat's
+    std::test::assert(!std::str::contains(rows_of(genome, "habitat.migrated"), "\"entity\": \"" + tkey2 + "/database\"") && !std::str::contains(stored.stdout, "migration ran"), "the storer's database is its own to migrate: " + stored.stdout);
     let to_sender = in_dir(scratch + "/sender", toolchain() + "\nhabitat\nhandover\n.").stdout;
     let to_storer = in_dir(scratch + "/storer", toolchain() + "\nhabitat\nhandover\n.").stdout;
     std::test::assert(len(line_value(to_sender, "HALE_DNA_BROKER_USER")) > 0 && len(line_value(to_sender, "HALE_DNA_DATABASE_DSN")) == 0, "the sender is handed its broker and no database: " + to_sender);
