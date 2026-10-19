@@ -172,6 +172,25 @@ change-deliver@1  a change delivered: reviewed at the forge, applied, deployed, 
 
 Today the body expresses a change, as the rest of this page describes.
 
+### Its migrations
+
+A heart that owns a database the habitat gave it migrates that schema
+however it likes, on boot included. It may hand the migration to the
+habitat instead by declaring its own tool in its manifest:
+
+```toml
+[dna.migrations.database]
+command = ["api/api", "migrate", "--migrations", "store/migrations"]
+```
+
+The habitat then runs that command at graft, at `hale habitat migrate`
+and at `hale dna upgrade`, every time, with the role's handover
+(`HALE_DNA_DATABASE_DSN`) in its environment. The tool keeps its own
+ledger and decides whether anything moved; the habitat keeps no
+version of the heart's schema. Each run is a row of the habitat's
+record with the command's exit status and output, and a run that fails
+fails the act, so the next one tries again.
+
 ### Removing it
 
 ```sh

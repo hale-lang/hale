@@ -78,8 +78,9 @@ handover [organism]  what the habitat hands the organism's heart, one
                      heart the same.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
-                     runs, and the schema version it records against this
-                     toolchain's.
+                     runs, the schema version memory and the nerves record
+                     against this toolchain's, and how a heart's declared
+                     migration last ran.
 down                 stop the habitat's body and every service of its
                      project; their data is kept, and `up` brings them back.
 migrate [organism]   bring the organism's allocations up and migrate them:
@@ -205,6 +206,7 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
     if needs_at(root).iter().any(|r| r == "broker") {
         out.push(provision_broker(root)?);
     }
+    out.extend(run_heart_migrations(root)?);
     // the senses' store is the habitat's when memory and the nerves are:
     // an environment that names servers of its own names its own store.
     // Nothing reads it but the reflexes, so one that cannot come up is said
@@ -269,9 +271,13 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
 /// The cache `row` after the organism `id`'s `role` was migrated to
 /// `version`: the rows the habitat's record is owed added to its pending
 /// ones — `habitat.allocated` the first time, `habitat.migrated` whenever
-/// the version moved — keyed by the organism and the role alone.
+/// the version moved — keyed by the organism and the role alone. A heart
+/// role has no version of the habitat's: its schema is the heart's (a
+/// declared migration runs the heart's own tool, `run_heart_migrations`),
+/// so its allocation is recorded once and carries none.
 fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool) {
-    let had = row["roles"][role]["schema_version"].as_u64();
+    let heart = PROVISIONED_HEART_ROLES.contains(&role);
+    let had = if heart { row["roles"][role].is_object().then_some(version) } else { row["roles"][role]["schema_version"].as_u64() };
     let recorded = row["roles"][role]["recorded"].as_bool().unwrap_or(false);
     let mut pending: Vec<serde_json::Value> = row["pending"].as_array().cloned().unwrap_or_default();
     // an allocation on the operator's own server is no service of the
@@ -282,11 +288,43 @@ fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, sl
     if had.is_none() && !recorded {
         pending.push(serde_json::json!({ "kind": "habitat.allocated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "service": service, "project": project, "vault": slots }).to_string() }));
     }
-    if had != Some(version) {
+    if !heart && had != Some(version) {
         pending.push(serde_json::json!({ "kind": "habitat.migrated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "from": had, "schema_version": version }).to_string() }));
     }
-    row["roles"][role] = serde_json::json!({ "service": service, "schema_version": version, "vault": slots, "recorded": recorded || had.is_some() });
+    // a migration that names no slots keeps the ones the allocation holds
+    let kept: Vec<serde_json::Value> = row["roles"][role]["vault"].as_array().cloned().unwrap_or_default();
+    let vault = if slots.is_empty() { serde_json::json!(kept) } else { serde_json::json!(slots) };
+    row["roles"][role] = if heart {
+        serde_json::json!({ "service": service, "vault": vault, "recorded": recorded || had.is_some() })
+    } else {
+        serde_json::json!({ "service": service, "schema_version": version, "vault": vault, "recorded": recorded || had.is_some() })
+    };
     row["pending"] = serde_json::json!(pending);
+}
+
+/// One run of a heart's declared migration, a `habitat.migrated
+/// <id>/<role>` row owed to the habitat's record: the command, its exit
+/// status and its output (its last bytes, bounded), whatever it did.
+fn record_migration_run(root: &Path, role: &str, command: &[String], status: &str, output: &str) -> Result<(), String> {
+    let Some(dir) = allocation_dir(root) else { return Ok(()) };
+    let id = manifest_pin(&root.join("hale.toml")).ok().flatten().unwrap_or_default();
+    if id.len() < 12 {
+        return Ok(());
+    }
+    let path = dir.join("allocation.json");
+    let mut row: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut pending: Vec<serde_json::Value> = row["pending"].as_array().cloned().unwrap_or_default();
+    const KEPT: usize = 4096;
+    let tail = if output.len() > KEPT { let mut at = output.len() - KEPT; while !output.is_char_boundary(at) { at += 1; } &output[at..] } else { output };
+    pending.push(serde_json::json!({ "kind": "habitat.migrated", "entity": format!("{}/{role}", &id[..12]), "body": serde_json::json!({ "organism": id, "role": role, "command": command, "status": status, "output": tail }).to_string() }));
+    row["pending"] = serde_json::json!(pending);
+    if row["roles"][role].is_object() {
+        row["roles"][role]["migration"] = serde_json::json!(status);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    write_row(&path, &row)?;
+    let _ = flush_pending();
+    Ok(())
 }
 
 fn write_row(path: &Path, row: &serde_json::Value) -> Result<(), String> {
@@ -363,6 +401,9 @@ fn recorded_allocations() -> Option<Vec<(String, serde_json::Value)>> {
             row["organism"] = body["organism"].clone();
             row["roles"][role]["service"] = body["service"].clone();
             row["roles"][role]["vault"] = body["vault"].clone();
+        } else if body["status"].is_string() {
+            // a heart's migration run: its status, never a version
+            row["roles"][role]["migration"] = body["status"].clone();
         } else {
             row["roles"][role]["schema_version"] = body["schema_version"].clone();
         }
@@ -423,11 +464,89 @@ pub(super) fn upgrade_allocation(root: &Path) -> Result<Vec<String>, String> {
     let Some(dir) = allocation_dir(root) else { return Ok(Vec::new()) };
     let Some(row) = std::fs::read_to_string(dir.join("allocation.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Ok(Vec::new()) };
     let moved = behind(&row, &toolchain_versions(root));
+    // a heart's declared migrations run at every upgrade: its tool keeps
+    // its own ledger and decides whether anything moved
     if moved.is_empty() {
-        return Ok(Vec::new());
+        return run_heart_migrations(root);
     }
     let mut out = vec![format!("habitat the allocation records versions behind this toolchain's ({}): migrating it", moved.join(", "))];
     out.extend(migrate_lines(root)?);
+    Ok(out)
+}
+
+/// GH #1653: a heart's own migration for a heart role it declares,
+/// `[dna.migrations.<role>] command = [...]` in its genome's manifest.
+/// Declaring one is the heart's choice: the habitat then runs it, with that
+/// role's handover in its environment, at graft, by `hale habitat migrate
+/// <organism>` and by `hale dna upgrade`, every time (the heart's tool is
+/// idempotent and keeps its own ledger; the habitat keeps no version of
+/// it). A heart that declares none owns its schema however it likes.
+pub(super) struct HeartMigration {
+    pub(super) role: String,
+    command: Vec<String>,
+}
+
+/// The heart migrations the genome at `root` declares, each for a heart
+/// role it needs; refused by name when one is malformed, names a key
+/// other than `command`, or is for a role the genome does not declare.
+pub(super) fn heart_migrations(root: &Path) -> Result<Vec<HeartMigration>, String> {
+    let Ok(text) = std::fs::read_to_string(root.join("hale.toml")) else { return Ok(Vec::new()) };
+    let table: toml::Table = text.parse().map_err(|e| format!("hale.toml does not parse: {e}"))?;
+    let Some(m) = table.get("dna").and_then(|d| d.get("migrations")) else { return Ok(Vec::new()) };
+    let m = m.as_table().ok_or("[dna.migrations] is not a table of heart roles")?;
+    let needs = needs_at(root);
+    let mut out = Vec::new();
+    for (role, spec) in m {
+        if !PROVISIONED_HEART_ROLES.contains(&role.as_str()) || !needs.iter().any(|r| r == role) {
+            return Err(format!("[dna.migrations.{role}]: a heart migration is for a heart role the genome needs ({}), and `{role}` is not one", PROVISIONED_HEART_ROLES.join(", ")));
+        }
+        let spec = spec.as_table().ok_or_else(|| format!("[dna.migrations.{role}] is not a table"))?;
+        if let Some(other) = spec.keys().find(|k| *k != "command") {
+            return Err(format!("[dna.migrations.{role}]: `{other}` is not a key of a heart migration; it is its `command` alone, run at every graft, `hale habitat migrate` and `hale dna upgrade` (the tool keeps its own ledger)"));
+        }
+        let command: Vec<String> = spec.get("command").and_then(|c| c.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        if command.is_empty() {
+            return Err(format!("[dna.migrations.{role}] needs `command`, the argv that migrates it"));
+        }
+        out.push(HeartMigration { role: role.clone(), command });
+    }
+    Ok(out)
+}
+
+/// Each declared heart migration run, with the role's handover in its
+/// environment, in the organism's directory; every run is a
+/// `habitat.migrated` row with the command's exit status and output, and
+/// one that fails fails the act (the next act runs it again). What was
+/// done, a line each.
+pub(super) fn run_heart_migrations(root: &Path) -> Result<Vec<String>, String> {
+    let migrations = heart_migrations(root)?;
+    if migrations.is_empty() {
+        return Ok(Vec::new());
+    }
+    let handed = handover(root, true)?;
+    let mut out = Vec::new();
+    for m in migrations {
+        let mut cmd = Command::new(&m.command[0]);
+        cmd.args(&m.command[1..]).current_dir(root);
+        for (k, v) in &handed {
+            cmd.env(k, v);
+        }
+        let shown = m.command.join(" ");
+        let ran = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                record_migration_run(root, &m.role, &m.command, "not run", &e.to_string())?;
+                return Err(format!("the heart's {} migration (`{shown}`) could not run: {e}", m.role));
+            }
+        };
+        let output = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let status = ran.status.code().map(|c| format!("exit {c}")).unwrap_or_else(|| ran.status.to_string());
+        record_migration_run(root, &m.role, &m.command, &status, &output)?;
+        if !ran.status.success() {
+            return Err(format!("the heart's {} migration (`{shown}`) failed ({status}): {}", m.role, String::from_utf8_lossy(&ran.stderr).trim()));
+        }
+        out.push(format!("{:<8}the heart's {} migration ran (`{shown}`, {status})", "heart", m.role));
+    }
     Ok(out)
 }
 
@@ -894,13 +1013,15 @@ fn status() -> ExitCode {
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
             let want = versions.iter().find(|(r, _)| r == role).map(|(_, v)| *v);
+            // a heart role's schema is the heart's: its last migration run
+            let migration = row["roles"][role]["migration"].as_str().map(|m| format!(", its migration last ran with {m}")).unwrap_or_default();
             let version = match (recorded, want) {
                 (Some(had), Some(want)) if had < want => format!(", schema {had}, behind this toolchain's {want}: `hale habitat migrate {}` (or `hale dna upgrade` there) migrates it", row["root"].as_str().unwrap_or("<organism>")),
                 (Some(had), Some(_)) => format!(", schema {had} (this toolchain's)"),
                 (Some(had), None) => format!(", schema {had}"),
                 (None, _) => String::new(),
             };
-            println!("  {role:<7} {service} {state}{version}");
+            println!("  {role:<7} {service} {state}{version}{migration}");
         }
     }
     ExitCode::SUCCESS
@@ -1293,6 +1414,8 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
         }
         out.push(provision_broker(&root)?);
     }
+    // the heart's own migrations, with its roles in place
+    out.extend(run_heart_migrations(&root)?);
     // the attach handover: the service client the heart signs in as,
     // mapped in the child's record and its secret drawn, so nothing of it
     // is written by hand
@@ -1475,6 +1598,41 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #1653: a heart migration is declared for a heart role the
+    /// genome needs, as its `command` alone.
+    #[test]
+    fn heart_migrations_are_declared_per_role() {
+        let d = root("migrations");
+        std::fs::write(d.join("hale.toml"), "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = [\"api\", \"migrate\"]\n").unwrap();
+        let m = heart_migrations(&d).unwrap();
+        assert_eq!((m.len(), m[0].role.as_str(), m[0].command.clone()), (1, "database", vec!["api".to_string(), "migrate".to_string()]));
+        std::fs::write(d.join("hale.toml"), "[dna]\nneeds = [\"memory\", \"nerves\"]\n\n[dna.migrations.database]\ncommand = [\"api\"]\n").unwrap();
+        assert!(heart_migrations(&d).err().unwrap().contains("`database` is not one"), "only for a role the genome needs");
+        std::fs::write(d.join("hale.toml"), "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = []\n").unwrap();
+        assert!(heart_migrations(&d).err().unwrap().contains("needs `command`"), "a command");
+        std::fs::write(d.join("hale.toml"), "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = [\"api\"]\nschema_version = 5\n").unwrap();
+        assert!(heart_migrations(&d).err().unwrap().contains("`schema_version` is not a key"), "the habitat keeps no version of the heart's schema");
+        std::fs::write(d.join("hale.toml"), "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n").unwrap();
+        assert!(heart_migrations(&d).unwrap().is_empty(), "a heart that declares none has nothing run");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// GH #1653: a heart role's allocation is recorded once and carries no
+    /// version; the organism's own roles keep theirs.
+    #[test]
+    fn a_heart_role_carries_no_version() {
+        let mut row = serde_json::json!({});
+        let id = "0123456789abcdef0123456789abcdef";
+        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
+        next_rows(&mut row, id, "database", 0, "postgres-heart_x", "p", false);
+        let pending = row["pending"].as_array().unwrap();
+        assert_eq!(pending.len(), 1, "allocated once, and no migration row of the habitat's: {pending:?}");
+        assert_eq!(pending[0]["kind"], "habitat.allocated");
+        assert!(row["roles"]["database"]["schema_version"].is_null());
+        next_rows(&mut row, id, "memory", 3, "", "p", false);
+        assert_eq!(row["roles"]["memory"]["schema_version"], 3);
+    }
 
     /// GH #1653: needs by role, the first half of graft.
     #[test]

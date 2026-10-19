@@ -2264,6 +2264,8 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
+        // GH #1653: and the heart's own migrations whose declared version moved
+        out.extend(habitat::run_heart_migrations(&root)?);
     } else if in_memory {
         // GH #1653: the habitat's upgrade of this organism's allocation:
         // each role recorded behind this toolchain's version is migrated
