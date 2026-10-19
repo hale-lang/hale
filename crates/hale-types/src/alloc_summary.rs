@@ -4183,7 +4183,7 @@ fn loci_started_from_main(
             Spelled::Name(n) if loci.contains(n) => {
                 out.insert(n.to_string());
             }
-            Spelled::Name(_) | Spelled::Text(_) => {}
+            Spelled::Name(_) | Spelled::Text(_) | Spelled::SelfRef(_) => {}
         });
         out
     };

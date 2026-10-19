@@ -272,7 +272,7 @@ impl Index {
                     to.extend(self.declares.get(n).into_iter().flatten());
                     spelled.insert(n);
                 }
-                Spelled::Text(_) => {}
+                Spelled::Text(_) | Spelled::SelfRef(_) => {}
                 Spelled::Path(segs) => {
                     for m in path_renames(segs, &self.renames) {
                         to.extend(self.declares.get(m).into_iter().flatten());
@@ -377,7 +377,7 @@ impl<'i, 'r> Closure<'i, 'r> {
                 }
                 self.name(n);
             }
-            Spelled::Text(_) => {}
+            Spelled::Text(_) | Spelled::SelfRef(_) => {}
             // Every public path is a `std::` one.
             Spelled::Path(segs) if segs.first().is_some_and(|s| s.name == "std") => {
                 for m in path_renames(segs, &index.renames) {

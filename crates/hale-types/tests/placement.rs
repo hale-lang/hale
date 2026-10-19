@@ -4175,3 +4175,34 @@ fn main() {{ App {{ }}; }}
     assert_eq!(check(&src("\"nats://127.0.0.1:4222\"")), Vec::<String>::new());
     assert!(!check(&src("\"x\" + self.url")).is_empty(), "a read inside an expression is refused too");
 }
+
+/// The walk is the one exhaustive walk of what an expression spells, so
+/// a `self` read anywhere in the literal is found: here in the index of
+/// an assignment's target, inside a block the init holds, which the
+/// first walk skipped (it passed `hale check` and failed in codegen).
+#[test]
+fn an_adapter_binding_literal_that_reads_self_in_an_assignment_index_is_refused() {
+    let src = |index: &str| {
+        format!(
+            r#"
+type Tick {{ n: Int = 0; }}
+topic Ticks {{ payload: Tick; }}
+locus Relay {{
+    params {{ url: String = ""; }}
+    fn send(subject: String, bytes: Bytes) {{ println(self.url); }}
+}}
+main locus App {{
+    params {{ n: Int = 0; }}
+    bindings {{ Ticks: Relay {{ url: {{ let mut a = ["nats://h:4222"]; a[{index}] = "x"; a[0] }} }}; }}
+    bus {{ publish Ticks; }}
+    run() {{ Ticks <- Tick {{ n: 1 }}; }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    let errs = check(&src("self.n"));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].starts_with("adapter binding for topic `Ticks`: the `Relay` literal reads `self`"), "{errs:?}");
+    assert_eq!(check(&src("0")), Vec::<String>::new());
+}

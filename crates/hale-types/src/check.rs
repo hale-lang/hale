@@ -9069,9 +9069,16 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
             // literal has no `self` to read (spec/semantics.md
             // § Phase 2, "Adapter bindings first instantiate").
             if let TransportSpec::Adapter { inits, .. } = &entry.transport {
+                // The one exhaustive walk of what an expression spells
+                // (`hale_syntax::names`), so a new kind of expression, or
+                // one an assignment's target index holds, is never missed.
                 let mut reads = Vec::new();
                 for init in inits {
-                    self_reads_in_expr(&init.value, &mut reads);
+                    hale_syntax::names::for_each_spelled_in_expr(&init.value, &mut |s| {
+                        if let hale_syntax::names::Spelled::SelfRef(span) = s {
+                            reads.push(span);
+                        }
+                    });
                 }
                 for span in reads {
                     diags.push(Diag::ty(
@@ -25814,139 +25821,5 @@ mod store_origin_tests {
         assert!(std_result_may_hold(&["std", "no", "such_fn"], Some("Registry"), &d));
         assert!(std_result_may_hold(&gauge, None, &d), "an argument of unknown type");
         assert!(!std_result_may_hold(&["std", "str", "upper"], Some("W"), &d), "a primitive result");
-    }
-}
-
-/// Every read of `self` in `e`, by the span of what reads it (a
-/// `self.<field>` whole, else the bare `self`).
-fn self_reads_in_expr(e: &Expr, out: &mut Vec<Span>) {
-    match e {
-        Expr::KwSelf(span) => out.push(*span),
-        Expr::Field { receiver, span, .. } | Expr::Path2 { receiver, span, .. } => {
-            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
-                out.push(*span);
-            } else {
-                self_reads_in_expr(receiver, out);
-            }
-        }
-        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => {}
-        Expr::Binary { left, right, .. } => {
-            self_reads_in_expr(left, out);
-            self_reads_in_expr(right, out);
-        }
-        Expr::Unary { operand, .. } => self_reads_in_expr(operand, out),
-        Expr::Call { callee, args, .. } => {
-            self_reads_in_expr(callee, out);
-            for a in args {
-                self_reads_in_expr(a, out);
-            }
-        }
-        Expr::Index { receiver, index, .. } => {
-            self_reads_in_expr(receiver, out);
-            self_reads_in_expr(index, out);
-        }
-        Expr::Tuple(v, _) | Expr::Array(v, _) => {
-            for x in v {
-                self_reads_in_expr(x, out);
-            }
-        }
-        Expr::Struct { inits, .. } => {
-            for i in inits {
-                self_reads_in_expr(&i.value, out);
-            }
-        }
-        Expr::Block(b) => self_reads_in_block(b, out),
-        Expr::If(i) => self_reads_in_if(i, out),
-        Expr::Match(m) => self_reads_in_match(m, out),
-        Expr::Sum(x, _) | Expr::Prod(x, _) => self_reads_in_expr(x, out),
-        Expr::Approx { left, right, tolerance, .. } => {
-            self_reads_in_expr(left, out);
-            self_reads_in_expr(right, out);
-            self_reads_in_expr(tolerance, out);
-        }
-        Expr::Range { lo, hi, .. } => {
-            self_reads_in_expr(lo, out);
-            self_reads_in_expr(hi, out);
-        }
-        Expr::ArrayRepeat { val, .. } => self_reads_in_expr(val, out),
-        Expr::Or { inner, disposition, .. } => {
-            self_reads_in_expr(inner, out);
-            if let OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) = disposition {
-                self_reads_in_expr(x, out);
-            }
-        }
-    }
-}
-
-fn self_reads_in_block(b: &Block, out: &mut Vec<Span>) {
-    for st in &b.stmts {
-        match st {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } => {
-                self_reads_in_expr(value, out)
-            }
-            Stmt::Assign { target, value, .. } => {
-                if target.head.name == "self" {
-                    out.push(target.span);
-                }
-                self_reads_in_expr(value, out);
-            }
-            Stmt::If(i) => self_reads_in_if(i, out),
-            Stmt::Match(m) => self_reads_in_match(m, out),
-            Stmt::For { iter, body, .. } => {
-                self_reads_in_expr(iter, out);
-                self_reads_in_block(body, out);
-            }
-            Stmt::While { cond, body, .. } => {
-                self_reads_in_expr(cond, out);
-                self_reads_in_block(body, out);
-            }
-            Stmt::Return(Some(e), _) | Stmt::Expr(e) => self_reads_in_expr(e, out),
-            Stmt::Block(b) => self_reads_in_block(b, out),
-            Stmt::Send { subject, value, .. } => {
-                self_reads_in_expr(subject, out);
-                self_reads_in_expr(value, out);
-            }
-            Stmt::Recovery { args, .. } => {
-                for a in args {
-                    self_reads_in_expr(a, out);
-                }
-            }
-            Stmt::Violate { payload: Some(p), .. } => self_reads_in_expr(p, out),
-            Stmt::ShmWrite { max, body, .. } => {
-                self_reads_in_expr(max, out);
-                self_reads_in_block(body, out);
-            }
-            // `terminate`, `yield`, a reperspective and the rest act on
-            // the enclosing locus: `self` all the same.
-            Stmt::Terminate(span) | Stmt::Yield(span) => out.push(*span),
-            Stmt::Reperspective { span, .. } => out.push(*span),
-            Stmt::Return(None, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Violate { payload: None, .. } => {}
-        }
-    }
-    if let Some(t) = &b.tail {
-        self_reads_in_expr(t, out);
-    }
-}
-
-fn self_reads_in_if(i: &IfStmt, out: &mut Vec<Span>) {
-    self_reads_in_expr(&i.cond, out);
-    self_reads_in_block(&i.then_block, out);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => self_reads_in_block(b, out),
-        Some(ElseBranch::ElseIf(n)) => self_reads_in_if(n, out),
-        None => {}
-    }
-}
-
-fn self_reads_in_match(m: &MatchStmt, out: &mut Vec<Span>) {
-    self_reads_in_expr(&m.scrutinee, out);
-    for a in &m.arms {
-        if let Some(g) = &a.guard {
-            self_reads_in_expr(g, out);
-        }
-        match &a.body {
-            MatchArmBody::Expr(e) => self_reads_in_expr(e, out),
-            MatchArmBody::Block(b) => self_reads_in_block(b, out),
-        }
     }
 }
