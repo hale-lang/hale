@@ -68,7 +68,7 @@ pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
 pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 
 /// The observe backends (`observe.hl`, GH #1592),
-/// `std::observe::Scrape` among them. Every stdlib declaration is lowered
+/// `std::observe::Scrape` and `std::observe::Otlp`. Every stdlib declaration is lowered
 /// into every program, so it is appended only to a program whose main
 /// locus holds one as a param (`hale_types::observe_expand`),
 /// and a program that observes nothing carries none of it.
@@ -544,6 +544,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "metrics", "metric_key"], "__metrics_key"),
     (&["std", "name", "Convention"], "__StdNameConvention"),
     // std::observe (GH #1592): the observe backends, params of a main locus.
+    (&["std", "observe", "Otlp"], "__StdObserveOtlp"),
     (&["std", "observe", "Scrape"], "__StdObserveScrape"),
     // C2 — subprocess. ProcessOutput is the captured-output struct
     // returned by `std::process::run`; Child is the lifecycle-bound

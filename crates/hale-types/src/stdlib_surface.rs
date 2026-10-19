@@ -1237,6 +1237,13 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__snap_str", ALLOC, [Int, Int] -> Str, Intrinsic(ObserveSnapStrRaw)),
             row!("__snap_num", PURE, [Int, Int] -> Float, Intrinsic(ObserveSnapNumRaw)),
             row!("__snap_int", PURE, [Int, Int] -> Int, Intrinsic(ObserveSnapIntRaw)),
+            // GH #1592 S4: the lifecycle event ring a declared `observe {
+            // events }` fills, drained by `std::observe::Otlp`; constants in
+            // any other program.
+            row!("__events_take", ALLOC, [Int] -> Int, Intrinsic(ObserveEventsTakeRaw)),
+            row!("__event_str", ALLOC, [Int, Int] -> Str, Intrinsic(ObserveEventStrRaw)),
+            row!("__event_int", PURE, [Int, Int] -> Int, Intrinsic(ObserveEventIntRaw)),
+            row!("__events_dropped", PURE, [Int] -> Int, Intrinsic(ObserveEventsDroppedRaw)),
         ],
         open_prefixes: &[],
     },
@@ -1663,6 +1670,10 @@ pub enum IntrinsicId {
     ObserveSnapStrRaw,
     ObserveSnapNumRaw,
     ObserveSnapIntRaw,
+    ObserveEventsTakeRaw,
+    ObserveEventStrRaw,
+    ObserveEventIntRaw,
+    ObserveEventsDroppedRaw,
     IoFileAtEofRaw,
     IoFileCloseRaw,
     IoFileOpenRaw,

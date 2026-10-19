@@ -1,4 +1,4 @@
-//! The `http` integration-test binary: 15 test files of this area, kept
+//! The `http` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -37,5 +37,7 @@ mod http_server_memory;
 mod http_split_write;
 #[path = "http_upgrade.rs"]
 mod http_upgrade;
+#[path = "observe_events.rs"]
+mod observe_events;
 #[path = "observe_metrics.rs"]
 mod observe_metrics;

@@ -2,8 +2,11 @@
 //! main locus, recognized by their type, as a hub is (`hub_expand`).
 //!
 //! ```text
-//! params { metrics: std::observe::Scrape { port: 9100 }; }
-//! placement { metrics: pinned; }
+//! params {
+//!     metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };
+//!     events: std::observe::Otlp = std::observe::Otlp { };
+//! }
+//! placement { metrics: pinned; events: pinned; }
 //! ```
 //!
 //! A backend is an ordinary locus: the author names it, places it, and it
@@ -32,12 +35,23 @@ use hale_syntax::ast::{
 };
 
 /// The backend kind a literal's or a type's path names: `metrics` for
-/// `std::observe::Scrape` (or its declaration's name, `__StdObserveScrape`).
+/// `std::observe::Scrape`, `events` for `std::observe::Otlp` (or their
+/// declarations' names).
 pub fn backend_kind(path: &QualifiedName) -> Option<&'static str> {
     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
     match segs.as_slice() {
         ["std", "observe", "Scrape"] | ["__StdObserveScrape"] => Some("metrics"),
+        ["std", "observe", "Otlp"] | ["__StdObserveOtlp"] => Some("events"),
         _ => None,
+    }
+}
+
+/// A backend kind's type, as the author spells it.
+pub fn backend_type(kind: &str) -> &'static str {
+    if kind == "events" {
+        "std::observe::Otlp"
+    } else {
+        "std::observe::Scrape"
     }
 }
 
@@ -115,15 +129,13 @@ fn number_items(items: &mut [TopDecl], next: &mut i64) {
                             continue;
                         }
                         let ParamInit::Value(Expr::Struct { path, inits, span, .. }) = &mut p.init else { continue };
-                        if backend_kind(path).is_none() {
-                            continue;
-                        }
+                        let Some(kind) = backend_kind(path) else { continue };
                         // the standard library's path, as a hub's literal is
                         // rewritten to `std::api::ws::Hub`
                         if path.segments.len() == 1 {
                             *path = QualifiedName {
-                                segments: ["std", "observe", "Scrape"]
-                                    .iter()
+                                segments: backend_type(kind)
+                                    .split("::")
                                     .map(|s| Ident::new(s.to_string(), *span))
                                     .collect(),
                                 span: *span,

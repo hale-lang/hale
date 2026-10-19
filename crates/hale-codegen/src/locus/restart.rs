@@ -98,7 +98,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         self.lc_in_spine(spine, |cx| {
             cx.lc_step("Restart", Some(self_ptr), Some(locus_name), |cx| {
-                cx.emit_observe_note(0)?;
+                // the names are made only where the note is emitted: a
+                // program observing nothing carries neither string
+                if cx.observes_metrics() || cx.observes_events() {
+                    let locus = cx.global_string(locus_name);
+                    let none = cx.global_string("");
+                    cx.emit_observe_note(0, self_ptr, locus, none)?;
+                }
                 cx.builder
                     .build_call(restart, &[self_ptr.into()], name)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

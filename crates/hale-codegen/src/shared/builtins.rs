@@ -4049,8 +4049,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ("lotus_observe_snap_str", ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false)),
                 ("lotus_observe_snap_num", f64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
                 ("lotus_observe_snap_int", i64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
-                // restarts and failures, counted in such a program only
-                ("lotus_observe_note", self.context.void_type().fn_type(&[i64_t.into()], false)),
+                // restarts and failures, counted (and, for `events`, an
+                // event) in a program declaring `metrics` or `events` only
+                (
+                    "lotus_observe_note",
+                    self.context.void_type().fn_type(&[i64_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+                ),
+                // GH #1592 S4: the event ring `observe { events }` drains
+                ("lotus_observe_events_take", i64_t.fn_type(&[i64_t.into()], false)),
+                ("lotus_observe_event_str", ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_event_int", i64_t.fn_type(&[i64_t.into(), i64_t.into()], false)),
+                ("lotus_observe_events_dropped", i64_t.fn_type(&[i64_t.into()], false)),
             ] {
                 self.module.add_function(name, ty, None);
             }

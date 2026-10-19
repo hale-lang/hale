@@ -4530,12 +4530,39 @@ the same instruction count, measured on #1667):
   lowers to constants in such a program, and the build's internalize and
   dead-code pass drops whatever of `metrics.hl` it does not call, as it
   drops any unused stdlib declaration;
-- the runtime's observe support (the series table, the
-  counters-only segment, the pools' parked counts) is compiled under
+- the runtime's observe support (the series table, the event ring,
+  the counters-only segment, the pools' parked counts) is compiled under
   `LOTUS_OBSERVE`, which the build passes only for a program that
-  defines `lotus_observe_metrics`, so every other program links the
-  runtime object it linked before
+  defines `lotus_observe_metrics` or `lotus_observe_events`, so every
+  other program links the runtime object it linked before
   (`observe_metrics::a_program_that_observes_nothing_links_none_of_it`).
+
+**Lifecycle events (GH #1592, S4).** A `std::observe::Otlp` param of
+the main locus sends the runtime's lifecycle events to an OpenTelemetry
+collector as OTLP/HTTP JSON log records (`POST <endpoint>`,
+`application/json`): `locus.birth` and `locus.dissolve` (attributes
+`hale.locus`, `hale.instance`, `hale.parent`), `locus.restart`, and
+`locus.failure` (severity `WARN`, with `hale.closure`), each stamped
+with its wall time, under one resource (`service.name`,
+`hale.model_hash`, `hale.entity_id_digest`, and
+`OTEL_RESOURCE_ATTRIBUTES`'s). The first export opens with a
+`hale.start` record carrying the build's identity. A program holding one
+defines `lotus_observe_events` (codegen emits it), and only then do the
+birth and dissolve probes and the restart and failure notes write to the
+runtime's event ring (`lotus_observe_event`), which runs the probes in
+counters-only mode as a scrape does. The ring holds 4096 events and is
+never waited on: an event that finds it full is dropped and counted.
+The backend drains it from wherever `placement` puts it (`pinned` for a
+thread of its own), a batch every `interval`, each send bounded by
+`timeout_ms` in all (a `std::http::Client` with that total deadline and
+no retry); a batch the collector does not take in time is dropped and
+counted too, and the count is `hale_otlp_dropped_total` on the page of a
+scrape the program also holds. What the backend's own thread does to
+send (a builder, a connection) is not an event. Its `run()` ends with the
+tree's drain or a signal's, after one last flush; events after that, at
+the very end of teardown, are not sent. A program that holds no `Otlp`
+emits no event call and leaves the ring empty
+(`observe_events::a_program_without_events_fills_no_ring`).
 
 A program that holds no scrape lowers `std::observe`'s calls to
 constants (an id of `-1`, `0`, `""`), so a Registry there registers
@@ -4606,6 +4633,10 @@ its behavior as described in this document.
 | `LOTUS_REPLAY_FD=<fd>` | unset | An already-open, validated descriptor for the recording, passed by `hale replay` so no path is re-resolved between admission and replay. |
 | `LOTUS_PROBES_STALL_MS=<ms>` | 10000 | The window `/healthz` allows a queue (main's, a cooperative pool's) to hold work its consumer has not touched before it answers 503 naming the queue; read when a `std::observe::Probes` param starts the probes (spec/semantics.md § Probes). A value that is not a positive count keeps the default. |
 | `LOTUS_API_ROLES=<table>` | the `table` param of the program's `std::api::StaticRoles` | Overrides a `StaticRoles` source's table at run time (`spec/stdlib.md` § `std::api`); with no table, every `requires` refuses until this says otherwise. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=<url>` | unset | Where a `std::observe::Otlp` backend with an empty `endpoint` sends (§ Observe backends). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=<url>` | unset | Without the logs endpoint, the base an empty `endpoint` sends to, at `<url>/v1/logs`. |
+| `OTEL_SERVICE_NAME=<name>` | `hale` | The `service.name` of an `Otlp` backend whose `service` is empty. |
+| `OTEL_RESOURCE_ATTRIBUTES=<k=v,…>` | unset | More resource attributes on every export of an `Otlp` backend. |
 | `HALE_LOG_FORMAT=<format>` | `logfmt` | The record format of `std::log`'s `StdoutSink` and `FileSink` (`spec/stdlib.md` § `std::log`) and of the runtime's own diagnostics (§ Runtime diagnostics are records): `logfmt`, `json`, or `text` (the format before records); a sink's `format:` param overrides it for that sink, and an unknown name is `logfmt`. |
 | `HALE_LOG=<level>` | unset: no filtering | `std::log` drops events below this level (`debug`, `info`, `warn`, `error`, case-insensitive). Anything unrecognized, and an unset variable, filters nothing, so a typo cannot discard the logs it was set to see. |
 | `HALE_VAULT_DIR=<dir>` | `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`, else `/tmp/hale-vault` | The local vault directory a `vault:` source of `std::secret` reads (a file per name). |

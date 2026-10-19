@@ -10461,6 +10461,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let g = self.module.add_global(i32_t, None, "lotus_observe_metrics");
             g.set_initializer(&i32_t.const_int(1, false));
         }
+        // GH #1592 S4: and one holding a `std::observe::Otlp` asks for the
+        // event ring the same way, so the probes fill it from the first
+        // birth.
+        if self.observes_events() {
+            let i32_t = self.context.i32_type();
+            let g = self.module.add_global(i32_t, None, "lotus_observe_events");
+            g.set_initializer(&i32_t.const_int(1, false));
+        }
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
         // GH #1077: the loci that can answer a drain, now every body
@@ -28004,7 +28012,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ObserveSnapshotRaw
             | Id::ObserveSnapStrRaw
             | Id::ObserveSnapNumRaw
-            | Id::ObserveSnapIntRaw => self.lower_std_observe(id, args, scope),
+            | Id::ObserveSnapIntRaw
+            | Id::ObserveEventsTakeRaw
+            | Id::ObserveEventStrRaw
+            | Id::ObserveEventIntRaw
+            | Id::ObserveEventsDroppedRaw => self.lower_std_observe(id, args, scope),
             Id::JsonNextStructOrQuote => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
             }
@@ -29307,6 +29319,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ObserveSnapStrRaw
             | Id::ObserveSnapNumRaw
             | Id::ObserveSnapIntRaw
+            | Id::ObserveEventsTakeRaw
+            | Id::ObserveEventStrRaw
+            | Id::ObserveEventIntRaw
+            | Id::ObserveEventsDroppedRaw
             | Id::IoFileAtEofRaw
             | Id::IoFileCloseRaw
             | Id::IoFileReadLineRaw
@@ -37181,18 +37197,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         crate::stdlib::observe::declares_observe_metrics(&self.program.items)
     }
 
-    /// Count a restart (`0`) or a delivered failure (`1`) for a
-    /// program holding a `std::observe::Scrape` (`lotus_observe_note`); nothing in
-    /// any other program.
-    pub(crate) fn emit_observe_note(&mut self, what: u64) -> Result<(), CodegenError> {
-        if !self.observes_metrics() {
+    /// Count a restart (`0`) or a delivered failure (`1`) of the locus at
+    /// `self_ptr` (`locus`, and a failure's closure as `detail`) for a
+    /// program holding a `std::observe::Scrape` or `std::observe::Otlp`
+    /// (`lotus_observe_note`); nothing in any other program.
+    pub(crate) fn emit_observe_note(
+        &mut self,
+        what: u64,
+        self_ptr: PointerValue<'ctx>,
+        locus: PointerValue<'ctx>,
+        detail: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if !self.observes_metrics() && !self.observes_events() {
             return Ok(());
         }
         let f = self.module.get_function("lotus_observe_note").expect("lotus_observe_note declared");
         self.builder
-            .build_call(f, &[self.context.i64_type().const_int(what, false).into()], "observe.note")
+            .build_call(
+                f,
+                &[self.context.i64_type().const_int(what, false).into(), self_ptr.into(), locus.into(), detail.into()],
+                "observe.note",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
+    }
+
+    /// Whether the program's main locus holds a `std::observe::Otlp`
+    /// param (GH #1592 S4): only then is the runtime's event ring filled
+    /// and drained.
+    pub(crate) fn observes_events(&self) -> bool {
+        hale_types::observe_expand::holds_backend(&self.program.items, "events")
     }
 
     /// Whether the drain observers' counts are emitted at all (the

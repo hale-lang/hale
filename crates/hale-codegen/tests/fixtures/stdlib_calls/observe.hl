@@ -1,6 +1,6 @@
 // Build-only call fixture (F.40 phase 4, S0): `std::observe` at statement
 // position. Never run; `stdlib_call_fixtures` builds it to IR. Without an
-// `std::observe::Scrape` param every call lowers to its constant.
+// `std::observe` backend param every call lowers to its constant.
 
 fn main() {
     std::observe::__registry("ns");
@@ -13,4 +13,8 @@ fn main() {
     std::observe::__snap_str(0, 0);
     std::observe::__snap_num(0, 0);
     std::observe::__snap_int(0, 0);
+    std::observe::__events_take(1);
+    std::observe::__event_str(0, 0);
+    std::observe::__event_int(0, 0);
+    std::observe::__events_dropped(0);
 }

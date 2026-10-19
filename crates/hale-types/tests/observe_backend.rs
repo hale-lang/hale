@@ -87,3 +87,22 @@ fn the_topology_artifact_carries_the_endpoint() {
     // a program that holds none has no section
     assert!(!dump("main locus App { run() { } }\nfn main() { App { }; }\n").contains("\"observe\""));
 }
+
+/// The events backend (S4) is recognized the same way: one per main, and
+/// the artifact carries its endpoint.
+#[test]
+fn an_otlp_param_is_recognized_as_a_scrape_is() {
+    let otlp = "        events: std::observe::Otlp = std::observe::Otlp { endpoint: \"http://c:4318/v1/logs\" };";
+    let app = |params: &str| app(params, "App { };").replace("placement { metrics: pinned; }", "placement { events: pinned; }");
+    assert_eq!(check(&app(otlp)), Vec::<String>::new());
+    let errs = check(&app(&format!("{otlp}\n        again: std::observe::Otlp = std::observe::Otlp {{ }};")));
+    assert!(errs.iter().any(|e| e.contains("param `again` is a second `std::observe::Otlp`")), "{errs:?}");
+    let program = parse_source(&app(otlp)).expect("parse");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("app.hl".to_string(), &program);
+    let a = entries::dump_topology(&hale_types::Bundle::new(programs));
+    assert!(
+        a.contains("{\"param\": \"events\", \"kind\": \"events\", \"backend\": \"std::observe::Otlp\", \"endpoint\": \"http://c:4318/v1/logs\"}"),
+        "{a}"
+    );
+}

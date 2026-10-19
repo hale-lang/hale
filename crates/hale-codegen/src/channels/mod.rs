@@ -130,10 +130,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         hold: bool,
         name: &str,
     ) -> Result<(), CodegenError> {
-        // GH #1592: a failure delivered, for a scrape's
-        // `hale_failures_total`
-        self.emit_observe_note(1)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
+        // GH #1592: a failure delivered, for a scrape's
+        // `hale_failures_total` and an OTLP backend's record: the failing
+        // locus and its closure, from the violation
+        if self.observes_metrics() || self.observes_events() {
+            let viol_ty = self
+                .user_types
+                .get("ClosureViolation")
+                .expect("ClosureViolation declared at startup")
+                .struct_ty;
+            let field = |i: u32| -> Result<PointerValue<'ctx>, CodegenError> {
+                let p = self
+                    .builder
+                    .build_struct_gep(viol_ty, viol_ptr, i, &format!("{name}.note.f{i}"))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(self
+                    .builder
+                    .build_load(ptr_t, p, &format!("{name}.note.v{i}"))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value())
+            };
+            let locus = field(0)?;
+            let closure = field(1)?;
+            self.emit_observe_note(1, child_self, locus, closure)?;
+        }
         let void_t = self.context.void_type();
         let handler_callee_ty = void_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
