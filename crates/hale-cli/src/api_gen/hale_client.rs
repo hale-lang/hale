@@ -99,23 +99,32 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -
 fn field_idents(t: &TypeSchema) -> Vec<String> {
     let mut used = BTreeSet::new();
     let mut idents: Vec<Option<String>> = vec![None; t.properties.len()];
-    // the flag of each optional field, by its declaration (its JSON key may be another)
-    let partner = |j: usize| -> Option<usize> {
-        let FieldSchema::Nullable { flag, .. } = &t.properties[j].1 else { return None };
-        t.properties.iter().position(|(_, f)| matches!(f, FieldSchema::Presence { flag: name, .. } if name == flag))
+    // the flag of each optional field, by its declaration (its JSON key may be another),
+    // and a presence triple's clear flag
+    let flag_at = |name: &str| t.properties.iter().position(|(_, f)| matches!(f, FieldSchema::Presence { flag, .. } if flag == name));
+    let partner = |j: usize| -> Option<(usize, Option<usize>)> {
+        let FieldSchema::Nullable { flag, clear, .. } = &t.properties[j].1 else { return None };
+        Some((flag_at(flag)?, clear.as_deref().and_then(flag_at)))
     };
     for j in 0..t.properties.len() {
-        let Some(i) = partner(j) else { continue };
+        let Some((i, c)) = partner(j) else { continue };
         let natural = field_ident(&t.properties[j].0);
         let mut ident = natural.clone();
         let mut n = 2;
-        while used.contains(&ident) || used.contains(&format!("has_{ident}")) {
+        while used.contains(&ident)
+            || used.contains(&format!("has_{ident}"))
+            || (c.is_some() && used.contains(&format!("clear_{ident}")))
+        {
             ident = format!("{natural}_{n}");
             n += 1;
         }
         used.insert(ident.clone());
         used.insert(format!("has_{ident}"));
         idents[i] = Some(format!("has_{ident}"));
+        if let Some(c) = c {
+            used.insert(format!("clear_{ident}"));
+            idents[c] = Some(format!("clear_{ident}"));
+        }
         idents[j] = Some(ident);
     }
     for (k, (key, _)) in t.properties.iter().enumerate() {

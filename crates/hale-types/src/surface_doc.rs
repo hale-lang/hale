@@ -399,9 +399,14 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             pairs.push(("maxItems".to_string(), J::Int(*max as i64)));
             J::Obj(pairs)
         }
-        FieldSchema::Nullable { inner, .. } => {
+        FieldSchema::Nullable { inner, clear: None, .. } => {
             o(vec![("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])]))])
         }
+        // a presence triple's field: `null` clears it
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => o(vec![
+            ("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])])),
+            ("x-hale-null", s("clear")),
+        ]),
         // no key of its own: `type_schema` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
         FieldSchema::Enum { name, variants, classes } => {

@@ -2205,7 +2205,10 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
             format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))
         }
-        FieldSchema::Nullable { inner, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
+        FieldSchema::Nullable { inner, clear: None, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => {
+            format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}],\"x-hale-null\":\"clear\"}}", field_json(inner))
+        }
         // no key of its own: `type_json` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
         FieldSchema::Enum { name, variants, classes } => {

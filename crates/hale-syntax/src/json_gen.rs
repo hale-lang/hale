@@ -239,7 +239,9 @@ fn default_marker(record: &str, field: &str) -> String {
 /// A field's part in a presence pair: `x` with a sibling `has_x: Bool`
 /// is optional, present on the JSON wire as a key with a value other
 /// than `null`, and `has_x` says whether it was; the flag is no JSON key.
-/// Protobuf carries both fields as declared.
+/// A presence triple adds `clear_x: Bool`: `null` is then a value of its
+/// own, the field cleared, and `clear_x` says the payload sent it (absent,
+/// both flags are false). Protobuf carries every field as declared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Presence {
     No,
@@ -247,6 +249,8 @@ enum Presence {
     Tracked(String),
     /// The flag; the optional field's name.
     Flag(String),
+    /// A presence triple's clear flag; the optional field's name.
+    Cleared(String),
 }
 
 impl JsonField {
@@ -270,10 +274,16 @@ impl JsonField {
     fn pb_tracks(&self) -> bool {
         self.needs_seen() || self.default_expr.is_some()
     }
-    /// The presence flag: no JSON key.
+    /// A presence flag or a clear flag: no JSON key.
     fn is_flag(&self) -> bool {
-        matches!(self.presence, Presence::Flag(_))
+        matches!(self.presence, Presence::Flag(_) | Presence::Cleared(_))
     }
+}
+
+/// The clear flag of the optional field `of` of `t` (its presence
+/// triple's `clear_<of>`), if it has one.
+fn clear_flag<'a>(t: &'a JsonType, of: &str) -> Option<&'a str> {
+    t.fields.iter().find(|f| matches!(&f.presence, Presence::Cleared(o) if o == of)).map(|f| f.name.as_str())
 }
 
 /// The presence pairs of a struct's fields (spec/api.md § Codecs): each
@@ -292,6 +302,28 @@ pub fn presence_pairs<'a>(
         }
         if fields.iter().any(|g| g.name.name == of) {
             out.push((of, f.name.name.as_str()));
+        }
+    }
+    out
+}
+
+/// The presence triples of a struct's fields (spec/api.md § Codecs): each
+/// `(x, clear_x)` where `(x, has_x)` is a presence pair and `clear_x` a
+/// field of the same struct whose type `is_bool` admits. A payload's `null`
+/// for `x` is then the field cleared, and `clear_x` says it was sent.
+pub fn presence_clears<'a>(
+    fields: &'a [crate::ast::StructField],
+    is_bool: &dyn Fn(&TypeExpr) -> bool,
+) -> Vec<(&'a str, &'a str)> {
+    let pairs = presence_pairs(fields, is_bool);
+    let mut out = Vec::new();
+    for f in fields {
+        let Some(of) = f.name.name.strip_prefix("clear_") else { continue };
+        if !is_bool(&f.ty) {
+            continue;
+        }
+        if let Some((x, _)) = pairs.iter().find(|(x, _)| *x == of) {
+            out.push((*x, f.name.name.as_str()));
         }
     }
     out
@@ -619,6 +651,10 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         if f.tracks() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
+        // a triple's field: whether the payload sent it as `null`
+        if clear_flag(t, &f.name).is_some() {
+            b.push_str(&format!("    let mut __null_{}: Bool = false;\n", f.name));
+        }
     }
     // Inlined single-pass scan — no cursor structs, only Int offsets +
     // the leaf SIMD/range primitives. Skip to `{`, then walk members.
@@ -701,8 +737,13 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::Nested(_) | FieldKind::Enum { .. } => format!("__raw_{} = \"\";", f.name),
                 FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
             };
+            // a triple's field records which: `null` clears it
+            let (cleared, set) = match clear_flag(t, &f.name) {
+                Some(_) => (format!(" __null_{} = true;", f.name), format!(" __null_{} = false;", f.name)),
+                None => (String::new(), String::new()),
+            };
             b.push_str(&format!(
-                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false; {reset} }} else {{\n",
+                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false;{cleared} {reset} }} else {{{set}\n",
                 f.name
             ));
         }
@@ -1028,10 +1069,12 @@ fn construct_src(t: &JsonType, json: bool) -> String {
     let inits: Vec<String> = lifted
         .chain(t.fields.iter().filter_map(|f| match (&f.kind, &f.conv) {
             // on the JSON wire a presence flag is whether its field was read
-            _ if json && f.is_flag() => {
-                let Presence::Flag(of) = &f.presence else { unreachable!("a flag") };
-                Some(format!("{}: __seen_{of}", f.name))
-            }
+            _ if json && f.is_flag() => match &f.presence {
+                Presence::Flag(of) => Some(format!("{}: __seen_{of}", f.name)),
+                // a clear flag is whether its field was sent as `null`
+                Presence::Cleared(of) => Some(format!("{}: __null_{of}", f.name)),
+                _ => unreachable!("a flag"),
+            },
             // a scalar whose declared default the codec builds: the
             // default when the payload left it out
             (FieldKind::Scalar(_) | FieldKind::Time, c) if f.default_expr.is_some() => {
@@ -1394,9 +1437,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 if dynamic {
                     b.push_str("    __sep = \",\";\n");
                 }
-                if matches!(f.presence, Presence::Tracked(_)) {
-                    b.push_str("    }\n");
-                }
+                b.push_str(&close_tracked(t, f, &prefix));
                 continue;
             }
             FieldKind::List { elem, elem_ty, .. } => {
@@ -1411,9 +1452,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 if dynamic {
                     b.push_str("    __sep = \",\";\n");
                 }
-                if matches!(f.presence, Presence::Tracked(_)) {
-                    b.push_str("    }\n");
-                }
+                b.push_str(&close_tracked(t, f, &prefix));
                 continue;
             }
         };
@@ -1421,13 +1460,24 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
         if dynamic {
             b.push_str("    __sep = \",\";\n");
         }
-        if matches!(f.presence, Presence::Tracked(_)) {
-            b.push_str("    }\n");
-        }
+        b.push_str(&close_tracked(t, f, &prefix));
     }
     b.push_str("    __b = __b + \"}\";\n");
     b.push_str("    return __b;\n}\n");
     b
+}
+
+/// The end of an optional field's write, which `if __v.has_x {` opened: a
+/// triple's field cleared writes its key with `null` (a field both set and
+/// cleared is written as set); any other field writes nothing more.
+fn close_tracked(t: &JsonType, f: &JsonField, prefix: &str) -> String {
+    if !matches!(f.presence, Presence::Tracked(_)) {
+        return String::new();
+    }
+    match clear_flag(t, &f.name) {
+        Some(clear) => format!("    }} else if __v.{clear} {{\n    __b = __b + {prefix} + \"null\";\n    __sep = \",\";\n    }}\n"),
+        None => "    }\n".to_string(),
+    }
 }
 
 /// The loop's element `__x` bound as `__xe` of its declared type: the
@@ -3133,6 +3183,13 @@ fn collect_api_types(
                             jf.presence = Presence::Tracked(flag.to_string());
                         } else if jf.name == flag {
                             jf.presence = Presence::Flag(of.to_string());
+                        }
+                    }
+                }
+                for (of, clear) in presence_clears(fields, &is_bool) {
+                    for jf in jfields.iter_mut() {
+                        if jf.name == clear {
+                            jf.presence = Presence::Cleared(of.to_string());
                         }
                     }
                 }

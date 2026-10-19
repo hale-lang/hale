@@ -74,6 +74,8 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
         FieldSchema::Map { name, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_ident(name))),
         FieldSchema::Map { name, .. } => Ok(format!("__Array<{}>", type_ident(name))),
         // an optional field is its value's type, the property optional
+        // a presence triple's field may also be `null`, the field cleared
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => Ok(format!("{} | null", type_in(inner, what, jsdoc)?)),
         FieldSchema::Nullable { inner, .. } => type_in(inner, what, jsdoc),
         FieldSchema::Presence { .. } => Err(unformed(what)),
         FieldSchema::Unformed => Err(unformed(what)),
@@ -101,6 +103,11 @@ pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String,
         },
         // left out of the object when absent (`JSON.stringify` drops an
         // `undefined` property), so the server reads it as absent
+        // a triple's field: `null` is sent as `null`, the field cleared
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => Ok(format!(
+            "({value} === null ? null : {value} === undefined ? undefined : {})",
+            encode(inner, value, what)?
+        )),
         FieldSchema::Nullable { inner, .. } => Ok(format!("({value} == null ? undefined : {})", encode(inner, value, what)?)),
         FieldSchema::Presence { .. } => Err(unformed(what)),
         FieldSchema::Unformed => Err(unformed(what)),
@@ -138,6 +145,10 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
         FieldSchema::List { items, .. } => Ok(format!(
             "(globalThis.Array.isArray({json}) ? ({json} as unknown[]).map((e) => {}) : [])",
             decode(items, "e", what)?
+        )),
+        FieldSchema::Nullable { inner, clear: Some(_), .. } => Ok(format!(
+            "({json} === null ? null : {json} === undefined ? undefined : {})",
+            decode_in(inner, json, what, js)?
         )),
         FieldSchema::Nullable { inner, .. } => Ok(format!("({json} == null ? undefined : {})", decode_in(inner, json, what, js)?)),
         FieldSchema::Presence { .. } => Err(unformed(what)),

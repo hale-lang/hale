@@ -240,6 +240,21 @@ only when "not sent" must stay distinguishable: when leaving a field out
 means the same as one value, a plain default (`limit: Int = 50`) says so
 with one field.
 
+A PATCH needs three answers from one field: leave it as it is, clear it,
+or set it. Add a third partner, a `Bool` named `clear_` and the field's
+name:
+
+```hale,fragment
+type Edit { note: String = ""; has_note: Bool = false; clear_note: Bool = false; }
+```
+
+Now a caller that leaves `note` out sets neither flag, one that sends
+`"note": null` sets `clear_note`, and one that sends a value sets
+`has_note`. The encoder writes `null` back for a cleared field. Without
+`clear_note`, `null` means the same as leaving the key out. The
+description marks the field `"x-hale-null": "clear"`, and the TypeScript
+client types it `note?: string | null`.
+
 ### Enums
 
 An enum crosses as the variant it holds. A variant with no values is its

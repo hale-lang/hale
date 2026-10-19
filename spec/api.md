@@ -2141,6 +2141,25 @@ absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
 carrying neither reads as an absence, `x` at its default or zero. The
 digest is the record's shape, which already holds both fields.
 
+**A three-way field** is a presence triple (2026-10-19): a presence pair
+and a third field `clear_x` of the same record whose type is `Bool`. It
+is the field of a PATCH, where leaving `x` out keeps what the server
+holds, `null` clears it, and a value sets it. On the JSON wire `null` is
+then a value of its own: a payload that sends `"x": null` sets `clear_x`
+and leaves `has_x` false and `x` at its default or zero; one that sends a
+value sets `has_x`; one that leaves `x` out sets neither. The last of a
+key sent twice wins, as ever. `clear_x` is no key either. The encoder
+writes `x`'s value when `has_x` is set, `"x": null` when `clear_x` is set
+instead, and nothing when neither is (a record that sets both is written
+as set). A pair without the third field reads `null` as an absence, as
+above, so declaring the triple is what makes `null` mean clear. A
+description gives `x` the pair's schema with `"x-hale-null": "clear"`
+beside it, and lists it under no `required`. Protobuf carries the three
+fields as declared, `clear_x` a `bool` of its own. The generated clients
+carry it: the Hale client declares the triple; in TypeScript the property
+is optional and may be `null` (`x?: T | null`), and the client sends
+`null` as `null` and leaves out an `undefined` one.
+
 **An enum** crosses as its variant (2026-10-17), externally tagged: a
 payload-free variant is its name as a JSON string (`"Up"`), a variant
 of one value the object `{"<Variant>": <value>}`, and one of several
@@ -2566,7 +2585,8 @@ client:
   the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
   TypeScript, whose bound the server holds; an optional field is the
   presence pair in Hale and an optional property (`text?: string`), left
-  out of the object when absent, in TypeScript; an enum is the server's
+  out of the object when absent, in TypeScript, and a presence triple's
+  `text?: string | null`, its `null` sent as `null`; an enum is the server's
   enum in Hale and in TypeScript the union of its variants as the wire
   writes them (`"Empty" | { Circle: number } | { Rect: [number, number] }`);
   a wire map is its records in either, `bounded[T; N] indexed_by <key>` in
