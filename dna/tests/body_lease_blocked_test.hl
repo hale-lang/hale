@@ -51,8 +51,8 @@ main locus App {
         std::io::fs::mkdir(cache) or discard;
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, cache, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nbodied\n--profile\nremote-body\n--remote\n" + bare + "\n--body\nriley@srv");
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = in_dir(scratch, cache, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nbodied\n--profile\nremote-body\n--remote\n" + bare + "\n--body\nriley@srv"));
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/bodied";
         std::io::fs::write_file(a + "/dna/org/main.hl", WORKER_ORG) or discard;
         let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");

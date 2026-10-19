@@ -43,6 +43,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 ```text
 usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+                          [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat handover [organism]
        hale habitat status
@@ -91,7 +92,10 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      the organism's) or a repository that is there
                      already. A graft that stopped part way goes on
                      where it stopped when run again; a record born of
-                     anything but this habitat is refused. --with <pack>
+                     anything but this habitat is refused. A new
+                     application takes --profile remote-body --remote
+                     <url> [--body <user@host>]: the record shared over
+                     that remote, the body on that server. --with <pack>
                      proposes a pack from the toolchain's nursery as
                      well, planned on the holes the birth proposed (`hale
                      dna pack apply <pack> --on-holes`, its --set and
