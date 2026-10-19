@@ -648,7 +648,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#ef024722
+== crates/hale-stdlib/hl/http_client.hl#c26666d3
 
 == crates/hale-stdlib/hl/json.hl#c7b1b7ac
 
@@ -2804,6 +2804,19 @@ row	Root@literal1.n	Napper	pinned:Root@literal1.n	entry	off owner
 == crates/hale-codegen/tests/drain_grace_names_the_wait.rs#5059fa8b
 root	Root	the entry
 row	Root@literal1	Root	main	default
+
+== crates/hale-codegen/tests/drain_grace_names_the_wait.rs#4eb6c2c8
+root	Root	the entry
+domain	pinned:Root@literal1.a	cpus 0
+domain	pinned:Root@literal1.b	cpus 1
+row	Root@literal1	Root	main	default
+row	Root@literal1.a	Worker	pinned:Root@literal1.a	entry	off owner
+row	Root@literal1.b	Worker	pinned:Root@literal1.b	entry	off owner
+
+== crates/hale-codegen/tests/drain_grace_names_the_wait.rs#91dcf671
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.g	Gate	main	default
 
 == crates/hale-codegen/tests/dump_pool_residency.rs#0e359bfe
 root	App	the entry
@@ -5274,9 +5287,7 @@ shared	dynamic	sites in the seed #3636d9ce
 == crates/hale-codegen/tests/tcp_connect_deadline.rs#5c595966
 row	__StdHttpClient@main1	__StdHttpClient	main	default
 row	__StdHttpClient@main2	__StdHttpClient	main	default
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main
-dynamic	__StdHttpConn	on main
+shared	dynamic	sites in the stdlib #1dcc5550
 
 == crates/hale-codegen/tests/tcp_connect_deadline.rs#d6647451
 root	App	the entry
@@ -5284,6 +5295,11 @@ domain	pool:io	async_io
 row	App@literal1	App	main	default
 row	App@literal1.host	Host	pool:io	entry	off owner
 dynamic	Job	on pool:io	in the seed
+
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#893b87b3
+row	__StdHttpClient@main1	__StdHttpClient	main	default
+row	__StdHttpClient@main2	__StdHttpClient	main	default
+shared	dynamic	sites in the stdlib #1dcc5550
 
 == crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
@@ -18691,6 +18707,10 @@ dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
 == shared sites in the seed #fd8cbf5a
 dynamic	Alpha	on main
 dynamic	Beta	on main
+
+== shared sites in the stdlib #1dcc5550
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdHttpConn	on main
 
 == shared sites in the stdlib #919aadb4
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
