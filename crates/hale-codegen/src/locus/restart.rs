@@ -98,6 +98,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         self.lc_in_spine(spine, |cx| {
             cx.lc_step("Restart", Some(self_ptr), Some(locus_name), |cx| {
+                cx.emit_observe_note(0)?;
                 cx.builder
                     .build_call(restart, &[self_ptr.into()], name)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

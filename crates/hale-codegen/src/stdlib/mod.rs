@@ -27,6 +27,7 @@ pub(crate) mod io_udp;
 pub(crate) mod io_unix;
 pub(crate) mod math;
 pub(crate) mod mirror;
+pub(crate) mod observe;
 pub(crate) mod process;
 pub(crate) mod rand;
 pub(crate) mod sockopt;

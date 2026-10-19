@@ -87,6 +87,7 @@ pub mod roles;
 pub mod hub_expand;
 pub mod proto_gen;
 pub mod surface_doc;
+pub mod observe_expand;
 pub mod rpc_expand;
 pub mod seam_expand;
 pub mod surfaces;

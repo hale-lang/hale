@@ -11616,6 +11616,13 @@ typedef struct lotus_coop_pool {
      * see drain_one_async — and only re-sources cells from this ring. */
     lotus_mpsc_ring_t ring;
     _Atomic int       parked;            /* 1 while the classic consumer is (about to be) parked */
+#if LOTUS_OBSERVE
+    /* GH #1592: the coroutines parked on this pool right now, written by
+     * the worker alone (a load and a store, no read-modify-write) and
+     * read by a metrics scrape. Compiled only into a program that
+     * observes (`-DLOTUS_OBSERVE=1`), as everything of #1592's is. */
+    _Atomic int64_t   parked_n;
+#endif
     _Atomic int       producers_waiting; /* # producers blocked on a full ring */
     _Atomic int       shutdown;
     pthread_mutex_t   lock;
@@ -11724,6 +11731,21 @@ typedef struct lotus_coop_pool {
     int32_t           aff_cores[64];
     int32_t           aff_count;
 } lotus_coop_pool_t;
+
+/* GH #1592: the worker's own count of its parked coroutines (see
+ * `parked_n`): a relaxed load and store, the worker being its one
+ * writer, so a park pays no atomic read-modify-write for it. */
+#if LOTUS_OBSERVE
+static inline void lotus_pool_parked_bump(lotus_coop_pool_t *p, int64_t d) {
+    int64_t n = atomic_load_explicit(&p->parked_n, memory_order_relaxed) + d;
+    atomic_store_explicit(&p->parked_n, n < 0 ? 0 : n, memory_order_relaxed);
+}
+#define LOTUS_POOL_PARKED_BUMP(p, d) lotus_pool_parked_bump((p), (d))
+#define LOTUS_POOL_PARKED_CLEAR(p) atomic_store_explicit(&(p)->parked_n, 0, memory_order_relaxed)
+#else
+#define LOTUS_POOL_PARKED_BUMP(p, d) ((void)0)
+#define LOTUS_POOL_PARKED_CLEAR(p) ((void)0)
+#endif
 
 #if LOTUS_HAVE_ASYNC_IO
 /* The wake channel, defined with the rest of the poller below; the
@@ -13912,7 +13934,9 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
      * after epoll_wait wakeup (fd ready) or deadline expiry. The fd
      * has already been removed from epoll by the resume path before
      * swap-back. */
+    LOTUS_POOL_PARKED_BUMP(p, 1);
     swapcontext(&c->ctx, &p->drain_ctx);
+    LOTUS_POOL_PARKED_BUMP(p, -1);
     /* Resumed. The resume path cleared parked_fd to -1, detached us
      * from parked_head, and set park_timed_out on the expiry path.
      * Restore the caller-arena TLS we were running with, and our
@@ -13961,7 +13985,9 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     c->saved_caller_arena = lotus_current_caller_arena;
     lotus_reclaim_ctx_save(&c->reclaim_own);
     lotus_reclaim_ctx_load(&c->reclaim_outer);
+    LOTUS_POOL_PARKED_BUMP(p, 1);
     swapcontext(&c->ctx, &p->drain_ctx);
+    LOTUS_POOL_PARKED_BUMP(p, -1);
     lotus_current_caller_arena = c->saved_caller_arena;
     lotus_reclaim_ctx_save(&c->reclaim_outer);
     lotus_reclaim_ctx_load(&c->reclaim_own);
@@ -14227,6 +14253,7 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
                 c = next;
             }
             p->parked_head = NULL;
+            LOTUS_POOL_PARKED_CLEAR(p);
             c = p->ready_head;
             while (c) {
                 lotus_coro_t *next = c->next;
@@ -14405,6 +14432,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             c = next;
         }
         p->parked_head = NULL;
+        LOTUS_POOL_PARKED_CLEAR(p);
         return 0;
     }
 
@@ -15293,6 +15321,7 @@ void lotus_coop_pool_destroy_all(void) {
             c = next;
         }
         p->parked_head = NULL;
+        LOTUS_POOL_PARKED_CLEAR(p);
         /* Coro pooling (2026-07-16): free the reuse free-list too. */
         c = p->free_head;
         while (c) {
@@ -22348,6 +22377,409 @@ void lotus_diag_render_to_stdout(const char *format, int64_t level, const char *
     free(line);
 }
 
+
+#if LOTUS_OBSERVE
+/* ---- GH #1592: the series table a `std::observe::Scrape` scrapes ---
+ *
+ * A program whose main locus holds a `std::observe::Scrape` param keeps
+ * one process-wide table of series: every live `std::metrics::Registry`
+ * registers here at birth (`lotus_observe_registry`), each handle its
+ * series (`lotus_observe_series`), and every update the handle makes to
+ * its registry's map it also makes here, so `std::observe::Scrape` can
+ * render every registry without reaching into a locus that may be
+ * dissolving on another thread. A program without the declaration
+ * calls none of this: codegen lowers `std::observe`'s calls to
+ * constants there.
+ *
+ * A series id is `(generation << 32) | slot`, generation >= 1, so a
+ * handle that outlives its registry writes nothing to the slot a later
+ * series reuses. Registries are few and series are resolved at boot
+ * (the `std::metrics` contract), so lookups are linear under one lock;
+ * an update takes the lock too, which is only paid by a program that
+ * holds a scrape. */
+
+#define LOTUS_OBSERVE_BOUNDS 32
+
+typedef struct {
+    int64_t reg;          /* registry slot; -1 = free */
+    uint32_t gen;
+    int kind;             /* 0 counter, 1 gauge, 2 histogram */
+    char *name;
+    char *labels;         /* "k1=v1\tk2=v2", as std::metrics serializes */
+    double value;
+    int nb;
+    double bounds[LOTUS_OBSERVE_BOUNDS];
+    int64_t counts[LOTUS_OBSERVE_BOUNDS + 1];
+    double sum;
+    int64_t count;
+} lotus_observe_series_t;
+
+typedef struct {
+    int live;
+    uint32_t gen;
+    char *ns;
+} lotus_observe_reg_t;
+
+static pthread_mutex_t g_observe_lock = PTHREAD_MUTEX_INITIALIZER;
+static lotus_observe_series_t *g_observe_series = NULL;
+static int64_t g_observe_series_n = 0, g_observe_series_cap = 0;
+static lotus_observe_reg_t *g_observe_regs = NULL;
+static int64_t g_observe_regs_n = 0, g_observe_regs_cap = 0;
+static uint32_t g_observe_gen = 0;
+
+/* restarts (0) and failures (1), counted by a declaring program's
+ * restart and violation sites */
+static _Atomic int64_t g_observe_notes[2];
+
+void lotus_observe_note(int64_t what) {
+    if (what >= 0 && what < 2)
+        atomic_fetch_add_explicit(&g_observe_notes[what], 1, memory_order_relaxed);
+}
+
+static int64_t lotus_observe_id(uint32_t gen, int64_t slot) {
+    return ((int64_t)gen << 32) | slot;
+}
+
+int64_t lotus_observe_registry(const char *ns) {
+    pthread_mutex_lock(&g_observe_lock);
+    int64_t slot = -1;
+    for (int64_t i = 0; i < g_observe_regs_n; i++) {
+        if (!g_observe_regs[i].live) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (g_observe_regs_n == g_observe_regs_cap) {
+            int64_t cap = g_observe_regs_cap ? g_observe_regs_cap * 2 : 8;
+            lotus_observe_reg_t *r = realloc(g_observe_regs, (size_t)cap * sizeof *r);
+            if (!r) { pthread_mutex_unlock(&g_observe_lock); return -1; }
+            g_observe_regs = r;
+            g_observe_regs_cap = cap;
+        }
+        slot = g_observe_regs_n++;
+    }
+    uint32_t gen = ++g_observe_gen ? g_observe_gen : ++g_observe_gen;
+    g_observe_regs[slot] = (lotus_observe_reg_t){ .live = 1, .gen = gen, .ns = strdup(ns ? ns : "") };
+    pthread_mutex_unlock(&g_observe_lock);
+    return lotus_observe_id(gen, slot);
+}
+
+/* Under the lock: the registry slot an id names, or -1. */
+static int64_t lotus_observe_reg_slot(int64_t id) {
+    if (id < 0) return -1;
+    int64_t slot = id & 0xffffffff;
+    uint32_t gen = (uint32_t)(id >> 32);
+    if (slot >= g_observe_regs_n || !g_observe_regs[slot].live || g_observe_regs[slot].gen != gen) return -1;
+    return slot;
+}
+
+/* Under the lock: the series an id names, or NULL. */
+static lotus_observe_series_t *lotus_observe_slot(int64_t id) {
+    if (id < 0) return NULL;
+    int64_t slot = id & 0xffffffff;
+    uint32_t gen = (uint32_t)(id >> 32);
+    if (slot >= g_observe_series_n) return NULL;
+    lotus_observe_series_t *s = &g_observe_series[slot];
+    if (s->reg < 0 || s->gen != gen) return NULL;
+    return s;
+}
+
+int64_t lotus_observe_registry_drop(int64_t id) {
+    pthread_mutex_lock(&g_observe_lock);
+    int64_t slot = lotus_observe_reg_slot(id);
+    if (slot >= 0) {
+        for (int64_t i = 0; i < g_observe_series_n; i++) {
+            lotus_observe_series_t *s = &g_observe_series[i];
+            if (s->reg != slot) continue;
+            free(s->name);
+            free(s->labels);
+            s->name = s->labels = NULL;
+            s->reg = -1;
+        }
+        free(g_observe_regs[slot].ns);
+        g_observe_regs[slot].ns = NULL;
+        g_observe_regs[slot].live = 0;
+    }
+    pthread_mutex_unlock(&g_observe_lock);
+    return 0;
+}
+
+double lotus_str_parse_float(const char *s);
+
+/* `bounds` as std::metrics parses it: split at every space, each
+ * token a float or 0.0, at most LOTUS_OBSERVE_BOUNDS of them. */
+static int lotus_observe_parse_bounds(const char *bounds, double *out) {
+    if (!bounds || !*bounds) return 0;
+    int n = 0;
+    const char *p = bounds;
+    char tok[128];
+    for (;;) {
+        const char *sp = strchr(p, ' ');
+        size_t len = sp ? (size_t)(sp - p) : strlen(p);
+        if (n < LOTUS_OBSERVE_BOUNDS) {
+            double v = 0.0;
+            if (len > 0 && len < sizeof tok) {
+                memcpy(tok, p, len);
+                tok[len] = 0;
+                v = lotus_str_parse_float(tok);
+            }
+            out[n++] = v;
+        }
+        if (!sp) break;
+        p = sp + 1;
+    }
+    return n;
+}
+
+int64_t lotus_observe_series(int64_t reg, const char *name, const char *labels, int64_t kind,
+                             const char *bounds) {
+    if (!name) name = "";
+    if (!labels) labels = "";
+    pthread_mutex_lock(&g_observe_lock);
+    int64_t rs = lotus_observe_reg_slot(reg);
+    if (rs < 0) { pthread_mutex_unlock(&g_observe_lock); return -1; }
+    int64_t free_slot = -1;
+    for (int64_t i = 0; i < g_observe_series_n; i++) {
+        lotus_observe_series_t *s = &g_observe_series[i];
+        if (s->reg < 0) {
+            if (free_slot < 0) free_slot = i;
+            continue;
+        }
+        if (s->reg == rs && strcmp(s->name, name) == 0 && strcmp(s->labels, labels) == 0) {
+            int64_t id = lotus_observe_id(s->gen, i);
+            pthread_mutex_unlock(&g_observe_lock);
+            return id;
+        }
+    }
+    if (free_slot < 0) {
+        if (g_observe_series_n == g_observe_series_cap) {
+            int64_t cap = g_observe_series_cap ? g_observe_series_cap * 2 : 64;
+            lotus_observe_series_t *r = realloc(g_observe_series, (size_t)cap * sizeof *r);
+            if (!r) { pthread_mutex_unlock(&g_observe_lock); return -1; }
+            g_observe_series = r;
+            g_observe_series_cap = cap;
+        }
+        free_slot = g_observe_series_n++;
+    }
+    lotus_observe_series_t *s = &g_observe_series[free_slot];
+    memset(s, 0, sizeof *s);
+    s->reg = rs;
+    s->gen = ++g_observe_gen ? g_observe_gen : ++g_observe_gen;
+    s->kind = (int)kind;
+    s->name = strdup(name);
+    s->labels = strdup(labels);
+    if (kind == 2) s->nb = lotus_observe_parse_bounds(bounds, s->bounds);
+    int64_t id = lotus_observe_id(s->gen, free_slot);
+    pthread_mutex_unlock(&g_observe_lock);
+    return id;
+}
+
+int64_t lotus_observe_add(int64_t id, double v) {
+    if (id < 0) return 0;
+    pthread_mutex_lock(&g_observe_lock);
+    lotus_observe_series_t *s = lotus_observe_slot(id);
+    if (s) s->value += v;
+    pthread_mutex_unlock(&g_observe_lock);
+    return 0;
+}
+
+int64_t lotus_observe_set(int64_t id, double v) {
+    if (id < 0) return 0;
+    pthread_mutex_lock(&g_observe_lock);
+    lotus_observe_series_t *s = lotus_observe_slot(id);
+    if (s) s->value = v;
+    pthread_mutex_unlock(&g_observe_lock);
+    return 0;
+}
+
+/* A histogram observation as std::metrics records one: every
+ * cumulative bucket from the first bound >= v up, the +Inf one always. */
+int64_t lotus_observe_hist(int64_t id, double v) {
+    if (id < 0) return 0;
+    pthread_mutex_lock(&g_observe_lock);
+    lotus_observe_series_t *s = lotus_observe_slot(id);
+    if (s && s->kind == 2) {
+        int hit = s->nb;
+        for (int i = 0; i < s->nb; i++) {
+            if (v <= s->bounds[i]) { hit = i; break; }
+        }
+        for (int j = hit; j <= s->nb; j++) s->counts[j]++;
+        s->sum += v;
+        s->count++;
+    }
+    pthread_mutex_unlock(&g_observe_lock);
+    return 0;
+}
+
+/* ---- the snapshot a scrape renders -------------------------------- */
+
+typedef struct {
+    int kind;
+    int64_t order;        /* its place in the table, for a stable sort */
+    char *ns, *name, *labels;
+    double value;
+    int nb;
+    double bounds[LOTUS_OBSERVE_BOUNDS];
+    int64_t counts[LOTUS_OBSERVE_BOUNDS + 1];
+    double sum;
+    int64_t count;
+} lotus_observe_row_t;
+
+static __thread lotus_observe_row_t *t_observe_rows = NULL;
+static __thread int64_t t_observe_rows_n = 0, t_observe_rows_cap = 0;
+
+static void lotus_observe_rows_clear(void) {
+    for (int64_t i = 0; i < t_observe_rows_n; i++) {
+        free(t_observe_rows[i].ns);
+        free(t_observe_rows[i].name);
+        free(t_observe_rows[i].labels);
+    }
+    t_observe_rows_n = 0;
+}
+
+static lotus_observe_row_t *lotus_observe_row(int kind, const char *ns, const char *name,
+                                               const char *labels) {
+    if (t_observe_rows_n == t_observe_rows_cap) {
+        int64_t cap = t_observe_rows_cap ? t_observe_rows_cap * 2 : 64;
+        lotus_observe_row_t *r = realloc(t_observe_rows, (size_t)cap * sizeof *r);
+        if (!r) return NULL;
+        t_observe_rows = r;
+        t_observe_rows_cap = cap;
+    }
+    lotus_observe_row_t *row = &t_observe_rows[t_observe_rows_n];
+    memset(row, 0, sizeof *row);
+    row->order = t_observe_rows_n++;
+    row->kind = kind;
+    row->ns = strdup(ns);
+    row->name = strdup(name);
+    row->labels = strdup(labels);
+    return row;
+}
+
+static void lotus_observe_runtime_row(int kind, const char *name, const char *labels, double v) {
+    lotus_observe_row_t *row = lotus_observe_row(kind, "hale", name, labels);
+    if (row) row->value = v;
+}
+
+/* the runtime counts lotus_obs.c keeps (weak: a runtime built without
+ * it reports none of them) */
+int64_t lotus_obs_live_loci(void) __attribute__((weak));
+int lotus_obs_topic_counts(int64_t i, const char **subject, uint64_t *published,
+                               uint64_t *delivered, uint64_t *bytes) __attribute__((weak));
+
+static double lotus_observe_rss_bytes(void) {
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return 0.0;
+    long size = 0, resident = 0;
+    int got = fscanf(f, "%ld %ld", &size, &resident);
+    fclose(f);
+    if (got != 2) return 0.0;
+    return (double)resident * (double)sysconf(_SC_PAGESIZE);
+}
+
+/* A family's series together (the exposition gives a family one TYPE
+ * line), families by namespace and name, a family's series in the
+ * order they were registered. */
+static int lotus_observe_row_cmp(const void *pa, const void *pb) {
+    const lotus_observe_row_t *a = pa, *b = pb;
+    int c = strcmp(a->ns, b->ns);
+    if (c == 0) c = strcmp(a->name, b->name);
+    if (c == 0) c = a->order < b->order ? -1 : a->order > b->order ? 1 : 0;
+    return c;
+}
+
+/* Copy the table, and the runtime's own series after it, into this
+ * thread's snapshot; the number of rows. A scrape renders the copy, so
+ * no lock is held while it does. */
+int64_t lotus_observe_snapshot(void) {
+    lotus_observe_rows_clear();
+    pthread_mutex_lock(&g_observe_lock);
+    for (int64_t i = 0; i < g_observe_series_n; i++) {
+        lotus_observe_series_t *s = &g_observe_series[i];
+        if (s->reg < 0) continue;
+        const char *ns = g_observe_regs[s->reg].ns ? g_observe_regs[s->reg].ns : "";
+        lotus_observe_row_t *row = lotus_observe_row(s->kind, ns, s->name, s->labels);
+        if (!row) break;
+        row->value = s->value;
+        row->nb = s->nb;
+        memcpy(row->bounds, s->bounds, sizeof row->bounds);
+        memcpy(row->counts, s->counts, sizeof row->counts);
+        row->sum = s->sum;
+        row->count = s->count;
+    }
+    pthread_mutex_unlock(&g_observe_lock);
+
+    lotus_observe_runtime_row(1, "process_resident_memory_bytes", "", lotus_observe_rss_bytes());
+    lotus_observe_runtime_row(1, "draining", "", lotus_process_draining() ? 1.0 : 0.0);
+    if (lotus_obs_live_loci)
+        lotus_observe_runtime_row(1, "loci_live", "", (double)lotus_obs_live_loci());
+    lotus_observe_runtime_row(0, "restarts_total", "",
+                              (double)atomic_load_explicit(&g_observe_notes[0], memory_order_relaxed));
+    lotus_observe_runtime_row(0, "failures_total", "",
+                              (double)atomic_load_explicit(&g_observe_notes[1], memory_order_relaxed));
+    char labels[96];
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (!p) continue;
+        snprintf(labels, sizeof labels, "pool=%s", p->name);
+        uint64_t enq = atomic_load_explicit(&p->ring.enqueue_pos, memory_order_relaxed);
+        uint64_t deq = atomic_load_explicit(&p->ring.dequeue_pos, memory_order_relaxed);
+        lotus_observe_runtime_row(1, "pool_queue_depth", labels, enq > deq ? (double)(enq - deq) : 0.0);
+        lotus_observe_runtime_row(1, "pool_parked_coroutines", labels,
+                                  (double)atomic_load_explicit(&p->parked_n, memory_order_relaxed));
+    }
+    if (lotus_obs_topic_counts) {
+        char tl[600];
+        const char *subject = NULL;
+        uint64_t pub = 0, del = 0, bytes = 0;
+        for (int64_t i = 0; lotus_obs_topic_counts(i, &subject, &pub, &del, &bytes); i++) {
+            /* the runtime's own plumbing (`__tcp.accepted`, …) is not
+             * the program's traffic */
+            if (!subject || strncmp(subject, "__", 2) == 0) continue;
+            snprintf(tl, sizeof tl, "topic=%s", subject);
+            lotus_observe_runtime_row(0, "topic_published_total", tl, (double)pub);
+            lotus_observe_runtime_row(0, "topic_delivered_total", tl, (double)del);
+            lotus_observe_runtime_row(0, "topic_published_bytes_total", tl, (double)bytes);
+        }
+    }
+    qsort(t_observe_rows, (size_t)t_observe_rows_n, sizeof *t_observe_rows, lotus_observe_row_cmp);
+    return t_observe_rows_n;
+}
+
+/* A snapshot row's string field: 0 the namespace, 1 the name, 2 the
+ * labels. */
+const char *lotus_observe_snap_str(lotus_arena_t *a, int64_t i, int64_t field) {
+    const char *v = "";
+    if (i >= 0 && i < t_observe_rows_n) {
+        lotus_observe_row_t *r = &t_observe_rows[i];
+        v = field == 0 ? r->ns : field == 1 ? r->name : field == 2 ? r->labels : "";
+    }
+    return lotus_str_clone(a, v ? v : "");
+}
+
+/* A snapshot row's float field: 0 the value, 1 a histogram's sum,
+ * 100 + j its bound j. */
+double lotus_observe_snap_num(int64_t i, int64_t field) {
+    if (i < 0 || i >= t_observe_rows_n) return 0.0;
+    lotus_observe_row_t *r = &t_observe_rows[i];
+    if (field == 0) return r->value;
+    if (field == 1) return r->sum;
+    if (field >= 100 && field < 100 + r->nb) return r->bounds[field - 100];
+    return 0.0;
+}
+
+/* A snapshot row's integer field: 0 the kind, 1 a histogram's bound
+ * count, 2 its observation count, 200 + k its cumulative bucket k. */
+int64_t lotus_observe_snap_int(int64_t i, int64_t field) {
+    if (i < 0 || i >= t_observe_rows_n) return 0;
+    lotus_observe_row_t *r = &t_observe_rows[i];
+    if (field == 0) return r->kind;
+    if (field == 1) return r->nb;
+    if (field == 2) return r->count;
+    if (field >= 200 && field <= 200 + r->nb) return r->counts[field - 200];
+    return 0;
+}
+
+#endif /* LOTUS_OBSERVE */
+
 #else /* __wasm__: no stderr to write to (fprintf is a no-op there too) */
 void lotus_diag(int level, const char *logger, const char *msg, const char *fields) {
     (void)level; (void)logger; (void)msg; (void)fields;
@@ -22362,6 +22794,28 @@ void lotus_diag_errno(int level, const char *logger, const char *msg, const char
                       const char *extra) {
     (void)level; (void)logger; (void)msg; (void)op; (void)err; (void)extra;
 }
+#if LOTUS_OBSERVE
+/* GH #1592: no `std::observe::Scrape` serves in the browser
+ * (std::http refuses there), so the series table is inert. */
+void lotus_observe_note(int64_t what) { (void)what; }
+int64_t lotus_observe_registry(const char *ns) { (void)ns; return -1; }
+int64_t lotus_observe_registry_drop(int64_t id) { (void)id; return 0; }
+int64_t lotus_observe_series(int64_t reg, const char *name, const char *labels, int64_t kind,
+                             const char *bounds) {
+    (void)reg; (void)name; (void)labels; (void)kind; (void)bounds;
+    return -1;
+}
+int64_t lotus_observe_add(int64_t id, double v) { (void)id; (void)v; return 0; }
+int64_t lotus_observe_set(int64_t id, double v) { (void)id; (void)v; return 0; }
+int64_t lotus_observe_hist(int64_t id, double v) { (void)id; (void)v; return 0; }
+int64_t lotus_observe_snapshot(void) { return 0; }
+const char *lotus_observe_snap_str(lotus_arena_t *a, int64_t i, int64_t field) {
+    (void)a; (void)i; (void)field;
+    return "";
+}
+double lotus_observe_snap_num(int64_t i, int64_t field) { (void)i; (void)field; return 0.0; }
+int64_t lotus_observe_snap_int(int64_t i, int64_t field) { (void)i; (void)field; return 0; }
+#endif /* LOTUS_OBSERVE */
 #endif /* __wasm__ */
 
 void lotus_io_set_nonblock(int fd) {

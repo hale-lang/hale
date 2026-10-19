@@ -37,3 +37,5 @@ mod http_server_memory;
 mod http_split_write;
 #[path = "http_upgrade.rs"]
 mod http_upgrade;
+#[path = "observe_metrics.rs"]
+mod observe_metrics;

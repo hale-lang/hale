@@ -43,6 +43,7 @@ use crate::stdlib::compress::{CompressStdlib, TarArg, TarRet, TarStdlib};
 use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::decimal::DecimalStdlib;
 use crate::stdlib::env::EnvStdlib;
+use crate::stdlib::observe::ObserveStdlib;
 use crate::stdlib::io_file::IoFileStdlib;
 use crate::stdlib::io_fs::IoFsStdlib;
 use crate::stdlib::io_stdin::IoStdinStdlib;
@@ -2377,6 +2378,13 @@ fn build_resolved_lowered(
     if prefetch_disabled {
         rt_cflags.push("-DLOTUS_DISABLE_PREFETCH=1".into());
     }
+    // GH #1592: the runtime's observe support (the series table, the
+    // counters-only segment, the pools' parked counts) is compiled only
+    // into a program that observes, so one that does not links the
+    // runtime it linked before, byte for byte.
+    if module_observes(&cx.module) {
+        rt_cflags.push("-DLOTUS_OBSERVE=1".into());
+    }
     if options.lifecycle_trace {
         rt_cflags.push("-DLOTUS_LIFECYCLE_TRACE=1".into());
     }
@@ -2730,6 +2738,13 @@ fn publish_output(
 /// libc malloc/free that respect the framework's region model
 /// (m19 introduces the substrate; m20+ wires it to locus
 /// lifetimes).
+/// Whether the module is a program that observes (GH #1592): it defines
+/// the global a program holding a `std::observe` backend emits
+/// (`lotus_observe_metrics`).
+fn module_observes(module: &inkwell::module::Module<'_>) -> bool {
+    module.get_global("lotus_observe_metrics").is_some() || module.get_global("lotus_observe_events").is_some()
+}
+
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 const RUNTIME_COMPRESS_C_SOURCE: &str =
@@ -2936,6 +2951,9 @@ fn link_cross(
     let mut rt_cflags: Vec<String> = vec!["-g".into()];
     if !options.cc_warnings {
         rt_cflags.push("-w".into());
+    }
+    if module_observes(module) {
+        rt_cflags.push("-DLOTUS_OBSERVE=1".into());
     }
     rt_cflags.push("-O2".into());
     if options.target_cpu == TargetCpu::X86_64V3
@@ -10434,6 +10452,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Every reclaim site has lowered: a reclaim function two or more
         // of them call keeps its body out of line.
         self.settle_reclaim_fn_inlining();
+        // GH #1592: a program holding a `std::observe::Scrape` tells the
+        // runtime so before `main` (its counters-only mode is resolved in
+        // a constructor, as `lotus_obs_live` is); any other program
+        // defines nothing and the runtime's weak reference stays unset.
+        if self.observes_metrics() {
+            let i32_t = self.context.i32_type();
+            let g = self.module.add_global(i32_t, None, "lotus_observe_metrics");
+            g.set_initializer(&i32_t.const_int(1, false));
+        }
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.
         // GH #1077: the loci that can answer a drain, now every body
@@ -27968,6 +27995,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::EnvVarExists => {
                 self.lower_std_env_var_exists(args, scope)
             }
+            Id::ObserveRegistryRaw
+            | Id::ObserveDropRegistryRaw
+            | Id::ObserveSeriesRaw
+            | Id::ObserveAddRaw
+            | Id::ObserveSetRaw
+            | Id::ObserveObserveRaw
+            | Id::ObserveSnapshotRaw
+            | Id::ObserveSnapStrRaw
+            | Id::ObserveSnapNumRaw
+            | Id::ObserveSnapIntRaw => self.lower_std_observe(id, args, scope),
             Id::JsonNextStructOrQuote => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
             }
@@ -29260,6 +29297,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::EnvArgsCount
             | Id::EnvVar
             | Id::EnvVarExists
+            | Id::ObserveRegistryRaw
+            | Id::ObserveDropRegistryRaw
+            | Id::ObserveSeriesRaw
+            | Id::ObserveAddRaw
+            | Id::ObserveSetRaw
+            | Id::ObserveObserveRaw
+            | Id::ObserveSnapshotRaw
+            | Id::ObserveSnapStrRaw
+            | Id::ObserveSnapNumRaw
+            | Id::ObserveSnapIntRaw
             | Id::IoFileAtEofRaw
             | Id::IoFileCloseRaw
             | Id::IoFileReadLineRaw
@@ -37124,6 +37171,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let wide = self.builder.build_int_s_extend(ret.into_int_value(), i64_t, "until.i64").map_err(e)?;
         Ok((wide.into(), CodegenTy::Int))
+    }
+
+    /// Whether the program's main locus holds a `std::observe::Scrape`
+    /// }` (GH #1592): only then do `std::observe`'s calls lower to the
+    /// runtime's series table, the runtime counts in counters-only mode,
+    /// and restarts and failures are counted.
+    pub(crate) fn observes_metrics(&self) -> bool {
+        crate::stdlib::observe::declares_observe_metrics(&self.program.items)
+    }
+
+    /// Count a restart (`0`) or a delivered failure (`1`) for a
+    /// program holding a `std::observe::Scrape` (`lotus_observe_note`); nothing in
+    /// any other program.
+    pub(crate) fn emit_observe_note(&mut self, what: u64) -> Result<(), CodegenError> {
+        if !self.observes_metrics() {
+            return Ok(());
+        }
+        let f = self.module.get_function("lotus_observe_note").expect("lotus_observe_note declared");
+        self.builder
+            .build_call(f, &[self.context.i64_type().const_int(what, false).into()], "observe.note")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
     }
 
     /// Whether the drain observers' counts are emitted at all (the

@@ -357,10 +357,10 @@ pub const IDENTITIES: &[Identity] = &[
             (Input::LawRows, "by design: the law rows are a section of their own, under `law_digest`"),
         ],
         producer: ("crates/hale-types/src/topology_projection.rs", "project_shape_hash"),
-        consumers: &["topology / fleet (admission)", "replay (admission, the recording's header)", "dna (schema 1.20, semantics 2)", "baseline gates"],
+        consumers: &["topology / fleet (admission)", "replay (admission, the recording's header)", "dna (schema 1.20 or 1.21, semantics 2)", "baseline gates"],
         on_mismatch: "the artifact is refused (`verify_shape_hash`), a replay is refused, a baseline gate fails",
-        versioned_by: "the artifact schema (`TOPOLOGY_SCHEMA`, 1.20)",
-        frozen: Some("the 1,793 pinned values of `topology_projection`, the nine of `model_arrangement`, and DNA, which requires schema 1.20 and recomputes it"),
+        versioned_by: "the artifact schema (`TOPOLOGY_SCHEMA`, 1.21)",
+        frozen: Some("the 1,793 pinned values of `topology_projection`, the nine of `model_arrangement`, and DNA, which requires schema 1.20 or 1.21 and recomputes it"),
     },
     Identity {
         name: "model_hash",
@@ -386,7 +386,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["topology / fleet (admission)", "dna (recomputes it)", "`hale fleet` with declared trust roots"],
         on_mismatch: "the artifact is refused",
         versioned_by: "the artifact schema; a correction changes a section's values and never its shape (I3 made relative the `sources` paths that were absolute)",
-        frozen: Some("DNA requires schema 1.20 exactly and recomputes it"),
+        frozen: Some("DNA requires schema 1.20 or 1.21 and recomputes it"),
     },
     Identity {
         name: "law_digest",
@@ -399,7 +399,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["admission (`topology_law.rs`, which recomputes it from the rows)"],
         on_mismatch: "the artifact is refused: a row edited under a stale digest",
         versioned_by: "the artifact schema",
-        frozen: Some("DNA reads the law section under schema 1.20"),
+        frozen: Some("DNA reads the law section under schema 1.20 or 1.21"),
     },
     Identity {
         name: "claim_table_digest",
@@ -558,7 +558,7 @@ pub const IDENTITIES: &[Identity] = &[
         consumers: &["the artifact's `sources` section (so `artifact_digest`)", "the evidence sidecar's source-unit tie"],
         on_mismatch: "the evidence is refused; the artifact's digest differs",
         versioned_by: "the artifact schema",
-        frozen: Some("the `sources` section's shape (schema 1.20)"),
+        frozen: Some("the `sources` section's shape (schema 1.20 and 1.21)"),
     },
     Identity {
         name: "obs_entity_id_digest",

@@ -130,6 +130,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         hold: bool,
         name: &str,
     ) -> Result<(), CodegenError> {
+        // GH #1592: a failure delivered, for a scrape's
+        // `hale_failures_total`
+        self.emit_observe_note(1)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let void_t = self.context.void_type();
         let handler_callee_ty = void_t.fn_type(

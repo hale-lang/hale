@@ -1333,6 +1333,34 @@ collector cannot parse; it is the standard-practices pack's first
 clause (`standard/logs-are-structured`, GH #1591), which the Board
 holds in review until the compiler can check it. **[convention]**
 
+---
+
+### C13. Hold the metrics scrape as a param of main, not a hand-wired server
+
+A program's metrics are read by the platform, which scrapes one
+endpoint. Hold it as a param of the main locus, place it, and keep the
+registries where the work is:
+
+```hale
+main locus App {
+    params {
+        reg: std::metrics::Registry = std::metrics::Registry { namespace: "orders" };
+        metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };
+    }
+    placement { metrics: pinned; }
+}
+
+fn main() { App { }; }
+```
+
+Every live `Registry` is on the page, with the runtime's own series,
+and the endpoint is in the topology artifact for the deployment to
+annotate. A `std::http::Server` hand-wired to a `std::metrics::Endpoint`
+serves one registry, none of the runtime's series, and a port nothing
+outside the source knows about; keep it for a second page you mean to
+have. Place the scrape `pinned`, so a busy pool never delays a scrape
+and a scrape never delays the pool. **[convention]**
+
 ## 4. Speed rules
 
 **First ask: is this path hot?** Hot means a per-frame/per-message

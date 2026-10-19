@@ -75,6 +75,8 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     }
     // GH #1417 (R2a): a serve site becomes an exposure, its surface's rows
     // an adapter and its receivers' plumbing (`rpc_expand`).
+    // GH #1592 S3: the main locus's observe backends as hidden params.
+    crate::observe_expand::expand(programs);
     crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does

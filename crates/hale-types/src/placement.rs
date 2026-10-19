@@ -1240,8 +1240,9 @@ impl<'a> Decls<'a> {
         }
         match segs {
             [] => Named::Unknown,
-            // The TCP substrate is appended to the program that names it
-            // (`rpc_expand::inject_tcp_serve`), so its loci are declared
+            // The TCP substrate and the observe backends are appended to
+            // the program that names them (`rpc_expand::inject_tcp_serve`,
+            // `inject_observe`), so their loci are declared
             // among the program's own: a std path to one of them
             // (`std::http::Server`) names the program's declaration. (The
             // api runtime's loci are reached through the names its pass
@@ -1249,7 +1250,7 @@ impl<'a> Decls<'a> {
             // the substrate.)
             ["std", ..] => match crate::ownership::stdlib_mangled_for_path(segs) {
                 Some(mangled) => match self.stdlib_named(mangled).or_else(|| {
-                    self.user_named(mangled).filter(|e| crate::rpc_expand::is_tcp_serve_pos(e.decl.span.start.0))
+                    self.user_named(mangled).filter(|e| crate::rpc_expand::is_appended_stdlib_pos(e.decl.span.start.0))
                 }) {
                     Some(e) => Named::Locus(e),
                     None if self.contracts.contains(mangled) => Named::Contract,
@@ -2608,7 +2609,7 @@ impl<'a> Scopes<'a> {
                     let is_main = top && universe == SiteUniverse::User && fd.name.name == "main";
                     self.fns.entry((universe, fd.name.name.clone())).or_insert(self.scopes.len());
                     let mut scope = w.finish(ScopeKind::Fn { name: fd.name.name.clone(), site, is_main });
-                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(fd.name.span.start.0);
+                    scope.appended = crate::rpc_expand::is_appended_stdlib_pos(fd.name.span.start.0);
                     self.scopes.push(scope);
                 }
                 TopDecl::Locus(l) => {
@@ -2644,7 +2645,7 @@ impl<'a> Scopes<'a> {
                     }
                     self.loci.insert(decl, self.scopes.len());
                     let mut scope = w.finish(ScopeKind::Locus { decl });
-                    scope.appended = crate::rpc_expand::is_tcp_serve_pos(l.name.span.start.0);
+                    scope.appended = crate::rpc_expand::is_appended_stdlib_pos(l.name.span.start.0);
                     self.scopes.push(scope);
                 }
                 TopDecl::Module(m) => self.collect(&m.items, ids, universe, decls, false),

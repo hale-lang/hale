@@ -2710,10 +2710,10 @@ pub fn validate_law_account(
             )
         })?;
         let fam = family_of(&decoded);
-        if fam == JF::Placement && v["schema"] != "1.20" {
+        if fam == JF::Placement && v["schema"] != "1.20" && v["schema"] != "1.21" {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] carries \
-                 require_separate_domains, which requires schema 1.20",
+                 require_separate_domains, which requires schema 1.20 or later",
                 label, i
             ));
         }
@@ -3367,7 +3367,8 @@ pub fn validate_law_account(
     ];
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[JF] = match schema {
-        "1.20" => MIGRATED_120,
+        // 1.21 added the `observe` section (GH #1592).
+        "1.21" | "1.20" => MIGRATED_120,
         // 1.18 added the per-locus `contracts` section (GH #527
         // B4), 1.19 the declared `bindings` (GH #528); the family
         // account is 1.17's.

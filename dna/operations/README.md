@@ -62,7 +62,7 @@ caller's exact owned snapshot directory; it is never serialized. Call `load()` b
 provide the public projection; `error()` describes refused input. Failure leaves
 the public catalog empty, never partially loaded. One instance loads only once.
 
-The reader recognizes topology schema `1.20`, model semantics `2`, and verifies
+The reader recognizes topology schemas `1.20` and `1.21`, model semantics `2`, and verifies
 the compiler's exact whole-artifact digest before interpreting its contracts.
 Its bounds are 8 MiB of artifact, 64 KiB of ownership source, 4,096 declarations
 and 4,096 static instances. The syntax checker rejects malformed, ambiguous and

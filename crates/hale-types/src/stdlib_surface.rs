@@ -1218,6 +1218,28 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // GH #1592: the process-wide series table a `std::observe::Scrape`
+    // scrapes. `std::metrics` registers and updates through the first six,
+    // which lower to nothing (and -1 for an id) in a program that holds no
+    // scrape; `std::observe::Scrape` reads it through
+    // the snapshot. A series update is a write to the program's own
+    // memory, as the registry's own map write is.
+    NsSurface {
+        ns: &["observe"],
+        fns: &[
+            row!("__registry", ALLOC, [Str] -> Int, Intrinsic(ObserveRegistryRaw)),
+            row!("__drop_registry", PURE, [Int] -> Int, Intrinsic(ObserveDropRegistryRaw)),
+            row!("__series", ALLOC, [Int, Str, Str, Int, Str] -> Int, Intrinsic(ObserveSeriesRaw)),
+            row!("__add", PURE, [Int, Float] -> Int, Intrinsic(ObserveAddRaw)),
+            row!("__set", PURE, [Int, Float] -> Int, Intrinsic(ObserveSetRaw)),
+            row!("__observe", PURE, [Int, Float] -> Int, Intrinsic(ObserveObserveRaw)),
+            row!("__snapshot", SYSCALL | ALLOC, [] -> Int, Intrinsic(ObserveSnapshotRaw)),
+            row!("__snap_str", ALLOC, [Int, Int] -> Str, Intrinsic(ObserveSnapStrRaw)),
+            row!("__snap_num", PURE, [Int, Int] -> Float, Intrinsic(ObserveSnapNumRaw)),
+            row!("__snap_int", PURE, [Int, Int] -> Int, Intrinsic(ObserveSnapIntRaw)),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["os"],
         fns: &[
@@ -1631,6 +1653,16 @@ pub enum IntrinsicId {
     EnvArgsCount,
     EnvVar,
     EnvVarExists,
+    ObserveRegistryRaw,
+    ObserveDropRegistryRaw,
+    ObserveSeriesRaw,
+    ObserveAddRaw,
+    ObserveSetRaw,
+    ObserveObserveRaw,
+    ObserveSnapshotRaw,
+    ObserveSnapStrRaw,
+    ObserveSnapNumRaw,
+    ObserveSnapIntRaw,
     IoFileAtEofRaw,
     IoFileCloseRaw,
     IoFileOpenRaw,

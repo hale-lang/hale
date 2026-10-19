@@ -67,6 +67,13 @@ pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
 /// serving with `std::http::Server` carries no Listener.
 pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 
+/// The observe backends (`observe.hl`, GH #1592),
+/// `std::observe::Scrape` among them. Every stdlib declaration is lowered
+/// into every program, so it is appended only to a program whose main
+/// locus holds one as a param (`hale_types::observe_expand`),
+/// and a program that observes nothing carries none of it.
+pub const OBSERVE_SOURCE: &str = include_str!("../hl/observe.hl");
+
 /// The gRPC transport (`api_grpc.hl`, GH #1417 R7): `std::api::grpc::Rpc`,
 /// over the HTTP/2 server of [`API_H2_SOURCE`]. Appended after it, and only
 /// to a program that names `grpc::Rpc`.
@@ -536,6 +543,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "metrics", "labels_two"], "__metrics_labels_two"),
     (&["std", "metrics", "metric_key"], "__metrics_key"),
     (&["std", "name", "Convention"], "__StdNameConvention"),
+    // std::observe (GH #1592): the observe backends, params of a main locus.
+    (&["std", "observe", "Scrape"], "__StdObserveScrape"),
     // C2 — subprocess. ProcessOutput is the captured-output struct
     // returned by `std::process::run`; Child is the lifecycle-bound
     // handle returned by `std::process::spawn`. The free-fn surface

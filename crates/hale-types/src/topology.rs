@@ -178,7 +178,11 @@ use crate::symbol::Bundle;
 // 1.20 (GH #1327): `require separate_domains` has a typed two-group
 // law payload, a `placement` judgment family and a required
 // `adequacy.placement` entry. Historical schemas do not admit this law.
-pub const TOPOLOGY_SCHEMA: &str = "1.20";
+// 1.21 (GH #1592): an unhashed `observe` section — the observe backends
+// the main locus holds as params (`std::observe::Scrape`), each with its
+// param and a scrape's host, port and path. Absent when the program holds
+// none; shapes are unchanged.
+pub const TOPOLOGY_SCHEMA: &str = "1.21";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -805,6 +809,18 @@ pub fn dump_topology_over(
             rows.sort();
             rows.dedup();
             out.push_str(&format!(",\n  \"bindings\": [{}]", rows.join(", ")));
+        }
+    }
+    // GH #1592 (schema 1.21): the backends the main locus is observed
+    // through (its `std::observe` params), with the endpoint a deployment
+    // annotates: a scrape's host, port and path. A value the source
+    // computes (another param, an environment read) is `null`: it is known
+    // at run, not here. Absent when the program holds none; unhashed, as
+    // `bindings` is.
+    {
+        let rows = observe_rows(&programs);
+        if !rows.is_empty() {
+            out.push_str(&format!(",\n  \"observe\": [{}]", rows.join(", ")));
         }
     }
     out.push_str(",\n  \"claims\": [\n");
@@ -1686,6 +1702,7 @@ const CANONICAL_TOP_LEVEL: &[&str] = &[
     "declares_publish",
     "contracts",
     "bindings",
+    "observe",
     "claims",
     "lowered",
     "law",
@@ -1771,6 +1788,79 @@ pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
 
 /// Minimal JSON string escaping — names are identifiers and wire
 /// subjects, but fail-closed on the full set anyway.
+/// The `observe` section's rows: one per observe backend a main locus
+/// holds as a param (`observe_expand::backends`), each endpoint field as
+/// its literal writes it, its declaration's default, or `null` when the
+/// source computes it (a read of another param, an environment read).
+fn observe_rows(programs: &[&Program]) -> Vec<String> {
+    let declares = programs.iter().flat_map(|p| flat_decls(&p.items)).any(|item| {
+        matches!(item, TopDecl::Locus(l) if l.is_main && !crate::observe_expand::backends(l).is_empty())
+    });
+    if !declares {
+        return Vec::new();
+    }
+    // the literal's value of a field, or its declaration's default
+    let lit = |e: &Expr| -> String {
+        match e {
+            Expr::Literal(Literal::Int(n), _) => n.to_string(),
+            Expr::Literal(Literal::String(v), _) => quote(v),
+            _ => "null".to_string(),
+        }
+    };
+    // the backends are the stdlib's, declared in `observe.hl`
+    let stdlib: Option<Program> = hale_syntax::parse_source(hale_stdlib::OBSERVE_SOURCE).ok();
+    let decl_default = |locus: &str, field: &str| -> Option<String> {
+        stdlib.iter().flat_map(|p| flat_decls(&p.items)).find_map(|item| match item {
+            TopDecl::Locus(l) if l.name.name == locus => l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field).map(|p| match &p.init {
+                    ParamInit::Value(e) => lit(e),
+                    _ => "null".to_string(),
+                }),
+                _ => None,
+            }),
+            _ => None,
+        })
+    };
+    let mut rows = Vec::new();
+    for p in programs {
+        for item in flat_decls(&p.items) {
+            let TopDecl::Locus(l) = item else { continue };
+            if !l.is_main {
+                continue;
+            }
+            for b in crate::observe_expand::backends(l) {
+                let (backend, locus, fields): (&str, &str, &[&str]) = match b.kind {
+                    "metrics" => ("std::observe::Scrape", "__StdObserveScrape", &["host", "port", "path"]),
+                    _ => continue,
+                };
+                let inits: &[hale_syntax::ast::StructInit] = match b.literal {
+                    Some(Expr::Struct { inits, .. }) => inits,
+                    _ => &[],
+                };
+                let mut row = format!(
+                    "{{\"param\": {}, \"kind\": {}, \"backend\": {}",
+                    quote(b.param),
+                    quote(b.kind),
+                    quote(backend)
+                );
+                for f in fields {
+                    let v = inits
+                        .iter()
+                        .find(|i| i.name.name == *f)
+                        .map(|i| lit(&i.value))
+                        .or_else(|| decl_default(locus, f))
+                        .unwrap_or_else(|| "null".to_string());
+                    row.push_str(&format!(", {}: {}", quote(f), v));
+                }
+                row.push('}');
+                rows.push(row);
+            }
+        }
+    }
+    rows.sort();
+    rows
+}
+
 pub(crate) fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');

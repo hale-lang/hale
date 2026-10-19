@@ -175,8 +175,8 @@ fn endpoint_scrapes_through_server_over_tcp() {
 /// `# TYPE` line, so the page parses as Prometheus text: the renderer
 /// wrote a TYPE line per series, and the map's order scattered a
 /// family's series between others', both of which the text format
-/// refuses. `Registry.render()` (and so `Endpoint`) renders a series at
-/// a time through `__metrics_render_series`.
+/// refuses. `Registry.render()` and `Endpoint` share the renderer
+/// `std::observe::Scrape` uses (`__metrics_render_series`).
 #[test]
 fn a_family_of_labelled_series_renders_under_one_type_line() {
     let src = r#"

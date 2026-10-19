@@ -1118,6 +1118,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("math", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("metrics", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("name", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("observe", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("os", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("rand", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("regex", STD_NATIVE, STD_NATIVE, STD_WASM),
