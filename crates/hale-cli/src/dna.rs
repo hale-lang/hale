@@ -334,6 +334,10 @@ const MEMORY_FROM_KEY: &str = "HALE_DNA_MEMORY_FROM";
 /// GH #1653: where the local habitat lives, as `dna::local_habitat_dir`
 /// spells it: `${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local`.
 fn local_habitat_dir() -> String {
+    // a habitat named outright (a test's, a slice's): HALE_DNA_HABITAT
+    if let Some(named) = std::env::var("HALE_DNA_HABITAT").ok().filter(|v| !v.is_empty()) {
+        return named;
+    }
     let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
     let base = if data.is_empty() { format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()) } else { data };
     format!("{base}/hale/habitat/local")

@@ -438,6 +438,45 @@ fn scratch_register(dir: String) {
     std::io::fs::write_file(reg + ".all/" + scratch_name(dir), dir) or discard;
 }
 
+// ---- the test's habitat (GH #1653) ------------------------------------
+//
+// Every organism a fixture makes is grafted from a habitat, as every
+// organism but the habitat is. `test_habitat` is the one it grafts into:
+// the slice's (`HALE_DNA_TEST_HABITAT`, born once per slice by the suite,
+// its secrets lent from `HALE_DNA_TEST_HABITAT_VAULT` into this file's
+// vault), or one of this test file's own, born here the first time with
+// no body — on the operator's backends when an owner's DSN and NATS are
+// named, else its own. `grafted` grafts into it.
+
+// The habitat this fixture grafts into, born: its directory, "" with why
+// on stderr when it cannot be.
+fn test_habitat() -> String {
+    let slice = trim_nl(std::env::var("HALE_DNA_TEST_HABITAT"));
+    if len(slice) > 0 {
+        let vault = trim_nl(std::env::var("HALE_DNA_TEST_HABITAT_VAULT"));
+        // the habitat's secrets, lent: copied where this file's vault has none
+        let lent = run_tool("sh\n-c\numask 077 && mkdir -p \"$2\" && for f in \"$1\"/*; do [ -f \"$f\" ] || continue; b=$(basename \"$f\"); [ -e \"$2/$b\" ] || cp \"$f\" \"$2/$b\"; done\nsh\n" + vault + "\n" + std::secret::vault_local_dir());
+        if lent.code != 0 { eprintln("dna: the slice habitat's secrets could not be lent: ", lent.stderr); return ""; }
+        return slice;
+    }
+    let dir = local_habitat_dir();
+    if std::io::fs::file_exists(dir + "/genome/hale.toml") && !std::io::fs::file_exists(dir + "/birth.pending") && len(record_scope(dir + "/genome")) > 0 { return dir; }
+    let operator = len(trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0 && len(trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let up = run_tool_timeout(900, "sh\n-c\n" + (if operator { "" } else { "unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; " }) + "export HALE_DNA_DISCOVER=off; exec \"$1\" habitat up --no-body --backends \"$2\"\nsh\n" + hale + "\n" + (if operator { "operator" } else { "own" }));
+    if up.code != 0 { eprintln("dna: the test's habitat was not born: ", up.stdout, up.stderr); return ""; }
+    return dir;
+}
+
+// `hale habitat graft <args>` (newline-separated) run in `dir`, into this
+// fixture's habitat.
+fn grafted(dir: String, args: String) -> RunResult {
+    let habitat = test_habitat();
+    if len(habitat) == 0 { return RunResult { code: -1, stderr: "no habitat to graft into" }; }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    return run_tool_timeout(900, "sh\n-c\ncd \"$1\" && export HALE_DNA_HABITAT=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && exec \"$@\"\nsh\n" + dir + "\n" + habitat + "\n" + hale + "\nhabitat\ngraft\n" + args);
+}
+
 // The fixture is done with `dir` and passed: the root goes, and its
 // registry entry with it. `HALE_DNA_KEEP_SCRATCH` keeps both and says
 // where the root is, which is the knob for looking at what a fixture

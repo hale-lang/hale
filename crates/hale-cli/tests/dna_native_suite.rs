@@ -564,9 +564,14 @@ exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
 /// --json` is what carries the cost: the text form reports only the
 /// pass/fail summary, and the wall time of the child here would fold
 /// the compile of every import into the first fixture that needed it.
-fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureTiming, String> {
+fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>, habitat: Option<&SliceHabitat>) -> Result<FixtureTiming, String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("test").arg("--json").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    // GH #1653: the slice's habitat, born once, which a fixture grafts its
+    // organisms into (`dna::test_habitat`, `dna::grafted`)
+    if let Some(h) = habitat {
+        cmd.env("HALE_DNA_TEST_HABITAT", &h.dir).env("HALE_DNA_TEST_HABITAT_VAULT", &h.vault);
+    }
     cmd.env("HALE_DNA_SOURCE", repo_root());
     cmd.env(SLICE_TAG, tag);
     // every fixture runs under a vault of its own: `hale test` makes one per
@@ -639,6 +644,60 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     })
 }
 
+/// GH #1653: a slice's habitat, which its fixtures graft their organisms
+/// into instead of birthing them free-standing: born once per slice, with
+/// no body, under a scratch root of the slice's (so its sweep takes it
+/// down), on the operator's backends when the slice has an owner's DSN and
+/// NATS (CI's: no compose), else its own. Its secrets are in a vault of its
+/// own, which a fixture's `dna::test_habitat` lends into the fixture's.
+struct SliceHabitat {
+    dir: PathBuf,
+    vault: PathBuf,
+}
+
+fn slice_habitat(tag: &str, dsn: Option<&str>, mine: &[&PathBuf]) -> Option<SliceHabitat> {
+    // only a slice with a fixture that grafts pays for a birth
+    let grafts = mine.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("dna::grafted(") || t.contains("dna::test_habitat(")));
+    if !grafts {
+        return None;
+    }
+    let root = PathBuf::from(format!("/tmp/dna-slicehabitat-{}", tag.replace('/', "-")));
+    let _ = std::fs::remove_dir_all(&root);
+    // recorded as the slice's scratch root, so its sweep takes it down
+    let name = root.file_name().unwrap().to_string_lossy().to_string();
+    for reg in [scratch_registry(tag), roots_ledger(tag)] {
+        let _ = std::fs::create_dir_all(&reg);
+        let _ = std::fs::write(reg.join(&name), root.display().to_string());
+    }
+    let vault = root.join("vault");
+    std::fs::create_dir_all(&vault).expect("the slice habitat's vault");
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
+    let dir = root.join("habitat");
+    let operator = dsn.is_some() && std::env::var("HALE_DNA_NATS_URL_OWNER").is_ok_and(|v| !v.is_empty());
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
+    cmd.args(["habitat", "up", "--no-body", "--backends", if operator { "operator" } else { "own" }])
+        .current_dir(&root)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_HABITAT", &dir)
+        .env("HALE_VAULT_DIR", &vault)
+        .env_remove("HALE_VAULT_ADDR")
+        .env("HALE_DNA_DISCOVER", "off")
+        .env(SLICE_TAG, tag);
+    match dsn {
+        Some(d) if operator => {
+            cmd.env("HALE_DNA_MEMORY_DSN_OWNER", d);
+        }
+        _ => {
+            cmd.env_remove("HALE_DNA_MEMORY_DSN_OWNER").env_remove("HALE_DNA_NATS_URL_OWNER");
+        }
+    }
+    let out = cmd.output().expect("invoke hale for the slice's habitat");
+    assert!(out.status.success(), "the slice's habitat was not born:
+{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    Some(SliceHabitat { dir, vault })
+}
+
 fn run_fixture_slice(slice: usize) {
     let files = fixture_files();
     assert!(!files.is_empty(), "no DNA fixtures under dna/tests");
@@ -664,6 +723,7 @@ fn run_fixture_slice(slice: usize) {
          then postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable)"
     );
 
+    let habitat = slice_habitat(&tag, dsn.as_deref(), &mine);
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
     let mut failure = None;
     for f in &mine {
@@ -673,7 +733,7 @@ fn run_fixture_slice(slice: usize) {
         let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         eprintln!("slice {slice}: {name} starting");
         let started = std::time::Instant::now();
-        let outcome = run_one_fixture(f, &tag, dsn.as_deref());
+        let outcome = run_one_fixture(f, &tag, dsn.as_deref(), habitat.as_ref());
         eprintln!(
             "slice {slice}: {name} {} after {:.1}s",
             if outcome.is_ok() { "passed" } else { "failed" },
@@ -1006,6 +1066,7 @@ fn dna_fixture_set_is_complete() {
             "graph_model_test.hl",
             "graph_route_test.hl",
             "graph_show_test.hl",
+            "habitat_graft_test.hl",
             "habitat_operator_test.hl",
             "habitat_up_test.hl",
             "handed_task_test.hl",

@@ -902,7 +902,7 @@ row	M@literal1	M	main	default
 row	M@literal1.r	Recv	main	default
 row	M@literal1.s	Send	main	default
 
-== crates/hale-cli/tests/harness_vault.rs#52ff5935
+== crates/hale-cli/tests/harness_vault.rs#4aaded00
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
@@ -11429,6 +11429,8 @@ dynamic	__lib_dna__core___memory_record__RecordJournal	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #919aadb4
+
+== dna/tests/habitat_graft_test.hl
 
 == dna/tests/habitat_operator_test.hl
 

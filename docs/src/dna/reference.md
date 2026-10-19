@@ -41,7 +41,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 --help`:
 
 ```text
-usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
+usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library]
        hale habitat handover [organism]
        hale habitat status
@@ -64,7 +64,9 @@ up                   birth the habitat the first time, from the genome the
                      whose recorded schema version is behind this
                      toolchain's, and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
-                     --foreground, in this process. Idempotent. Its
+                     --foreground, in this process; --no-body births it and
+                     brings its allocations up and starts no body (what a
+                     test's habitat needs to graft into). Idempotent. Its
                      backends are chosen at its birth and kept: `own` (the
                      default) provisions memory, the nerves and the senses'
                      store as its project's allocations; `operator` adopts

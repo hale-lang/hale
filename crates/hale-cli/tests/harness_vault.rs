@@ -37,6 +37,7 @@ const PROBE: &str = r#"fn main() {
     std::test::assert(std::env::var_exists("HALE_VAULT_DIR") && dir == std::env::var("HALE_VAULT_DIR"), "the vault is the run's own: " + dir);
     std::test::assert(dir != std::env::var("CALLER_VAULT") && dir != std::env::var("XDG_CACHE_HOME") + "/hale/vault", "never the caller's, never the developer's: " + dir);
     std::test::assert(std::env::var("XDG_DATA_HOME") == dir + "/data", "and so is the local habitat, beside the vault (GH #1653): " + std::env::var("XDG_DATA_HOME"));
+    std::test::assert(std::env::var("HALE_DNA_HABITAT") == dir + "/data/hale/habitat/local", "named outright, never the caller's: " + std::env::var("HALE_DNA_HABITAT"));
     std::io::fs::write_file(std::env::var("PROBE_ROOT") + "/ORG.vault", dir) or raise;
     let made = std::process::run("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna new ORG\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN")) or raise;
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
@@ -86,6 +87,8 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let before = listing(&cache.join("hale/vault"));
     let caller_vault = home.join("caller-vault");
+    // a habitat the caller exported: no test reaches it
+    let decoy = home.join("decoy-habitat");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["test", "-j", "2"])
         .arg(d.join("probes"))
@@ -98,6 +101,7 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
         // a caller's own vault and a real vault named: neither reaches the test
         .env("HALE_VAULT_DIR", &caller_vault)
         .env("HALE_VAULT_ADDR", "http://127.0.0.1:9")
+        .env("HALE_DNA_HABITAT", &decoy)
         .output()
         .expect("hale test");
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -106,6 +110,7 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     assert!(!ran[0].is_empty() && ran[0] != ran[1], "two files side by side, two vaults: {ran:?}");
     assert!(ran.iter().all(|v| !Path::new(v).exists()), "and each is gone once its file has run: {ran:?}");
     assert!(!caller_vault.exists(), "the caller's vault was never written: {said}");
+    assert!(!decoy.exists(), "nor the habitat the caller exported: {said}");
     assert_eq!(listing(&cache.join("hale/vault")), before, "the cache's own vault is untouched");
     assert!(!home.join(".config").exists(), "nothing was written under ~/.config: {said}");
     let _ = std::fs::remove_dir_all(&d);

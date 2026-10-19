@@ -977,6 +977,9 @@ locus MemoryVault {
 
 // Where the local habitat lives.
 fn local_habitat_dir() -> String {
+    // GH #1653: a habitat named outright (a test's, a slice's)
+    let named = std::env::var("HALE_DNA_HABITAT");
+    if len(named) > 0 { return named; }
     let data = std::env::var("XDG_DATA_HOME");
     let base = if len(data) > 0 { data } else { std::env::var("HOME") + "/.local/share" };
     return base + "/hale/habitat/local";

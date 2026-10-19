@@ -280,7 +280,9 @@ organization's entries into `~/.cache/hale/vault`). A test that
 needs a second vault sets `HALE_VAULT_DIR` on a child it starts;
 a child that is itself `hale test` gives each of its files one of
 its own again. The file runs under a local habitat of its own as
-well (GH #1653): `XDG_DATA_HOME` is the vault directory's `data`, so
+well (GH #1653): `XDG_DATA_HOME` is the vault directory's `data`, and
+`HALE_DNA_HABITAT` names the habitat under it outright (never the
+caller's), so
 an organism a DNA fixture births is a tenant of the file's habitat,
 never of the developer's, and the compose projects run from under the
 vault directory come down before it is removed (one that does not

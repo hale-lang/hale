@@ -63,6 +63,8 @@ pub fn dir() -> PathBuf {
 /// habitat comes down when the vault is swept, after the process is gone.
 pub fn hale() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
-    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR").env("XDG_DATA_HOME", dir().join("data"));
+    // the habitat named outright too: a HALE_DNA_HABITAT the developer
+    // exported would otherwise win over XDG_DATA_HOME
+    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR").env("XDG_DATA_HOME", dir().join("data")).env("HALE_DNA_HABITAT", dir().join("data/hale/habitat/local"));
     c
 }
