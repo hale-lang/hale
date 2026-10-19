@@ -20,7 +20,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    r#"usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
+    r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library]
        hale habitat handover [organism]
        hale habitat status
@@ -43,7 +43,9 @@ up                   birth the habitat the first time, from the genome the
                      whose recorded schema version is behind this
                      toolchain's, and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
-                     --foreground, in this process. Idempotent. Its
+                     --foreground, in this process; --no-body births it and
+                     brings its allocations up and starts no body (what a
+                     test's habitat needs to graft into). Idempotent. Its
                      backends are chosen at its birth and kept: `own` (the
                      default) provisions memory, the nerves and the senses'
                      store as its project's allocations; `operator` adopts
@@ -623,12 +625,14 @@ fn backends_of(asked: Option<&str>) -> Result<String, String> {
 
 fn up(args: &[String]) -> ExitCode {
     let mut foreground = false;
+    let mut no_body = false;
     let mut profile = "local".to_string();
     let mut asked: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--foreground" => foreground = true,
+            "--no-body" => no_body = true,
             "--backends" if i + 1 < args.len() => {
                 asked = Some(args[i + 1].clone());
                 i += 1;
@@ -681,6 +685,12 @@ fn up(args: &[String]) -> ExitCode {
     }
     let genome = genome_dir();
     let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "hale".into());
+    // GH #1653: born and its allocations up, its body not started: what a
+    // test's habitat needs to graft into
+    if no_body {
+        println!("{:<8}not started (--no-body): `hale habitat up` starts it", "body");
+        return ExitCode::SUCCESS;
+    }
     if foreground {
         let _ = std::fs::write(pid_file(), format!("{}\n", std::process::id()));
         println!("{:<8}the habitat's body runs in this process (`hale dna dev {}`)", "body", genome.display());
@@ -968,7 +978,7 @@ fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String>
         vault.push_str(&format!("EnvironmentFile={}\n", env.display()));
     }
     let unit = format!(
-        "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec={stop}\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_HABITAT={dir}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec={stop}\n\n[Install]\nWantedBy=default.target\n",
         dir = local_habitat_dir(),
         g = genome.display(),
         // `systemctl stop` waits for the body's drain, which reaches its
@@ -1165,8 +1175,7 @@ pub(crate) fn projects_rooted_in(listed: &str, root: &Path, recorded: &str) -> V
     let under = format!("{text}/");
     let home = std::env::var("HOME").unwrap_or_default();
     let mine = habitat_project_at(&format!("{home}/.local/share/hale/habitat/local"));
-    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
-    let here = format!("{data}/hale/habitat/local");
+    let here = local_habitat_dir();
     let current = if here == text || here.starts_with(&under) { None } else { Some(habitat_project_at(&here)) };
     let mut projects: Vec<String> = listed
         .lines()

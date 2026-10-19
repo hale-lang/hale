@@ -4518,6 +4518,19 @@ The live half is memory's, projected from the record by the spine
   `backends`), and the `standard` pack is proposed to the child's Board.
   `hale dna new` and `hale dna init` still birth an organism with no
   parent until graft replaces them.
+- **A test's organisms are grafted too** (GH #1653). A DNA fixture
+  makes an organism with `dna::grafted(dir, args)`, into
+  `dna::test_habitat()`: the DNA suite's slice habitat when the suite
+  runs it — born once per slice whose fixtures graft, with no body
+  (`hale habitat up --no-body`), under a scratch root the slice sweeps,
+  on the operator's backends when the slice has an owner's DSN and NATS
+  (CI's: no compose) and its own otherwise, its secrets in a vault of its
+  own that `test_habitat` lends into the fixture's (`HALE_DNA_TEST_HABITAT`,
+  `HALE_DNA_TEST_HABITAT_VAULT`) — or, run by hand, a habitat of the test
+  file's own, born the first time. A CLI test does the same through
+  `tests/support/habitat.rs` (`habitat()`, `graft(cwd, dir, args)`), in
+  the habitat of its process's vault. `HALE_DNA_HABITAT` names a
+  habitat's directory outright.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the
@@ -6027,6 +6040,9 @@ otherwise.
 | `HALE_DNA_BROKER_SUBJECTS=<subjects>` | set for a heart the habitat allocated `broker` | The attach handover: the heart's own subject space, `heart.<id>.>`. |
 | `HALE_DNA_BROKER_NODE_USER=<user>` | set for a heart the habitat allocated `broker` | The attach handover: the user the heart's nodes connect as, `heart-<id>-node`. |
 | `HALE_DNA_BROKER_NODE_VAULT=<slot>` | set for a heart the habitat allocated `broker` | The attach handover: the vault slot of the nodes' broker password, `nats-<org>-heart-node`, which the heart passes a node at enrollment. |
+| `HALE_DNA_HABITAT=<dir>` | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local` | The local habitat's directory, named outright (GH #1653): a test's or a DNA suite slice's habitat; the developer's stays the default. |
+| `HALE_DNA_TEST_HABITAT=<dir>` | unset | Set by the DNA suite for a slice whose fixtures graft (GH #1653): the slice's habitat, born once with no body, which `dna::test_habitat` hands a fixture; unset, a test file births a habitat of its own. |
+| `HALE_DNA_TEST_HABITAT_VAULT=<dir>` | unset | Set beside `HALE_DNA_TEST_HABITAT`: the vault the slice's habitat was born with, whose entries `dna::test_habitat` lends into the fixture's own vault. |
 | `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
 | `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
