@@ -46,7 +46,7 @@ The habitat is itself a DNA organism, one the compiler ships, as it ships the fo
 
 **Bootstrap is the one act outside an organism.** The host provisions memory and nerves by hand; the habitat boots on them and takes them over. After that, every provisioning act is a row in the habitat's record.
 
-Once it ships, the habitat gets its own specification (`spec/habitat.md`).
+The local habitat as shipped has its own specification, [`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md).
 
 ## Records are the unit of isolation
 
