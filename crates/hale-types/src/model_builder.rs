@@ -2750,6 +2750,40 @@ pub fn derive_application_model_over(
         }
         m
     };
+    // The stdlib subscribers the program instantiates: (subscription
+    // pattern, locus, handler). A publish inside a stdlib body delivers
+    // to them as it does to the program's own subscribers, so the
+    // absorption walk follows it into their handlers.
+    let stdlib_subscribers: Vec<(String, String, String)> = {
+        let built: BTreeSet<&str> = inputs
+            .placement
+            .instances
+            .values()
+            .filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.as_str()))
+            .collect();
+        let mut out = Vec::new();
+        if let Some(sp) = crate::stdlib_bodies::program() {
+            for item in &sp.items {
+                let TopDecl::Locus(l) = item else { continue };
+                if !built.contains(l.name.name.as_str()) {
+                    continue;
+                }
+                for mem in &l.members {
+                    let LocusMember::Bus(bus) = mem else { continue };
+                    for bm in &bus.members {
+                        if let BusMember::Subscribe { subject, handler, .. } = bm {
+                            out.push((
+                                subject.canonical().to_string(),
+                                l.name.name.clone(),
+                                handler.name.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
     let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
         Vec::new();
     // MERGED summary: the evaluator's Cx.summary — stdlib conformer
@@ -2834,6 +2868,26 @@ pub fn derive_application_model_over(
             let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
             let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
             let mut order: Vec<FnKey> = Vec::new();
+            // A publish's deliveries to stdlib subscribers: each
+            // handler becomes an interior vertex of this entry.
+            let deliver = |reach: &[(String, String, String)],
+                           in_loop: bool,
+                           events: &mut Vec<hale_model::AbsorbedEvent>,
+                           index: &mut BTreeMap<FnKey, u32>,
+                           order: &mut Vec<FnKey>| {
+                for (subject, locus, handler) in reach {
+                    let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
+                    let target = *index.entry(hk.clone()).or_insert_with(|| {
+                        order.push(hk.clone());
+                        (order.len() - 1) as u32
+                    });
+                    events.push(hale_model::AbsorbedEvent::Deliver {
+                        target,
+                        subject: subject.clone(),
+                        in_loop,
+                    });
+                }
+            };
             index.insert(next.clone(), 0);
             order.push(next.clone());
             let mut cursor = 0usize;
@@ -2957,11 +3011,23 @@ pub fn derive_application_model_over(
                                     })
                                     .cloned()
                                     .unwrap_or_default();
+                                // Bounded: deliver to every stdlib
+                                // subscriber a declared pattern can
+                                // address (unbounded fails closed at
+                                // the hole itself).
+                                let reach: Vec<(String, String, String)> = stdlib_subscribers
+                                    .iter()
+                                    .filter(|(sub, _, _)| {
+                                        patterns.iter().any(|p| hale_model::subjects_can_overlap(sub, p))
+                                    })
+                                    .cloned()
+                                    .collect();
                                 events.push(
                                     hale_model::AbsorbedEvent::PublishHole {
                                         patterns,
                                     },
                                 );
+                                deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
                             }
                             alloc_summary::EffectSiteKind::Publish(
                                 Some(subj),
@@ -2979,6 +3045,17 @@ pub fn derive_application_model_over(
                                         .get(&subj.text)
                                         .copied()
                                 };
+                                // The wire a stdlib subscription
+                                // matches: a declared topic's subject,
+                                // else the literal text.
+                                let wire = declared_topic
+                                    .map(|t| e.subjects[e.topics[t.index()].subject.index()].pattern.clone())
+                                    .unwrap_or_else(|| subj.text.clone());
+                                let reach: Vec<(String, String, String)> = stdlib_subscribers
+                                    .iter()
+                                    .filter(|(sub, _, _)| hale_model::subjects_can_overlap(sub, &wire))
+                                    .cloned()
+                                    .collect();
                                 events.push(
                                     hale_model::AbsorbedEvent::Publish {
                                         subject: subj.text.clone(),
@@ -2986,6 +3063,7 @@ pub fn derive_application_model_over(
                                         in_loop: site2.loop_depth > 0,
                                     },
                                 );
+                                deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
                             }
                             _ => {}
                         }

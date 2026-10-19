@@ -83,7 +83,9 @@ enum StepIr {
     Bus {
         subject: String,
         publish_provenance: Option<ProvenanceId>,
-        subscribe_provenance: ProvenanceId,
+        /// `None` for a stdlib subscription, whose declaration has
+        /// no position in the program.
+        subscribe_provenance: Option<ProvenanceId>,
         from_stdlib: bool,
     },
 }
@@ -1107,7 +1109,7 @@ pub fn judge_forbid_reaches(
                                                 *ppid,
                                             ),
                                             subscribe_provenance:
-                                                spid,
+                                                Some(spid),
                                             from_stdlib: false,
                                         },
                                     ));
@@ -1290,10 +1292,67 @@ pub fn judge_forbid_reaches(
                                                     publish_provenance:
                                                         None,
                                                     subscribe_provenance:
-                                                        spid,
+                                                        Some(spid),
                                                     from_stdlib: true,
                                                 },
                                             ));
+                                        }
+                                    }
+                                }
+                                AbsorbedEvent::Deliver {
+                                    target,
+                                    subject,
+                                    ..
+                                } => {
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    edges.push((
+                                        V::Interior(*ai, *target),
+                                        StepIr::Bus {
+                                            subject: subject.clone(),
+                                            publish_provenance: None,
+                                            subscribe_provenance: None,
+                                            from_stdlib: true,
+                                        },
+                                    ));
+                                }
+                                AbsorbedEvent::PublishHole { patterns }
+                                    if !patterns.is_empty() =>
+                                {
+                                    // Bounded: the subject is one a
+                                    // declared pattern admits, so the
+                                    // program's subscribers it can
+                                    // reach are those whose
+                                    // subscription overlaps one (the
+                                    // stdlib's follow as `Deliver`).
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    for p in patterns {
+                                        if bus_holes.blocks(
+                                            hale_model::RelationSet::SUBSCRIBES,
+                                            None,
+                                            Some(p.as_str()),
+                                        ) && bus_unknown.is_none()
+                                        {
+                                            bus_unknown = Some((display(*v), p.clone()));
+                                        }
+                                        for (pattern, subs) in &subs_by_pattern {
+                                            if !hale_model::subjects_can_overlap(pattern, p) {
+                                                continue;
+                                            }
+                                            for (handler, spid) in subs {
+                                                edges.push((
+                                                    V::User(*handler),
+                                                    StepIr::Bus {
+                                                        subject: p.clone(),
+                                                        publish_provenance: None,
+                                                        subscribe_provenance: Some(*spid),
+                                                        from_stdlib: true,
+                                                    },
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -1589,14 +1648,16 @@ fn render_violation_ir(
                         ));
                     }
                 }
-                diags.push(Diag::ty(
-                    model_span(*subscribe_provenance),
-                    format!(
-                        "claim `{}`: delivered at this \
-                         subscription",
-                        row.name
-                    ),
-                ));
+                if let Some(spid) = subscribe_provenance {
+                    diags.push(Diag::ty(
+                        model_span(*spid),
+                        format!(
+                            "claim `{}`: delivered at this \
+                             subscription",
+                            row.name
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -4026,6 +4087,16 @@ pub fn judge_bound(
                             AbsorbedEvent::PublishHole { .. } => {
                                 evs.push(Ev::Computed(None))
                             }
+                            // A delivery to a stdlib subscriber: its
+                            // handler's sites count like a callee's.
+                            AbsorbedEvent::Deliver {
+                                target, in_loop, ..
+                            } => evs.push(Ev::Call {
+                                to: V::Interior(ai, *target),
+                                in_loop: *in_loop,
+                                group: None,
+                                prov: None,
+                            }),
                             AbsorbedEvent::Truncated => {
                                 evs.push(Ev::Truncated)
                             }
@@ -4965,7 +5036,9 @@ pub fn judge_causes_witnessed(
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         interior_unknown.insert(a.from.0);
                     }
-                    hale_model::AbsorbedEvent::Call { .. } => {}
+                    // The handler's own publishes are its node's events.
+                    hale_model::AbsorbedEvent::Call { .. }
+                    | hale_model::AbsorbedEvent::Deliver { .. } => {}
                 }
             }
         }

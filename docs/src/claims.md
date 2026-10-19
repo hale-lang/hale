@@ -412,7 +412,12 @@ and composes two edge kinds:
   handler of that subject — including subscribers whose `**`
   wildcard pattern covers it (a `log.**` sink is an edge from
   every `log.x` publish; more edges is the conservative
-  direction).
+  direction). A publish inside a stdlib body reaches subscribers the
+  same way, the stdlib's own included: a `std::log::Logger` call
+  reaches the `StdoutSink` the program builds, and through it
+  `println`. A stdlib body's computed subject reaches every subscriber
+  its locus's declared `**` pattern can address; a computed subject in
+  your own code (a publish through a variable) fails closed.
 
 `via { calls }` or `via { bus }` restricts the composition;
 omitting `via` selects both — the conservative default. `via { }`

@@ -161,6 +161,8 @@ Claim [257..260] claim `iso` violated: `b_side` reaches `a_side` — witness: `A
 Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 --- crates/hale-types/tests/claims.rs#13 ---
 Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/claims.rs#20 ---
+Claim [568..569] claim `c` cannot be certified: `Writer::write` (reachable from `writers`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
 --- crates/hale-types/tests/claims_edges.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here

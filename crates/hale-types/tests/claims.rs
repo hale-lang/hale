@@ -827,3 +827,96 @@ fn declaring_a_group_named_program_is_refused() {
     );
     assert!(ds.iter().any(|m| m.contains("`program` is the built-in group")), "{ds:?}");
 }
+
+// ---- a publish inside a stdlib body reaches the stdlib's subscribers ----
+
+fn only_logs(sink: &str, claims: &str) -> String {
+    format!(
+        r#"
+    group app = {{ App }};
+    main locus App {{
+        params {{
+            {sink}
+            log: std::log::Logger = std::log::Logger {{ name: "app" }};
+        }}
+        claims {{
+            {claims}
+        }}
+        run() {{ self.log.info("started"); }}
+    }}
+"#
+    )
+}
+
+/// A program that only logs reaches a syscall: the logger publishes on
+/// `log.**`, the sink the program instantiates prints. The walk follows
+/// the publish out of the logger's body into the sink's handler, as it
+/// does for a program's own subscribers; it used to stop at the
+/// publish, and the claim held.
+#[test]
+fn a_program_that_only_logs_reaches_a_syscall_through_its_sink() {
+    let ds = diags(&only_logs(
+        "sink: std::log::StdoutSink = std::log::StdoutSink { };",
+        "c: forbid reaches(app, effects(syscall));",
+    ));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `c` violated"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(
+        hit.contains("`std::log::Logger::emit` -(publishes \"log.**\")-> `std::log::StdoutSink::on_event`"),
+        "{hit}"
+    );
+}
+
+/// The gate still holds the structured-logs law: the sink is in
+/// `std::log`, which the law masks.
+#[test]
+fn the_structured_logs_law_still_holds_through_the_sink() {
+    let ds = diags(&only_logs(
+        "sink: std::log::StdoutSink = std::log::StdoutSink { };",
+        "logs_structured: forbid reaches(program, effects(stdio)) avoiding std::log::*;",
+    ));
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// A sink the program never builds receives nothing: with no sink, the
+/// logger's events go nowhere and the claim holds.
+#[test]
+fn a_sink_the_program_never_builds_is_no_path() {
+    let ds = diags(&only_logs("", "c: forbid reaches(app, effects(syscall));"));
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// A publish through a local binding is a computed subject, not a
+/// topic named after the binding: the walk cannot know its
+/// subscribers, so it does not certify past it.
+#[test]
+fn a_publish_through_a_local_binding_is_a_computed_subject() {
+    let ds = diags(
+        r#"
+        type Note { text: String; }
+        locus Printer {
+            bus { subscribe "note.**" as on_note of type Note; }
+            fn on_note(n: Note) { println(n.text); }
+        }
+        locus Writer {
+            bus { publish "note.**" of type Note; }
+            fn write(kind: String) {
+                let subj = "note." + kind;
+                subj <- Note { text: kind };
+            }
+        }
+        group writers = { Writer };
+        main locus App {
+            params { p: Printer = Printer { }; w: Writer = Writer { }; }
+            claims { c: forbid reaches(writers, effects(syscall)); }
+            run() { self.w.write("a"); }
+        }
+    "#,
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("claim `c` cannot be certified") && m.contains("computed subject")),
+        "{ds:?}"
+    );
+}

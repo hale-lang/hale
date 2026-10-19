@@ -175,7 +175,17 @@ main locus Org {
   sinks (the conservative direction). Edges are the resolved call
   graph (stdlib bodies merged, handle-method calls resolved) and the
   declared bus graph (a publish site composes with every subscriber
-  of its subject, wildcard subscribers included). `via { calls }` /
+  of its subject, wildcard subscribers included). A publish inside a
+  stdlib body composes the same way, with the program's subscribers and
+  with every stdlib subscriber the program instantiates (2026-10-19:
+  `Logger.info` → `log.**` → `StdoutSink::on_event` → `println` is a
+  path; the walk used to stop at the logger's publish, and a `forbid`
+  over a program that only logged held). A computed subject inside a
+  stdlib body, bounded by its locus's declared `**` patterns, composes
+  with every subscriber whose subscription overlaps one; an unbounded
+  one fails closed. A publish through a local binding
+  (`let s = "x." + k; s <- v`) is a computed subject, never a topic
+  named after the binding. `via { calls }` /
   `via { bus }` restricts which relations compose; the default is
   the **full composition** — more edges, conservative. `bus`
   composes publish sites in the visited fn's own body; the default

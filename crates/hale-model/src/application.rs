@@ -325,6 +325,21 @@ pub enum AbsorbedEvent {
     /// Empty means unconstrained: no pattern was recoverable, so the
     /// hole addresses anything, as before.
     PublishHole { patterns: Vec<String> },
+    /// A delivery from a publish of this body (the `Publish` or the
+    /// bounded `PublishHole` just before it) to a STDLIB subscriber the
+    /// program instantiates: the subscriber's handler is an interior
+    /// vertex of this entry (fans out under `via { bus }`). A stdlib
+    /// handler is no model function, so without this the walk lost the
+    /// path at the publish (`Logger.info` → `log.**` →
+    /// `StdoutSink::on_event` → `println`).
+    Deliver {
+        /// Index into `nodes`: the subscriber's handler.
+        target: u32,
+        /// The subscription's subject, as the stdlib declares it.
+        subject: String,
+        /// The publish sits inside a loop.
+        in_loop: bool,
+    },
     /// The absorption walk hit its step ceiling before settling —
     /// explicit residue, never silent exhaustion (a judgment
     /// treating a truncated interior as fully explored would
@@ -2352,6 +2367,16 @@ impl ApplicationModel {
                                         index: i,
                                     },
                                 );
+                            }
+                        }
+                        // A delivery names an interior vertex of
+                        // this entry.
+                        crate::AbsorbedEvent::Deliver { target, .. } => {
+                            if (*target as usize) >= a.nodes.len() {
+                                return Err(ModelError::DanglingId {
+                                    table: "legacy.stdlib_absorption",
+                                    index: i,
+                                });
                             }
                         }
                         // The TYPED publish identity judgments
