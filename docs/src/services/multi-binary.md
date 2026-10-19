@@ -94,6 +94,10 @@ deployment (unix), chosen entirely at this seam.
       BrokerEvt: MyNatsAdapter { url: "nats://prod:4222" };
   }
   ```
+  The adapter is built once, before the `main` locus that names it,
+  so its literal cannot read that locus's params: `self.url` there is
+  refused at `hale check`. Write the value in the literal, or give the
+  adapter's own field a default.
   An adapter a library ships is named through its import alias,
   like any imported name — and so is a codec:
   ```hale,fragment

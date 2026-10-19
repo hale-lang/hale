@@ -4134,3 +4134,44 @@ fn main() { }
 "#;
     assert!(check(src).iter().any(|m| m.contains("cell type cannot be a locus")), "{:?}", check(src));
 }
+
+/// An adapter binding is built by the program's prelude, before the
+/// `main` locus that declares it, so its literal has no `self`: a read
+/// of the main locus's params there passed the check and then failed
+/// in codegen ("self.url read outside a locus method"). It is refused
+/// at the read; the same literal with the value written in it checks.
+#[test]
+fn an_adapter_binding_literal_that_reads_self_is_refused_at_the_read() {
+    let src = |url: &str| {
+        format!(
+            r#"
+type Tick {{ n: Int = 0; }}
+topic Ticks {{ payload: Tick; }}
+locus Relay {{
+    params {{ url: String = ""; }}
+    fn send(subject: String, bytes: Bytes) {{ println(self.url); }}
+}}
+main locus App {{
+    params {{ url: String = "nats://127.0.0.1:4222"; }}
+    bindings {{ Ticks: Relay {{ url: {url} }}; }}
+    bus {{ publish Ticks; }}
+    run() {{ Ticks <- Tick {{ n: 1 }}; }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    let refused = src("self.url");
+    let errs = check(&refused);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].starts_with("adapter binding for topic `Ticks`: the `Relay` literal reads `self`"),
+        "{errs:?}"
+    );
+    let prog = parse_source(&refused).expect("parse");
+    let diag = check_program(&prog).into_iter().next().expect("one diagnostic");
+    let at = refused.find("self.url }").expect("the read");
+    assert_eq!(diag.span.start.0 as usize, at, "the diagnostic is at the read");
+    assert_eq!(check(&src("\"nats://127.0.0.1:4222\"")), Vec::<String>::new());
+    assert!(!check(&src("\"x\" + self.url")).is_empty(), "a read inside an expression is refused too");
+}

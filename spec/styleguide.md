@@ -995,6 +995,13 @@ locus Conn {
 ```
 
   **[convention]**
+- **An adapter binding's literal is written whole.** The adapter in
+  `bindings { Topic: Relay { ... }; }` is built by the program's prelude,
+  before the `main` locus that declares it, so its fields cannot read
+  that locus's params: `Relay { url: self.url }` is refused at the read.
+  Write the value in the literal, or give the adapter's own `params` the
+  default, and read configuration the adapter needs at run time (an
+  environment variable, a file) in its `birth()`. **[error]**
 - Inline the payload at the `<-` send site (`T <- Msg { ... }`
   publishes from a stack slot). Routing a payload through a free
   fn first anchors it in the caller's region — a per-publish leak

@@ -503,6 +503,35 @@ fn claim_a_bounded_lives_in_its_holder() {
     );
 }
 
+/// C5: an adapter binding's literal reads no `self` — it is built before
+/// the `main` locus that declares it — and the same literal with its
+/// value written in it passes.
+#[test]
+fn claim_an_adapter_binding_literal_reads_no_self() {
+    let src = |url: &str| {
+        format!(
+            "type Tick {{ n: Int = 0; }}\n\
+             topic Ticks {{ payload: Tick; }}\n\
+             locus Relay {{ params {{ url: String = \"\"; }} fn send(subject: String, bytes: Bytes) {{ }} }}\n\
+             main locus App {{\n\
+                 params {{ url: String = \"nats://h:4222\"; }}\n\
+                 bindings {{ Ticks: Relay {{ url: {url} }}; }}\n\
+                 bus {{ publish Ticks; }}\n\
+                 run() {{ Ticks <- Tick {{ n: 1 }}; }}\n\
+             }}\n\
+             fn main() {{ App {{ }}; }}"
+        )
+    };
+    let read = build_errs(&src("self.url"));
+    assert!(
+        read.iter().any(|m| m.contains("the `Relay` literal reads `self`")),
+        "spec/styleguide.md C5 says an adapter literal reading `self` is refused: {:?}",
+        read
+    );
+    let written = build_errs(&src("\"nats://h:4222\""));
+    assert!(written.is_empty(), "C5's working shape passes: {:?}", written);
+}
+
 /// S15, S16: `hale check` says nothing about a String grown with `+`
 /// in a loop or a text read by slicing off the rest, which is why both
 /// rules are tagged [convention]. When a lint lands, retag them.

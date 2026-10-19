@@ -3000,6 +3000,12 @@ into `fn main`'s prelude, right after the bus queue is published:
   `-> LocusRef(L)` return path also used before GH #1570), resolve the locus's `send`
   method's function pointer, then call
   `lotus_bus_register_remote_adapter(subject, self, send_fn)`.
+  The adapter literal is lowered there, before the `main` locus
+  that declares the binding is built, so it has no `self`: a read
+  of `self` anywhere in its inits (`Remote: Relay { url: self.url }`)
+  is refused at check time, at the read, rather than reaching
+  lowering. Its values are written in the literal or are the
+  adapter's own `params` defaults.
 
 Subjects use the desugared wire form (so a binding for
 hierarchical `Login` registers as `"events.login"`). Topics with
