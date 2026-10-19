@@ -148,7 +148,7 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
 // rows land in the proposer's name, as `ingest`'s do; `graph.requested`
 // asks the running organization to open the Review, and the Board's one
 // verdict ratifies every member in one append. `on_holes` (`--on-holes`,
-// what `hale dna init --with` passes) plans it on the holes init proposed
+// what `hale habitat graft --with` passes) plans it on the holes init proposed
 // that the Board has not decided yet (`dna::batch_plan_on`).
 fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
     // `hale dna pack apply` hands the rendered steps over as they are

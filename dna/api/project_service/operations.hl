@@ -232,7 +232,8 @@ fn plan_create(cfg: HeadConfig, arguments: String) -> Plan {
     let target = parent + "/" + name;
     let occupied = dna::run_tool("sh\n-c\n[ -e \"$1\" ] && [ -n \"$(ls -A \"$1\")\" ]\nsh\n" + target);
     if occupied.code == 0 { return Plan { refused: "directory_not_empty", reason: target + " exists and is not empty" }; }
-    let mut script = "exec \"$HALE_BIN\" dna new " + sq(target);
+    // GH #1653: the project is grafted from the machine's habitat
+    let mut script = "exec \"$HALE_BIN\" habitat graft " + sq(target);
     if len(profile) > 0 { script = script + " --profile " + sq(profile); }
     if len(remote) > 0 { script = script + " --remote " + sq(remote); }
     if len(body) > 0 { script = script + " --body " + sq(body); }
@@ -242,7 +243,7 @@ fn plan_create(cfg: HeadConfig, arguments: String) -> Plan {
 fn plan_init(cfg: HeadConfig, arguments: String) -> Plan {
     let root = argument(arguments, "root");
     if !std::str::starts_with(root, "/") || !is_dir(root) { return Plan { refused: "path_invalid", reason: "root must be an existing absolute directory" }; }
-    return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" dna init " + sq(root), cwd: root, envs: discover_env(flag(arguments, "discover")), deadline_secs: 600, external: false };
+    return Plan { ok: true, kind: "run", script: "exec \"$HALE_BIN\" habitat graft " + sq(root) + " --attach", cwd: root, envs: discover_env(flag(arguments, "discover")), deadline_secs: 600, external: false };
 }
 
 fn plan_attach(cfg: HeadConfig, command_id: String, arguments: String) -> Plan {

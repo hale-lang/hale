@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -264,7 +266,8 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let d = scratch::Scratch::new(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "designed", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     assert!(out.contains("charter.hl") && out.contains("seeded  design (11 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed") && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
@@ -487,7 +490,8 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let d = scratch::Scratch::new(format!("hale_dna_operating_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "operated"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "operated", "--no-pack"], &d);
     assert!(ok && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("operated");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -576,7 +580,8 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let started = std::time::Instant::now();
-    let (ok, out) = hale(&["dna", "new", "libbed"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "libbed", "--no-pack"], &d);
     let took = started.elapsed();
     assert!(ok, "{out}");
     assert!(took < Duration::from_secs(60), "the library is seeded in a batch, not a commit per process: {took:?}");
@@ -664,7 +669,8 @@ fn init_seeds_the_language_and_system_nodes_and_the_library() {
     assert!(ok && !view.contains("knowledge for"), "a practice bound to a path has no node to read for: {view}");
 
     // --no-library: none of it, and the output says so
-    let (ok, out) = hale(&["dna", "new", "bare", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "bare", "--no-library", "--no-pack"], &d);
     assert!(ok && out.contains("skipped library") && !out.contains("seeded  library"), "{out}");
     let bare = journal(&d.join("bare"));
     assert_eq!(count_of(&bare, "graph.node") + count_of(&bare, "graph.edge"), 2, "no library node, no edge: only the application's own purpose and seed");
@@ -696,7 +702,8 @@ fn approving_the_library_ratifies_and_binds_every_idea() {
     let d = scratch::Scratch::new(format!("hale_dna_libapprove_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "libapp"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "libapp", "--no-pack"], &d);
     assert!(ok && out.contains("seeded  library ("), "{out}");
     let app: PathBuf = d.join("libapp");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -764,7 +771,8 @@ fn rejecting_the_library_declines_every_idea() {
     let d = scratch::Scratch::new(format!("hale_dna_libreject_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "librej"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "librej", "--no-pack"], &d);
     assert!(ok && out.contains("seeded  library ("), "{out}");
     let app: PathBuf = d.join("librej");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -803,12 +811,14 @@ fn the_using_practices_are_seeded_listed_and_decided_like_the_design() {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     // --no-library keeps the family
-    let (ok, bare) = hale(&["dna", "new", "bare", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, bare) = hale(&["habitat", "graft", "bare", "--no-library", "--no-pack"], &d);
     assert!(ok && bare.contains("seeded  using (7 practice(s) proposed") && bare.contains("skipped library"), "{bare}");
     let (_, list) = hale(&["dna", "review"], &d.join("bare"));
     assert!(family_ids(&list, "using").len() == 7 && family_ids(&list, "library").is_empty(), "{list}");
 
-    let (ok, out) = hale(&["dna", "new", "used"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "used", "--no-pack"], &d);
     assert!(ok && out.contains("seeded  using (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("used");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -868,7 +878,8 @@ fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approv
     let d = scratch::Scratch::new(format!("hale_dna_libupgrade_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale_env(&["dna", "new", "upg"], &d, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-a")]);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "upg", "--no-pack"], &d, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-a")]);
     assert!(ok && out.contains("seeded  library ("), "{out}");
     let app: PathBuf = d.join("upg");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -945,7 +956,8 @@ fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let earlier = [("HALE_DNA_LIBRARY_VERSION", "1.0.0-a"), ("HALE_DNA_LIBRARY_EARLIER_NAMES", "1")];
-    let (ok, out) = hale_env(&["dna", "new", "mv"], &d, &earlier);
+    habitat::habitat();
+    let (ok, out) = hale_env(&["habitat", "graft", "mv", "--no-pack"], &d, &earlier);
     assert!(ok && out.contains("seeded  library ("), "{out}");
     let app: PathBuf = d.join("mv");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();

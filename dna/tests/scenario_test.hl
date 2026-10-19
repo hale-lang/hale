@@ -28,7 +28,7 @@ import "../core" as dna;
 // is proposed); `ratify batch by <reviewer>` decides the last batch, and
 // `expect stale` that it was refused whole because its ground moved.
 // `apply on pending {` … `}` plans the batch on the last proposal while it
-// is still pending (`batch_plan_on`, as `hale dna init --with` plans a pack
+// is still pending (`batch_plan_on`, as `hale habitat graft --with` plans a pack
 // on init's holes); `ratify ground by` / `reject ground by` decide that
 // proposal, `decide batch by` approves the batch without waiting, `expect
 // undecided` that it is not decided yet, and `await batch` waits until it

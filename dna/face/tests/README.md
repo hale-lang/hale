@@ -48,7 +48,7 @@ structure outside that group and an uninstantiated declaration remain distinct.
 Dirty source, changed committed source and invalid committed source exercise the
 real provenance, conflict and failure paths. These are declaration inspection
 tests, not proof of semantic position administration or live occupants.
-One fixture uses ordinary `hale dna new` with an owned toolchain cache, preserving
+One fixture uses ordinary `hale habitat graft` with an owned toolchain cache, preserving
 the generated, ignored `vendor/dna` import. It never runs the organization or a
 model. Valid, invalid and missing ignored dependency bytes exercise cache
 invalidation at unchanged source HEAD, recovery and preservation of project refs,
@@ -403,7 +403,7 @@ use, source refusal, source races, access loss, framing/context boundaries and
 the disabled host profile. It checks project refs/status stay unchanged.
 
 `startup.spec.mjs` exercises the checkout launcher with a real disposable
-`hale dna new` project, its generated source committed only in the test worktree.
+`hale habitat graft` project, its generated source committed only in the test worktree.
 It covers building and serving the native API, captured vendored Organization
 source, existing-binary startup, independent process shutdown, temporary-build
 cleanup and incomplete private-service configuration. It does not seed a sample
@@ -680,7 +680,7 @@ node dna/face/tests/native-commands.mjs
 
 What each run starts, and from what:
 
-- **The project.** `hale dna new` scaffolds one under the evidence directory
+- **The project.** `hale habitat graft` scaffolds one under the evidence directory
   (a vendored core, a record, `dna/org`); the acceptance Body
   (`dna/api/practice_review/tests/body/main.hl`) is written in as the
   organization, its imports pointed at this checkout, and the project is

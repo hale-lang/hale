@@ -62,7 +62,7 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
             let why = if record.ensure_open() { "the memory reached here holds none of it" } else { record.last_error() };
             return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + why + "); `hale habitat migrate <organism>` migrates the organism's memory and keeps the head's DSN");
         }
-        eprintln("hale dna show: the record has no rows: `hale dna init` seeds it");
+        eprintln("hale dna show: the record has no rows: `hale habitat graft` seeds it");
         return show_answer(what, json, show_empty(what), 0, 0, true, "\n");
     }
     let env = dna::memory_source(root, dna::HEAD_DSN_ENV);

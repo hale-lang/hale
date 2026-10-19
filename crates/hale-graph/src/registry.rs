@@ -835,7 +835,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("--env and --matrix (an environment's constitutions are adopted into the row's root, the seed's own `main locus` the build deploys: the entry, in every seed an environment may be bound to)", SNAPSHOT, "adopt_into_root"),
             consumer_at("model (the header's `entrypoint` names the root the arrangement is rooted at, the placement table's, so the row's root; `main` when there is none)", MODEL_BUILDER, "derive_application_model_over"),
             consumer_at("lsp (`hale/placement` shows the row's root's params and placement block, a refused module-nested root included, never an imported library's `main locus`)", LSP, "placement_of"),
-            consumer_at("hale dna init (the seed's entry and its file, by the row over the seed's own files that parse, as `seed_entry_kind` reads it: no import is resolved, and none holds the entry)", CLI_DNA, "main_of"),
+            consumer_at("hale habitat graft (the seed's entry and its file, by the row over the seed's own files that parse, as `seed_entry_kind` reads it: no import is resolved, and none holds the entry)", CLI_DNA, "main_of"),
             consumer_at("claims (the world tier: the row's `world()`, every `main locus` the bundle declares, whose inline claims are the world law, an imported application's included, GH #733; a bundle that closes a world refuses a top-level `claims` block of the closing seed's own)", CLAIMS, "enumerate_clauses"),
             consumer_at("the cross-seed rename (GH #774: an imported seed closes a world, so its constitutions' vocabulary is its own, when the row over its own files, none of them renamed yet, has an entry)", TY_MANGLE, "seed_declares_main"),
         ],

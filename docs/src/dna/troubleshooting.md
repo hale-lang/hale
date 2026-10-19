@@ -54,22 +54,22 @@ nothing.
 ### No record, or a toolchain that moved
 
 ```text
-no record in memory for … (run `hale dna init`)
+no record in memory for … (run `hale habitat graft`)
 ```
 
-The directory has DNA files but no record in memory. Run `hale dna
-init` in it. In a second clone of a project whose record exists, the
+The directory has DNA files but no record in memory. Graft it from the habitat:
+`hale habitat graft . --attach`. In a second clone of a project whose record exists, the
 pin in `hale.toml` names it; run `hale habitat migrate` (or `hale
 dna upgrade` with the owner's DSN) so the clone keeps the head's DSN.
 
 ```text
-this clone holds a record an earlier toolchain kept on git (refs/dna/journal), and records are not carried forward: re-init a fresh record — delete the old refs (…), remove the `[dna] record` line from hale.toml if it has one, and run `hale dna init`
+this clone holds a record an earlier toolchain kept on git (refs/dna/journal), and records are not carried forward: re-init a fresh record — delete the old refs (…), remove the `[dna] record` line from hale.toml if it has one, and run `hale habitat graft . --attach`
 ```
 
-`init` and `upgrade` refuse a clone that still has the record an
+A graft and `upgrade` refuse a clone that still has the record an
 earlier toolchain kept under `refs/dna/`. There is no migration: delete
 the old refs, remove the `[dna] record` line from `hale.toml` if it has
-one, and run `hale dna init` for a fresh record:
+one, and run `hale habitat graft . --attach` for a fresh record:
 
 ```sh
 git for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git update-ref -d
@@ -143,7 +143,7 @@ brings up, and a line before this one says why it is not there:
 
 ```text
 hale dna dev: the organism's memory allocation in the local habitat (memory-…) is not up: `hale habitat migrate …` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own
-hale dna dev: the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale dna init` pins one)
+hale dna dev: the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale habitat graft` pins one)
 ```
 
 Run `hale habitat migrate` on the organism (it needs `docker compose`
@@ -701,13 +701,13 @@ lists the tasks waiting.
 
 A record is memory's, and `git log` still holds every change it
 applied to the genome. To begin a fresh record from the program as it
-is now, remove the `[dna] record` line from `hale.toml` and run `init`,
+is now, remove the `[dna] record` line from `hale.toml` and graft it again,
 which keeps the files already there and composes a new record with a
 new identity, in a schema of its own. The old record's schema stays in
 Postgres until you drop it:
 
 ```sh
-hale dna init .
+hale habitat graft . --attach
 ```
 
 A clone that still holds a record an earlier toolchain kept on git

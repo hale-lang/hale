@@ -12,6 +12,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -123,7 +125,8 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "knowing"], &d, &[]);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "knowing", "--no-pack"], &d, &[]);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("knowing");
     // the toolchain's library is one idea per chapter or spec section,

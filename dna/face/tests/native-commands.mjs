@@ -40,7 +40,7 @@ const inherited = isolatedEnvironment();
 // observation, model, signing, OIDC, or native service configuration is forwarded.
 const childEnv = Object.fromEntries([
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
-  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR',
+  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR', 'XDG_DATA_HOME', 'HALE_DNA_HABITAT',
 ].filter(key => inherited[key] !== undefined).map(key => [key, inherited[key]]));
 const owned = new Set();
 const processes = [];
@@ -389,7 +389,7 @@ async function scenario(name, run) {
 
 let failure;
 try {
-  // `hale dna new` births the record in memory (GH #1590), with the owner's DSN
+  // the graft births the record in memory (GH #1590, #1653), with the owner's servers
   scaffoldProject({ hale: binaries.hale, root: fixture, env: { ...childEnv, USER: actor, LOGNAME: actor, HALE_DNA_MEMORY_DSN_OWNER: owner }, actor });
   const ready = await startHost();
   application = recordIdentity(fixture);

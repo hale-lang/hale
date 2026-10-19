@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -59,7 +61,8 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
-    let (ok, out) = hale_in(&["dna", "new", "trusted"], &d);
+    habitat::habitat();
+    let (ok, out) = hale_in(&["habitat", "graft", "trusted", "--no-pack"], &d);
     assert!(ok, "{out}");
     let a: PathBuf = d.join("trusted");
     git(&["config", "user.name", "organism-host"], &a);

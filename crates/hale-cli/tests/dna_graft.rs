@@ -2,10 +2,10 @@
 //! process's own (`support/habitat.rs`), born once with no body; two
 //! grafted organisms are two children of one parent.
 
-#[path = "support/habitat.rs"]
-mod habitat;
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 

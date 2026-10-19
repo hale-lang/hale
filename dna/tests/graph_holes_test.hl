@@ -2,7 +2,7 @@
 // the org chart they fill once the Board ratifies them (GH #1091).
 //
 // The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
-// under dna/tests/onboarding/voice. `hale dna init` proposes exactly what
+// under dna/tests/onboarding/voice. `hale habitat graft` proposes exactly what
 // its GRAPH.md lists under "The holes", each derived from the graph's edges:
 // 15 positions, each followed by its mandate, 6 work items and the 4
 // practices DIRECTION.md marks `derived` — 40 proposals, one Board Review

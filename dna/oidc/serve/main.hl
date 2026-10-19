@@ -18,7 +18,7 @@ fn main() {
     let client = std::env::arg_or(2, "dna-local");
     let secret_vault = "oidc-client-" + client;
     if !std::secret::Credential { vault: secret_vault }.ready() {
-        eprintln("hale dna oidc: the vault holds no secret for the client ", client, " (", secret_vault, "): `hale dna init` or `hale dna upgrade` in a project provisions it");
+        eprintln("hale dna oidc: the vault holds no secret for the client ", client, " (", secret_vault, "): `hale habitat graft` or `hale dna upgrade` in a project provisions it");
         std::process::exit(2);
     }
     let key_file = std::env::var("HALE_DNA_OIDC_KEY_FILE");

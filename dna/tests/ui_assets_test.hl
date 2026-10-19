@@ -1,7 +1,7 @@
 // dna/tests/ui_assets_test.hl — a `ui/` with no manifest is no seed
 // (ruling 11b, 2026-10-12).
 //
-// Three repositories through the real `hale dna init`, then the head's
+// Three repositories through the real `hale habitat graft`, then the head's
 // answer for the application's static assets (`ops::application_asset`,
 // which the head's `GET /app/...` returns):
 //

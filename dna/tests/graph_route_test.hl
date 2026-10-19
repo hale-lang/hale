@@ -102,14 +102,14 @@ locus App {
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.init();
-        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);
 
         // ---- the holes ratified, a holder for api's reviewer, a practice
         // ratified as law bound to store.md, and one ratified as advice
         // bound to openapi.yaml: advice is not law
         // (a hold is asked of a running organization, `hale dna fill`, which
         // graph_holds_test drives; here the ratified hold is its graph row)
-        self.ratify("hale dna init");
+        self.ratify("hale habitat graft");
         std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         let receipts = dna::MemoryReceipts { repo: self.repo };
         let law = "sha256:" + receipts.store("{\"kind\": \"practice\", \"text\": \"a change to a contract is a new migration, never an edit\", \"author\": \"board\", \"target\": \"contract:spec/store.md\", \"provenance\": \"proposed\", \"law\": true}");

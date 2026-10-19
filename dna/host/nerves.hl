@@ -26,7 +26,7 @@
 // naming `hale habitat migrate`.
 fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     let id = record_identity(root);
-    if len(id) == 0 { return fail("nerves migrate: the record has no identity yet (`hale dna init` first)"); }
+    if len(id) == 0 { return fail("nerves migrate: the record has no identity yet (`hale habitat graft` first)"); }
     let org = dna::schema_for(id);
     let missing = dna::nerves_missing(org);
     if len(missing) > 0 { return fail("nerves migrate: the vault holds no credential for the nerves' " + missing + " (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)"); }

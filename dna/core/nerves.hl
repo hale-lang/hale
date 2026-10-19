@@ -121,7 +121,7 @@ const NERVES_ROLES: String = "owner spine head reflexes exchange";
 // part that connects holds `std::secret::Credential { vault: … }` beside
 // its `user`, and pond's NATS client reveals it on the line that writes
 // CONNECT and nowhere else — no field, no return, no URL, no environment.
-// It is provisioned by the organism's bootstrap (`hale dna init`,
+// It is provisioned by the organism's bootstrap (`hale habitat graft`,
 // `upgrade`: dna/host/secrets.hl) and only consumed here.
 fn nerves_vault_name(org: String, role: String) -> String { return "nats-" + identifier_part(org, 60) + "-" + identifier_part(role, 16); }
 

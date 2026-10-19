@@ -10,6 +10,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -85,7 +87,8 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrev", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgrev", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrev");
     git(&["init", "-q", "-b", "main"], &app);

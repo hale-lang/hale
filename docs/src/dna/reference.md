@@ -17,16 +17,6 @@ directory as an optional argument and default to the current one.
 [DNA, the building block](./dna.md).
 
 ```text
-hale dna init [app-dir] [--no-library] [--with <pack> [--set <param>=<value>]… [--as <who>]]
-                             attach the DNA to an existing application; the record starts with the language and system
-                             nodes and the toolchain's library proposed, one Review per family (--no-library leaves out the nodes and the
-                             library, not the practices); --with proposes a pack from the toolchain's nursery as one batch beside them,
-                             planned on the holes init opens so it may fill them (`--with founder --set founder=<you>` seats you in
-                             every one): one `review all approve` ratifies the starting organization, seats included
-hale dna new <name> [--no-library]
-                             a greenfield application with its DNA
-hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
-                             the profile sets the pieces (a remote, a body host); the combination is always detected
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library
                              (each changed practice, and the library as new families, supersede the active one once the Board approves)
 hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust
@@ -364,7 +354,7 @@ hale dna apply <file> [--dry-run] [--as <who>] [--on-holes]
                              several changes to the structure (`open`, `fill`, `fill *`, `vacate`, `practice`, `assign`, `unassign`, `close`, `merge`,
                              `split`, `expose`, `depend`, `externalize`, `internalize`, `retire-practice`) as one Board Review, applied all or nothing
                              (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing; --on-holes
-                             plans it on the holes init proposed that the Board has not decided, and ratifies it after them
+                             plans it on the holes the graft proposed that the Board has not decided, and ratifies it after them
 hale dna vacate <position> <holder> [--dry-run] [--as <who>]
                              a holder leaves a position: a one-step batch, one Board Review (`review changes approve`)
 hale dna pack list [--from <dir|git-url[#rev]>]
@@ -436,7 +426,7 @@ kind it does not know keeps walking.
 
 | kind | memory | what it is |
 |---|---|---|
-| `structure.observed` | record | the compiler's model of one of the application's parts, at `init` |
+| `structure.observed` | record | the compiler's model of one of the application's parts, at the graft |
 | `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it (also inside a ratified graph proposal's receipt) |
 | `graph.ingested` | record | `hale dna ingest` read the repository at a commit (`added`, `changed`, `retired`, the `review_id` of its proposal) |
 | `graph.requested` / `graph.proposed` / `graph.refused` | record | `hale dna ingest` asks the running organization to open its Review; opened, or not. `graph.refused <row id>` with `by: memory` is a graph row memory would not project; the projection goes on past it |
@@ -665,12 +655,12 @@ organism works, the arrays fill:
 
 ### A generated project
 
-`hale dna new <name>` writes these; `hale dna init` writes the same
-around an application you already have.
+`hale habitat graft <name>` writes these; `hale habitat graft <dir> --attach` writes the
+same around an application you already have.
 
 | path | what |
 |---|---|
-| `main.hl`, `tests/main_test.hl` | the application and its first test (`new` only) |
+| `main.hl`, `tests/main_test.hl` | the application and its first test (a new application only) |
 | `hale.toml` | the manifest: an environment for the application (`.`) and one for the organization (`dna/org`) |
 | `hale.lock` | the toolchain the DNA was materialized for (`[dna] toolchain`) |
 | `.gitignore` | ignores the build artifact, `/vendor/` and `/.hale/` |

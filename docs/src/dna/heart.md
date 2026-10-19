@@ -139,7 +139,7 @@ The application the record attaches has a broker account of its own,
 named by its project: user `app-<name>`, its password the vault's
 `nats-<org>-app-<name>`. It may publish on `<org>.app.<name>.>` and
 nowhere else: no other application's subjects, nothing of DNA's, and it
-reads nothing. `hale dna init` records `application.attached` (with the
+reads nothing. `hale habitat graft` records `application.attached` (with the
 `name`) and draws the account; `hale dna upgrade` draws it again if it
 is missing. An application named `reflexes` holds no account, since
 those subjects are [the reflexes'](./senses.md#reflexes).

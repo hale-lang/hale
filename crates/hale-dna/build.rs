@@ -1,7 +1,7 @@
 //! GH #726 — the embedded DNA source set's digest, computed at the
 //! toolchain's build time.
 //!
-//! `hale dna new` / `init` / `upgrade` materialize `vendor/dna` from
+//! `hale habitat graft` and `hale dna upgrade` materialize `vendor/dna` from
 //! the source this crate embeds, so an organism runs the core the
 //! BINARY carries. Two binaries with the same `hale --version` can
 //! carry different source, and a fixture that mutates `dna/core`

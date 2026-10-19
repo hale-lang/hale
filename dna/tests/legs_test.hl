@@ -125,7 +125,7 @@ locus App {
     // The socket's gate (GH #1104 piece 5): the peer — this process's uid —
     // is mapped to a person, and under the fresh record's local trust that
     // person holds every position, so the head lists the leg's verbs to it
-    // (`hale dna new` seats its maker the same way; this record was made
+    // (`hale habitat graft` seats its maker the same way; this record was made
     // by the suite's user).
     fn seat_me() {
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);

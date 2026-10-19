@@ -1,10 +1,12 @@
-//! GH #528 — `hale dna new <name>` (Track C, PR 24): a greenfield
+//! GH #528 — `hale habitat graft <name>` (Track C, PR 24): a greenfield
 //! application with its DNA. The issue's acceptance: it passes
 //! `hale check --matrix`, builds, runs, and its tests pass; the
 //! app-wide law is ACTIVE because a fresh app has no holes.
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 use std::process::Command;
@@ -27,7 +29,8 @@ fn workdir(tag: &str) -> scratch::Scratch {
 #[test]
 fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     let d = workdir("demo");
-    let (ok, out) = hale(&["dna", "new", "demo-app"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "demo-app", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app = d.join("demo-app");
     for f in ["main.hl", "tests/main_test.hl", "hale.toml", "hale.lock", ".gitignore", "dna/org/main.hl", "dna/org/law.hl", "dna/org/purpose.hl", "vendor/dna/topics.hl", ".hale/dna/baseline.topology"] {
@@ -60,7 +63,8 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     let (ok, out) = hale(&["test", "."], &app);
     assert!(ok, "test: {out}");
     // a second `new` into the same directory is refused
-    let (ok, out) = hale(&["dna", "new", "demo-app"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "demo-app", "--no-pack"], &d);
     assert!(!ok && out.contains("not empty"), "{out}");
     let _ = std::fs::remove_dir_all(&d);
 }

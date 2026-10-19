@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner, launchToken, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
 import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
 import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced } from './command-wire.mjs';
@@ -129,7 +129,7 @@ export const test = base.extend({
     try {
       if (organization === 'generated') {
         // The birth runs under the runner's own cache, not this case's
-        // empty one: `hale dna new` builds the toolchain's host into its
+        // empty one: the graft builds the toolchain's host into its
         // cache on first use, and in the per-case cache that was a cold
         // host build (minutes on a CI runner) inside this one case, for a
         // binary nothing here runs. The API below still reads the case's
@@ -138,7 +138,9 @@ export const test = base.extend({
         const birthEnv = { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner };
         if (process.env.XDG_CACHE_HOME) birthEnv.XDG_CACHE_HOME = process.env.XDG_CACHE_HOME;
         else delete birthEnv.XDG_CACHE_HOME;
-        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env: birthEnv, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
+        const grafting = graftEnvironment(birthEnv);
+        ensureHabitat(env.HALE_BIN, birthEnv);
+        await executeNative(env.HALE_BIN, graft(root), { env: grafting, timeout: 300_000, maxBuffer: 2_097_152 }, { build: true });
       }
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
       seeded = true;
@@ -172,7 +174,7 @@ export const test = base.extend({
           originalOrganization = originalOrganization.replace('        metrics: Metrics', `${members}\n        metrics: Metrics`);
           await writeFile(orgSource, originalOrganization);
         }
-        // A DNA project has a manifest at its root, as `hale dna new` writes
+        // A DNA project has a manifest at its root, as a graft writes
         // one, and the compiler names a program's files relative to it. In a
         // tree with none it names them relative to the seed (`main.hl`), so
         // the organization's source would not be `dna/org/main.hl`.

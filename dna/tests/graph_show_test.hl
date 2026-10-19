@@ -3,7 +3,7 @@
 // (GH #1086).
 //
 // The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
-// under dna/tests/onboarding/voice. `hale dna init` reads it into the
+// under dna/tests/onboarding/voice. `hale habitat graft` reads it into the
 // record; the holes GRAPH.md fills for its org chart (the ones init
 // derives from the edges: a board, a dev where a gate guards a part, a
 // reviewer where a part serves or consumes a contract, an operator under

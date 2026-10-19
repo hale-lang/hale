@@ -39,7 +39,7 @@ hale build dna/api -o target/seeds/api/api
 ./target/seeds/api/api /absolute/path/to/a/dna-project 8792
 ```
 
-The project must already have a DNA Record (`hale dna new` / `init`). The server
+The project must already have a DNA Record (`hale habitat graft`). The server
 binds only `127.0.0.1`. Stop it with Ctrl-C. Discover the native application id:
 
 ```sh
@@ -699,7 +699,7 @@ head envelope `{"api_version","head":{"profile":"dna.head.v1","principal","activ
   pushed.
 
 Operations (all version 1): `dna.project.create` / `init` (600 s runs of
-`hale dna new` / `init`, then an attach), `attach` / `detach` / `forget`
+`hale habitat graft`, then an attach), `attach` / `detach` / `forget`
 (inline; attach validates the worktree, the Record, the `dna/` seed, and
 refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
 projects), `dna.project.sync` / `publish` (a commit and push of the genome,

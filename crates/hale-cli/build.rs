@@ -94,7 +94,7 @@ fn slug(heading: &str) -> String {
     s.trim_end_matches('-').to_string()
 }
 
-/// The toolchain's library (`hale dna init` seeds it): every chapter of the
+/// The toolchain's library (`hale habitat graft` seeds it): every chapter of the
 /// book and every `## ` section of the spec, one idea each, generated from
 /// the tree so a new chapter joins by existing. Generates
 /// OUT_DIR/library_embed.rs with a `LIBRARY` table of

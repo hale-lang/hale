@@ -669,8 +669,8 @@ locus IsolatedWorktrees {
             return Worktree { mutation_id: mutation_id, base_commit: base_commit, error: self.last_error };
         }
         self.opened = self.opened + 1;
-        // vendor/ is toolchain-managed and ignored by git (`hale dna
-        // init`), so a fresh checkout has none: the worktree gets the
+        // vendor/ is toolchain-managed and ignored by git (the graft's
+        // edit), so a fresh checkout has none: the worktree gets the
         // repository's, and the editor's `hale check` resolves its
         // imports the way the genome's does.
         let vendored = std::io::fs::list_dir_count(self.repo + "/vendor") or - 1;
@@ -750,7 +750,7 @@ locus LocalGit {
     // Stage everything in `path` but `vendor/` and commit it; the
     // candidate's sha, or "". `vendor/` is the toolchain's copy that
     // `IsolatedWorktrees.open` puts in every worktree: a genome whose
-    // committed `.gitignore` does not name it (`hale dna init`'s edit left
+    // committed `.gitignore` does not name it (`hale habitat graft`'s edit left
     // uncommitted) would otherwise carry the whole vendored tree in every
     // candidate. It is unstaged after `add -A` rather than excluded by a
     // pathspec, which git refuses when `vendor/` is already ignored.
@@ -1151,8 +1151,8 @@ fn fixture_keep_head(repo: String, head_dsn: String) -> String {
 // (HALE_DNA_MEMORY_DSN_OWNER), keeps the head's DSN in the clone as `hale
 // dna memory migrate` does (`.hale/dna/memory.env`, mode 600, ignored:
 // every memory handle in it dials it when it is given no role's DSN), and
-// appends the record's birth (`record.genesis`, `record.key`) as `hale dna
-// init` does. "" when the
+// appends the record's birth (`record.genesis`, `record.key`) as a graft
+// does. "" when the
 // record is born (or was, by an earlier call), else why not.
 fn memory_fixture(repo: String) -> String {
     let owner_env = "HALE_DNA_MEMORY_DSN_OWNER";

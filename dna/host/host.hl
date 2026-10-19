@@ -2047,7 +2047,7 @@ main locus Host {
         std::io::fs::mkdir(self.dna_dir) or discard;
         self.status_path = self.dna_dir + "/status.json";
         let org_seed = self.root + "/" + ORG_SEED;
-        if !std::io::fs::file_exists(org_seed + "/main.hl") { self.say("no organization at " + org_seed + " (run `hale dna init`)"); std::process::exit(2); }
+        if !std::io::fs::file_exists(org_seed + "/main.hl") { self.say("no organization at " + org_seed + " (run `hale habitat graft`)"); std::process::exit(2); }
         // GH #989: the organism's drawn secrets are its bootstrap's; a start
         // without one refuses rather than run on a default
         let unprovisioned = missing_drawn(self.root);

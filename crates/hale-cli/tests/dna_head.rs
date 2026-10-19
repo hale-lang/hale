@@ -14,6 +14,8 @@
 mod scratch;
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -101,7 +103,8 @@ fn a_container_outside_the_allocation_is_no_evidence_of_the_organisms_memory() {
         return;
     }
     let root = scratch("decoy");
-    let made = vault::hale().args(["dna", "new", "decoy"]).current_dir(&*root).env("HALE_DNA_DISCOVER", "off").output().expect("hale dna new");
+    habitat::habitat();
+    let made = vault::hale().args(["habitat", "graft", "decoy", "--no-pack"]).current_dir(&*root).env("HALE_DNA_DISCOVER", "off").output().expect("hale habitat graft");
     assert!(made.status.success(), "{}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr));
     let app = root.join("decoy").canonicalize().unwrap();
     // the organism's DSN was the owner's; take it away, so its memory is

@@ -18,6 +18,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -483,7 +485,8 @@ fn bring_up() -> Fixture {
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
-    let (ok, out) = f.hale(&["dna", "init", ".", "--no-library"], &app);
+    habitat::habitat();
+    let (ok, out) = f.hale(&["habitat", "graft", ".", "--attach", "--no-library", "--no-pack"], &app);
     assert!(ok, "init: {out}");
     std::fs::write(app.join("dna/org/models.hl"), std::fs::read_to_string(repo.join("dna/acceptance/trio.fixture/catalog.hl")).unwrap()).unwrap();
     let (ok, out) = f.hale(&["check", "--matrix", "."], &app);

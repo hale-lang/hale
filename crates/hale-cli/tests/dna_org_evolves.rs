@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -73,7 +75,8 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orggrow", "--no-library"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orggrow", "--no-library", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orggrow");
     // scripted models: the editor answers with a prepared org main; the Leader abstains

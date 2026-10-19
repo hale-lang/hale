@@ -240,7 +240,7 @@ locus App {
         let pass = if label == "record" { "1" } else { "2" };
         let alice_leg = "position:agent#" + pass; let bob_leg = "position:editor#" + pass; let carol_leg = "position:leader#" + pass;
         // ---- a ratified hole is a position only when its own rows state one
-        // (GH #1166): `hale dna init` proposes holes of kind `graph`, a work
+        // (GH #1166): `hale habitat graft` proposes holes of kind `graph`, a work
         // hole `api` and a position hole `api/dev` alike. The rows here are
         // the check's, not a real proposal's, which memory would refuse to
         // project, so the case runs where the record is all there is

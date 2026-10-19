@@ -6,6 +6,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -76,7 +78,8 @@ fn the_surface_serves_the_record_and_takes_no_command() {
         .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", &cache).output().expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
-    let (ok, out) = hale(&["dna", "new", "uiapp"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "uiapp", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("uiapp");
     let bare = d.join("origin.git");

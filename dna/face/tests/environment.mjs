@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,24 +14,31 @@ export const MEMORY_DSNS = ['HALE_DNA_MEMORY_DSN_OWNER', 'HALE_DNA_MEMORY_DSN_SP
 // inheritance.
 export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE', 'HALE_DNA_NATS_URL_HEAD', 'HALE_DNA_NATS_URL_APP', 'HALE_DNA_NATS_USER_APP', 'HALE_DNA_NATS_VAULT_APP', 'HALE_DNA_NATS_VAULT_REFLEXES', 'HALE_DNA_NATS_ORG'];
 
-// Every environment a fixture is handed carries a vault of its own
-// (`HALE_VAULT_DIR`, mode 700, removed when the process exits) and no real
-// vault: `hale dna new` provisions the organism's secrets, and a fixture's
-// never land in the developer's vault or read a secret held there.
-function fixtureVault() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hale-face-vault-'));
+// Every environment a fixture is handed carries the job's vault
+// (`HALE_VAULT_DIR`, mode 700, one for every worker of the run, named for
+// the runner process that started them) and no real vault: a graft
+// provisions the organism's secrets, and a fixture's never land in the
+// developer's vault or read a secret held there. The job's habitat is
+// beside it (GH #1653): the local habitat is long-lived and one per
+// owner's servers, so every fixture grafts from the same one, with the
+// same vault holding its record's passwords. The directory is left for the
+// runner's temp sweep; a worker removing it would pull it from the others.
+function jobDir() {
+  const dir = path.join(os.tmpdir(), `hale-face-job-${process.env.HALE_FACE_JOB || process.ppid}`);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dir, 0o700);
-  process.once('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
   return dir;
 }
 
 export function isolatedEnvironment() {
   const env = { ...process.env };
   delete env.HALE_VAULT_ADDR;
-  env.HALE_VAULT_DIR = fixtureVault();
+  const job = jobDir();
+  env.HALE_VAULT_DIR = path.join(job, 'vault');
+  fs.mkdirSync(env.HALE_VAULT_DIR, { recursive: true, mode: 0o700 });
   // GH #1653: and a local habitat beside it, so an organism a fixture
   // births is never a tenant of the developer's habitat
-  env.XDG_DATA_HOME = path.join(env.HALE_VAULT_DIR, 'data');
+  env.XDG_DATA_HOME = path.join(job, 'data');
   // named outright: a HALE_DNA_HABITAT the developer exported wins over
   // XDG_DATA_HOME, and is never a fixture's
   env.HALE_DNA_HABITAT = path.join(env.XDG_DATA_HOME, 'hale/habitat/local');
@@ -49,6 +57,51 @@ export function isolatedEnvironment() {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_TERMINAL_PROMPT: '0', HALE_DNA_DISCOVER: 'off',
   });
+}
+
+// GH #1653: every organism but the habitat is grafted from a habitat. The
+// job's is the one every environment names (`XDG_DATA_HOME`, in the job's
+// directory), born once with no body, by whichever worker first needs it
+// (`ensureHabitat`, behind a lock the others wait on): on the operator's
+// backends when the runner names an owner's DSN and NATS (CI's: no
+// compose), else its own. `graftEnvironment` is `env` with the owner's
+// servers a graft agrees with, and does only that; `graft` is the argv of
+// the act. A fixture's project is grafted with `--no-pack`: the standard
+// pack is a Board's to ratify, not a face case's.
+export function graftEnvironment(env) {
+  const graft = { ...env };
+  if (memoryOwner() && nervesOwner()) {
+    graft.HALE_DNA_MEMORY_DSN_OWNER = memoryOwner();
+    graft.HALE_DNA_NATS_URL_OWNER = nervesOwner();
+  } else {
+    delete graft.HALE_DNA_MEMORY_DSN_OWNER;
+    delete graft.HALE_DNA_NATS_URL_OWNER;
+  }
+  return graft;
+}
+const habitatUp = () => ['habitat', 'up', '--no-body', '--backends', memoryOwner() && nervesOwner() ? 'operator' : 'own'];
+export const graft = dir => ['habitat', 'graft', dir, '--no-pack'];
+
+// The job's habitat is up: born by the first caller, awaited by the rest.
+// Synchronous, so a fixture's graft can follow it without a race.
+export function ensureHabitat(hale, env) {
+  const dir = path.dirname(env.XDG_DATA_HOME);
+  const ready = path.join(dir, 'habitat.ready'), lock = path.join(dir, 'habitat.lock');
+  const nap = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  for (let waited = 0; !fs.existsSync(ready); waited += 500) {
+    let mine = false;
+    try { fs.mkdirSync(lock); mine = true; } catch { /* another worker is born it */ }
+    if (mine) {
+      try {
+        const bounded = boundedNative(hale, habitatUp(), { build: true, lock: false });
+        execFileSync(bounded.command, bounded.args, { env: graftEnvironment(env), encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+        fs.writeFileSync(ready, '');
+      } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+      return;
+    }
+    if (waited > 360_000) throw new Error('the job\'s habitat was not born by the worker that holds its lock');
+    nap(500);
+  }
 }
 
 // The owner's DSN the Knowledge fixtures migrate a record with, from the

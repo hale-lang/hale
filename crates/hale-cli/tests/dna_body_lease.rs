@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -124,12 +126,14 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let bare = d.join("origin.git");
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     // clone A, made with the remote-body profile: the pieces are set, nothing is labelled
-    let (ok, _, out) = hale_in(&["dna", "new", "bodied", "--profile", "remote-body", "--remote", &bare.to_string_lossy(), "--body", "riley@srv"], &d);
+    habitat::habitat();
+    let (ok, _, out) = hale_in(&["habitat", "graft", "bodied", "--profile", "remote-body", "--remote", &bare.to_string_lossy(), "--body", "riley@srv", "--no-pack"], &d);
     assert!(ok && out.contains("remote origin = ") && out.contains("dna.body = riley@srv"), "{out}");
     let a: PathBuf = d.join("bodied");
     assert_eq!(git(&["remote", "get-url", "origin"], &a), bare.to_string_lossy());
     assert_eq!(git(&["config", "dna.body"], &a), "riley@srv");
-    let (_, code, out) = hale_in(&["dna", "new", "labelled", "--profile", "cloud"], &d);
+    habitat::habitat();
+    let (_, code, out) = hale_in(&["habitat", "graft", "labelled", "--profile", "cloud", "--no-pack"], &d);
     assert!(code != 0 && out.contains("unknown profile `cloud`"), "a profile is not a label: {out}");
     git(&["config", "user.name", "organism-host"], &a);
     git(&["config", "user.email", "host@dna"], &a);

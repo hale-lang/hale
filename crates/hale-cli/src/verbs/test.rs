@@ -390,7 +390,7 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
             }
             // Each test file runs with a vault of its own, made empty for
             // the run and removed after it: a test that provisions a secret,
-            // or a fixture that runs `hale dna init` (which draws the
+            // or a fixture that runs `hale habitat graft` (which draws the
             // organism's), never writes into the developer's vault, and no
             // test reaches a real vault (`HALE_VAULT_ADDR`). Everything the
             // test starts inherits it.

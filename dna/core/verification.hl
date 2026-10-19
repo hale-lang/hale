@@ -159,7 +159,7 @@ fn holds_source(dir: String) -> Bool {
 }
 
 // Whether `root` is itself a seed: it holds a `.hl` file of its own (an
-// application's organization). `hale dna init` writes a root `hale.toml`
+// application's organization). `hale habitat graft` writes a root `hale.toml`
 // in repository mode too, so the manifest does not decide it.
 fn root_is_seed(root: String) -> Bool {
     return holds_source(root);

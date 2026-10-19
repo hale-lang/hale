@@ -2,7 +2,7 @@
 // test says which DNA source it carries, and a fixture can hold it to
 // the working tree.
 //
-// `hale dna new` / `init` / `upgrade` materialize `vendor/dna` from the
+// `hale habitat graft` and `hale dna upgrade` materialize `vendor/dna` from the
 // source EMBEDDED in the `hale` binary at its own build time, so an
 // organism a fixture starts runs the core that binary carries — not
 // the one in `dna/core` on disk. A fixture that edits the core and

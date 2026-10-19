@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[path = "support/record.rs"]
@@ -77,7 +79,8 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "orgrun"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "orgrun", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgrun");
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");

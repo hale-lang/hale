@@ -37,7 +37,7 @@ fn open_projection(root: String, seed: String, toolchain: String, memory: dna::M
 }
 
 fn no_record(root: String) -> String {
-    return "no record in memory for " + root + " (run `hale dna init`)";
+    return "no record in memory for " + root + " (run `hale habitat graft`)";
 }
 
 // "" when the record has a head; otherwise why a verb cannot go on: no

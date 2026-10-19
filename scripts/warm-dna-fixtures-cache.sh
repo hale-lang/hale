@@ -51,7 +51,9 @@ trap cleanup EXIT
 
 # the organism's habitat is the root's own (GH #1653), never the developer's
 export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_HABITAT=$tmp/data/hale/habitat/local HALE_BIN=$hale HALE_DNA_DISCOVER=off GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
-"$hale" dna new "$tmp/warm" >/dev/null
+backends=own; [[ -n "${HALE_DNA_MEMORY_DSN_OWNER:-}" && -n "${HALE_DNA_NATS_URL_OWNER:-}" ]] && backends=operator
+"$hale" habitat up --no-body --backends "$backends" >/dev/null
+"$hale" habitat graft "$tmp/warm" --no-pack >/dev/null
 # --no-iris: this run exists for the build side effect alone. iris
 # attached (the default) means fuse-hl, which grows without bound on
 # a live organism's topology diff — confirmed directly (10 GB RSS

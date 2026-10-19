@@ -6,6 +6,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/habitat.rs"]
+mod habitat;
 #[path = "support/scratch.rs"]
 mod scratch;
 use std::path::Path;
@@ -27,7 +29,8 @@ fn the_outcome_flag_reaches_the_verb() {
     let d = scratch::Scratch::new(format!("hale_dna_effres_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "eff"], &d);
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", "eff", "--no-pack"], &d);
     assert!(ok, "{out}");
     let app = d.join("eff");
     // the outcome parsed: the verb gets as far as looking the key up

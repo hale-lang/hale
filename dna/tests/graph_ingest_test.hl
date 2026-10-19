@@ -1,10 +1,10 @@
-// dna/tests/graph_ingest_test.hl — `hale dna init` reads a repository into
+// dna/tests/graph_ingest_test.hl — `hale habitat graft` reads a repository into
 // the graph (GH #1090).
 //
 // The fixture is hale-lang/voice at a32b295faf5b96e6c965fc5bff2f66324fbbda10
 // (hale-lang/voice#6), vendored whole under dna/tests/onboarding/voice and
 // never fetched. Its GRAPH.md says what init should yield; this runs the
-// real `hale dna init` on a copy (a repository with no application at its
+// real `hale habitat graft` on a copy (a repository with no application at its
 // root, a seed per process) and reads the record back: the counts under
 // "Checkable", and every `meets`, `constrains`, `runs`, `gates` and
 // `witnesses` edge "The edges, as they stand" lists, member for member.
@@ -177,9 +177,10 @@ locus App {
         }
         std::test::assert_eq_int(self.count(self.edges, "unfold|parent=purpose:voice|child=axiom:"), 17, "the purpose unfolds into every axiom");
 
-        // ---- init again: the record stands, nothing is read twice
-        let again = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
-        std::test::assert_eq_int(again.code, 0, "init again: " + again.stderr);
+        // ---- grafted again: the graft goes on where it stopped, which is
+        // its end; the record stands, nothing is read twice
+        let again = dna::grafted(repo, ".\n--attach");
+        std::test::assert_eq_int(again.code, 0, "grafted again: " + again.stderr);
         std::test::assert(std::str::contains(again.stdout, "kept    the record (memory holds it; not reseeded)") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
 
         // ---- the structure policy, written before init (GH #1091): the

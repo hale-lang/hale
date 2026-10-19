@@ -256,14 +256,14 @@ if ((oidc_local)); then
   key_y=$(pub | tail -c 32 | b64url)
   [[ ${#key_x} == 43 && ${#key_y} == 43 && -n "$spki" ]] || fail 'cannot read the provider key'\''s public half'
   # GH #989: the client's secret is the vault's `oidc-client-dna-local`,
-  # which the organism's bootstrap provisions (`hale dna init`, `upgrade`);
+  # which the organism's bootstrap provisions (`hale habitat graft`, `hale dna upgrade`);
   # the provider and the head each read it there, and nothing here draws,
   # holds or passes it. None in the vault: the provider refuses to start.
   env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
   provider=$!
   for _ in $(seq 1 100); do
     curl -sf "http://127.0.0.1:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
-    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale dna init` or `hale dna upgrade` in a project)'
+    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale habitat graft` or `hale dna upgrade` in a project)'
     sleep 0.1
   done
   # the provider answering is ours: it publishes the key made above

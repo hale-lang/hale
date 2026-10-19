@@ -146,7 +146,7 @@ fn main() {
         // GH #1590: init and upgrade pin the record's identity in hale.toml
         ans = host::record_identity_verb(root);
     } else if verb == "record-seed" {
-        // `hale dna init` seeds the record through the host: its rows, one
+        // `hale habitat graft` seeds the record through the host: its rows, one
         // JSON object per line in a file, and the declared purpose (GH #995)
         ans = host::record_seed_verb(root, host::word(a, 0), host::word(a, 1), memory);
     } else if verb == "show" {
@@ -177,13 +177,13 @@ fn main() {
         // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`
         ans = host::route_verb(root, a);
     } else if verb == "graph-ingest" {
-        // `hale dna init` on a repository: what it holds, as the graph (GH #1090)
+        // `hale habitat graft` on a repository: what it holds, as the graph (GH #1090)
         ans = host::graph_ingest_verb(root, host::word(a, 0), host::flag(a, "--rows"), host::flag(a, "--app"), host::flag(a, "--description"), memory);
     } else if verb == "design-upgrade" {
-        // `hale dna init` / `upgrade`: the toolchain's design as proposals
+        // `hale habitat graft` / `hale dna upgrade`: the toolchain's design as proposals
         ans = host::design_upgrade_verb(root, host::word(a, 0), toolchain, memory);
     } else if verb == "library-seed" {
-        // `hale dna init`: the toolchain's library, each idea bound to its node, as proposals
+        // `hale habitat graft`: the toolchain's library, each idea bound to its node, as proposals
         ans = host::library_seed_verb(root, host::word(a, 0), host::word(a, 1), host::has_flag(a, "--upgrade"), toolchain, memory);
     } else if verb == "body" {
         // GH #617: the body lease from the CLI; the body on a server

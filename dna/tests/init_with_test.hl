@@ -1,4 +1,4 @@
-// dna/tests/init_with_test.hl — onboarding in one verdict: `hale dna init
+// dna/tests/init_with_test.hl — onboarding in one verdict: `hale habitat graft
 // --with <pack>` proposes a pack that fills the holes init itself opens.
 //
 // `init` proposes the holes its graph implies (the Board, each part's dev

@@ -33,7 +33,8 @@ pub(crate) fn usage() {
     eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
-    eprintln!("    hale dna init|new|upgrade     attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
+    eprintln!("    hale habitat up | graft <dir> the local habitat, and an organism grafted from it (vendor/dna, dna/, its record)");
+    eprintln!("    hale dna upgrade [dir]        re-materialize an organism's vendor/dna for this toolchain");
     eprintln!("    hale habitat migrate [dir]    bring an organism's allocations in the local habitat up and migrate them");
     eprintln!("    hale node  <name>             express a fleet plan's instances on this machine, from the record");
     eprintln!("    hale targets                  the targets this compiler can name, and which it can build");

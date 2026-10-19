@@ -772,7 +772,7 @@ pub fn dump_topology_over(
         // GH #528 (schema 1.19): the DECLARED bindings — which topics
         // the main locus routes across a process boundary, on which
         // transport, in which role. A deployment fact of the source
-        // that `hale dna init` seeds the Journal from and a fleet
+        // that `hale habitat graft` seeds the Journal from and a fleet
         // consumer can read without re-parsing. Unhashed (a binding
         // changes where a message goes, not the model's shape).
         {

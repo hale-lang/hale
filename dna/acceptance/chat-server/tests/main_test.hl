@@ -1,4 +1,4 @@
-// The application's own tests: what `hale dna init` must leave passing,
+// The application's own tests: what `hale habitat graft` must leave passing,
 // and what every candidate Mutation is verified against.
 
 import ".." as app;

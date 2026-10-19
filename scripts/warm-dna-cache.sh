@@ -17,9 +17,10 @@ hale=$(realpath -- "${1:?the hale binary}")
 cache=${2:-${XDG_CACHE_HOME:-$HOME/.cache}}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm.XXXXXX")
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-# the root goes with whatever compose ran from under it: `dna new` with no
-# owner's DSN brings the organism's memory up in the local habitat, which
-# is the root's own here (XDG_DATA_HOME under it), never the developer's
+# the root goes with whatever compose ran from under it: a habitat with no
+# owner's servers brings its memory and nerves up as its own allocations,
+# and the local habitat is the root's own here (XDG_DATA_HOME under it),
+# never the developer's
 # (a teardown that did not finish keeps the root, and fails the script)
 trap 'if "$here/compose-down-under.sh" "$tmp"; then rm -rf -- "$tmp"; else exit 1; fi' EXIT
 export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_HABITAT=$tmp/data/hale/habitat/local HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
@@ -42,7 +43,16 @@ verb_bin=$iris_dir/dna/host/verb/verb
 if [[ -s "$host_bin" && ! -s "$host_bin.ir-size" ]] || [[ -s "$verb_bin" && ! -s "$verb_bin.ir-size" ]]; then
     rm -f -- "$host_bin" "$verb_bin"
 fi
-LOTUS_DUMP_IR=1 "$hale" dna new "$tmp/warm" >/dev/null
+# the habitat's birth runs the first host verb (GH #1653): on the owner's
+# servers when they are named, else its own allocations
+if [[ -n "${HALE_DNA_MEMORY_DSN_OWNER:-}" && -n "${HALE_DNA_NATS_URL_OWNER:-}" ]]; then
+    backends=operator; clear_owner=()
+else
+    # a lone owner endpoint is refused beside `own`: clear both
+    backends=own; clear_owner=(env -u HALE_DNA_MEMORY_DSN_OWNER -u HALE_DNA_NATS_URL_OWNER)
+fi
+LOTUS_DUMP_IR=1 "${clear_owner[@]}" "$hale" habitat up --no-body --backends "$backends" >/dev/null
+"${clear_owner[@]}" "$hale" habitat graft "$tmp/warm" --no-pack >/dev/null
 for bin in "$host_bin" "$verb_bin"; do
     if [[ -f "$bin.ll" ]]; then
         echo "lines=$(( $(wc -l < "$bin.ll") )) defines=$(grep -c '^define ' "$bin.ll")" \

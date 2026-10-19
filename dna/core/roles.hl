@@ -83,7 +83,7 @@ locus RecordRoles {
     // record moves.
     // The mapping, and the trust the record declares: a record that
     // declares `dna.trust = local` — one person holding every authority,
-    // as `hale dna new` declares for the record it makes — is that
+    // as `hale habitat graft` declares for the record it makes — is that
     // person's: whoever a peer maps to holds every position, the board
     // included, so a fresh record is its maker's to work as soon as the
     // socket knows them. A record that declares nothing, or any other
@@ -366,7 +366,7 @@ fn graph_member(body: String, role: String) -> String {
     return "";
 }
 
-// The graph rows a hole proposal carries (`hale dna init`: a
+// The graph rows a hole proposal carries (`hale habitat graft`: a
 // `knowledge.proposed` of kind `graph` whose stored document holds
 // `rows`), one `{"kind", "entity", "body"}` object per line: what the
 // record gains when the Board ratifies it. Read by `hale dna fill` and

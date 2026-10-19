@@ -148,7 +148,7 @@ locus HeadFixture {
         std::io::fs::write_file(self.project + "/.gitignore", ".hale/\n") or discard;
         std::io::fs::write_file(self.project + "/README.md", "# head fixture\n") or discard;
         // the record is born in memory (GH #1590), and the project keeps
-        // its head's DSN, as `hale dna init` leaves a clone
+        // its head's DSN, as `hale habitat graft` leaves a clone
         std::test::assert_eq_str(dna::memory_fixture(self.project), "", "the record is born in memory");
         self.journal = dna::RecordJournal { repo: self.project };
         let refreshed = self.journal.refresh();

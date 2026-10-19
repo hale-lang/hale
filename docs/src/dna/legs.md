@@ -91,10 +91,9 @@ verb's id. Every verb takes `--api`.
 `/` is allowed (`position:api/dev`). It must be a position your person
 holds: by the record's `holds` edges (a holder `hale dna fill` proposed
 holds once the Board ratifies it), or any position under a record that
-declares `dna.trust = local`, as `hale dna new` and `hale dna init`
-declare. Who you are comes from the socket: your uid, mapped to a
+declares `dna.trust = local`, as a graft declares. Who you are comes from the socket: your uid, mapped to a
 person by `git config --local --add dna.unix.member "uid:<n>=<person>"`,
-which `new` and `init` write for whoever runs them.
+which a graft writes for whoever runs it.
 
 A claim matches attempts by performer kind, and `--kind` names it. The
 kinds the organization hands to legs are `agent`, `software` and the
@@ -119,7 +118,7 @@ only with `--once` or `--drain`.
 
 ## Performers and their effect classes
 
-`dna/org/work.hl` names one performer of each kind. `init` writes it
+`dna/org/work.hl` names one performer of each kind. The graft writes it
 beside the catalog; on a machine with `claude` on `PATH` its model and
 its catalog read:
 
@@ -285,7 +284,7 @@ its author ([Reviews](./head.md#reviews)).
 
 The organization calls models through a router over backends that
 share one interface, `ModelBackend`. Which model each position calls
-is a catalog in source, `dna/org/models.hl`, written by `init` for
+is a catalog in source, `dna/org/models.hl`, written by the graft for
 what the machine had, and yours to edit. A backend is a constructor
 function; a position's router is composed from them:
 
@@ -314,7 +313,7 @@ editor's; `agent_models()` is the model leg's. The catalog's
 | `dna::FakeModel` | scripted answers | no key; for rehearsal and fixtures |
 
 A hosted backend's call carries the `external_model` effect class, so
-the law can keep customer data away from it. `init` writes
+the law can keep customer data away from it. The graft writes
 `claude-opus-5` and `claude-haiku-4-5-20251001` over
 `AnthropicMessages` when the vault holds an Anthropic key, else
 `gpt-4o` and `gpt-4o-mini` over `OpenAiChat`, naming `OPENAI_API_KEY`
@@ -334,7 +333,7 @@ hale dna secret set OPENAI_API_KEY
 `FORGE_TOKEN`, or `OIDC_CLIENT_SECRET`). **No environment variable is
 read**, first or otherwise: the credential reads its vault slot and
 nothing else, fresh on every call, in the one statement that sends the
-request, and never returns the bytes. `init`'s discovery reads the
+request, and never returns the bytes. The graft's discovery reads the
 same slots. A backend whose slot is empty is not permitted, and the
 router refuses before the wire. The vault is the one where the call is
 made: the local directory (`HALE_VAULT_DIR`, else

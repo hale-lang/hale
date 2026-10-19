@@ -1,6 +1,6 @@
 // The identity of the embedded DNA source set (GH #726).
 //
-// `hale dna new` / `init` / `upgrade` materialize `vendor/dna` from
+// `hale habitat graft` and `hale dna upgrade` materialize `vendor/dna` from
 // the source EMBEDDED in this binary, so an organism a fixture
 // starts runs the core the binary carries, not the one in the
 // working tree — and two binaries with the same `hale --version`

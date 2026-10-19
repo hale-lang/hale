@@ -34,7 +34,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     (
         "crates/hale-cli/src/dna.rs",
         "push_graph_lines",
-        "`hale dna init` prints its report as label-aligned lines (`graph   …`, \
+        "`hale habitat graft` prints its report as label-aligned lines (`graph   …`, \
          `note    …`), the same column as the init report's other lines",
     ),
     (

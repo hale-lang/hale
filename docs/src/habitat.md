@@ -31,10 +31,10 @@ The habitat is itself a DNA organism, one the compiler ships, as it ships the fo
   - `local`: compose on one machine;
   - `hosted`: a Postgres, NATS, Vault and identity provider the platform already runs.
 
-**Every other organism is grafted, never born free-standing.** A new organism is the habitat's child, under a ceiling the habitat grants and a Board it seats.
+**Every other organism is grafted, never born without a parent.** A new organism is the habitat's child, under a ceiling the habitat grants and a Board it seats.
 - The child's record, its memory schema, its nerves account and its vault role are the habitat's provisioning acts.
 - The `scope` on `application.attached` (GH #1445) and the per-client roles are the habitat's to decide, never the organism's to assert.
-- `hale dna new` becomes the graft verb, or is retired. Today's `hale dna new` births a free-standing organism, and that is what the tree does now, not the model.
+- `hale habitat graft` is the one way an organism other than the habitat is born.
 
 **The habitat deploys what it keeps alive** (GH #1477 is its hands).
 - A habitat-scoped heart's body is deployed by the habitat: placement is elaborated into manifests or compose, and applied with credentials the habitat holds.
@@ -168,9 +168,9 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | a record per repository, never rewound | yes: [Memory and the record](./dna/memory.md) |
 | deliberate publication between records | connections and handoffs of single facts with origin, lineage and purpose (`hale dna connect`, `hale dna handoff`): [Memory and the record](./dna/memory.md) |
 | protected evidence outside the replicated record | receipts filed as `customer` or `confidential` are kept in memory alone, and every read is a row (`hale dna receipt`): [Memory and the record](./dna/memory.md) |
-| deployment profiles | `hale dna new --profile local \| remote-body`, `hale dna profile`: a free-standing birth, which graft replaces: [Getting started](./dna/getting-started.md) |
-| the habitat organism: its genome, `hale habitat up` (`local`, `hosted`), its bootstrap | **not built** |
-| graft: every organism a child of the habitat, provisioned by it | **not built**; `hale dna new` births a free-standing organism |
+| deployment profiles | `hale habitat graft --profile local \| remote-body`, `hale dna profile`: the graft takes the profile, and it is the one way an organism other than the habitat is born: [Getting started](./dna/getting-started.md) |
+| the habitat organism: its genome, `hale habitat up` (`local`, `hosted`), its bootstrap | **built** for `local` (below); `hosted` is not built |
+| graft: every organism a child of the habitat, provisioned by it | **built**: `hale habitat graft` is the one way an organism other than the habitat is born |
 | a verified principal source | an OIDC-signed head (`git config dna.principal oidc`): [The head and the face](./dna/head.md), [The skin](./dna/skin.md) |
 | roles per client on each backend | memory's roles, one broker account per role and per attached application, and vault slots: [The skin](./dna/skin.md) |
 | money reserved against grants | spend reserved, settled and compensated under a grant's windows: [The spine](./dna/spine.md) |
@@ -179,8 +179,8 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | opening and filling a position | `hale dna position open` (its node and its mandate, one Board Review) and `hale dna fill`, each ratified by the Board: [Positions and `fill`](./dna/shaping.md) |
 | several changes as one Review, and the operations of one organism | **built**: `hale dna apply <file>` (open, fill, vacate, practice, assign, close, merge, split, expose, depend, externalize, internalize) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
 | adopting and retiring a pack | **built**: `hale dna pack apply` from the toolchain's nursery, a directory or a git repository at a revision, recorded with its digest and source; `hale dna pack retire` undoes the latest ratified adoption; a git nursery is trusted by the Board first (`hale dna nursery add`) |
-| graft | **built**, local profile: `hale habitat graft <dir> [--attach]` births an organism as the habitat's child, its genesis naming its parent, the roles its genome needs (`[dna] needs`) allocated and recorded in the habitat's record, and the `standard` pack proposed to its Board; `hale dna new` and `init` still birth one with no parent until graft replaces them |
+| graft | **built**, local profile: `hale habitat graft <name>` makes a new application, and `hale habitat graft <dir> --attach` takes an existing one, each as the habitat's child, its genesis naming its parent, the roles its genome needs (`[dna] needs`) allocated and recorded in the habitat's record, and the `standard` pack proposed to its Board; it is the one way an organism other than the habitat is born |
 | the habitat's operations: extract, absorb, re-parent | **not built**; they span several records and come with saplings |
-| the habitat, born and run | **built**, local profile: `hale habitat up` births the habitat from the genome the toolchain ships (no parent; its positions and law proposed to its Board) and runs its body as a systemd user unit or `--foreground`; `status` reads its allocations, rows of its record by organism and role with their schema versions; `down` stops it and keeps its data. The hosted profile and graft are not built |
-| standard equipment | **not built**; the standard-practices pack is in the nursery (`hale dna pack apply standard`, GH #1591), its first clause that logs are structured, adopted by hand until graft adopts it at birth |
+| the habitat, born and run | **built**, local profile: `hale habitat up` births the habitat from the genome the toolchain ships (no parent; its positions and law proposed to its Board) and runs its body as a systemd user unit or `--foreground`; `status` reads its allocations, rows of its record by organism and role with their schema versions; `down` stops it and keeps its data. The hosted profile is not built |
+| standard equipment | **not built**; the standard-practices pack is in the nursery (`hale dna pack apply standard`, GH #1591), its first clause that logs are structured, proposed to a grafted organism's Board at birth |
 | finance capture and books | **not built** |

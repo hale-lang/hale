@@ -102,8 +102,8 @@ fn owners_of_keys(keys: String) -> String {
 }
 
 // GH #989: a role's password lives in the vault under
-// `postgres-<role>`. The organism's bootstrap provisions it (`hale dna
-// init` / `upgrade`, dna/host/secrets.hl, through
+// `postgres-<role>`. The organism's bootstrap provisions it (`hale habitat
+// graft` / `hale dna upgrade`, dna/host/secrets.hl, through
 // `provision_record_roles`); an owner's head role is provisioned where the
 // owner is declared (`migrate_for`'s owners). Everything else only
 // consumes it: `role_password` is "" when the vault holds none, and
