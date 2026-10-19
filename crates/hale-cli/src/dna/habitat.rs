@@ -22,6 +22,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library]
+       hale habitat handover [organism]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -66,6 +67,15 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      already. A graft that stopped part way goes on
                      where it stopped when run again; a record born of
                      anything but this habitat is refused.
+handover [organism]  what the habitat hands the organism's heart, one
+                     NAME=value a line, a secret only by its vault slot's
+                     name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
+                     HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and
+                     HALE_DNA_OIDC_CLIENT_VAULT, and for each heart role
+                     its genome declares, HALE_DNA_DATABASE_DSN or
+                     HALE_DNA_BROKER_URL, _USER, _VAULT, _SUBJECTS,
+                     _NODE_USER and _NODE_VAULT. `hale dna dev` hands the
+                     heart the same.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this
@@ -111,6 +121,21 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("migrate") => migrate(args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))),
         Some("up") => up(&args[1..]),
         Some("graft") => graft(&args[1..]),
+        Some("handover") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match project(&dir).and_then(|(root, _)| handover(&root, true)) {
+                Ok(lines) => {
+                    for (k, v) in lines {
+                        println!("{k}={v}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("hale habitat handover: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -173,9 +198,12 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
         Ok(NervesPlan::NoServer(why)) => return Err(format!("nerves: {why}")),
         Err(e) => return Err(format!("nerves: {e}")),
     }
-    // the heart's database, when the genome declares it
+    // the heart's roles, when the genome declares them
     if needs_at(root).iter().any(|r| r == "database") {
         out.push(provision_database(root, if own_servers() { "operator" } else { "own" })?);
+    }
+    if needs_at(root).iter().any(|r| r == "broker") {
+        out.push(provision_broker(root)?);
     }
     // the senses' store is the habitat's when memory and the nerves are:
     // an environment that names servers of its own names its own store.
@@ -1106,10 +1134,11 @@ const ALWAYS: [&str; 2] = ["memory", "nerves"];
 /// foreign heart's infrastructure is its own, and none of it is the
 /// habitat's to touch), only when a Hale heart's genome declares one. The
 /// local profile provisions `database` (a tenant database of the
-/// organism's memory server); the rest are refused until a heart needs
-/// them.
+/// organism's memory server) and `broker` (a user of its nerves server
+/// with a subject space and an inbox of its own); the rest are refused
+/// until a heart needs them.
 const HEART_ROLES: [&str; 4] = ["database", "broker", "cache", "object-store"];
-const PROVISIONED_HEART_ROLES: [&str; 1] = ["database"];
+const PROVISIONED_HEART_ROLES: [&str; 2] = ["database", "broker"];
 
 /// GH #1653: the roles the genome at `dir` needs from the habitat, as its
 /// manifest declares them (`[dna] needs = ["memory", "nerves", …]`): the
@@ -1258,6 +1287,16 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     if needs.iter().any(|r| r == "database") {
         out.push(provision_database(&root, &backends)?);
     }
+    if needs.iter().any(|r| r == "broker") {
+        if backends == "operator" {
+            return Err("the `broker` heart role is a user of the organism's own nerves server, which the habitat configures; a habitat on the operator's backends does not configure the operator's NATS".to_string());
+        }
+        out.push(provision_broker(&root)?);
+    }
+    // the attach handover: the service client the heart signs in as,
+    // mapped in the child's record and its secret drawn, so nothing of it
+    // is written by hand
+    out.extend(map_service_client(&root)?);
     // the graft is complete when the habitat's record holds its row: one
     // row, however many times the graft goes on
     if rows_of(&genome).iter().any(|r| r["kind"] == "habitat.grafted" && r["entity"] == &child[..12]) {
@@ -1353,6 +1392,75 @@ pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, 
     Ok(format!("database a tenant database of the organism's memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
 }
 
+/// GH #1653: the `broker` heart role, recorded as the organism's
+/// allocation and then provisioned from that row: its two users, their
+/// subject space and their passwords, written into its nerves server's
+/// configuration with its other secrets.
+fn provision_broker(root: &Path) -> Result<String, String> {
+    // the names the broker is handed by, before its row is written: the
+    // role is named, as the habitat has not recorded it yet
+    let named = handover_with(root, true, "broker")?;
+    let name = |k: &str| named.iter().find_map(|(n, v)| (n == k).then(|| v.clone())).unwrap_or_default();
+    let vault = name("HALE_DNA_BROKER_VAULT");
+    let node_vault = name("HALE_DNA_BROKER_NODE_VAULT");
+    if vault.is_empty() || node_vault.is_empty() {
+        return Err("the broker's vault slots are not named by the handover".to_string());
+    }
+    // the habitat's decision is its row: every reader of the organism's
+    // heart roles (its secrets, its nerves server's users, its handover)
+    // reads the row, never the manifest again
+    record_allocation(root, "broker", 0, &format!("{vault} {node_vault}"), false)?;
+    // its two users and their passwords, drawn with the organism's other
+    // secrets now the allocation names the role; the server rereads them
+    let drawn = host_run("secrets-provision", root, &[])?;
+    if let Some(why) = drawn.trim().strip_prefix("none: ") {
+        return Err(format!("the broker's users were not provisioned: {why}"));
+    }
+    let lines = handover(root, false)?;
+    let get = |k: &str| lines.iter().find_map(|(n, v)| (n == k).then(|| v.clone())).unwrap_or_default();
+    Ok(format!("{:<8}{} and its nodes' {} on the organism's nerves server, confined to {} (HALE_DNA_BROKER_*, their passwords in the vault slots {vault} and {node_vault})", "broker", get("HALE_DNA_BROKER_USER"), get("HALE_DNA_BROKER_NODE_USER"), get("HALE_DNA_BROKER_SUBJECTS")))
+}
+
+/// The handover the habitat gives the heart of the organism at `root`,
+/// `(name, value)`; `derive` provisions nothing.
+pub(super) fn handover(root: &Path, derive: bool) -> Result<Vec<(String, String)>, String> {
+    handover_with(root, derive, "")
+}
+
+/// [`handover`], with heart roles named beside the ones the habitat
+/// allocated (`with`, words): a graft names the role it is provisioning
+/// before the role's row is written.
+fn handover_with(root: &Path, derive: bool, with: &str) -> Result<Vec<(String, String)>, String> {
+    let mut args: Vec<String> = if derive { vec!["--derive".to_string()] } else { Vec::new() };
+    if !with.is_empty() {
+        args.push("--with".to_string());
+        args.push(with.to_string());
+    }
+    let o = host_run("heart-handover", root, &args)?;
+    if let Some(why) = o.trim().strip_prefix("none: ") {
+        return Err(why.to_string());
+    }
+    Ok(o.lines().filter(|l| l.starts_with("HALE_DNA_")).filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect())
+}
+
+/// The heart's service client mapped in the child's record (`git config
+/// --local --add dna.oidc.service <client>=<client>`, once) and its secret
+/// drawn into the vault slot the handover names.
+fn map_service_client(root: &Path) -> Result<Vec<String>, String> {
+    let lines = handover(root, true).unwrap_or_default();
+    let Some(client) = lines.iter().find_map(|(k, v)| (k == "HALE_DNA_OIDC_CLIENT").then(|| v.clone())) else { return Ok(Vec::new()) };
+    let mapping = format!("{client}={client}");
+    let have = Command::new("git").arg("-C").arg(root).args(["config", "--local", "--get-all", "dna.oidc.service"]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim() == mapping)).unwrap_or(false);
+    if !have {
+        let ok = Command::new("git").arg("-C").arg(root).args(["config", "--local", "--add", "dna.oidc.service", &mapping]).status().is_ok_and(|s| s.success());
+        if !ok {
+            return Err(format!("could not map the service client `{client}` in {}", root.display()));
+        }
+    }
+    let drawn = super::organism_secrets(root, false);
+    Ok(vec![format!("{:<8}the heart's service client `{client}` (dna.oidc.service {mapping}; its secret the vault slot oidc-service-{client})", "oidc"), drawn].into_iter().filter(|l| !l.is_empty()).collect())
+}
+
 /// The roles the organism at `root` needs, as its manifest declares them.
 pub(super) fn needs_at(root: &Path) -> Vec<String> {
     needs_of(std::fs::read_to_string(root.join("hale.toml")).ok().as_deref()).unwrap_or_else(|_| ROLES.iter().map(|r| r.to_string()).collect())
@@ -1379,7 +1487,8 @@ mod tests {
             assert!(got.iter().all(|r| !HEART_ROLES.contains(&r.as_str())), "and no heart role: {got:?}");
         }
         assert_eq!(needs_of(Some("[dna]\nneeds = [\"database\", \"memory\", \"nerves\"]\n")).unwrap(), ["memory", "nerves", "database"], "a Hale heart declares the database it needs");
-        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"broker\"]\n")).unwrap_err().contains("the heart role `broker`, which this habitat does not provision yet"), "the other heart roles are refused by name");
+        assert_eq!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"broker\"]\n")).unwrap(), ["memory", "nerves", "broker"], "and the broker it needs");
+        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"cache\"]\n")).unwrap_err().contains("the heart role `cache`, which this habitat does not provision yet"), "the other heart roles are refused by name");
         assert_eq!(needs_of(Some("[dna]\nneeds = [\"nerves\", \"memory\"]\n")).unwrap(), ["memory", "nerves"], "senses left out");
         assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"redis\"]\n")).unwrap_err().contains("`redis`, which the habitat does not provision"));
         assert!(needs_of(Some("[dna]\nneeds = [\"memory\"]\n")).unwrap_err().contains("leaves out `nerves`"));

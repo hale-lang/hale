@@ -253,6 +253,21 @@ locus GovernanceCommands {
         if dna::count_lines(ids) != revision || dna::count_lines(text) != revision || dna::line_at(ids, 0) != identity || dna::line_at(ids, revision - 1) != head { return GovernanceSnapshot { code: "command_history_invalid" }; }
         return GovernanceSnapshot { ok: true, application_id: identity, head: head, revision: revision, ids: ids, text: text };
     }
+    // One consistent snapshot for a reader outside a command (a CLI's
+    // predecessor or policy read): a Record that moved during the read is
+    // read again from the start, as `execute` reads it, at most
+    // `limits.attempts` times; a concurrent write never fails the read,
+    // and a Record that keeps moving past the attempts says so.
+    fn capture_settled() -> GovernanceSnapshot {
+        let mut attempt = 0;
+        let mut s = GovernanceSnapshot { code: "snapshot_changed" };
+        while attempt < self.limits.attempts && attempt < 8 {
+            attempt = attempt + 1;
+            s = self.capture();
+            if s.ok || s.code != "snapshot_changed" { return s; }
+        }
+        return s;
+    }
     fn grant_valid(grant: GovernanceGrant) -> Bool {
         let codec = GovernanceCommandCodec { };
         return grant.allowed && codec.bounded(grant.authority, 256, true, false) && codec.bounded(grant.basis, 2048, true, false);

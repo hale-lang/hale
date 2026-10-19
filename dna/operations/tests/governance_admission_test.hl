@@ -32,6 +32,28 @@ locus FaultRecord {
         return result;
     }
 }
+// A Record another writer moves while a snapshot of it is read: each of
+// its first `moves` reads of the rows' text lands a row underneath.
+locus MovingRecord {
+    params { inner: dna::MemoryRecord = dna::MemoryRecord { }; moves: Int = 0; moved: Int = 0; }
+    fn location() -> String { return self.inner.location(); }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String {
+        let text = self.inner.text_at(id);
+        if self.moved < self.moves {
+            self.moved = self.moved + 1;
+            let at = self.inner.head("journal");
+            let landed = self.inner.append("journal", at.id, dna::Row { kind: "work.noted", entity: "w" + to_string(self.moved), body: "{}", author: "fixture" }, false, "");
+            std::test::assert(landed.ok, "the concurrent write lands");
+        }
+        return text;
+    }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended { return self.inner.append(chain, at, row, sign, note); }
+}
 fn append(j: dna::Journal, kind: String, entity: String, body: String) {
     let result = j.append(j.revision(), kind, entity, body);
     std::test::assert(result.ok, "fixture " + kind);
@@ -160,6 +182,22 @@ fn test_payload_bound(repo: String, byte: Int) {
     let found = service.lookup(context, command.request_id);
     std::test::assert(found.ok && found.receipt.fingerprint == result.receipt.fingerprint, "maximum payload recovers exactly");
 }
+// A snapshot read outside a command (a CLI's predecessor read) is read
+// again from the start when the Record moved underneath it: a concurrent
+// write never fails it, and a Record that moves past every attempt says so.
+fn test_settled_capture(repo: String) {
+    let digest = subject(repo, true);
+    let moving = MovingRecord { inner: dna::MemoryRecord { repo: repo }, moves: 2 };
+    let reader = ops::GovernanceCommands { record: moving, authority: Authority { } };
+    let first = reader.capture();
+    std::test::assert(!first.ok && first.code == "snapshot_changed", "one read across a write is refused: " + first.code);
+    let settled = reader.capture_settled();
+    std::test::assert(settled.ok && settled.head == dna::MemoryRecord { repo: repo }.head("journal").id, "the settled read is one consistent snapshot, of the Record as it now stands: " + settled.code);
+    let restless = MovingRecord { inner: dna::MemoryRecord { repo: repo }, moves: 100 };
+    let never = ops::GovernanceCommands { record: restless, authority: Authority { } }.capture_settled();
+    std::test::assert(!never.ok && never.code == "snapshot_changed", "a Record that keeps moving is named, after the bounded attempts: " + never.code);
+    std::test::assert(len(digest) > 0, "the subject exists");
+}
 fn main() {
     let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-governance-admission") };
     std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
@@ -169,4 +207,5 @@ fn main() {
     std::io::fs::mkdir(base + "/head") or discard; test_exact_head(base + "/head");
     std::io::fs::mkdir(base + "/maximum") or discard; test_payload_bound(base + "/maximum", 120);
     std::io::fs::mkdir(base + "/escaped-maximum") or discard; test_payload_bound(base + "/escaped-maximum", 1);
+    std::io::fs::mkdir(base + "/settled") or discard; test_settled_capture(base + "/settled");
 }

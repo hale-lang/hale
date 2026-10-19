@@ -15,6 +15,7 @@
 
 import "../core" as dna;
 import "../core/pond/db" as db;
+import "../core/pond/realtime/nats" as nats;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -72,6 +73,28 @@ fn rows_of(genome: String, kind: String) -> String {
         if std::json::find_string_field(line, "kind") == kind { out = out + line + "\n"; }
     }
     return out;
+}
+
+// Whether `s` is exactly 32 lowercase hex digits.
+@bounded_by(s)
+fn hex32(s: String) -> Bool {
+    if len(s) != 32 { return false; }
+    let mut i = 0;
+    while i < 32 {
+        let c = s[i..(i + 1)];
+        if !((c >= "0" && c <= "9") || (c >= "a" && c <= "f")) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of("\n" + text, "\n" + name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
 }
 
 // Whether the habitat's Ledger holds the body lease `token` given back.
@@ -150,9 +173,12 @@ fn main() {
     // of its memory server, its DSN naming its vault slot, working
     std::io::fs::mkdir(scratch + "/keeper") or discard;
     std::io::fs::write_file(scratch + "/keeper/README.md", "# keeper\n\nA repository whose heart keeps a store.\n") or discard;
-    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n") or discard;
+    // its needs over several lines, with comments and a trailing comma:
+    // the habitat reads the manifest once, at graft, and every reader
+    // after it reads the rows it recorded
+    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\n# what the heart needs from the habitat\nneeds = [\n    \"memory\",\n    \"nerves\",   # the organization's\n    \"database\",\n    \"broker\",\n]\n") or discard;
     let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--attach\n--no-library");
-    std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
+    std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database, broker)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
     let kkey = dna::allocation_key(scratch + "/keeper");
     std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + kkey + "/database\""), "and recorded as its allocation");
     let hp = dna::trim_nl(dna::run_tool(dna::allocation_compose(scratch + "/keeper") + "\nport\nmemory-" + kkey + "\n5432").stdout);
@@ -163,6 +189,75 @@ fn main() {
     let read = if opened.ok { c.query_one("SELECT n FROM kept") } else { db::Row { } };
     if opened.ok { c.close(); }
     std::test::assert(opened.ok && wrote.ok && read.ok && std::str::contains(read.data, "7"), "the DSN reaches the heart's own database through its slot: " + opened.err.detail + wrote.err.detail + read.err.detail);
+    // the attach handover, and the broker: a user with its own subjects and
+    // its own inbox, which reads no other user's reply
+    let handed = in_dir(scratch + "/keeper", toolchain() + "\nhabitat\nhandover\n.").stdout;
+    std::test::assert(line_value(handed, "HALE_DNA_APPLICATION_ID") == dna::record_scope(scratch + "/keeper") && line_value(handed, "HALE_DNA_OIDC_CLIENT") == "keeper" && line_value(handed, "HALE_DNA_OIDC_CLIENT_VAULT") == "oidc-service-keeper" && len(line_value(handed, "HALE_DNA_HEAD_URL")) > 0 && len(line_value(handed, "HALE_DNA_OIDC_ISSUER")) > 0 && std::str::starts_with(line_value(handed, "HALE_DNA_DATABASE_DSN"), "postgres://heart_"), "the handover names the head, the application, the issuer, its client and its roles: " + handed);
+    std::test::assert(std::str::contains(in_dir(scratch + "/keeper", "git\nconfig\n--local\n--get-all\ndna.oidc.service").stdout, "keeper=keeper") && std::secret::Credential { vault: "oidc-service-keeper" }.ready(), "its service client mapped at graft, its secret drawn");
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + kkey + "/broker\""), "the broker is recorded as its allocation");
+    let subjects = line_value(handed, "HALE_DNA_BROKER_SUBJECTS");
+    let base = std::str::replace(subjects, ".>", "");
+    let inbox = base + "._INBOX";
+    let url = line_value(handed, "HALE_DNA_BROKER_URL");
+    let heart = nats::NatsClient { url: url, user: line_value(handed, "HALE_DNA_BROKER_USER"), credential: std::secret::Credential { vault: line_value(handed, "HALE_DNA_BROKER_VAULT") }, inbox_prefix: inbox, name: "heart", timeout: 2s };
+    let node = nats::NatsClient { url: url, user: line_value(handed, "HALE_DNA_BROKER_NODE_USER"), credential: std::secret::Credential { vault: line_value(handed, "HALE_DNA_BROKER_NODE_VAULT") }, name: "heart-node", timeout: 2s };
+    std::test::assert(heart.open() && node.open(), "the heart and its node connect as their broker users: " + heart.last_error + node.last_error);
+    // their passwords are 32 lowercase hex digits: safe in JSON and in a URL
+    std::test::assert(hex32(text_of(std::secret::vault_local_dir() + "/" + line_value(handed, "HALE_DNA_BROKER_VAULT"))) && hex32(text_of(std::secret::vault_local_dir() + "/" + line_value(handed, "HALE_DNA_BROKER_NODE_VAULT"))), "the broker passwords are hex");
+    // the heart asks its node over its own subjects; the reply comes back
+    // under the heart's own inbox, which the node may publish on
+    let nsid = node.sub_to(base + ".node.n1.serve", "") or - 1;
+    node.flush() or discard;
+    let reply = inbox + ".r1";
+    let hsid = heart.sub_to(reply, "") or - 1;
+    heart.flush() or discard;
+    heart.pub_msg(base + ".node.n1.serve", reply, std::bytes::from_string("ping")) or discard;
+    heart.flush() or discard;
+    let asked = node.read_msg(3s);
+    if asked { node.pub_msg(node.last.reply, "", std::bytes::from_string("pong")) or discard; node.flush() or discard; }
+    let answered = heart.read_msg(3s) && std::str::from_bytes(heart.last.data) == "pong";
+    std::test::assert(nsid > 0 && hsid > 0 && asked && answered, "request and reply between the heart and its node: " + heart.last_error + node.last_error);
+    // neither reaches `_INBOX`: another user's reply is never the heart's
+    let org = dna::schema_for(dna::record_scope(scratch + "/keeper"));
+    let owner = nats::NatsClient { url: url, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "someone", timeout: 2s };
+    let spy = heart.sub_to("_INBOX.>", "") or - 1;
+    heart.flush() or discard;
+    std::test::assert(owner.open(), "another user connects: " + owner.last_error);
+    owner.pub_msg("_INBOX.someone.r1", "", std::bytes::from_string("secret reply")) or discard;
+    owner.flush() or discard;
+    let leaked = heart.read_msg(2s) && heart.last.subject == "_INBOX.someone.r1";
+    std::test::assert(!leaked && std::str::contains(heart.last_error, "Permissions Violation"), "the heart cannot read another user's reply (" + to_string(spy) + "): " + heart.last_error);
+    // the node is narrower: the heart's own subjects outside `node.>` are
+    // not its to read
+    let wide = node.sub_to(base + ".>", "") or - 1;
+    node.flush() or discard;
+    owner.pub_msg(base + ".private", "", std::bytes::from_string("not the node's")) or discard;
+    owner.flush() or discard;
+    let read_wide = node.read_msg(2s) && node.last.subject == base + ".private";
+    std::test::assert(!read_wide && std::str::contains(node.last_error, "Permissions Violation"), "the node reads only its own work (" + to_string(wide) + "): " + node.last_error);
+    owner.close();
+    heart.close();
+    node.close();
+    // the same needs on one line, and over several lines with no
+    // comment: each heart is handed exactly the roles its graft provisioned
+    std::io::fs::mkdir(scratch + "/sender") or discard;
+    std::io::fs::write_file(scratch + "/sender/README.md", "# sender\n\nA repository whose heart talks over a broker.\n") or discard;
+    std::io::fs::write_file(scratch + "/sender/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"broker\"]\n") or discard;
+    std::io::fs::mkdir(scratch + "/storer") or discard;
+    std::io::fs::write_file(scratch + "/storer/README.md", "# storer\n\nA repository whose heart keeps a store.\n") or discard;
+    std::io::fs::write_file(scratch + "/storer/hale.toml", "[dna]\nneeds = [\n  \"memory\",\n  \"nerves\",\n  \"database\"\n]\n") or discard;
+    let sent = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsender\n--attach\n--no-library");
+    let stored = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nstorer\n--attach\n--no-library");
+    std::test::assert(sent.code == 0 && std::str::contains(sent.stdout, "needs memory, nerves, broker)") && stored.code == 0 && std::str::contains(stored.stdout, "needs memory, nerves, database)"), "both grafted with the roles they declare: " + sent.stdout + sent.stderr + stored.stdout + stored.stderr);
+    let skey = dna::allocation_key(scratch + "/sender");
+    let tkey2 = dna::allocation_key(scratch + "/storer");
+    let to_sender = in_dir(scratch + "/sender", toolchain() + "\nhabitat\nhandover\n.").stdout;
+    let to_storer = in_dir(scratch + "/storer", toolchain() + "\nhabitat\nhandover\n.").stdout;
+    std::test::assert(len(line_value(to_sender, "HALE_DNA_BROKER_USER")) > 0 && len(line_value(to_sender, "HALE_DNA_DATABASE_DSN")) == 0, "the sender is handed its broker and no database: " + to_sender);
+    std::test::assert(len(line_value(to_storer, "HALE_DNA_DATABASE_DSN")) > 0 && len(line_value(to_storer, "HALE_DNA_BROKER_USER")) == 0, "the storer is handed its database and no broker: " + to_storer);
+    std::test::assert(len(line_value(handed, "HALE_DNA_DATABASE_DSN")) > 0 && len(line_value(handed, "HALE_DNA_BROKER_USER")) > 0, "and the keeper, its needs over several lines, both: " + handed);
+    let allocated = rows_of(genome, "habitat.allocated");
+    std::test::assert(std::str::contains(allocated, "\"entity\": \"" + skey + "/broker\"") && !std::str::contains(allocated, "\"entity\": \"" + skey + "/database\"") && std::str::contains(allocated, "\"entity\": \"" + tkey2 + "/database\"") && !std::str::contains(allocated, "\"entity\": \"" + tkey2 + "/broker\""), "each handover is the rows the graft recorded: " + allocated);
     let undeclared = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(!std::str::contains(undeclared, "database-" + tkey) && !std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + tkey + "/database\""), "an undeclared genome gets no database: " + undeclared);
     // a whole graft grafted again goes on where it stopped, which is its

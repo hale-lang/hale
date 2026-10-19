@@ -43,6 +43,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 ```text
 usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library]
+       hale habitat handover [organism]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -87,6 +88,15 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      already. A graft that stopped part way goes on
                      where it stopped when run again; a record born of
                      anything but this habitat is refused.
+handover [organism]  what the habitat hands the organism's heart, one
+                     NAME=value a line, a secret only by its vault slot's
+                     name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
+                     HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and
+                     HALE_DNA_OIDC_CLIENT_VAULT, and for each heart role
+                     its genome declares, HALE_DNA_DATABASE_DSN or
+                     HALE_DNA_BROKER_URL, _USER, _VAULT, _SUBJECTS,
+                     _NODE_USER and _NODE_VAULT. `hale dna dev` hands the
+                     heart the same.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this

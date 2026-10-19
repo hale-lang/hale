@@ -191,7 +191,7 @@ locus NatsConn {
         // what this program publishes reaches its own subscribers on
         // the bus already; the server must not send it back
         self.client.echo = false;
-        self.inbox = new_inbox();
+        self.inbox = new_inbox("_INBOX");
     }
 
     // Runs on this locus's thread, between reads (run() yields for it).

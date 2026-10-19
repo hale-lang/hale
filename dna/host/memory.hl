@@ -91,3 +91,53 @@ fn database_provision_verb(root: String, derive: Bool) -> Answer {
     if !derive { out = out + "allocation.schema_version=0\nallocation.vault_slots=" + h.slot + "\n"; }
     return answer(out);
 }
+
+// GH #1653: `heart-handover` — what the habitat hands a habitat-scoped
+// heart, one `NAME=value` a line, a secret only ever by its vault slot's
+// name: the head's URL (`git config dna.head.url`, the local head's by
+// default), the application's identity (the record's), the OIDC issuer
+// (`dna.oidc.issuer`, the local stub's by default) and the service client
+// the heart signs in as (the application's name, its secret the slot
+// `oidc-service-<name>`), and, for each heart role its genome declares,
+// that role's: `HALE_DNA_DATABASE_DSN`, and `HALE_DNA_BROKER_URL`,
+// `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER` and `_NODE_VAULT`. `derive` provisions
+// nothing (what `dev` and `hale habitat handover` ask); without it the
+// heart roles are provisioned, at graft.
+// `with`: heart roles named beside the ones the habitat allocated (a
+// graft names the role it is provisioning before its row is written),
+// one word each.
+fn heart_handover_verb(root: String, derive: Bool, with: String) -> Answer {
+    let id = record_identity(root);
+    if len(id) == 0 { return fail("heart handover: the record has no identity yet"); }
+    let rec = dna::MemoryRecord { repo: root };
+    let head = dna::trim_nl(rec.git("config\n--get\ndna.head.url").stdout);
+    let issuer = dna::trim_nl(rec.git("config\n--get\ndna.oidc.issuer").stdout);
+    let attached = attached_application(root);
+    let client = if len(attached) > 0 { dna::nerves_app_name(attached) } else { dna::nerves_app_name(root[(dna::last_slash(root) + 1)..len(root)]) };
+    let mut out = "HALE_DNA_APPLICATION_ID=" + id + "\n"
+        + "HALE_DNA_HEAD_URL=" + (if len(head) > 0 { head } else { "http://127.0.0.1:8792" }) + "\n"
+        + "HALE_DNA_OIDC_ISSUER=" + (if len(issuer) > 0 { issuer } else { "http://127.0.0.1:8794" }) + "\n"
+        + "HALE_DNA_OIDC_CLIENT=" + client + "\n"
+        + "HALE_DNA_OIDC_CLIENT_VAULT=oidc-service-" + client + "\n";
+    let named = " " + with + " ";
+    if dna::allocated_role(root, "database") || std::str::contains(named, " database ") {
+        let d = database_provision_verb(root, derive);
+        if !d.ok { return d; }
+        if std::str::starts_with(d.text, "none: ") { return d; }
+        out = out + d.text;
+    }
+    if dna::allocated_role(root, "broker") || std::str::contains(named, " broker ") {
+        if std::env::var_exists(dna::NATS_OWNER_URL_ENV) && len(std::env::var(dna::NATS_OWNER_URL_ENV)) > 0 { return answer("none: the broker heart role is a user of the organism's own nerves server, which the habitat configures; the operator's NATS is not the habitat's to configure\n"); }
+        let infra = ReferenceInfrastructure { root: root };
+        let server = if derive { infra.nerves_if_up() } else { infra.nerves_server(root).dsn };
+        if len(server) == 0 { return answer("none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate " + root + "` brings it up)\n"); }
+        let key = dna::allocation_key(root);
+        out = out + "HALE_DNA_BROKER_URL=" + dna::nerves_server_url(server) + "\n"
+            + "HALE_DNA_BROKER_USER=" + dna::heart_broker_user(key) + "\n"
+            + "HALE_DNA_BROKER_VAULT=" + dna::heart_broker_vault(dna::schema_for(id)) + "\n"
+            + "HALE_DNA_BROKER_SUBJECTS=" + dna::heart_broker_subjects(key) + "\n"
+            + "HALE_DNA_BROKER_NODE_USER=" + dna::heart_broker_node_user(key) + "\n"
+            + "HALE_DNA_BROKER_NODE_VAULT=" + dna::heart_broker_node_vault(dna::schema_for(id)) + "\n";
+    }
+    return answer(out);
+}

@@ -170,6 +170,54 @@ fn nerves_missing(org: String) -> String {
     return missing;
 }
 
+// ---- the `broker` heart role (GH #1653) ---------------------------------
+//
+// A Hale heart that declares `broker` in its genome's needs gets two users
+// of its organism's nerves server, both confined to its own subject space
+// `heart.<key>.>` and neither on `_INBOX` (the heart's replies come back
+// under its own `heart.<key>._INBOX`, so no grant reaches another user's
+// replies): `heart-<key>`, the heart itself, publishing and subscribing on
+// all of `heart.<key>.>`; and `heart-<key>-node`, the narrower one its
+// nodes connect as, subscribing on `heart.<key>.node.>` and publishing on
+// `heart.<key>.reply.>` and `heart.<key>._INBOX.>`. Their passwords are
+// the vault's `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with
+// the organism's other secrets; JetStream is neither's.
+fn heart_broker_user(key: String) -> String { return "heart-" + std::str::lower(key); }
+fn heart_broker_node_user(key: String) -> String { return heart_broker_user(key) + "-node"; }
+fn heart_broker_base(key: String) -> String { return "heart." + std::str::lower(key); }
+fn heart_broker_subjects(key: String) -> String { return heart_broker_base(key) + ".>"; }
+fn heart_broker_vault(org: String) -> String { return nerves_vault_name(org, "heart"); }
+fn heart_broker_node_vault(org: String) -> String { return nerves_vault_name(org, "heart-node"); }
+const HEART_PASSWORD_VAR: String = "NATS_HEART_PASSWORD";
+const HEART_NODE_PASSWORD_VAR: String = "NATS_HEART_NODE_PASSWORD";
+
+// Whether the habitat allocated the heart role `role` to the organism at
+// `root` (GH #1653). The habitat decided what the organism needs when it
+// grafted it, reading its manifest once, and recorded each role it
+// provisioned as a row of its record; the allocation keeps those rows
+// beside it (`allocation.json`), and that is what is read here, never the
+// manifest again.
+fn allocated_role(root: String, role: String) -> Bool {
+    let dir = allocation_dir(root);
+    if len(dir) == 0 { return false; }
+    let row = std::io::fs::read_file(dir + "/allocation.json") or "";
+    let roles = std::json::find_field_raw(row, "roles");
+    return len(roles) > 0 && len(std::json::find_field_raw(roles, role)) > 0;
+}
+
+// The heart's users on the nerves server, "" when none is declared.
+fn nerves_heart_conf(key: String) -> String {
+    if len(key) == 0 { return ""; }
+    let base = heart_broker_base(key);
+    return "    # the heart's broker (GH #1653): its own subject space, its replies\n"
+        + "    # under it, nothing of DNA's and no `_INBOX`\n"
+        + "    { user: " + heart_broker_user(key) + ", password: $" + HEART_PASSWORD_VAR + ",\n"
+        + "      permissions: { publish: [\"" + base + ".>\"], subscribe: [\"" + base + ".>\"] } }\n"
+        + "    # its nodes: their own work in, their replies and acks out\n"
+        + "    { user: " + heart_broker_node_user(key) + ", password: $" + HEART_NODE_PASSWORD_VAR + ",\n"
+        + "      permissions: { publish: [\"" + base + ".reply.>\", \"" + base + "._INBOX.>\"], subscribe: [\"" + base + ".node.>\"] } }\n";
+}
+
 // The variable the nerves allocation's nats.conf names a role's password by.
 fn nerves_password_var(role: String) -> String { return "NATS_" + std::str::upper(role) + "_PASSWORD"; }
 
@@ -177,8 +225,9 @@ fn nerves_password_var(role: String) -> String { return "NATS_" + std::str::uppe
 // local habitat, never in a checkout): the nerves' server, with
 // no secret in it — each user's password is a variable of the include.
 // `app`: the application the record attaches, whose account it carries
-// ("" when none is attached, or it was detached).
-fn nerves_conf_text(app: String) -> String {
+// ("" when none is attached, or it was detached); `heart`, the key of an
+// organism whose heart declares the `broker` role ("" when none does).
+fn nerves_conf_text(app: String, heart: String) -> String {
     return "# nats.conf — the organism's nerves allocation in the local habitat (GH #986,\n"
         + "# GH #1653; written by its provisioning, never in a checkout). One user per\n"
         + "# family of subjects, each allowed only its own; `hale dna dev` hands each part\n"
@@ -199,6 +248,7 @@ fn nerves_conf_text(app: String) -> String {
         + "    { user: spine, password: $NATS_SPINE_PASSWORD,\n"
         + "      permissions: { publish: [\"*.dna.>\", \"*.*.dna.>\", \"*.head.>\", \"*.*.head.>\", \"$JS.API.CONSUMER.CREATE.*.*\", \"$JS.API.CONSUMER.INFO.*.*\", \"$JS.API.CONSUMER.MSG.NEXT.*.*\", \"$JS.ACK.*.*.>\"], subscribe: [\"_INBOX.>\"] } }\n"
         + nerves_app_conf(app)
+        + nerves_heart_conf(heart)
         + "    # the reflexes (#988): publish their firings on their own subjects,\n"
         + "    # read nothing\n"
         + "    { user: reflexes, password: $NATS_REFLEXES_PASSWORD,\n"

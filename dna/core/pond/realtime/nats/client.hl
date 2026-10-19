@@ -60,10 +60,11 @@ fn hex_of(b: Bytes) -> String {
     return out;
 }
 
-/// A subject no other client will use: `_INBOX.<22 random hex>`.
-fn new_inbox() -> String {
+/// A subject no other client will use: `<prefix>.<22 random hex>`,
+/// `_INBOX` unless the connection names a private prefix of its own.
+fn new_inbox(prefix: String) -> String {
     let raw = std::os::getrandom(11) or std::bytes::from_string(to_string(std::time::monotonic_ns()));
-    return "_INBOX." + hex_of(raw);
+    return (if len(prefix) > 0 { prefix } else { "_INBOX" }) + "." + hex_of(raw);
 }
 
 locus NatsClient {
@@ -83,6 +84,10 @@ locus NatsClient {
         echo: Bool = true;
         // how long a handshake, a flush or a request may wait
         timeout: Duration = 5s;
+        // the prefix a request's reply inbox is made under: a user whose
+        // permissions allow only an inbox of its own (`heart.<id>._INBOX`)
+        // names it here
+        inbox_prefix: String = "_INBOX";
         recv_chunk: Int = 65536;
 
         io: NatsTransport = NatsTransport { };
@@ -377,7 +382,7 @@ locus NatsClient {
 
     /// `request` with a header block on the publish (see `pub_headers`).
     fn request_with(subject: String, headers: String, data: Bytes, wait: Duration) -> NatsMsg fallible(NatsError) {
-        let inbox = new_inbox();
+        let inbox = new_inbox(self.inbox_prefix);
         let sid = self.sub_to(inbox, "") or raise;
         if !self.write_str(unsub_line(sid, 1)) { fail self.fail_with("io", "the write failed"); }
         self.pub_headers(subject, inbox, headers, data) or raise;

@@ -756,7 +756,7 @@ locus GovernanceCli {
         let codec = ops::GovernanceCommandCodec { };
         if !codec.valid(context, command) { return fail("invalid_command: native replacements require exact subject, nonempty text and rationale; verdicts require approve, reject or revise on an exact pending Practice Review"); }
         if len(authority_flag) > 0 {
-            let snapshot = native.capture();
+            let snapshot = native.capture_settled();
             if !snapshot.ok { return fail("cannot check --authority against current policy: " + snapshot.code); }
             let journal = ops::GovernanceJournal { snapshot: snapshot };
             if !journal.valid { return fail("cannot check --authority against an invalid Record"); }
@@ -783,7 +783,7 @@ locus GovernanceCli {
         let record = dna::MemoryRecord { repo: self.root };
         let authority = ops::FixedAuthority { policy: settings.policy };
         let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
-        let snapshot = native.capture();
+        let snapshot = native.capture_settled();
         if !snapshot.ok { return fail("cannot read Practice predecessor: " + snapshot.code); }
         let journal = ops::GovernanceJournal { snapshot: snapshot };
         if !journal.valid { return fail("cannot read Practice predecessor: invalid Record"); }
@@ -799,7 +799,7 @@ locus GovernanceCli {
     fn review_profile(id: String) -> GovernanceCliReview {
         let record = dna::MemoryRecord { repo: self.root };
         let native = ops::GovernanceCommands { record: record };
-        let snapshot = native.capture();
+        let snapshot = native.capture_settled();
         if !snapshot.ok { return GovernanceCliReview { error: snapshot.code }; }
         let journal = ops::GovernanceJournal { snapshot: snapshot };
         if !journal.valid { return GovernanceCliReview { error: "command_history_invalid" }; }
