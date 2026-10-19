@@ -842,223 +842,6 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
-/// The bare names a default reads that it does not bind itself, each with
-/// where it is read: what the default needs of the scope it is evaluated
-/// in. The walk keeps lexical frames in binding order, as the checker
-/// does: a `let`'s initializer and a `for`'s iterator are read before the
-/// name is bound, a block's `let` is visible after it and within the block
-/// only, and a `for`'s name, a match arm's bindings, an `or` handler's
-/// `err` and a `shm_write`'s binding within their own body only. An
-/// assignment's target reads its name. A narrowing's policy word (`or
-/// clamp`) is no name.
-fn default_free_names(e: &Expr) -> Vec<(String, Span)> {
-    struct Walk {
-        frames: Vec<Vec<String>>,
-        out: Vec<(String, Span)>,
-    }
-    fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
-        match p {
-            Pattern::Binding(i) => out.push(i.name.clone()),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
-                for a in args {
-                    pattern_names(a, out);
-                }
-            }
-            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
-        }
-    }
-    impl Walk {
-        fn read(&mut self, i: &Ident) {
-            if !self.frames.iter().any(|f| f.contains(&i.name)) {
-                self.out.push((i.name.clone(), i.span));
-            }
-        }
-        fn bind(&mut self, n: &str) {
-            self.frames.last_mut().expect("a frame").push(n.to_string());
-        }
-        fn scoped(&mut self, names: Vec<String>, body: &mut dyn FnMut(&mut Walk)) {
-            self.frames.push(names);
-            body(self);
-            self.frames.pop();
-        }
-        fn block(&mut self, b: &Block) {
-            self.scoped(Vec::new(), &mut |w| {
-                for st in &b.stmts {
-                    w.stmt(st);
-                }
-                if let Some(t) = &b.tail {
-                    w.expr(t);
-                }
-            });
-        }
-        fn if_(&mut self, i: &IfStmt) {
-            self.expr(&i.cond);
-            self.block(&i.then_block);
-            match i.else_block.as_deref() {
-                Some(ElseBranch::Else(b)) => self.block(b),
-                Some(ElseBranch::ElseIf(e)) => self.if_(e),
-                None => {}
-            }
-        }
-        fn match_(&mut self, m: &MatchStmt) {
-            self.expr(&m.scrutinee);
-            for arm in &m.arms {
-                let mut names = Vec::new();
-                pattern_names(&arm.pattern, &mut names);
-                self.scoped(names, &mut |w| {
-                    if let Some(g) = &arm.guard {
-                        w.expr(g);
-                    }
-                    match &arm.body {
-                        MatchArmBody::Expr(e) => w.expr(e),
-                        MatchArmBody::Block(b) => w.block(b),
-                    }
-                });
-            }
-        }
-        fn or_(&mut self, d: &OrDisposition) {
-            match d {
-                // a narrowing's policy word ends its `or`: no name
-                OrDisposition::Substitute(rhs)
-                    if matches!(rhs.as_ref(), Expr::Ident(w)
-                        if w.name == "clamp" || w.name == "wrap" || crate::units::RoundPolicy::of(&w.name).is_some()) => {}
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    self.scoped(vec!["err".to_string()], &mut |w| w.expr(e));
-                }
-                OrDisposition::Wait(_) | OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
-            }
-        }
-        fn stmt(&mut self, st: &Stmt) {
-            match st {
-                Stmt::Let { name, value, .. } => {
-                    self.expr(value);
-                    self.bind(&name.name);
-                }
-                Stmt::LetTuple { names, value, .. } => {
-                    self.expr(value);
-                    for n in names {
-                        self.bind(&n.name);
-                    }
-                }
-                Stmt::Assign { target, value, .. } => {
-                    self.read(&target.head);
-                    for seg in &target.tail {
-                        if let LValueSeg::Index(e) = seg {
-                            self.expr(e);
-                        }
-                    }
-                    self.expr(value);
-                }
-                Stmt::If(i) => self.if_(i),
-                Stmt::Match(m) => self.match_(m),
-                Stmt::For { name, iter, body, .. } => {
-                    self.expr(iter);
-                    self.scoped(vec![name.name.clone()], &mut |w| w.block(body));
-                }
-                Stmt::While { cond, body, .. } => {
-                    self.expr(cond);
-                    self.block(body);
-                }
-                Stmt::Return(e, _) => {
-                    if let Some(e) = e {
-                        self.expr(e);
-                    }
-                }
-                Stmt::Fail { value, .. } => self.expr(value),
-                Stmt::Block(b) => self.block(b),
-                Stmt::Recovery { args, modifier, .. } => {
-                    for a in args {
-                        self.expr(a);
-                    }
-                    if let Some(RecoveryModifier::For(e)) | Some(RecoveryModifier::Until(e)) = modifier {
-                        self.expr(e);
-                    }
-                }
-                Stmt::Violate { payload, .. } => {
-                    if let Some(p) = payload {
-                        self.expr(p);
-                    }
-                }
-                Stmt::Send { subject, value, or_disposition, .. } => {
-                    self.expr(subject);
-                    self.expr(value);
-                    if let Some(d) = or_disposition {
-                        self.or_(d);
-                    }
-                }
-                Stmt::ShmWrite { max, binding, body, .. } => {
-                    self.expr(max);
-                    self.scoped(vec![binding.name.clone()], &mut |w| w.block(body));
-                }
-                Stmt::Expr(e) => self.expr(e),
-                Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => {}
-            }
-        }
-        fn expr(&mut self, e: &Expr) {
-            match e {
-                Expr::Ident(i) => self.read(i),
-                Expr::Binary { left, right, .. } => {
-                    self.expr(left);
-                    self.expr(right);
-                }
-                Expr::Unary { operand, .. } => self.expr(operand),
-                Expr::Call { callee, args, .. } => {
-                    self.expr(callee);
-                    for a in args {
-                        self.expr(a);
-                    }
-                }
-                Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
-                Expr::Index { receiver, index, .. } => {
-                    self.expr(receiver);
-                    self.expr(index);
-                }
-                Expr::Tuple(es, _) | Expr::Array(es, _) => {
-                    for x in es {
-                        self.expr(x);
-                    }
-                }
-                Expr::Struct { inits, .. } => {
-                    for i in inits {
-                        self.expr(&i.value);
-                    }
-                }
-                Expr::Block(b) => self.block(b),
-                Expr::If(i) => self.if_(i),
-                Expr::Match(m) => self.match_(m),
-                Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
-                Expr::Approx { left, right, tolerance, .. } => {
-                    self.expr(left);
-                    self.expr(right);
-                    self.expr(tolerance);
-                }
-                Expr::Range { lo, hi, .. } => {
-                    self.expr(lo);
-                    self.expr(hi);
-                }
-                Expr::ArrayRepeat { val, .. } => self.expr(val),
-                Expr::Or { inner, disposition, .. } => {
-                    self.expr(inner);
-                    self.or_(disposition);
-                }
-                Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
-            }
-        }
-    }
-    let mut w = Walk { frames: vec![Vec::new()], out: Vec::new() };
-    w.expr(e);
-    w.out
-}
-
-/// A bare name every scope resolves alike: a builtin (a value builtin, a
-/// printer, any form the parser claims), or a primitive's conversion
-/// (`Time(3ns)`).
-fn default_builtin(n: &str) -> bool {
-    crate::builtin_sigs::bare_builtin_sig(n).is_some()
-        || hale_syntax::parser::builtin_call_form(n).is_some()
-        || hale_syntax::parser::primitive_from_name(n).is_some()
-}
-
 /// A default reads only its own fields and constants (spec/types.md §
 /// Locus params): a default is evaluated where the literal or call that
 /// leaves it is written, and a name of that scope (a local, a fn value
@@ -1077,15 +860,10 @@ fn default_builtin(n: &str) -> bool {
 /// expands another expands nothing of the caller's either.
 fn default_scope_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
+    // the names the default reads are the checker's to resolve
+    // (`Checker::judge_defaults_where_declared`); `self` is a keyword
+    let _ = top;
     let check = |e: &Expr, out: &mut Vec<Diag>| {
-        for (name, span) in default_free_names(e) {
-            if top.lookup(&name).is_none() && !default_builtin(&name) {
-                out.push(Diag::ty(
-                    span,
-                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope"),
-                ));
-            }
-        }
         visit_expr(e, &mut |v| {
             if let Visited::Expr(Expr::KwSelf(span)) = v {
                 out.push(Diag::ty(
@@ -1650,6 +1428,9 @@ fn walk_bundle(
         defaults_judged_at_literals: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
+        default_scan: None,
+        default_uses: Vec::new(),
+        defaults_judged: BTreeSet::new(),
         default_evaluation: Vec::new(),
         array_elements: std::collections::HashMap::new(),
         decimal_literals: Vec::new(),
@@ -11305,6 +11086,17 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
+    /// While a default is typed where it is declared, with no binding in
+    /// scope (`judge_defaults_where_declared`): the bare names the walk
+    /// could not resolve, each with where it is read.
+    default_scan: Option<Vec<(String, Span)>>,
+    /// While a default is typed where a literal or call leaves it: the
+    /// scope stack's depth when it began (the frames below are the
+    /// caller's) and the literal or call, innermost last.
+    default_uses: Vec<(usize, Span)>,
+    /// The defaults `judge_defaults_where_declared` has judged, by place:
+    /// each once, however many walks reach its declaration.
+    defaults_judged: BTreeSet<usize>,
     /// While a default is typed where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
     /// or a call that leaves a parameter. A conversion typed there (a
@@ -11439,6 +11231,10 @@ impl ScopeStack {
             .expect("at least one scope")
             .insert(name.to_string(), sym);
     }
+    /// The frame that binds `name` innermost, counted from the outermost.
+    fn frame_of(&self, name: &str) -> Option<usize> {
+        self.frames.iter().rposition(|f| f.contains_key(name))
+    }
     fn lookup(&self, name: &str) -> Option<&LocalSym> {
         for frame in self.frames.iter().rev() {
             if let Some(s) = frame.get(name) {
@@ -11553,6 +11349,10 @@ impl<'a> Checker<'a> {
                                 &f.ty,
                             );
                         }
+                        // what a field default may read is judged here, where
+                        // it is declared, with no binding in scope
+                        let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
+                        self.judge_defaults_where_declared(&defaults, &t.generics);
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -15023,6 +14823,8 @@ impl<'a> Checker<'a> {
                 // The parser already enforces "main-only".
             }
             LocusMember::Lifecycle(lc) => {
+                let defaults: Vec<&'a Expr> = lc.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &lc.params {
@@ -15056,6 +14858,8 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = false;
             }
             LocusMember::Mode(md) => {
+                let defaults: Vec<&'a Expr> = md.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &md.params {
@@ -15118,6 +14922,8 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                let defaults: Vec<&'a Expr> = fd.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.in_on_failure = true;
                 self.locals.push();
@@ -15630,6 +15436,10 @@ impl<'a> Checker<'a> {
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }
+        // what a parameter's default may read is judged where it is
+        // declared, with no binding in scope (the generics are)
+        let defaults: Vec<&'a Expr> = decl.params.iter().filter_map(|p| p.default.as_ref()).collect();
+        self.judge_defaults_where_declared(&defaults, &[]);
         if let Some(ret) = &decl.ret {
             self.check_type_annotation(ret);
         }
@@ -18934,6 +18744,9 @@ impl<'a> Checker<'a> {
 
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         let unshadowed = std::mem::take(&mut self.callee_unshadowed);
+        if self.locals.lookup(&id.name).is_some() && !unshadowed {
+            self.note_default_read(&id.name);
+        }
         if let Some(s) = self.locals.lookup(&id.name).filter(|_| !unshadowed) {
             if !self.defaults_judged_at_literals {
                 self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
@@ -18941,6 +18754,16 @@ impl<'a> Checker<'a> {
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
+            // a default typed where it is declared: a name nothing there
+            // binds is the caller's (a builtin callee is no such name)
+            if self.locals.lookup(&id.name).is_none()
+                && !self.generic_fns.contains_key(id.name.as_str())
+                && !BARE_BUILTIN_CALLEES.contains(&id.name.as_str())
+            {
+                if let Some(scan) = self.default_scan.as_mut() {
+                    scan.push((id.name.clone(), id.span));
+                }
+            }
             // GH #1139: a name a block of this body bound and then
             // released is the block's — `hale check <file>` says so as
             // `hale check <seed>` and the build do, whatever the
@@ -19967,7 +19790,6 @@ impl<'a> Checker<'a> {
         if omitted.is_empty() {
             return;
         }
-        self.refuse_shadowed_default_names(omitted.iter().map(|(d, _, _)| *d), at);
         // The rows this walk would record (a default's calls typed in the
         // caller's body) are not the caller's: the outermost walk puts
         // the record back as it found it (undoing what the walk wrote,
@@ -19985,6 +19807,7 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`populate_user_type_fields`).
         self.default_evaluation.push(literal.0);
+        self.default_uses.push((self.locals.frames.len(), at));
         for (default, field, want) in omitted {
             self.struct_defaults_typing.push(default);
             let got = self.check_expr(default);
@@ -19993,6 +19816,7 @@ impl<'a> Checker<'a> {
             }
             self.struct_defaults_typing.pop();
         }
+        self.default_uses.pop();
         self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_keeping_unit_errors(mark);
@@ -20675,30 +20499,131 @@ impl<'a> Checker<'a> {
     /// and their casts' conversions under the evaluation path that ends
     /// at the invocation (`default_evaluation`).
     /// A default is evaluated where the literal or call that leaves it is
-    /// written, so a name it reads as a constant or a module fn reads the
-    /// caller's binding instead when the caller binds that name. A default
-    /// reads only its own fields and constants (spec/types.md § Locus
-    /// params): such a use is refused at the literal or call.
-    fn refuse_shadowed_default_names<'e>(&mut self, defaults: impl Iterator<Item = &'e Expr>, at: Span) {
-        let mut seen: BTreeSet<String> = BTreeSet::new();
+    /// written, so a name it reads that the checker resolves there to a
+    /// binding of the caller's (one below the frames the default opened)
+    /// is the caller's. A default reads only its own fields and constants
+    /// (spec/types.md § Locus params): a name that is a module-level item
+    /// or a builtin, which a caller's binding shadows, is refused at the
+    /// literal or call. Any other name is refused where the default is
+    /// declared (`judge_defaults_where_declared`). Kept through the
+    /// discarding walk that types the default, and said once.
+    fn note_default_read(&mut self, name: &str) {
+        let Some(&(depth, at)) = self.default_uses.last() else { return };
+        if !self.locals.frame_of(name).is_some_and(|f| f < depth) {
+            return;
+        }
+        let module_level = self.top.lookup(name).is_some()
+            || BARE_BUILTIN_CALLEES.contains(&name)
+            || hale_syntax::parser::primitive_from_name(name).is_some();
+        if !module_level {
+            return;
+        }
+        let d = Diag::ty(
+            at,
+            format!(
+                "a default reads only its own fields and constants; `{name}` here is the caller's binding, which a \
+                 default left out here would read in place of the module's `{name}`: rename the binding or pass the value"
+            ),
+        );
+        // kept as a quantity rule's error is (`discard_keeping_unit_errors`),
+        // once in the declaration's result
+        self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+        let start = self.decl_diags_start.min(self.diags.len());
+        if !self.diags[start..].iter().any(|seen| seen.span == d.span && seen.message == d.message) {
+            self.diags.push(d);
+        }
+    }
+
+    /// A locus literal that leaves params evaluates their defaults where it
+    /// is written; their names are typed where the locus declares them, so
+    /// here the defaults are walked once more only to ask which names the
+    /// caller's bindings would answer (`note_default_read`). The walk is
+    /// discarded but for those refusals.
+    fn probe_locus_defaults(&mut self, defaults: &[&'a Expr], at: Span) {
+        // a default whose own literal leaves it again (`next: Node = Node
+        // { }`) is not entered again
+        let defaults: Vec<&'a Expr> =
+            defaults.iter().copied().filter(|d| !self.struct_defaults_typing.contains(&(*d as *const Expr))).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let seen = (self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len));
+        let opened = self.struct_defaults_typing.is_empty();
+        if opened {
+            self.typed.open_walk();
+        }
+        let mark = self.walk_mark();
+        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, false);
+        self.default_uses.push((self.locals.frames.len(), at));
         for d in defaults {
-            for (name, _) in default_free_names(d) {
-                let module_level = self.top.lookup(&name).is_some() || default_builtin(&name);
-                if module_level && self.locals.lookup(&name).is_some() && seen.insert(name.clone()) {
-                    // kept through an enclosing default's walk (a literal
-                    // inside a default, the binding the default's own),
-                    // and reported once, as a quantity rule's error is
-                    let d = Diag::ty(
-                        at,
-                        format!(
-                            "a default reads only its own fields and constants; `{name}` here is the caller's binding, \
-                             which a default left out here would read in place of the module's `{name}`: rename the binding \
-                             or pass the value"
-                        ),
-                    );
-                    self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
-                    self.diags.push(d);
-                }
+            self.struct_defaults_typing.push(d);
+            let _ = self.check_expr(d);
+            self.struct_defaults_typing.pop();
+        }
+        self.default_uses.pop();
+        self.defaults_judged_at_literals = judged;
+        self.discard_keeping_unit_errors(mark);
+        if opened {
+            let _ = self.typed.close_walk();
+        }
+        self.locals.closed = seen.0;
+        if let (Some(n), Some(types)) = (seen.1, self.expr_types.as_mut()) {
+            types.truncate(n);
+        }
+    }
+
+    /// A default reads only its own fields and constants (spec/types.md §
+    /// Locus params): each is typed once where it is declared, with no
+    /// binding in scope, and every bare name the checker cannot resolve
+    /// there (a caller's local, a fn value bound there, an earlier
+    /// parameter) is refused at the name. What the walk resolves, how it
+    /// scopes the default's own bindings and which `or` words are a
+    /// narrowing's policy are the checker's answers, the same as at every
+    /// literal and call that leaves the default. The walk is no
+    /// evaluation: it records nothing, and its other findings are not
+    /// reported here.
+    fn judge_defaults_where_declared(&mut self, defaults: &[&'a Expr], generics: &[GenericParam]) {
+        let defaults: Vec<&'a Expr> =
+            defaults.iter().copied().filter(|d| self.defaults_judged.insert(*d as *const Expr as usize)).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let saved_locals = std::mem::replace(&mut self.locals, ScopeStack::new());
+        let seen = self.expr_types.as_ref().map(Vec::len);
+        let opened = self.struct_defaults_typing.is_empty();
+        if opened {
+            self.typed.open_walk();
+        }
+        let mark = self.walk_mark();
+        let generic_count = self.generic_params.len();
+        self.generic_params.extend(generics.iter().map(|g| g.name.name.clone()));
+        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
+        let scan = std::mem::replace(&mut self.default_scan, Some(Vec::new()));
+        let uses = std::mem::take(&mut self.default_uses);
+        for d in defaults {
+            self.struct_defaults_typing.push(d);
+            let _ = self.check_expr(d);
+            self.struct_defaults_typing.pop();
+        }
+        let unresolved = std::mem::replace(&mut self.default_scan, scan).unwrap_or_default();
+        self.default_uses = uses;
+        self.defaults_judged_at_literals = judged;
+        self.generic_params.truncate(generic_count);
+        self.discard_since(mark);
+        if opened {
+            let _ = self.typed.close_walk();
+        }
+        if let (Some(n), Some(types)) = (seen, self.expr_types.as_mut()) {
+            types.truncate(n);
+        }
+        self.locals = saved_locals;
+        let mut said: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (name, span) in unresolved {
+            if said.insert((span.start.as_usize(), span.end.as_usize())) {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope"),
+                ));
             }
         }
     }
@@ -20760,18 +20685,19 @@ impl<'a> Checker<'a> {
         if defaults.is_empty() {
             return;
         }
-        self.refuse_shadowed_default_names(defaults.iter().map(|(d, _, _)| *d), callee.span());
         let mark = self.walk_mark();
         self.default_invocations.push(invocation.0);
         // The call leaves these parameters: one step of the path, pushed
         // for their walk as lowering pushes it for their lowering
         // (`lower_default_in_caller`).
         self.default_evaluation.push(invocation.0);
+        self.default_uses.push((self.locals.frames.len(), callee.span()));
         for (default, param, te) in defaults {
             let got = self.check_expr(default);
             let want = crate::resolve::resolve_type_expr(te, self.known);
             self.default_flows_into(&format!("param `{param}`"), &want, &got, default);
         }
+        self.default_uses.pop();
         self.default_evaluation.pop();
         self.default_invocations.pop();
         // The param accesses the defaults reached stay, as the
@@ -25521,7 +25447,7 @@ impl<'a> Checker<'a> {
                         _ => None,
                     })
                     .collect();
-                self.refuse_shadowed_default_names(omitted.into_iter(), span);
+                self.probe_locus_defaults(&omitted, span);
             }
         }
 

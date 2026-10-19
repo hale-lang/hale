@@ -1527,7 +1527,12 @@ Three init shapes:
     binding, an `or` handler's `err`), where that binding is in scope:
     after its `let` and within its block, within its arm or handler. A
     read in a `let`'s own initializer, or after the block that bound it,
-    is not the default's;
+    is not the default's. The checker answers each of these, typing the
+    default once where it is declared with no binding in scope, as it
+    types it wherever it is evaluated: a word after `or` is a
+    narrowing's policy (`T(x) or clamp`) only where the `or` narrows,
+    and after any other fallible (`parse_int(s) or clamp`) it is a name
+    like any other;
   - for a locus's param only, an earlier param through `self.<param>`.
 
   Anything else is refused where the default is written ("a default

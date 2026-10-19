@@ -3073,6 +3073,26 @@ mod default_scope_tests {
         );
     }
 
+    /// A word after `or` is a narrowing's policy only where the checker
+    /// reads the `or` as a narrowing; after any other fallible it is a
+    /// value, read like any name: the caller's if no module item, and
+    /// refused where a caller's binding shadows the module's.
+    #[test]
+    fn a_policy_word_is_a_name_unless_the_or_narrows() {
+        let parse = "type R { b: Int = std::str::parse_int(\"bad\") or clamp; }\n";
+        assert_eq!(errors(&format!("{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), vec![caller("clamp")]);
+        let shadowed = format!("const clamp: Int = 3;\n{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n");
+        assert_eq!(
+            errors(&shadowed),
+            vec!["a default reads only its own fields and constants; `clamp` here is the caller's binding, which a \
+                  default left out here would read in place of the module's `clamp`: rename the binding or pass the value"
+                .to_string()]
+        );
+        // a narrowing's policy word names nothing, whatever the caller binds
+        let narrowing = "type Session = Int { range: 0..64; }\ntype R { s: Session = Session(70) or clamp; }\n";
+        assert_eq!(errors(&format!("{narrowing}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), Vec::<String>::new());
+    }
+
     #[test]
     fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
         let shadow = |name: &str| {
