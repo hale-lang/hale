@@ -976,3 +976,30 @@ fn a_program_publishing_a_log_event_holds_the_structured_logs_law() {
     );
     assert!(!ds.iter().any(|m| m.contains("logs_structured")), "{ds:?}");
 }
+
+/// A gate over the target's stdlib module masks the target, and the
+/// claim would hold whatever the program did: refused as a gate that
+/// overlaps a declared group is, naming what they share. A target that
+/// shares only part of its members with the gate is refused alike; the
+/// structured-logs law, whose target is a class, is not.
+#[test]
+fn a_gate_over_the_target_s_stdlib_module_is_refused() {
+    let program = |groups: &str, claim: &str| {
+        logging_program("let _ = n;", claim).replace("main locus App", &format!("{groups}\n    main locus App"))
+    };
+    let ds = diags(&program(
+        "group logging = { std::log::* };",
+        "c: forbid reaches(program, logging) avoiding logging;",
+    ));
+    let hit = ds.iter().find(|m| m.contains("`avoiding logging` overlaps `logging`")).unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(hit.contains("std::log::Logger"), "names what they share: {hit}");
+
+    let ds = diags(&program(
+        "group sinks = { std::log::*, report };",
+        "c: forbid reaches(app, sinks) avoiding std::log::*;",
+    )
+    .replace("main locus App", "group app = { App };\n    main locus App"));
+    assert!(ds.iter().any(|m| m.contains("`avoiding std::log::*` overlaps `sinks`")), "{ds:?}");
+
+    assert!(diags(&logging_program("let _ = n;", LOGS_STRUCTURED)).is_empty());
+}

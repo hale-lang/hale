@@ -705,13 +705,21 @@ pub fn judge_forbid_reaches(
                 // group's `Function` member) and its enclosing locus
                 // (a named group's `LocusDecl`) are seen to share it.
                 let av_fns = &group_fns[&av_gid];
+                let av_std = std_of(av_gid);
                 for set in [src, dst] {
                     let SetIr::Group(n) = set else { continue };
                     let Some(gid) = n.group else { continue };
-                    let shared: Vec<String> = av_fns
+                    // a stdlib module's bodies are endpoints too: a
+                    // gate over the target's module masks its target
+                    let mut shared: Vec<String> = av_fns
                         .intersection(&group_fns[&gid])
                         .map(|f| e.functions[f.index()].name.clone())
                         .collect();
+                    shared.extend(
+                        av_std
+                            .intersection(std_of(gid))
+                            .map(|d| crate::stdlib_bodies::demangle_str(d, &[])),
+                    );
                     if !shared.is_empty() {
                         diags.push(Diag::ty(
                             claim_span(a.provenance),
