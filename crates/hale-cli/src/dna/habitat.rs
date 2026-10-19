@@ -21,6 +21,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
+       hale habitat graft <dir> [--attach] [--no-library]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -48,6 +49,18 @@ up                   birth the habitat the first time, from the genome the
                      the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
                      HALE_DNA_NATS_URL_OWNER name, and provisions nothing
                      of its own. The hosted profile is not built.
+graft <dir>          birth an organism as the habitat's child, the one way an
+                     organism other than the habitat is born: its record's
+                     genesis names the habitat's record as its parent, the
+                     roles its genome needs (`[dna] needs` in its hale.toml:
+                     memory and nerves always, senses unless left out;
+                     undeclared, as a foreign heart is, it is exactly the
+                     organism's own, never a heart's database or broker) are
+                     allocated to it and recorded in the habitat's record,
+                     and the `standard` pack is proposed to its Board.
+                     <dir> is a new application's directory, or with
+                     --attach an application or a repository that is
+                     there already.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this
@@ -87,6 +100,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         Some("migrate") => migrate(args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))),
         Some("up") => up(&args[1..]),
+        Some("graft") => graft(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.len() == 2 => match down_under(Path::new(&args[1])) {
@@ -1037,9 +1051,179 @@ pub(crate) fn down_under_with(root: &Path, docker: &mut dyn FnMut(&[&str]) -> Do
     }
 }
 
+// ---------------------------------------------------------------
+// graft (GH #1653)
+// ---------------------------------------------------------------
+
+/// The organism's own roles, the ones the habitat provisions for the
+/// organism itself (its record is memory's, its organization reads the
+/// nerves, its body's readings go to the senses), and of them the ones it
+/// always gets.
+const ROLES: [&str; 3] = ["memory", "nerves", "senses"];
+const ALWAYS: [&str; 2] = ["memory", "nerves"];
+/// The roles a heart may need of its own: never given by default (a
+/// foreign heart's infrastructure is its own, and none of it is the
+/// habitat's to touch), only when a Hale heart's genome declares one, and
+/// not provisioned by this habitat yet.
+const HEART_ROLES: [&str; 4] = ["database", "broker", "cache", "object-store"];
+
+/// GH #1653: the roles the genome at `dir` needs from the habitat, as its
+/// manifest declares them (`[dna] needs = ["memory", "nerves", …]`): the
+/// first half of graft, satisfied by its second. None declared (no
+/// manifest, or a foreign heart's, which declares nothing) is exactly the
+/// organism's own roles, never a heart's: the habitat provides nothing for
+/// a heart that did not ask. A heart role is declared by a Hale heart that
+/// needs one, and is refused for now (this habitat provisions none); a
+/// role it does not know, or a list without memory or the nerves, is
+/// refused by name.
+pub(super) fn needs_of(manifest_text: Option<&str>) -> Result<Vec<String>, String> {
+    let declared = match manifest_text {
+        None => None,
+        Some(text) => {
+            let table: toml::Table = text.parse().map_err(|e| format!("hale.toml does not parse: {e}"))?;
+            match table.get("dna").and_then(|d| d.get("needs")) {
+                None => None,
+                Some(toml::Value::Array(a)) => Some(a.iter().map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("[dna] needs holds {v}, not a role's name"))).collect::<Result<Vec<_>, _>>()?),
+                Some(other) => return Err(format!("[dna] needs is {other}, not a list of roles")),
+            }
+        }
+    };
+    let Some(mut needs) = declared else { return Ok(ROLES.iter().map(|r| r.to_string()).collect()) };
+    if let Some(r) = needs.iter().find(|r| HEART_ROLES.contains(&r.as_str())) {
+        return Err(format!("[dna] needs names the heart role `{r}`, which this habitat does not provision yet (it provisions the organism's own: {})", ROLES.join(", ")));
+    }
+    if let Some(r) = needs.iter().find(|r| !ROLES.contains(&r.as_str())) {
+        return Err(format!("[dna] needs names `{r}`, which the habitat does not provision (it provisions the organism's own roles, {}, and knows the heart roles {})", ROLES.join(", "), HEART_ROLES.join(", ")));
+    }
+    for must in ALWAYS {
+        if !needs.iter().any(|r| r == must) {
+            return Err(format!("[dna] needs leaves out `{must}`, which every organism needs: its record is memory's and its organization reads the nerves"));
+        }
+    }
+    needs.sort_by_key(|r| ROLES.iter().position(|x| x == r));
+    needs.dedup();
+    Ok(needs)
+}
+
+fn graft(args: &[String]) -> ExitCode {
+    let mut dir: Option<PathBuf> = None;
+    let mut attach = false;
+    let mut library = true;
+    for a in args {
+        match a.as_str() {
+            "--attach" => attach = true,
+            "--no-library" => library = false,
+            f if f.starts_with("--") => {
+                eprintln!("hale habitat graft: `{f}` is not a flag of `graft`\n{}", usage_text());
+                return ExitCode::from(2);
+            }
+            d => {
+                if dir.replace(PathBuf::from(d)).is_some() {
+                    eprintln!("hale habitat graft: one directory\n{}", usage_text());
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    }
+    let Some(dir) = dir else {
+        eprintln!("hale habitat graft: which directory?\n{}", usage_text());
+        return ExitCode::from(2);
+    };
+    match graft_lines(&dir, attach, library) {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("hale habitat graft: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// GH #1653: an organism born as the habitat's child: its needs read from
+/// its genome, its record's genesis naming the habitat's record, each role
+/// it needs allocated to it, and the graft and its needs a row of the
+/// habitat's record. The habitat must be born, and the environment must
+/// agree with its backends.
+fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, String> {
+    let genome = genome_dir();
+    let Some(parent) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else {
+        return Err("the habitat is not born: `hale habitat up` births it, and every other organism is grafted from it".to_string());
+    };
+    if !super::record_exists(&genome).unwrap_or(false) {
+        return Err("the habitat's record cannot be read (its memory is not up): `hale habitat up` brings it up".to_string());
+    }
+    let backends = backends_of(None)?;
+    if attach && !dir.is_dir() {
+        return Err(format!("{} is not there to attach (graft without --attach births a new application there)", dir.display()));
+    }
+    if !attach && dir.exists() {
+        return Err(format!("{} exists: `--attach` grafts the application or repository that is there", dir.display()));
+    }
+    let manifest = std::fs::read_to_string(dir.join("hale.toml")).ok();
+    if manifest.as_deref().is_some_and(|m| manifest_pin_in_text(m).is_some()) {
+        return Err(format!("{} is born already: its hale.toml pins a record", dir.display()));
+    }
+    let needs = needs_of(manifest.as_deref())?;
+    let mut out = vec![format!("graft   {} as the habitat's child (parent {}…; needs {})", dir.display(), &parent[..12], needs.join(", "))];
+    out.extend(if attach { super::init_under(dir, library, Some(&parent))? } else { super::new_project_under(dir, None, None, None, library, Some(&parent))? });
+    let root = project(dir)?.0;
+    let child = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the child pins no record after its birth")?;
+    // birth allocated memory and the nerves; the rest of what it needs here
+    if needs.iter().any(|r| r == "senses") && backends == "own" {
+        match host_run("senses-up", &root, &[]) {
+            Ok(o) if !o.starts_with("none: ") => {
+                record_allocation(&root, "senses", 0, "", false)?;
+                out.push(format!("senses  allocated ({})", o.trim().trim_start_matches("HALE_DNA_SENSES_URL=")));
+            }
+            Ok(o) => out.push(format!("note    senses not up: {}", o.trim().strip_prefix("none: ").unwrap_or(o.trim()))),
+            Err(e) => out.push(format!("note    senses not up: {e}")),
+        }
+    }
+    let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends }).to_string() });
+    let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
+    std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
+    let landed = host_run("record-seed", &genome, &[file.display().to_string(), String::new()]);
+    let _ = std::fs::remove_file(&file);
+    landed?;
+    out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
+    // the standard practices, the law every organism is born under, for
+    // the child's Board (a process of its own: the verb execs the host)
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
+    out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("note    the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", root.display()) });
+    Ok(out)
+}
+
+fn manifest_pin_in_text(text: &str) -> Option<String> {
+    let table: toml::Table = text.parse().ok()?;
+    table.get("dna").and_then(|d| d.get("record")).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #1653: needs by role, the first half of graft.
+    #[test]
+    fn needs_are_declared_by_role() {
+        // undeclared, foreign or not: exactly the organism's own roles, no
+        // heart role
+        for undeclared in [None, Some("[deps]\n")] {
+            let got = needs_of(undeclared).unwrap();
+            assert_eq!(got, ROLES, "an undeclared genome gets the organism's own roles");
+            assert!(got.iter().all(|r| !HEART_ROLES.contains(&r.as_str())), "and no heart role: {got:?}");
+        }
+        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n")).unwrap_err().contains("the heart role `database`, which this habitat does not provision yet"), "a heart role is declared, never given");
+        assert_eq!(needs_of(Some("[dna]\nneeds = [\"nerves\", \"memory\"]\n")).unwrap(), ["memory", "nerves"], "senses left out");
+        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"redis\"]\n")).unwrap_err().contains("`redis`, which the habitat does not provision"));
+        assert!(needs_of(Some("[dna]\nneeds = [\"memory\"]\n")).unwrap_err().contains("leaves out `nerves`"));
+        assert!(needs_of(Some("[dna]\nneeds = \"memory\"\n")).unwrap_err().contains("not a list of roles"));
+    }
 
     /// GH #1653: an allocation's rows are the organism's and the role's,
     /// never a checkout's: allocated once, migrated whenever the version

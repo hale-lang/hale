@@ -4401,6 +4401,32 @@ The live half is memory's, projected from the record by the spine
   that cannot be reached is a refusal that destroys nothing. Allocation
   rows wait for the genesis memory confirms before they are written into
   the record.
+- **Every other organism is grafted from the habitat** (GH #1653).
+  `hale habitat graft <dir> [--attach] [--no-library]` births an
+  organism as the habitat's child: a new application at `<dir>`, or with
+  `--attach` the application or repository already there (once: one
+  whose `hale.toml` pins a record is refused). The habitat must be born
+  and its record readable, and the environment must agree with its
+  backends. Graft has two halves. **Needs by role** come first: the
+  genome declares the roles it needs from the habitat in its manifest,
+  `[dna] needs = ["memory", "nerves", "senses"]`; memory and the nerves
+  are always among them (the record is memory's, and the organization
+  reads the nerves). A genome that declares none, foreign heart or not
+  (a foreign heart declares nothing), gets exactly the organism's own
+  roles — memory, the nerves and the senses' store — and never a heart
+  role (`database`, `broker`, `cache`, `object-store`): a heart's
+  infrastructure is its own, and the habitat provides nothing for a
+  heart that did not ask. A Hale heart that needs one declares it; this
+  habitat provisions no heart role yet, so a declared one is refused by
+  name at graft, as is a role it does not know. **Then birth satisfies them**: the record's
+  genesis names its parent (`parent`, the habitat's record identity, in
+  the first row's body, and so in the child's identity), each role it
+  needs is allocated to it and recorded in the habitat's record
+  (`habitat.allocated`, `habitat.migrated`), the graft is a
+  `habitat.grafted <child>` row (`child`, `parent`, `needs`,
+  `backends`), and the `standard` pack is proposed to the child's Board.
+  `hale dna new` and `hale dna init` still birth an organism with no
+  parent until graft replaces them.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
   role is provisioned (`organism`, `role`, `service`, `project`, and the

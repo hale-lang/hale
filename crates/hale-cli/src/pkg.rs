@@ -117,6 +117,11 @@ pub struct DnaManifest {
     /// reads it (`dna::record_identity_at`); the toolchain only carries it.
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it; read in Hale
     pub record: Option<String>,
+    /// GH #1653: `[dna] needs = ["memory", "nerves", "senses"]` — the roles
+    /// the organism needs from the habitat, satisfied at graft
+    /// (`dna::habitat::needs_of` reads and checks it).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub needs: Option<Vec<String>>,
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and plan path

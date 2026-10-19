@@ -42,6 +42,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 
 ```text
 usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
+       hale habitat graft <dir> [--attach] [--no-library]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -69,6 +70,18 @@ up                   birth the habitat the first time, from the genome the
                      the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
                      HALE_DNA_NATS_URL_OWNER name, and provisions nothing
                      of its own. The hosted profile is not built.
+graft <dir>          birth an organism as the habitat's child, the one way an
+                     organism other than the habitat is born: its record's
+                     genesis names the habitat's record as its parent, the
+                     roles its genome needs (`[dna] needs` in its hale.toml:
+                     memory and nerves always, senses unless left out;
+                     undeclared, as a foreign heart is, it is exactly the
+                     organism's own, never a heart's database or broker) are
+                     allocated to it and recorded in the habitat's record,
+                     and the `standard` pack is proposed to its Board.
+                     <dir> is a new application's directory, or with
+                     --attach an application or a repository that is
+                     there already.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this

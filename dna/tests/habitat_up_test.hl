@@ -117,11 +117,23 @@ fn main() {
     std::test::assert(std::str::contains(allocated, "\"entity\": \"" + key + "/memory\"") && std::str::contains(allocated, "\"entity\": \"" + key + "/nerves\""), "its bootstrap allocations are rows of its record: " + allocated);
     std::test::assert(!std::str::contains(allocated, genome) && std::str::contains(allocated, "postgres-owner-" + key), "keyed by organism and role, naming vault slots, never a checkout: " + allocated);
 
-    // ---- a tenant: an organism born beside it is recorded in its record
-    let made = in_dir(scratch, toolchain() + "\ndna\nnew\ntenant\n--no-library");
-    std::test::assert_eq_int(made.code, 0, "the tenant is born: " + made.stdout + made.stderr);
+    // ---- a tenant, grafted: born as the habitat's child, its genesis
+    // naming the habitat's record, its graft a row of the habitat's
+    let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ntenant\n--no-library");
+    std::test::assert(made.code == 0 && std::str::contains(made.stdout, "as the habitat's child (parent " + key) && std::str::contains(made.stdout, "needs memory, nerves, senses"), "the tenant is grafted: " + made.stdout + made.stderr);
     let tenant = scratch + "/tenant";
     let tkey = dna::allocation_key(tenant);
+    let genesis = in_dir(tenant, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(std::str::contains(genesis, "\"kind\": \"record.genesis\"") && std::str::contains(genesis, "\\\"parent\\\":\\\"" + dna::record_scope(genome) + "\\\""), "its genesis names its parent: " + genesis);
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.grafted"), "\"entity\": \"" + tkey + "\""), "and the habitat records the graft");
+    // a repository attached, declaring the roles it needs: no senses
+    std::io::fs::mkdir(scratch + "/attached") or discard;
+    std::io::fs::write_file(scratch + "/attached/README.md", "# attached\n\nA repository grafted as it is.\n") or discard;
+    std::io::fs::write_file(scratch + "/attached/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n") or discard;
+    let attached = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach\n--no-library");
+    std::test::assert(attached.code == 0 && std::str::contains(attached.stdout, "needs memory, nerves)") && !std::str::contains(attached.stdout, "senses  allocated"), "an attached repository gets the roles it declares: " + attached.stdout + attached.stderr);
+    let refused = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach");
+    std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "is born already"), "an organism is grafted once: " + refused.stderr);
     let with_tenant = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     std::test::assert(std::str::contains(with_tenant, "allocation " + tkey + " (" + tenant + ")") && std::str::contains(with_tenant, "memory  memory-" + tkey + " running"), "status names the tenant's allocation: " + with_tenant);
     std::test::assert(std::str::contains(rows_of(genome, "habitat.migrated"), "\"entity\": \"" + tkey + "/memory\""), "the tenant's migration is a row of the habitat's record");

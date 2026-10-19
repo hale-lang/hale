@@ -1627,6 +1627,12 @@ fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
 }
 
 fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
+    init_under(app_dir, library, None)
+}
+
+/// [`init`], the record born as `parent`'s child when one is named (GH
+/// #1653: graft, the habitat's act): its genesis names its parent.
+fn init_under(app_dir: &Path, library: bool, parent: Option<&str>) -> Result<Vec<String>, String> {
     // an application, or (GH #1090) a repository with none at its root
     let app = match repository_root(app_dir)? {
         Some(_) => None,
@@ -1778,7 +1784,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     //     secrets, memory's schema and the row follow
     let fresh = manifest_pin(&manifest)?.is_none();
     let genesis_body = if fresh {
-        let (body, id) = genesis_row(&root)?;
+        let (body, id) = genesis_row(&root, parent)?;
         pin_record_in_manifest(&manifest, &id)?;
         out.push(format!("pinned  {} ([dna] record = {}…, the identity of the record born here)", manifest.display(), short_id(&id)));
         Some(body)
@@ -2787,6 +2793,11 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------
 
 fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>, library: bool) -> Result<Vec<String>, String> {
+    new_project_under(dir, profile, remote, body, library, None)
+}
+
+/// [`new_project`], born as `parent`'s child (GH #1653: graft).
+fn new_project_under(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>, library: bool, parent: Option<&str>) -> Result<Vec<String>, String> {
     match profile {
         None | Some("local") => {
             if remote.is_some() || body.is_some() {
@@ -2869,7 +2880,7 @@ fn main() {{
         fs::write(&p, c).map_err(|e| format!("write {}: {e}", p.display()))?;
         out.push(format!("created {}", p.display()));
     }
-    let mut rest = init(dir, library)?;
+    let mut rest = init_under(dir, library, parent)?;
     out.append(&mut rest);
     if let Some(url) = remote {
         git(dir, &["remote", "add", "origin", url])?;
@@ -3545,12 +3556,16 @@ fn pinned_manifest(text: &str, identity: &str) -> Result<String, String> {
 /// before (`genesis`): the genome it is born on (the root commit, "" for a
 /// genome with none yet) and a nonce, so two projects made alike are two
 /// records.
-fn genesis_row(root: &Path) -> Result<(String, String), String> {
+fn genesis_row(root: &Path, parent: Option<&str>) -> Result<(String, String), String> {
     let genome = Command::new("git").args(["-C", &root.to_string_lossy(), "rev-list", "--max-parents=0", "HEAD"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string()).unwrap_or_default();
     let mut nonce = [0u8; 16];
     openssl::rand::rand_bytes(&mut nonce).map_err(|e| format!("a nonce for the record: {e}"))?;
     let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-    let body = serde_json::json!({ "genome": genome, "nonce": nonce }).to_string();
+    // a grafted organism's first row names its parent, the habitat's record
+    let body = match parent {
+        Some(p) => serde_json::json!({ "genome": genome, "nonce": nonce, "parent": p }).to_string(),
+        None => serde_json::json!({ "genome": genome, "nonce": nonce }).to_string(),
+    };
     let digest = openssl::sha::sha256(format!("genesis|record.genesis|record|{body}").as_bytes());
     Ok((body, digest.iter().map(|b| format!("{b:02x}")).collect()))
 }
