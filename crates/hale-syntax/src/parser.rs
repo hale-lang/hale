@@ -3744,20 +3744,6 @@ impl Parser {
                         ),
                     ));
                 }
-                if let LocusMember::Fn(f) = m {
-                    if f.name.name == crate::ast::PROBES_HTTP_FN {
-                        return Err(Diag::parse(
-                            f.span,
-                            format!(
-                                "`probes` block is only valid inside `main \
-                                 locus`: the probes are the process's, and \
-                                 locus `{}` is not declared with the `main` \
-                                 modifier",
-                                name.name
-                            ),
-                        ));
-                    }
-                }
                 if let LocusMember::Placement(pb) = m {
                     return Err(Diag::parse(
                         pb.span,
@@ -4190,16 +4176,6 @@ impl Parser {
             TokenKind::Ident(s) if s == "topology" => {
                 self.parse_topology_block().map(LocusMember::Topology)
             }
-            // GH #1477 contextual keyword — `probes { http(PORT); }`.
-            // Lexes as Ident; recognized when a `{` follows. It reads as
-            // the main locus's method `__probes$http` (an unspeakable
-            // name), whose body is the port, so the port is checked and
-            // lowered as any method's expression, `self.<param>` in
-            // scope. The "must be inside `main locus`" check fires in
-            // `parse_locus_decl` (parallel to placement/bindings).
-            TokenKind::Ident(s) if s == "probes" && matches!(self.peek_at(1), TokenKind::LBrace) => {
-                self.parse_probes_block().map(LocusMember::Fn)
-            }
             // GH #382 phase 1 contextual keyword — `claims { ... }`.
             // Lexes as Ident; recognized here. The "must be inside
             // `main locus`" check fires in `parse_locus_decl`
@@ -4576,65 +4552,6 @@ impl Parser {
     ///
     /// The "must be inside `main locus`" check fires later in
     /// `parse_locus_decl` (parallel to placement/bindings).
-    /// GH #1477: `probes { http(PORT); }` as the main locus's method
-    /// `fn __probes$http() -> Int { return PORT; }`
-    /// ([`crate::ast::PROBES_HTTP_FN`]).
-    fn parse_probes_block(&mut self) -> Result<FnDecl, Diag> {
-        let kw = self.peek_token().clone();
-        self.bump(); // `probes`
-        self.expect(TokenKind::LBrace, "{")?;
-        let head = self.peek_token().clone();
-        match &head.kind {
-            TokenKind::Ident(s) if s == "http" => {
-                self.bump();
-            }
-            other => {
-                return Err(Diag::parse(
-                    head.span,
-                    format!(
-                        "expected `http(PORT);` inside `probes {{ }}`, got {:?}: the probes are \
-                         served over HTTP on the port named",
-                        other
-                    ),
-                ));
-            }
-        }
-        self.expect(TokenKind::LParen, "(")?;
-        let port = self.parse_expr()?;
-        self.expect(TokenKind::RParen, ")")?;
-        self.expect(TokenKind::Semi, ";")?;
-        if !matches!(self.peek(), TokenKind::RBrace) {
-            return Err(Diag::parse(
-                self.peek_token().span,
-                "`probes { }` holds one `http(PORT);`".to_string(),
-            ));
-        }
-        let close = self.peek_token().clone();
-        self.bump(); // `}`
-        let span = kw.span.merge(close.span);
-        let port_span = port.span();
-        Ok(FnDecl {
-            name: Ident::new(crate::ast::PROBES_HTTP_FN.to_string(), kw.span),
-            generics: Vec::new(),
-            params: Vec::new(),
-            ret: Some(TypeExpr::Primitive(PrimType::Int, port_span)),
-            fallible: None,
-            ffi: None,
-            export: false,
-            unbounded: false,
-            bounded_by: None,
-            rpc: None,
-            budget: None,
-            hot: false,
-            effects: Vec::new(),
-            quantities: Vec::new(),
-            decorators: Vec::new(),
-            body: Block { stmts: vec![Stmt::Return(Some(port), port_span)], tail: None, span },
-            span,
-            id: NodeId::NONE,
-        })
-    }
-
     fn parse_topology_block(&mut self) -> Result<TopologyBlock, Diag> {
         let kw_tok = self.peek_token().clone();
         self.bump(); // consume `topology` ident

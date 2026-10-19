@@ -4575,24 +4575,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => None,
         };
         // GH #1477: the main locus's births are done (params children
-        // born, bindings realized, boot subscriptions registered): the
-        // process is ready, and its probes, if it declares them, are
-        // served from here on, on the port `probes { http(PORT); }`
-        // names (`__probes$http`, read here with `self` in scope).
-        if is_main_locus {
-            if let Some(port_fn) = info.user_methods.get(hale_syntax::ast::PROBES_HTTP_FN).copied() {
-                let port = self
-                    .builder
-                    .build_call(port_fn, &[self_ptr.into()], "probes.port")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("the probes' port is an Int");
-                let start = self.module.get_function("lotus_probes_start").expect("lotus_probes_start declared");
-                self.builder
-                    .build_call(start, &[port.into()], "probes.start")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
+        // born, bindings realized, boot subscriptions registered): a
+        // program that declares the probes (a `std::observe::Probes`
+        // param, whose birth started them) is ready from here on.
+        if is_main_locus
+            && info.fields.values().any(|(_, ty)| {
+                matches!(ty, CodegenTy::LocusRef(n) if n == hale_types::probes::PROBES_LOCUS)
+            })
+        {
+            let ready = self.module.get_function("lotus_probes_ready").expect("lotus_probes_ready declared");
+            self.builder
+                .build_call(ready, &[], "probes.ready")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         // m41: gate run() on __quarantined. If a parent's
         // on_failure called quarantine(self) during the birth-

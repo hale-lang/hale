@@ -1,7 +1,7 @@
-//! GH #1477 S1 — runtime probes. `probes { http(PORT); }` on the main
-//! locus serves `/healthz`, `/readyz` and `/capacity` from a thread of the
-//! runtime's own once the main locus's births are done (spec/semantics.md
-//! § Probes). Each program binds port 0 and the test reads the port the
+//! GH #1477 S1 — runtime probes. A main-locus param of type
+//! `std::observe::Probes` serves `/healthz`, `/readyz` and `/capacity`
+//! from a thread of the runtime's own, ready once the main locus's births
+//! are done (spec/semantics.md § Probes). Each program binds port 0 and the test reads the port the
 //! kernel gave back from `/proc` (`child::tcp_port`): no test hands a
 //! child a port it drew.
 
@@ -58,8 +58,7 @@ fn stop(mut child: Child) {
 
 const SERVED: &str = r#"
 main locus App {
-    params { port: Int = 0; }
-    probes { http(self.port); }
+    params { probes: std::observe::Probes = std::observe::Probes { port: 0 }; }
     run() { std::time::sleep(30s); }
 }
 fn main() { App { }; }
@@ -87,8 +86,7 @@ fn the_probes_answer_health_readiness_and_capacity() {
 
 const DRAINS: &str = r#"
 main locus App {
-    params { port: Int = 0; }
-    probes { http(self.port); }
+    params { probes: std::observe::Probes = std::observe::Probes { port: 0 }; }
     run() {
         while !self.draining { std::time::sleep(20ms); }
     }
@@ -129,12 +127,11 @@ locus Slow {
 }
 main locus App {
     params {
-        port: Int = 0;
+        probes: std::observe::Probes = std::observe::Probes { port: 0 };
         slow: Slow = Slow { };
     }
     placement { slow: cooperative(pool = slow); }
     bus { publish "jobs" of type Job; }
-    probes { http(self.port); }
     run() {
         "jobs" <- Job { n: 1 };
         "jobs" <- Job { n: 2 };
@@ -168,11 +165,39 @@ fn a_stalled_pool_is_not_live() {
     let _ = std::fs::remove_file(&bin);
 }
 
-/// `probes { }` belongs to the main locus, and holds one `http(PORT);`.
+const BOOTS: &str = r#"
+locus Warm {
+    birth() { std::time::sleep(2s); }
+}
+main locus App {
+    params {
+        probes: std::observe::Probes = std::observe::Probes { port: 0 };
+        warm: Warm = Warm { };
+    }
+    run() { std::time::sleep(30s); }
+}
+fn main() { App { }; }
+"#;
+
+/// The probes' birth starts the listener; the process is ready only once
+/// every birth of the main locus is done: while a later param is still
+/// being born, `/readyz` answers 503 `starting` and `/healthz` 200.
 #[test]
-fn a_probes_block_is_the_main_locus_s_and_holds_one_http_port() {
-    let parse = |src: &str| hale_syntax::parse_source(src).err().map(|d| format!("{d:?}")).unwrap_or_default();
-    assert!(parse("locus W { probes { http(9100); } }\nmain locus App { }\n").contains("`probes` block is only valid inside `main"));
-    assert!(parse("main locus App { probes { grpc(9100); } }\n").contains("expected `http(PORT);`"));
-    assert!(parse("main locus App { probes { http(1); http(2); } }\n").contains("holds one `http(PORT);`"));
+fn the_process_is_ready_once_its_births_are_done() {
+    let bin = build("boots", BOOTS);
+    let (child, port) = spawn(&bin, None);
+    assert_eq!(get(port, "/readyz"), (503, "starting\n".to_string()));
+    assert_eq!(get(port, "/healthz").0, 200);
+    let until = Instant::now() + Duration::from_secs(5);
+    let mut last = (0, String::new());
+    while Instant::now() < until {
+        last = get(port, "/readyz");
+        if last.0 == 200 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(last, (200, "ready\n".to_string()));
+    stop(child);
+    let _ = std::fs::remove_file(&bin);
 }

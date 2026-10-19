@@ -26079,12 +26079,14 @@ void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
 }
 
 /*
- * Runtime probes (GH #1477, S1): `probes { http(port); }` on the main
- * locus asks the runtime to serve the process's health over HTTP, on a
- * thread of its own, so a wedged pool or a busy main thread cannot keep it
- * from answering. Nothing is served unless a program declares it: the
- * main locus calls `lotus_probes_start(port)` once its births are done,
- * just before its run().
+ * Runtime probes (GH #1477, S1): a main-locus param of type
+ * `std::observe::Probes` (`probes: std::observe::Probes { port: 9090 }`)
+ * asks the runtime to serve the process's health over HTTP, on a thread
+ * of its own, so a wedged pool or a busy main thread cannot keep it from
+ * answering. Nothing is served unless a program declares it: the param's
+ * birth calls `lotus_probes_start(port)` (the listener, not yet ready),
+ * and the main locus calls `lotus_probes_ready()` once all its births are
+ * done, just before its run().
  *
  *   GET /healthz   liveness: 200 unless a queue has work its consumer has
  *                  not touched for the stall window (main's queue, each
@@ -26314,16 +26316,25 @@ static void *lotus_probes_thread(void *arg) {
 }
 #endif
 
-/* `probes { http(port); }`: serve the probes on `port`, all interfaces,
- * from a thread of their own, and mark the process ready. Called once,
- * by the main locus, when its births are done. A port that cannot be
+/* The main locus's births are done: `/readyz` answers 200 from here on
+ * (until the process drains). Called by the main locus of a program that
+ * declares the probes, just before its run(). */
+void lotus_probes_ready(void) {
+#ifndef __wasm__
+    atomic_store(&g_probes_ready, 1);
+#endif
+}
+
+/* A `std::observe::Probes` param's birth: serve the probes on `port`, all
+ * interfaces, from a thread of their own; `/readyz` answers 503 until
+ * `lotus_probes_ready`. One probe set a process (the check allows one,
+ * on the main locus); a second start is a no-op. A port that cannot be
  * bound is a startup failure, as an unbindable listener is. */
 void lotus_probes_start(int64_t port) {
 #ifdef __wasm__
     (void)port;
 #else
     if (atomic_exchange(&g_probes_started, 1)) {
-        atomic_store(&g_probes_ready, 1);
         return;
     }
     const char *stall = getenv("LOTUS_PROBES_STALL_MS");
@@ -26357,7 +26368,6 @@ void lotus_probes_start(int64_t port) {
         exit(1);
     }
     pthread_attr_destroy(&attr);
-    atomic_store(&g_probes_ready, 1);
 #endif
 }
 

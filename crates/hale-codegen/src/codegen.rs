@@ -27900,6 +27900,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("returns i64");
                 Ok((v, CodegenTy::Int))
             }
+            // GH #1477: a Probes param's birth starts the runtime's
+            // probe thread on its port (statement).
+            Id::ProcessProbesStartRaw => match pos {
+                StdCallPos::Statement => {
+                    let (port, _) = self.lower_expr(&args[0], scope)?;
+                    let f = self
+                        .module
+                        .get_function("lotus_probes_start")
+                        .expect("lotus_probes_start declared");
+                    self.builder
+                        .build_call(f, &[port.into()], "probes.start")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    return Ok(None);
+                }
+                StdCallPos::Value => return self.lower_std_unarmed(segs, args, scope, pos),
+            },
             // GH #230: std::test pass-counter bump (statement).
             Id::TestNotePassRaw => match pos {
                 StdCallPos::Statement => {
@@ -29427,6 +29443,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::TestFailedRaw
             | Id::TestNoteFailRaw
             | Id::TestNotePassRaw
+            | Id::ProcessProbesStartRaw
             | Id::TestPassesRaw
             | Id::TextBase64Decode
             | Id::TextBase64Encode

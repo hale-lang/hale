@@ -4636,19 +4636,28 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/printable_rule.rs#131986c0
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
-== crates/hale-codegen/tests/probes.rs#2090a72d
+== crates/hale-codegen/tests/probes.rs#2e012ccc
 root	App	the entry
 row	App@literal1	App	main	default
+row	App@literal1.probes	__StdObserveProbes	main	default
 
-== crates/hale-codegen/tests/probes.rs#17a8f33e
+== crates/hale-codegen/tests/probes.rs#beaceb36
 root	App	the entry
 row	App@literal1	App	main	default
+row	App@literal1.probes	__StdObserveProbes	main	default
 
-== crates/hale-codegen/tests/probes.rs#f2134535
+== crates/hale-codegen/tests/probes.rs#095937f6
 root	App	the entry
 domain	pool:slow
 row	App@literal1	App	main	default
+row	App@literal1.probes	__StdObserveProbes	main	default
 row	App@literal1.slow	Slow	pool:slow	entry	off owner
+
+== crates/hale-codegen/tests/probes.rs#95fe9a04
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.probes	__StdObserveProbes	main	default
+row	App@literal1.warm	Warm	main	default
 
 == crates/hale-codegen/tests/process_child.rs#60a6b930
 dynamic	__StdProcessChild	on main	in the seed

@@ -423,14 +423,14 @@ nobody could see is not an absence.
 
 A supervisor (compose's healthcheck, a Kubernetes probe) needs to ask a
 process whether it is alive and whether it is ready, and a program that
-serves no API still has to answer. Declare it on the main locus:
+serves no API still has to answer. Declare it as a param of the main
+locus:
 
 ```hale
 main locus App {
     params {
-        probe_port: Int = 9100;
+        probes: std::observe::Probes = std::observe::Probes { port: 9100 };
     }
-    probes { http(self.probe_port); }
     run() {
         while !self.draining { std::time::sleep(100ms); }
     }
@@ -438,20 +438,25 @@ main locus App {
 fn main() { App { }; }
 ```
 
-The runtime then serves, on that port, from a thread of its own:
+The runtime then serves, on that port, from a thread of its own (not a
+pool you place, so a stuck pool cannot keep it from answering):
 
 - `GET /healthz`: `200 ok`, or `503` naming each queue (main's, a
   pool's) that has held work its worker has not touched for ten seconds
   (`LOTUS_PROBES_STALL_MS` changes the window). A pool running one long
   handler with nothing waiting is still alive; one with work piling
   behind a stuck handler is not.
-- `GET /readyz`: `200 ready` once the main locus's births are done (its
-  children born, its bindings open), `503 draining` once the process
-  drains, so a supervisor stops sending it work before it stops.
+- `GET /readyz`: `503 starting` until the main locus's births are done
+  (its children born, its bindings open), then `200 ready`, and
+  `503 draining` once the process drains, so a supervisor stops sending
+  it work before it stops.
 - `GET /capacity`: each queue's waiting cells, its capacity, and how long
   it has stalled, as JSON.
 
-Nothing is served, or measured, in a program without a `probes` block.
+The main locus declares one, and builds it by its default: the port can
+read another param (`std::observe::Probes { port: self.probe_port }`),
+but a construction of the main locus cannot supply the probes. Nothing
+is served, or measured, in a program without the param.
 
 ## The shape this gives you
 

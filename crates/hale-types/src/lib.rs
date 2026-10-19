@@ -77,6 +77,7 @@ pub mod stdlib_surface;
 pub mod ownership;
 pub mod ownership_graph;
 pub mod placement;
+pub mod probes;
 pub mod printable;
 pub mod purity;
 pub mod quantitative;

@@ -320,11 +320,12 @@ fn own_scope_let_block_scope_test() {
             // called from a sink's bus handler); 478, and two more, since
             // a record's values are escaped byte by byte (the plain-byte
             // and hex-digit helpers); 480 since `std::json::Value` came
-            // (`parse` and `null`)
+            // (`parse` and `null`); 481, and one more entry point, since
+            // `std::observe::Probes` came (its birth)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 480 fns, 29 entry points, 130 invoked-unboundedly",
-                "+ # 480 fns, 29 entry points, 129 invoked-unboundedly",
+                "- # 481 fns, 30 entry points, 130 invoked-unboundedly",
+                "+ # 481 fns, 30 entry points, 129 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -923,7 +924,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 31, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 32, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the
