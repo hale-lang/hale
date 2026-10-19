@@ -31,9 +31,11 @@ fn toolchain() -> String {
 
 // Run `argv` (newline-separated) in `dir`, with `vault` as the vault, no
 // compose project named from outside and no discovery. The local habitat
-// is this test file's own: `hale test` gives each file one.
+// is this test file's own: `hale test` gives each file one. An owner's
+// DSN or NATS named alone is dropped, as `main` falls back to the
+// habitat's own backends then, which refuse either.
 fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && exec \"$@\"\nsh\n" + dir + "\n" + vault + "\n" + argv);
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && { [ -n \"$HALE_DNA_MEMORY_DSN_OWNER\" ] && [ -n \"$HALE_DNA_NATS_URL_OWNER\" ] || unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; } && exec \"$@\"\nsh\n" + dir + "\n" + vault + "\n" + argv);
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
