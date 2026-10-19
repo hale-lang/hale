@@ -647,6 +647,9 @@ pub struct BuildOptions {
     /// GH #1109: `--env <name>` — the deployment target whose
     /// constitution is adopted.
     pub env: Option<String>,
+    /// `--adopt <constitution>` (repeatable): constitutions adopted into
+    /// the root locus for this build only (`std::law::Standard`).
+    pub adopt: Vec<String>,
     /// #8 dev profile (2026-07-02): trade runtime speed for build
     /// latency — O1 module pipeline + Less machine codegen instead
     /// of the O3/Aggressive release default. The 97%-of-build-time
@@ -810,6 +813,7 @@ impl BuildOptions {
         BuildOptions {
             cache_dir,
             env: Default::default(),
+            adopt: Default::default(),
             dev_profile: Default::default(),
             link_libs: Default::default(),
             csrc_files: Default::default(),

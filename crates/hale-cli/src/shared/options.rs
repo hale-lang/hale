@@ -16,6 +16,7 @@ pub(crate) const VALUE_FLAGS: &[&str] = &[
     "--target-cpu",
     "--target-cache",
     "--env",
+    "--adopt",
     "-o",
     "--out",
 ];
@@ -100,6 +101,8 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--workspace", false),
     // GH #409
     ("--env", true),
+    // a constitution adopted for this check only (`std::law::Standard`)
+    ("--adopt", true),
     ("--matrix", false),
     // F.40 P3: the target the program is checked for, parsed as
     // `hale build --target` parses it (design §1.3).
@@ -229,6 +232,17 @@ pub(crate) fn parse_build_options(
                             api::serve(NAME, unix::Rpc { path: \"…\" }, as: \"web\", bound: 64, on_full: refuse);` \
                             (spec/api.md); `hale check --api` prints its description"
                     .to_string());
+            }
+            // A constitution adopted into the root locus for this build
+            // only, as an environment's is (`std::law::Standard`).
+            "--adopt" => {
+                let v = args.get(i + 1).filter(|v| !v.is_empty() && !v.starts_with("--")).ok_or_else(|| {
+                    "--adopt requires a constitution (e.g. --adopt std::law::Standard)".to_string()
+                })?;
+                if !opts.adopt.contains(v) {
+                    opts.adopt.push(v.clone());
+                }
+                i += 2;
             }
             // GH #1109: the deployment target. Its constitution is
             // adopted as `check --env` adopts it.
@@ -686,6 +700,7 @@ pub(crate) fn build_config(
     });
     config.allow_unowned_subscriber =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    config.adopt = options.adopt.clone();
     config
 }
 

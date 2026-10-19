@@ -835,7 +835,7 @@ locus __StdApiWsListener {
         if self.fd < 0 || std::io::tcp::__name_listener(self.listener, self.fd) == 0 {
             // the structural failure of a binding that cannot be realized
             // (spec/semantics.md): the diagnostic and a non-zero exit
-            eprintln("api: ws::Hub could not listen on " + self.bind);
+            __std_log_diag("api: ws::Hub could not listen on " + self.bind);
             std::process::exit(2);
         }
         self.relay.name = self.listener;
@@ -920,7 +920,7 @@ locus __StdApiUdpEndpoint {
         self.fd = std::io::udp::bind(host, port) or - 1;
         if self.fd < 0 {
             // the structural failure of a binding that cannot be realized
-            eprintln("api: udp::Hub could not listen on " + self.bind);
+            __std_log_diag("api: udp::Hub could not listen on " + self.bind);
             std::process::exit(2);
         }
         self.address = host + ":" + to_string(std::io::tcp::__local_port(self.fd));

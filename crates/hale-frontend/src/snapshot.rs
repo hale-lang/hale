@@ -234,6 +234,10 @@ pub struct Config {
     /// for every entry point; off only for the test harness's snapshot
     /// ([`Config::harness`]), which lowers what it is handed.
     pub check_gates_lowering: bool,
+    /// `--adopt <constitution>` (repeatable): constitutions adopted into
+    /// the root locus for this load only, as an environment's are; a
+    /// `std::law::…` path loads the stdlib's standard constitutions.
+    pub adopt: Vec<String>,
 }
 
 impl Config {
@@ -249,6 +253,7 @@ impl Config {
             build_rules: false,
             alloc_advisory: false,
             check_gates_lowering: true,
+            adopt: Vec::new(),
         }
     }
 
@@ -266,6 +271,7 @@ impl Config {
             build_rules: true,
             alloc_advisory: false,
             check_gates_lowering: true,
+            adopt: Vec::new(),
         }
     }
 
@@ -315,6 +321,10 @@ impl Config {
                     d.field(c.as_bytes());
                 }
             }
+        }
+        d.count(self.adopt.len());
+        for a in &self.adopt {
+            d.field(a.as_bytes());
         }
         d.flag(self.whole_program);
         d.flag(self.allow_unowned_subscriber);
@@ -718,6 +728,41 @@ impl Snapshot {
                 hale_syntax::desugar::wrap_main_as_wasm_export(prog);
             }
         }
+        // `--adopt` and an environment's constitutions: a `std::law::…`
+        // one loads the stdlib's standard constitutions first, once, and
+        // an unknown one of that module is refused by name.
+        {
+            let mut wanted: Vec<String> = snap.config.adopt.clone();
+            if let Some(env) = &snap.config.environment {
+                wanted.extend(env.adopt.iter().cloned());
+            }
+            let std_law: Vec<&String> = wanted.iter().filter(|a| a.starts_with("std::")).collect();
+            if !std_law.is_empty() {
+                for a in &std_law {
+                    if !hale_types::stdlib_law_constitutions().iter().any(|(p, _)| p == a) {
+                        let known: Vec<&str> = hale_types::stdlib_law_constitutions().iter().map(|(p, _)| *p).collect();
+                        return Err(LoadError::Refused(format!(
+                            "no stdlib constitution `{a}`: the stdlib declares {}",
+                            known.join(", ")
+                        )));
+                    }
+                }
+                let path = PathBuf::from(STD_LAW_PROGRAM);
+                if !snap.programs.contains_key(&path) {
+                    let (program, base) = std_law_program(&snap.file_bases)?;
+                    // a file of the load, so a diagnostic on a clause of
+                    // it names `<stdlib>/law.hl` and its line
+                    let text = hale_types::stdlib_law_source().to_string();
+                    snap.file_bases.push((base, path.clone(), text.len() as u32));
+                    snap.sources.insert(path.clone(), text);
+                    snap.programs.insert(path, program);
+                }
+            }
+            if !snap.config.adopt.is_empty() {
+                let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
+                adopt_into_root(&mut refs, &snap.config.adopt);
+            }
+        }
         if let Some(env) = &snap.config.environment {
             // The constitutions land in the seed's own `main locus` the
             // build deploys. Whether there is an entry to deploy is the
@@ -786,6 +831,17 @@ impl Snapshot {
                     entry.display()
                 )));
             }
+        }
+        if !snap.config.adopt.is_empty() && !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
+            // `adopt` is legal only in a main locus's `claims { }`: a
+            // constitution is evaluated in the closed world a main
+            // closes, and a seed with no entry closes none, so the
+            // flag has nowhere to land and would check nothing.
+            return Err(LoadError::Refused(format!(
+                "{}: `--adopt` needs a main locus; this program has none. A constitution is \
+                 adopted into the entry's `main locus` and evaluated in the world it closes",
+                entry.display()
+            )));
         }
         Ok(snap)
     }
@@ -2319,6 +2375,35 @@ pub fn inject_adopt(l: &mut hale_syntax::ast::LocusDecl, name: &str) {
 /// environment may be bound to it is the entry (a seed with no entry is
 /// refused once the load is minted, so what lands there is never
 /// checked), and it is the entry once lowering deploys the entry (L4).
+/// Where the stdlib's standard constitutions sit among a load's
+/// programs, when one is adopted.
+const STD_LAW_PROGRAM: &str = "/<stdlib>/law.hl";
+
+/// `std::law` as a program of the load: `law.hl` parsed, its spans moved
+/// past every file of the load so none is shared, and each constitution
+/// named by the path it is adopted under (`std::law::Standard`), so an
+/// adoption needs no import.
+fn std_law_program(file_bases: &[(u32, PathBuf, u32)]) -> Result<(Program, u32), LoadError> {
+    let mut p = hale_syntax::parse_source(hale_types::stdlib_law_source())
+        .map_err(|e| LoadError::Refused(format!("std::law does not parse: {e:?}")))?;
+    let end = file_bases.iter().map(|(base, _, len)| base + len + 1).max().unwrap_or(0);
+    hale_syntax::shift::shift_program(&mut p, end);
+    for item in &mut p.items {
+        if let hale_syntax::ast::TopDecl::Constitution(cd) = item {
+            if let Some((path, _)) = hale_types::stdlib_law_constitutions().iter().find(|(_, n)| *n == cd.name.name) {
+                cd.name.name = path.to_string();
+            }
+        }
+    }
+    Ok((p, end))
+}
+
+/// Whether a program of the load is the stdlib's standard constitutions
+/// an adoption loaded, not a file of the seed.
+pub fn is_std_law_program(path: &Path) -> bool {
+    path == Path::new(STD_LAW_PROGRAM)
+}
+
 pub fn adopt_into_root(programs: &mut [&mut Program], names: &[String]) {
     let row = {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();

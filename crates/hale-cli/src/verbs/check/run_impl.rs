@@ -324,6 +324,21 @@ pub(crate) fn load_for_check(
     // wasm32 and the host is the fallback, as in the build and the
     // editor.
     let args: Vec<String> = std::env::args().collect();
+    // `--adopt <constitution>` (repeatable): adopted into the root locus
+    // for this check only, as an environment's constitution is
+    for (i, a) in args.iter().enumerate() {
+        if a == "--adopt" {
+            if let Some(v) = args.get(i + 1) {
+                if !config.adopt.contains(v) {
+                    config.adopt.push(v.clone());
+                }
+            }
+        } else if let Some(v) = a.strip_prefix("--adopt=") {
+            if !config.adopt.contains(&v.to_string()) {
+                config.adopt.push(v.to_string());
+            }
+        }
+    }
     match flag_value_in(&args, "--target") {
         Ok(None) => {}
         Ok(Some(v)) => match parse_target(&v) {
@@ -1115,7 +1130,9 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     if !json_mode {
         // Count the target's own files, not `programs` entries — a
         // multi-file seed merges into one program before checking.
-        let n_files = own_files.len().max(snap.programs().len());
+        let n_files = own_files
+            .len()
+            .max(snap.programs().keys().filter(|p| !hale_frontend::snapshot::is_std_law_program(p)).count());
         if gate_warnings {
             eprintln!("verified: {} file(s), 0 findings", n_files);
         } else {

@@ -28,6 +28,21 @@
 // Instantiate StdoutSink BEFORE any Logger so the sink is
 // listening when Logger.info/warn/error fires.
 
+// The stdlib's own diagnostic line on stderr: a binding that cannot be
+// realized before the process exits, a role table naming nobody. It is
+// the stdlib's logger writing, so a law gated `avoiding std::log::*`
+// (`std::law::Standard`) reads it as the logger's, not as a bare write.
+fn __std_log_diag(line: String) {
+    eprintln(line);
+}
+
+// The stdlib's own protocol line on stdout: a listener's `ready_signal`,
+// which a program sets for a piped oracle to wait on. Written here for the
+// same reason as `__std_log_diag`.
+fn __std_log_out(line: String) {
+    println(line);
+}
+
 // std::log::LogEvent — payload type for every Logger publish.
 //
 // `level` is an Int constant in the 1..=5 range; sinks map it

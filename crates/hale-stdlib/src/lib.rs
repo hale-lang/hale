@@ -248,6 +248,14 @@ pub const AP_SOURCE: &str = concat!(
     include_str!("../hl/probes.hl"),
 );
 
+/// `std::law`: the standard constitutions, loaded only when a program
+/// or an environment adopts one (never part of `AP_SOURCE`).
+pub const LAW_SOURCE: &str = include_str!("../hl/law.hl");
+
+/// The constitutions `LAW_SOURCE` declares, by the path they are adopted
+/// under (`std::law::Standard`) and the name `law.hl` declares them by.
+pub const LAW_CONSTITUTIONS: &[(&str, &str)] = &[("std::law::Standard", "Standard")];
+
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
 /// concatenation of these contents joined by `"\n"` — asserted by
 /// a test, since span math depends on it. Downstream handoff
