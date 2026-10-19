@@ -130,3 +130,17 @@ fn the_flag_adopts_a_constitution_the_source_adopts_once() {
     assert_eq!(out.matches("claim `quiet` violated").count(), 1, "{out}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn adopting_into_a_program_with_no_main_locus_is_refused() {
+    // `adopt` is legal only in a main locus's `claims { }`, so a seed
+    // that closes no world has nowhere for the flag to land: refused,
+    // never passed with the law unapplied
+    let d = seed("no_main", "fn main() {\n    println(\"bare\");\n}\n", None);
+    let (ok, out) = check(&d, &["--adopt", "std::law::Standard"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("`--adopt` needs a main locus; this program has none"), "{out}");
+    let (ok, out) = check(&d, &[]);
+    assert!(ok, "{out}");
+    let _ = std::fs::remove_dir_all(&d);
+}

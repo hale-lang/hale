@@ -832,6 +832,17 @@ impl Snapshot {
                 )));
             }
         }
+        if !snap.config.adopt.is_empty() && !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
+            // `adopt` is legal only in a main locus's `claims { }`: a
+            // constitution is evaluated in the closed world a main
+            // closes, and a seed with no entry closes none, so the
+            // flag has nowhere to land and would check nothing.
+            return Err(LoadError::Refused(format!(
+                "{}: `--adopt` needs a main locus; this program has none. A constitution is \
+                 adopted into the entry's `main locus` and evaluated in the world it closes",
+                entry.display()
+            )));
+        }
         Ok(snap)
     }
 

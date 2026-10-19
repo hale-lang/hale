@@ -1128,7 +1128,11 @@ in union with what the source and the environment already adopt. The
 flag repeats. Adoption is by name, so one constitution adopted by the
 flag and by `hale.toml` or by an `adopt` in the source is adopted once,
 and its clauses are checked once. A name nothing declares is refused as
-an unknown constitution, as a misspelt `adopt` is.
+an unknown constitution, as a misspelt `adopt` is. A seed with no entry
+(no top-level `main locus` of its own) is refused: `adopt` is legal only
+in a main locus's `claims { }`, because a constitution is evaluated in
+the world a main closes, and a seed that closes none would otherwise
+pass with the law never applied.
 
 **`std::law`** holds the stdlib's standard constitutions. One is adopted
 by its path (`--adopt std::law::Standard`, or `constitution =
