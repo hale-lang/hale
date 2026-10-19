@@ -2273,6 +2273,30 @@ is the empty key. The digest folds the value in beside the key
 (`checks:bounded[...]@name->status`). The generated clients keep the
 records and put each one's value alone on the wire.
 
+**Free-form JSON** (2026-10-19) is a `std::json::Value` field: any JSON
+value the program carries and never decodes into a type of its own (a
+seat's configuration, a change's before and after). It is held as its
+text, and the codecs carry that text byte for byte. The decoder takes the
+member's value as sent, and the encoder writes it back, so key order,
+spacing and a number's spelling survive. A value is well-formed JSON at
+most 64 levels deep, or it is refused `wrong_type`, and at most 64 KiB,
+or it is refused `too_long`. A list of values, a map of them, and an
+optional one (a presence pair) are carried as for any field. A row's
+whole request or response is never a `Value`: it is a record's field, and
+law 5 refuses the row. The description gives it `{"x-hale-any": true}`,
+an empty schema marked so a reader does not look inside, and the contract
+digest tags it `json`. Protobuf carries the text as a `string`, commented
+as JSON. A `google.protobuf.Value` would keep neither the bytes nor a
+number's precision. The Hale client declares `std::json::Value`. The
+TypeScript and JavaScript clients type it `unknown`, as the response's
+`JSON.parse` gave it and as `JSON.stringify` writes it back, so a client
+is not byte-faithful; the server is. A program builds a value with
+`std::json::Value::parse(text) -> Value fallible(ParseError)`, held to the
+same rules, and a literal of one is refused, so every `Value` is one a
+codec or `parse` admitted. It reads one through its `.text` with
+`std::json`'s cursors (`find_field_raw`, `object_first`, ...). Two values
+are equal when their texts are; there is no semantic JSON equality.
+
 **A program's own use of the codec** (2026-10-17). `T::api_decode(text) -> T
 fallible(JsonError)` and `T::api_encode(value) -> String` call the api
 codec of a record or an enum `T` from any program, served or not: the same

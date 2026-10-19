@@ -1,0 +1,82 @@
+// tests/hale/api_json_value_test.hl — free-form JSON (spec/api.md §
+// Codecs): a `std::json::Value` field carries any JSON value as its text,
+// byte for byte, never decoded: key order, spacing and a number's spelling
+// come back as they were sent. A value must be well-formed JSON at most 64
+// levels deep (`wrong_type`) and at most 64 KiB (`too_long`); a list holds
+// values as a field does. A program builds its own with
+// `std::json::Value::parse`, held to the same rules, and reads one through
+// its `.text` with `std::json`'s cursors. Through the program's own codec.
+
+type Seat { name: String; config: std::json::Value; }
+type Change { before: std::json::Value; after: std::json::Value; }
+type Log { entries: bounded[std::json::Value; 3]; }
+
+fn refused(text: String) -> String {
+    let s = Seat::api_decode(text) or { return err.kind + ": " + err.field; };
+    return "decoded " + s.config.text;
+}
+
+fn nested(depth: Int) -> String {
+    let mut open = "";
+    let mut close = "";
+    let mut i = 0;
+    while i < depth {
+        open = open + "[";
+        close = close + "]";
+        i = i + 1;
+    }
+    return open + close;
+}
+
+fn main() {
+    // byte for byte: order, spacing, a number's spelling
+    let text = "{\"name\":\"a\",\"config\":{\"b\": [1, 2.50, \"x\"],  \"a\":null}}";
+    let s = Seat::api_decode(text) or {
+        std::test::assert(false, "a seat: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(s.config.text, "{\"b\": [1, 2.50, \"x\"],  \"a\":null}", "the value's text as sent");
+    std::test::assert_eq_str(Seat::api_encode(s), text, "written back byte for byte");
+
+    // any JSON value: a scalar, `null`, an array; before and after alike
+    let change = Change::api_decode("{\"before\":null,\"after\":\"on\"}") or {
+        std::test::assert(false, "a change: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_str(change.before.text + " " + change.after.text, "null \"on\"", "a scalar and null");
+    let log = Log::api_decode("{\"entries\":[1,{\"k\":true},[]]}") or {
+        std::test::assert(false, "a log: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(count(log.entries), 3, "a list of values");
+    std::test::assert_eq_str(Log::api_encode(log), "{\"entries\":[1,{\"k\":true},[]]}", "a list written back");
+
+    // read-only inspection through the text
+    std::test::assert_eq_str(std::json::find_field_raw(s.config.text, "b"), "[1, 2.50, \"x\"]", "a field read through the cursors");
+
+    // the rules
+    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + nested(64) + "}"), "decoded " + nested(64), "64 levels");
+    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + nested(65) + "}"), "wrong_type: config", "65 levels");
+    let mut big = "\"";
+    while len(big) < 65537 {
+        big = big + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    }
+    big = big + "\"";
+    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + big + "}"), "too_long: config", "past 64 KiB");
+    std::test::assert_eq_str(refused("{\"name\":\"a\"}"), "missing_field: config", "a value is required as any field is");
+
+    // a program's own value
+    let v = std::json::Value::parse("[1, 2]") or {
+        std::test::assert(false, "a parse: " + err.kind);
+        return;
+    };
+    std::test::assert_eq_str(v.text, "[1, 2]", "parse keeps the text");
+    let bad = std::json::Value::parse("{") or { std::json::Value::parse("\"refused\"") or { return; } };
+    std::test::assert_eq_str(bad.text, "\"refused\"", "malformed text is refused");
+    let deep = std::json::Value::parse(nested(65)) or { std::json::Value::parse("\"refused\"") or { return; } };
+    std::test::assert_eq_str(deep.text, "\"refused\"", "65 levels are refused");
+    // equal when their texts are
+    let same = std::json::Value::parse("[1, 2]") or { return; };
+    let spaced = std::json::Value::parse("[1,2]") or { return; };
+    std::test::assert(same.text == v.text && spaced.text != v.text, "equality is the text's");
+}

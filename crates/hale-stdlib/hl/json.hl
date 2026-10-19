@@ -1860,3 +1860,33 @@ fn __json_literal_end(text: String, start: Int, n: Int, word: String) -> Int {
     if !std::str::range_eq(text, start, start + width, word) { return -1; }
     return start + width;
 }
+
+// std::json::Value — free-form JSON (spec/api.md § Codecs). A value a
+// program never decodes into a type of its own: a seat's config, a
+// record's before and after. It is held as its text, which the api
+// codecs carry byte for byte, and every `Value` is well-formed JSON at
+// most 64 levels deep (`valid`'s bound) and 64 KiB long: built by
+// `std::json::Value::parse`, or by a codec that checked the same. Read it
+// through `.text` with this module's cursors; two values are equal when
+// their texts are.
+type __StdJsonValue {
+    text: String;
+}
+
+/// `std::json::Value::parse(text)`: `text` as a `Value`, refused
+/// (`ParseError`, kind `json`, or `json_too_long` past 64 KiB) unless it
+/// is one well-formed JSON value at most 64 levels deep.
+fn __json_value_parse(text: String) -> __StdJsonValue fallible(ParseError) {
+    if len(text) > 65536 {
+        fail ParseError { kind: "json_too_long", input: "" };
+    }
+    if !std::json::valid(text) {
+        fail ParseError { kind: "json", input: "" };
+    }
+    return __StdJsonValue { text: text };
+}
+
+/// The `Value` of text a codec has already held to `parse`'s rules.
+fn __json_value_of(text: String) -> __StdJsonValue {
+    return __StdJsonValue { text: text };
+}

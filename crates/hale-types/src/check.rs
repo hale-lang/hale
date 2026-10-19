@@ -25521,6 +25521,16 @@ impl<'a> Checker<'a> {
                 return Ty::Unknown;
             }
         };
+        // a `std::json::Value` holds well-formed text only, so it is built
+        // by `parse`, which holds the text to that (spec/api.md § Codecs)
+        if name == hale_syntax::json_gen::JSON_VALUE {
+            self.diags.push(Diag::ty(
+                span,
+                "a `std::json::Value` is built by `std::json::Value::parse(text)`, which refuses text that is no JSON \
+                 value; a literal would hold any text"
+                    .to_string(),
+            ));
+        }
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
                 self.type_omitted_defaults(literal, decl, inits, span);

@@ -2188,6 +2188,7 @@ fn jstr(v: &str) -> String {
 fn field_json(f: &crate::surfaces::FieldSchema) -> String {
     use crate::surfaces::FieldSchema;
     match f {
+        FieldSchema::Any => "{\"x-hale-any\":true}".to_string(),
         FieldSchema::Scalar { json, hale_type, unit } => {
             let mut o = format!("{{\"type\":{}", jstr(json));
             if let Some(t) = hale_type {

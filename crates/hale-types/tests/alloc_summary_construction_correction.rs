@@ -319,11 +319,12 @@ fn own_scope_let_block_scope_test() {
             // format, level, time, render and JSON-fields helpers, each
             // called from a sink's bus handler); 478, and two more, since
             // a record's values are escaped byte by byte (the plain-byte
-            // and hex-digit helpers)
+            // and hex-digit helpers); 480 since `std::json::Value` came
+            // (`parse` and the codecs' `__value_of`)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 478 fns, 29 entry points, 130 invoked-unboundedly",
-                "+ # 478 fns, 29 entry points, 129 invoked-unboundedly",
+                "- # 480 fns, 29 entry points, 130 invoked-unboundedly",
+                "+ # 480 fns, 29 entry points, 129 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -711,8 +712,10 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/api_codec_import_test.hl`, the same codec of an imported
     // type; 9: `tests/hale/api_value_map_test.hl`, whose map of values builds
     // a record per member it reads; 10: `tests/hale/api_patch_field_test.hl`,
-    // whose codec of a presence triple decodes the same way.
-    assert_eq!(moved, 10, "the run-to-exit programs among the targets that lose a site");
+    // whose codec of a presence triple decodes the same way; 11:
+    // `tests/hale/api_json_value_test.hl`, whose codec decodes a JSON value's
+    // record the same way.
+    assert_eq!(moved, 11, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -762,6 +765,14 @@ fn own_entries_run_to_exit_programs() {
             // append whose operands are typed by the field and the
             // `recv` result, not a literal.
             "tests/hale/api_context_test.hl: Api::ask StringConcat @6428..6444 InvokedUnboundedly",
+            // `tests/hale/api_json_value_test.hl`: its codec of JSON values, the
+            // decoders' refusals and a list's appends
+            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @13879..13927 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14439..14448 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14466..14481 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: main StringConcat @2878..2950 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: nested StringConcat @1054..1064 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: nested StringConcat @1082..1093 InUnboundedLoop",
             // `tests/hale/api_patch_field_test.hl`: its codec of presence triples,
             // a nested record's refusal
             "tests/hale/api_patch_field_test.hl: __api_decode_Inner StructLit(\"JsonError\") @4583..4627 InUnboundedLoop",

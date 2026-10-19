@@ -90,6 +90,38 @@ enum FieldKind {
     /// with payloads a message of a `oneof`. Read like a record, by the
     /// enum's own decoder (`__api_decode_<E>(text, key)`).
     Enum { name: String, unit_only: bool },
+    /// A `std::json::Value` (spec/api.md § Codecs): on the JSON wire the
+    /// member's own JSON text, byte for byte, never decoded; refused
+    /// `wrong_type` unless well-formed and at most 64 levels deep, and
+    /// `too_long` past 64 KiB. Protobuf carries the text as a `string`.
+    Raw,
+}
+
+/// Whether `te` names `std::json::Value`, by its path or its merged name.
+pub fn is_json_value(te: &TypeExpr) -> bool {
+    match te {
+        TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            segs == ["std", "json", "Value"] || segs == [JSON_VALUE]
+        }
+        _ => false,
+    }
+}
+
+/// `std::json::Value`'s declaration, by its merged name.
+pub const JSON_VALUE: &str = "__StdJsonValue";
+
+/// The most bytes a `std::json::Value` holds.
+pub const JSON_VALUE_MAX: usize = 65536;
+
+/// The statements that hold the JSON text `text` (a Hale expression) to a
+/// `std::json::Value`'s rules, failing for the field `key`: well-formed
+/// and at most 64 levels deep (`std::json::valid`), at most 64 KiB.
+fn json_value_check(text: &str, key: &str, ind: &str) -> String {
+    format!(
+        "{ind}if len({text}) > {JSON_VALUE_MAX} {{ fail JsonError {{ kind: \"too_long\", field: \"{key}\" }}; }}\n\
+         {ind}if !std::json::valid({text}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}; }}\n"
+    )
 }
 
 /// A map of values (`indexed_by <key> -> <value>`, spec/api.md § Codecs):
@@ -178,6 +210,8 @@ const EPOCH: &str = "`1970-01-01T00:00:00Z`";
 enum Elem {
     Scalar(ScalarTy, Option<Conv>),
     Time,
+    /// A `std::json::Value`: its JSON text, carried byte for byte.
+    Raw,
     Nested(String),
     /// An enum, and whether it has no payloads.
     Enum { name: String, unit_only: bool },
@@ -539,7 +573,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         };
                         let default_src = match kind {
                             FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
-                            FieldKind::Nested(_) | FieldKind::Time | FieldKind::List { .. } | FieldKind::Enum { .. } => None,
+                            FieldKind::Nested(_) | FieldKind::Time | FieldKind::List { .. } | FieldKind::Enum { .. } | FieldKind::Raw => None,
                         };
                         jfields.push(JsonField {
                             name: f.name.name.clone(),
@@ -644,6 +678,8 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                     init
                 ));
             }
+            // a JSON value's text; one left out is `null`
+            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: String = \"null\";\n", f.name)),
             FieldKind::Nested(_) | FieldKind::Enum { .. } => {
                 b.push_str(&format!("    let mut __raw_{}: String = \"\";\n", f.name));
             }
@@ -743,6 +779,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::Time => format!("__f_{} = {};", f.name, f.default_src.as_deref().unwrap_or(EPOCH)),
                 FieldKind::Nested(_) | FieldKind::Enum { .. } => format!("__raw_{} = \"\";", f.name),
                 FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
+                FieldKind::Raw => format!("__f_{} = \"null\";", f.name),
             };
             // a triple's field records which: `null` clears it
             let (cleared, set) = match clear_flag(t, &f.name) {
@@ -766,6 +803,8 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::Time => "__c0 == 34",
                 FieldKind::List { key: Some(_), .. } => "__c0 == 123",
                 FieldKind::List { .. } => "__c0 == 91",
+                // any JSON value, held to its rules below
+                FieldKind::Raw => "__c0 != 0",
             };
             b.push_str(&format!(
                 "                    let __c0 = if __vs < __ve {{ std::str::byte_at_unchecked(__s, __vs) }} else {{ 0 }};\n                    if !({}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
@@ -773,6 +812,12 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             ));
         }
         match &f.kind {
+            // a JSON value: its text as sent, held to a `Value`'s rules
+            FieldKind::Raw => {
+                b.push_str(&format!("                    let __rt_{} = __s[__vs..__ve];\n", f.name));
+                b.push_str(&json_value_check(&format!("__rt_{}", f.name), &f.key, "                    "));
+                b.push_str(&format!("                    __f_{n} = __rt_{n};\n", n = f.name));
+            }
             // String: slice directly when escape-free (the common case),
             // only unescape-copy when the scan saw a backslash.
             FieldKind::Scalar(ScalarTy::Str) => b.push_str(&format!(
@@ -914,6 +959,7 @@ fn elem_zero(elem: &Elem, key: &str) -> String {
         Elem::Scalar(s, Some(c)) => c.from_int(&wire_zero(*s, &Some(c.clone()), &None), key),
         Elem::Scalar(s, None) => s.zero().to_string(),
         Elem::Time => EPOCH.to_string(),
+        Elem::Raw => "std::json::__value_of(\"null\")".to_string(),
         Elem::Nested(tn) | Elem::Enum { name: tn, .. } => format!("{ZERO}{tn}() or raise"),
     }
 }
@@ -986,6 +1032,7 @@ fn generate_zero_src(t: &JsonType) -> String {
                 }
             }
             FieldKind::Time => f.default_src.clone().unwrap_or_else(|| EPOCH.to_string()),
+            FieldKind::Raw => "std::json::__value_of(\"null\")".to_string(),
             FieldKind::Nested(tn) | FieldKind::Enum { name: tn, .. } => format!("{ZERO}{tn}() or raise"),
             FieldKind::List { exact: false, .. } => continue,
             FieldKind::List { elem, cap, exact: true, .. } => format!("[{}; {cap}]", elem_zero(elem, &f.key)),
@@ -1096,6 +1143,7 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::Nested(_) | FieldKind::Enum { .. }, _) => Some(format!("{}: __p_{}", f.name, f.name)),
             (FieldKind::Time, _) => Some(format!("{}: __f_{}", f.name, f.name)),
+            (FieldKind::Raw, _) => Some(format!("{}: std::json::__value_of(__f_{})", f.name, f.name)),
             (FieldKind::List { exact: true, .. }, _) => Some(format!("{}: __a_{}", f.name, f.name)),
             (FieldKind::List { exact: false, .. }, _) => None,
         }))
@@ -1130,9 +1178,16 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         Elem::Time => "__e0 == 34",
         Elem::Nested(_) => "__e0 == 123",
         Elem::Enum { .. } => "__e0 == 34 || __e0 == 123",
+        Elem::Raw => "__e0 != 0",
     };
     b.push_str(&format!("{ind}if !({want}) {{ {wrong}; }}\n"));
     match elem {
+        // a JSON value: its text as sent, held to a `Value`'s rules
+        Elem::Raw => {
+            b.push_str(&format!("{ind}let __et = {src}[__es..__ee];\n"));
+            b.push_str(&json_value_check("__et", key, ind));
+            b.push_str(&format!("{ind}let __ev = std::json::__value_of(__et);\n"));
+        }
         Elem::Scalar(ScalarTy::Str, _) => {
             b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
         }
@@ -1426,6 +1481,8 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
             FieldKind::Enum { name, .. } => format!("{fn_prefix}{name}(__v.{})", f.name),
             FieldKind::Time => format!("\"\\\"\" + std::time::iso8601(__v.{}) + \"\\\"\"", f.name),
+            // a JSON value: its text, byte for byte
+            FieldKind::Raw => format!("__v.{}.text", f.name),
             // a wire map: an object keyed by each record's key, the record
             // without it as the value (or a map of values', its value
             // alone), in the list's order
@@ -1512,6 +1569,7 @@ fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(_, None) => format!("to_string({v})"),
         Elem::Time => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
+        Elem::Raw => format!("{v}.text"),
         Elem::Nested(tn) | Elem::Enum { name: tn, .. } => format!("{fn_prefix}{tn}({v})"),
     }
 }
@@ -1543,6 +1601,8 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 };
                 b.push_str(&format!("    let mut __f_{}: {} = {};\n", f.name, s.type_name(), init));
             }
+            // a JSON value's text, a `string`; one left out is `null`
+            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: String = \"null\";\n", f.name)),
             FieldKind::Nested(_) | FieldKind::Enum { unit_only: false, .. } => {
                 b.push_str(&format!("    let mut __raw_{}: Bytes = std::bytes::from_string(\"\");\n", f.name));
             }
@@ -1592,6 +1652,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
             FieldKind::Scalar(ScalarTy::Str)
             | FieldKind::Scalar(ScalarTy::Decimal(_))
             | FieldKind::Nested(_)
+            | FieldKind::Raw
             | FieldKind::Enum { unit_only: false, .. } => (2, "len"),
             FieldKind::Scalar(_) | FieldKind::Time | FieldKind::Enum { unit_only: true, .. } => (0, "varint"),
             FieldKind::List { .. } => unreachable!("read above"),
@@ -1623,7 +1684,11 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                             "            if len(__s) != __l {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
                             f.key
                         ));
-                        if let FieldKind::Scalar(ScalarTy::Decimal(_)) = f.kind {
+                        if let FieldKind::Raw = f.kind {
+                            // a JSON value's text, held to a `Value`'s rules
+                            b.push_str(&json_value_check("__s", &f.key, "            "));
+                            b.push_str(&format!("            __f_{} = __s;\n", f.name));
+                        } else if let FieldKind::Scalar(ScalarTy::Decimal(_)) = f.kind {
                             // A Decimal is its digits (proto3 has no decimal).
                             b.push_str(&format!(
                                 "            __f_{} = std::str::parse_decimal(__s) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }};\n",
@@ -1729,6 +1794,7 @@ fn pb_elem_wire(elem: &Elem) -> u32 {
         Elem::Scalar(ScalarTy::Str, _)
         | Elem::Scalar(ScalarTy::Decimal(_), _)
         | Elem::Nested(_)
+        | Elem::Raw
         | Elem::Enum { unit_only: false, .. } => 2,
         Elem::Scalar(_, _) | Elem::Time | Elem::Enum { unit_only: true, .. } => 0,
     }
@@ -1748,6 +1814,7 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
         Elem::Scalar(ScalarTy::Str, _)
         | Elem::Scalar(ScalarTy::Decimal(_), _)
         | Elem::Nested(_)
+        | Elem::Raw
         | Elem::Enum { unit_only: false, .. } => {
             b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
             b.push_str(&format!("{ind}if __ee < 0 {{ {bad} }}\n"));
@@ -1763,6 +1830,15 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
                     b.push_str(&format!(
                         "{ind}let __ev = __api_pb_decode_{name}(std::bytes::slice(__b, __ee, __ee + __el), \"{key}\") or raise;\n"
                     ));
+                }
+                // a JSON value's text, held to a `Value`'s rules
+                Elem::Raw => {
+                    b.push_str(&format!(
+                        "{ind}let __et = std::str::from_bytes(std::bytes::slice(__b, __ee, __ee + __el));\n"
+                    ));
+                    b.push_str(&format!("{ind}if len(__et) != __el {{ {wrong}; }}\n"));
+                    b.push_str(&json_value_check("__et", key, ind));
+                    b.push_str(&format!("{ind}let __ev = std::json::__value_of(__et);\n"));
                 }
                 Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
                     b.push_str(&format!(
@@ -1864,6 +1940,8 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
             },
             FieldKind::Nested(tn) => format!("__api_pb_put_msg({}, __api_pb_encode_{tn}({v}))", f.pb_no),
+            // a JSON value: its text, a `string`
+            FieldKind::Raw => format!("__api_pb_put_str({}, {v}.text)", f.pb_no),
             FieldKind::Enum { name, unit_only: true } => format!("__api_pb_put_int({}, __api_pb_enum_no_{name}({v}))", f.pb_no),
             FieldKind::Enum { name, unit_only: false } => {
                 format!("__api_pb_put_msg({}, __api_pb_encode_{name}({v}))", f.pb_no)
@@ -1918,6 +1996,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
         Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
+        Elem::Raw => format!("__api_pb_put_str({no}, {v}.text)"),
         Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
         Elem::Enum { name, unit_only: true } => format!("__api_pb_put_int({no}, __api_pb_enum_no_{name}({v}))"),
         Elem::Enum { name, unit_only: false } => format!("__api_pb_put_msg({no}, __api_pb_encode_{name}({v}))"),
@@ -2982,6 +3061,7 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
     let (kind, conv, default_src) = match &v.elem {
         Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone(), Some(wire_zero(*s, c, &None))),
         Elem::Time => (FieldKind::Time, None, Some(EPOCH.to_string())),
+        Elem::Raw => (FieldKind::Raw, None, None),
         Elem::Nested(tn) => (FieldKind::Nested(tn.clone()), None, None),
         Elem::Enum { name, unit_only } => {
             (FieldKind::Enum { name: name.clone(), unit_only: *unit_only }, None, unit_only.then(|| "0".to_string()))
@@ -3034,6 +3114,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                 let (kind, conv, default_src) = match elem {
                     Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone(), Some(wire_zero(*s, c, &None))),
                     Elem::Time => (FieldKind::Time, None, Some(EPOCH.to_string())),
+                    Elem::Raw => (FieldKind::Raw, None, None),
                     Elem::Nested(tn) => (FieldKind::Nested(tn.clone()), None, None),
                     Elem::Enum { name, unit_only } => {
                         (FieldKind::Enum { name: name.clone(), unit_only: *unit_only }, None, unit_only.then(|| "0".to_string()))
@@ -3095,7 +3176,9 @@ fn elem_of(
     enums: &std::collections::BTreeMap<String, bool>,
 ) -> Option<(Elem, String)> {
     let ty = through_aliases(ty, aliases);
-    if let TypeExpr::Primitive(PrimType::Time, _) = ty {
+    if is_json_value(&ty) {
+        Some((Elem::Raw, JSON_VALUE.to_string()))
+    } else if let TypeExpr::Primitive(PrimType::Time, _) = ty {
         Some((Elem::Time, "Time".to_string()))
     } else if let TypeExpr::Primitive(PrimType::Duration, _) = ty {
         // the stdlib's `quantity Int in ns`: its count of nanoseconds
@@ -3183,6 +3266,7 @@ fn collect_api_types(
                                 FieldKind::Scalar(s)
                             }
                             Some((Elem::Time, _)) => FieldKind::Time,
+                            Some((Elem::Raw, _)) => FieldKind::Raw,
                             Some((Elem::Nested(tn), _)) => FieldKind::Nested(tn),
                             Some((Elem::Enum { name, unit_only }, _)) => FieldKind::Enum { name, unit_only },
                             None => continue,

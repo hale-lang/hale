@@ -1205,6 +1205,11 @@ fn json_refusal(
     if matches!(shapes.dealias(te), TypeExpr::Primitive(PrimType::Time | PrimType::Duration, _)) {
         return None;
     }
+    // a `std::json::Value` is any JSON, carried as its text: a field's, a
+    // list's element, a map's value; never a row's whole request or response
+    if hale_syntax::json_gen::is_json_value(&shapes.dealias(te)) {
+        return path.is_empty().then(|| (path.clone(), type_text(te)));
+    }
     match shapes.classify(te) {
         TypeClass::Prim(p) if carried(p) => None,
         // An identity, a range and a quantity are their `Int`; a point is
@@ -2241,6 +2246,9 @@ pub enum FieldSchema {
     /// as it alone
     /// (`"additionalProperties": <its schema>`, `"x-hale-value": "<value>"`).
     Map { name: String, key: String, lifted: String, value: TypeSchema, max: u64, of: Option<(String, Box<FieldSchema>)> },
+    /// A `std::json::Value` (spec/api.md § Codecs): any JSON, carried as
+    /// its text and never decoded, `{"x-hale-any": true}`.
+    Any,
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2287,6 +2295,8 @@ impl<'a> Schemas<'a> {
         // an instant is its text; a `Duration` the quantity it is, its count
         // of nanoseconds
         match self.shapes.dealias(te) {
+            // free-form JSON: any value, its text carried as sent
+            d if hale_syntax::json_gen::is_json_value(&d) => return FieldSchema::Any,
             TypeExpr::Primitive(PrimType::Time, _) => return FieldSchema::Time,
             TypeExpr::Primitive(PrimType::Duration, _) => {
                 return FieldSchema::Scalar {

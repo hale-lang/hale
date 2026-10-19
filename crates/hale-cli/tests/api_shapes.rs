@@ -547,3 +547,79 @@ fn a_presence_triple_is_described_and_carried_by_the_clients() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A `std::json::Value` field (spec/api.md § Codecs) is described as any
+/// JSON (`{"x-hale-any": true}`) and carried in protobuf as a `string` of
+/// its text. The Hale client declares the same type, and its codec carries
+/// the server's text byte for byte; the TypeScript client types it
+/// `unknown`. A row whose whole request is a `Value` is refused (it crosses
+/// as a field of a record), and so is a literal of one.
+#[test]
+fn a_json_value_is_described_as_any_and_carried_by_the_clients() {
+    let dir = unique_dir("json_value");
+    let src = dir.join("seats.hl");
+    std::fs::write(
+        &src,
+        "type Seat { name: String; config: std::json::Value; }\n\
+         locus L {\n    fn put(s: Seat) -> Seat { return s; }\n}\n\
+         api Seats { rpc L::put; }\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        l: L = L { };\n        h: api::Exposure = api::serve(Seats, unix::Rpc { path: \"/tmp/hale-seats.sock\", roles: Nobody { } }, as: \"seats\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let out = dir.join("out");
+    let e = hale().args(["api", "export", "--surface", "Seats", "--out"]).arg(&out).arg(&src).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let doc = json_of(&std::fs::read_to_string(out.join("Seats.description.json")).unwrap());
+    assert_eq!(doc["schemas"]["Seat"]["properties"]["config"], json!({"x-hale-any": true}));
+    assert_eq!(doc["schemas"]["Seat"]["required"], json!(["name", "config"]));
+    let proto = std::fs::read_to_string(out.join("Seats.proto")).unwrap();
+    assert!(proto.contains("optional string config = 2; // Hale: std::json::Value, the JSON text as sent"), "{proto}");
+
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Seats", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    assert!(text.contains("config: std::json::Value;"), "the client declares the value: {text}");
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn main() {\n    let s = Seat::api_decode(\"{\\\"name\\\":\\\"a\\\",\\\"config\\\":{\\\"b\\\": [1, 2.50]}}\") or { println(err.kind); return; };\n    println(Seat::api_encode(s));\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "{\"name\":\"a\",\"config\":{\"b\": [1, 2.50]}}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let ts = dir.join("client.ts");
+    let o = hale().args(["api", "client", "--surface", "Seats", "--lang", "ts", "--out"]).arg(&ts).arg(&src).output().expect("ts client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&ts).unwrap();
+    assert!(text.contains("config: unknown;"), "any JSON is `unknown`: {text}");
+    let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
+    if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");
+        assert!(c.status.success(), "tsc refused the client:\n{}{}", String::from_utf8_lossy(&c.stdout), String::from_utf8_lossy(&c.stderr));
+    }
+
+    // a whole request that is a `Value`, and a literal of one
+    let whole = dir.join("whole.hl");
+    std::fs::write(
+        &whole,
+        "locus L {\n    fn put(v: std::json::Value) -> Int { return 0; }\n}\n\
+         api Whole { rpc L::put; }\n\
+         fn main() { let v = std::json::Value { text: \"{\" }; println(v.text); }\n",
+    )
+    .unwrap();
+    let c = hale().arg("check").arg(&whole).output().expect("check");
+    let err = String::from_utf8_lossy(&c.stderr);
+    assert!(!c.status.success(), "refused: {err}");
+    assert!(err.contains("a `std::json::Value` is built by `std::json::Value::parse(text)`"), "the literal: {err}");
+    assert!(err.contains("its request is `std::json::Value`, which the JSON codec does not carry"), "the whole request: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

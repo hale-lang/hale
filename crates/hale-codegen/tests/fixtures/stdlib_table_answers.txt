@@ -347,6 +347,9 @@ ns std::json open_prefixes=[]
   unescape_string pure
   valid pure
   valid_object pure
+  __value_of pure
+ns std::json::Value open_prefixes=[]
+  parse pure
 ns std::ts open_prefixes=[]
   node_child pure
   node_child_count pure
@@ -901,6 +904,9 @@ std::json::Builder | lookup=json@2 | locus=true | effects=- | sig=- | parks=fals
 std::json::JsonFieldRange | lookup=json@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::json::JsonString | lookup=json@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::json::ObjectIterSpan | lookup=json@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::json::Value | lookup=json@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::json::Value` | suggest=-
+std::json::Value::parse | lookup=json::Value@3 | locus=false | effects=pure | sig=(Str) -> Named(__StdJsonValue) ! ParseError | ret_ty=? | or=(__StdJsonValue, ParseError) | parks=false | holds=false | unknown=- | suggest=parse
+std::json::__value_of | lookup=json@2 | locus=false | effects=pure | sig=(Str) -> Named(__StdJsonValue) | ret_ty=__StdJsonValue | or=- | parks=false | holds=false | unknown=- | suggest=__value_of
 std::json::array_first | lookup=json@2 | locus=false | effects=pure | sig=(Str) -> Named(__JsonArrayIter) | ret_ty=__JsonArrayIter | or=- | parks=false | holds=false | unknown=- | suggest=array_first
 std::json::array_first_span | lookup=json@2 | locus=false | effects=pure | sig=(Str) -> Named(__JsonArrayIterSpan) | ret_ty=__JsonArrayIterSpan | or=- | parks=false | holds=false | unknown=- | suggest=array_first_span
 std::json::array_next | lookup=json@2 | locus=false | effects=pure | sig=(Named(__JsonArrayIter)) -> Named(__JsonArrayIter) | ret_ty=__JsonArrayIter | or=- | parks=false | holds=false | unknown=- | suggest=array_next

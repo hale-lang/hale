@@ -75,6 +75,9 @@ impl Scalar {
     }
 }
 
+/// What a `std::json::Value`'s `string` field carries, said in its comment.
+const JSON_TEXT: &str = "Hale: std::json::Value, the JSON text as sent";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Scalar(Scalar),
@@ -282,6 +285,9 @@ fn carried(
         // a presence pair is two fields of a record, never a row's whole shape
         FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(format!(
             "{member}: the {what} is an optional field, which crosses as a field of a record"
+        )),
+        FieldSchema::Any => Err(format!(
+            "{member}: the {what} is a `std::json::Value`, which crosses as a field of a record (law 5 refuses the row)"
         )),
         FieldSchema::Unformed => Err(format!(
             "{member}: the {what} is a shape the codec does not carry (an enum, an array or a name the program does not declare), \
@@ -570,6 +576,12 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                 p
             }
             FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
+            // free-form JSON: its text, as sent
+            FieldSchema::Any => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::String), Label::Optional);
+                p.comment = Some(JSON_TEXT.to_string());
+                p
+            }
             // a payload-free enum has presence as a scalar does; one with
             // payloads is a message
             FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
@@ -596,6 +608,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                         Ty::Scalar(s)
                     }
                     FieldSchema::Time => Ty::Scalar(Scalar::Int64),
+                    FieldSchema::Any => Ty::Scalar(Scalar::String),
                     FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
                         ty @ Ty::Enum(_) => ty,
                         _ => return Err(format!("{display}.{key}: a map's value `{name}` has payloads, which no map value carries")),
@@ -626,6 +639,11 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                         p
                     }
                     FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Repeated),
+                    FieldSchema::Any => {
+                        let mut p = field(key, number, Ty::Scalar(Scalar::String), Label::Repeated);
+                        p.comment = Some(JSON_TEXT.to_string());
+                        p
+                    }
                     FieldSchema::Enum { name, variants, .. } => {
                         field(key, number, enum_ty(name, variants, surface, extra)?, Label::Repeated)
                     }

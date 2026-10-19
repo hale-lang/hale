@@ -63,6 +63,8 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
+        // free-form JSON: whatever the server sent, parsed
+        FieldSchema::Any => Ok("unknown".to_string()),
         // an instant stays its RFC 3339 text: a `Date` holds milliseconds,
         // and the wire's nanoseconds would not survive it
         FieldSchema::Time => Ok("string".to_string()),
@@ -85,7 +87,7 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
 /// The wire form of `value`, a TypeScript (and JavaScript) expression of the schema's type.
 pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
-        FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
+        FieldSchema::Scalar { .. } | FieldSchema::Time | FieldSchema::Any => Ok(value.to_string()),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("encode_{}({value})", type_ident(name))),
         FieldSchema::Map { name, lifted, of: None, .. } => {
             Ok(format!("apiMapEncode({value}, {}, encode_{})", json_quote(lifted), type_ident(name)))
@@ -128,6 +130,8 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             _ => format!("String({json} ?? \"\")"),
         }),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("decode_{}({json})", type_ident(name))),
+        // free-form JSON: as parsed, never looked inside
+        FieldSchema::Any => Ok(json.to_string()),
         FieldSchema::Map { name, lifted, of: None, .. } => {
             Ok(format!("apiMapDecode({json}, {}, decode_{})", json_quote(lifted), type_ident(name)))
         }

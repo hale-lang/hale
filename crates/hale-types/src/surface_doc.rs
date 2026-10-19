@@ -379,6 +379,8 @@ impl<'s, 'a> Book<'s, 'a> {
 
 fn field_schema(f: &FieldSchema, base: &str) -> J {
     match f {
+        // any JSON: no constraint, marked so a reader does not look inside
+        FieldSchema::Any => o(vec![("x-hale-any", J::Bool(true))]),
         FieldSchema::Scalar { json, hale_type, unit } => {
             let mut pairs = vec![("type".to_string(), s(json))];
             if let Some(t) = hale_type {
