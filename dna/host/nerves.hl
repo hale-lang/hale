@@ -1,8 +1,9 @@
 // The nerves' stream, created by its owner (GH #986).
 //
-// `hale dna nerves migrate` (and `dev`, before it starts the organism)
-// runs `nerves-migrate`: the owner's NATS URL from HALE_DNA_NATS_URL_OWNER,
-// or from dna/compose.yaml's `nerves` service brought up, creates the
+// `hale habitat migrate` (and birth and `hale dna nerves migrate`) runs
+// `nerves-migrate`: the owner's NATS URL from HALE_DNA_NATS_URL_OWNER, or
+// from the organism's nerves allocation in the local habitat brought up
+// (GH #1653), creates the
 // organization's stream and prints the organization's token and each
 // role's URL. Like memory's owner, the owner's URL never reaches a
 // process that runs the organism: `dev` hands the host the spine's.
@@ -17,7 +18,13 @@
 // It consumes the organism's secrets and never creates one (GH #989): a
 // credential the vault lacks, or a server include that is not written, is
 // a refusal naming `hale dna upgrade`, which provisions them.
-fn nerves_migrate_verb(root: String) -> Answer {
+//
+// GH #1653: `derive` (`nerves-migrate --derive`, what `dev` and the head's
+// launcher ask) brings no service up and creates no stream: the URLs of the
+// owner's server, or of the organism's nerves allocation when it is already
+// up. A stream that is missing is the organization's refusal when it reads,
+// naming `hale habitat migrate`.
+fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     let id = record_identity(root);
     if len(id) == 0 { return fail("nerves migrate: the record has no identity yet (`hale dna init` first)"); }
     let org = dna::schema_for(id);
@@ -26,13 +33,20 @@ fn nerves_migrate_verb(root: String) -> Answer {
     let mut server = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
     if len(server) == 0 {
         // compose's server reads the passwords from the include
-        if !std::io::fs::file_exists(root + "/" + NATS_SECRETS) { return fail("nerves migrate: " + NATS_SECRETS + " is not written (`hale dna upgrade` writes it from the vault's provisioning)"); }
+        if derive && !std::io::fs::file_exists(nats_secrets_path(root)) { return answer("none: the organism's nerves allocation in the local habitat is not provisioned (`hale habitat migrate " + root + "` provisions it and brings it up)\n"); }
+        if !std::io::fs::file_exists(nats_secrets_path(root)) { return fail("nerves migrate: the nerves allocation's secrets (" + nats_secrets_path(root) + ") are not written (`hale dna upgrade` writes them from the vault's provisioning)"); }
         let infra = ReferenceInfrastructure { root: root };
-        let up = infra.nerves_server(root);
-        if !up.present { return answer("none: " + up.why + "\n"); }
-        server = up.dsn;
+        if derive {
+            server = infra.nerves_if_up();
+            if len(server) == 0 { return answer("none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate " + root + "` brings it up and creates the stream)\n"); }
+        } else {
+            let up = infra.nerves_server(root);
+            if !up.present { return answer("none: " + up.why + "\n"); }
+            server = up.dsn;
+        }
     }
     let url = dna::nerves_server_url(server);
+    if derive { return answer(nerves_urls(root, org, url)); }
     let c = nats::NatsClient { url: url, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "dna-owner", timeout: 2s };
     // a server compose has just started takes a moment to listen
     let mut tries = 0;
@@ -50,24 +64,14 @@ fn nerves_migrate_verb(root: String) -> Answer {
     c.close();
     if !m.ok { return fail("nerves migrate: " + m.why); }
     if len(x) > 0 { return fail("nerves migrate: the exchange: " + x); }
-    let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
-    out = out + dna::NATS_SPINE_URL_ENV + "=" + url + "\n";
-    out = out + dna::NATS_HEAD_URL_ENV + "=" + url + "\n";
-    out = out + dna::NATS_REFLEXES_URL_ENV + "=" + url + "\n";
-    // GH #989: the attached application's own account, when the record
-    // attaches one that holds it
-    let app = attached_application(root);
-    if len(app) > 0 && len(dna::nerves_app_refusal(app)) == 0 {
-        out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
-        out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(app) + "\n";
-        out = out + dna::NATS_APP_VAULT_ENV + "=" + dna::nerves_app_vault(org, app) + "\n";
-    }
-    out = out + "HALE_DNA_NATS_VAULT_REFLEXES=" + dna::nerves_vault_name(org, "reflexes") + "\n";
-    return answer(out);
+    return answer(nerves_urls(root, org, url));
+
 }
 
-const NATS_CONF: String = "dna/nats.conf";
-const NATS_SECRETS: String = "dna/nats.secrets.conf";
+// GH #1653: the nerves allocation's configuration and its secrets live with
+// the organism's allocations in the local habitat, never in a checkout.
+fn nats_conf_path(root: String) -> String { return allocation_files(root) + "/nats.conf"; }
+fn nats_secrets_path(root: String) -> String { return allocation_files(root) + "/nats.secrets.conf"; }
 
 // What `nerves_migrate` did: the stream exists as this toolchain wants it.
 type NervesMigration {
@@ -158,13 +162,34 @@ fn nerves_drop_verb(root: String) -> Answer {
     return fail("nerves drop: " + why);
 }
 
-// `senses-up` (GH #988): the senses' store, compose's `senses` service
-// brought up — `HALE_DNA_SENSES_URL=<read url>`, or `none: <why>`. No part
+// `senses-up` (GH #988): the senses' store, the organism's senses
+// allocation in the local habitat brought up (with `--derive`, read when it
+// is up) — `HALE_DNA_SENSES_URL=<read url>`, or `none: <why>`. No part
 // of the organism is handed it: the store scrapes the parts, and only the
 // reflexes read it.
-fn senses_up_verb(root: String) -> Answer {
+fn senses_up_verb(root: String, derive: Bool) -> Answer {
     let infra = ReferenceInfrastructure { root: root };
-    let store = infra.senses_store(root);
+    // GH #1653: `derive` brings nothing up: the store's URL when it is up
+    let store = if derive { infra.senses_if_up() } else { infra.senses_store(root) };
     if !store.present { return answer("none: " + store.why + "\n"); }
     return answer("HALE_DNA_SENSES_URL=" + store.dsn + "\n");
+}
+
+// The organization's token and each role's URL on `url`, as `dev` hands
+// them to the organism's parts.
+fn nerves_urls(root: String, org: String, url: String) -> String {
+    let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
+    out = out + dna::NATS_SPINE_URL_ENV + "=" + url + "\n";
+    out = out + dna::NATS_HEAD_URL_ENV + "=" + url + "\n";
+    out = out + dna::NATS_REFLEXES_URL_ENV + "=" + url + "\n";
+    // GH #989: the attached application's own account, when the record
+    // attaches one that holds it
+    let app = attached_application(root);
+    if len(app) > 0 && len(dna::nerves_app_refusal(app)) == 0 {
+        out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
+        out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(app) + "\n";
+        out = out + dna::NATS_APP_VAULT_ENV + "=" + dna::nerves_app_vault(org, app) + "\n";
+    }
+    out = out + "HALE_DNA_NATS_VAULT_REFLEXES=" + dna::nerves_vault_name(org, "reflexes") + "\n";
+    return out;
 }

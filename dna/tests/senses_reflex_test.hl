@@ -1,9 +1,10 @@
 // dna/tests/senses_reflex_test.hl — the senses and a reflex, end to end
 // (GH #988).
 //
-// An organism with one instance, on the seed's own compose: its nerves
-// and its senses' store (Prometheus, `senses`) come up from the
-// dna/compose.yaml `hale dna new` writes, as `dev` brings them up. The
+// An organism with one instance, on its allocations in the local habitat
+// (the fixture's own, under its root, GH #1653): its memory, its nerves
+// and its senses' store (Prometheus, `senses-<id>`) are brought up by
+// birth and the explicit verbs (`nerves migrate`, `senses up`). The
 // node serves its readings, every series labelled `part`; the instance's
 // process exits; the store holds `dna_instance_up 0`; the reflexes
 // (dna/reflexes) read it and publish `reflex.fired` as an application,
@@ -25,12 +26,17 @@ fn source() -> String {
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
-// Run `argv` (newline-separated) in `dir`, under the seed's own compose
-// project (its name is this run's), with no server of anyone else's
-// named: memory, the nerves and the store are the seed compose's.
+// Run `argv` (newline-separated) in `dir`, with no server of anyone
+// else's named: memory, the nerves and the store are the organism's
+// allocations in the local habitat, this test file's own (`hale test`
+// gives each file one).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
 }
+
+// The organism's allocations in the habitat, and `docker compose` on them.
+fn allocation_of(app: String) -> String { return dna::allocation_dir(app); }
+fn compose_of(app: String) -> String { return dna::allocation_compose(app); }
 
 // The value of `NAME=` on its own line of `text`.
 fn line_value(text: String, name: String) -> String {
@@ -121,26 +127,27 @@ main locus App {
     }
     run() {
         if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("senses_reflex_test: not exercised (docker compose is not on PATH)"); return; }
+        if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("senses_reflex_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); return; }
         let scratch = dna::scratch_root("senses");
         dna::reap_on_exit(scratch);
         let spine_port = dna::free_port(0);
         let node_port = dna::free_port(1);
 
-        // ---- the application, its fleet of one, and the seed's compose
-        // the application's name is this run's: compose's project, volumes
-        // and ports are named from it, so two checkouts on one box never
-        // share them
+        // ---- the application, its fleet of one, and its allocations: a
+        // record identity of this run's, which the allocations are named
+        // for
         let name = "sensing" + to_string(std::process::pid());
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
-        let compose = text_of(self.app + "/dna/compose.yaml");
-        std::test::assert(std::str::contains(compose, "senses:") && std::str::contains(compose, "retention.time=7d"), "the seed's compose has the senses' store, kept a week: " + compose);
+        let alloc = allocation_of(self.app);
+        let compose = text_of(alloc + "/compose.yaml");
+        std::test::assert(std::str::contains(compose, "senses-" + dna::allocation_key(self.app) + ":") && std::str::contains(compose, "retention.time=7d"), "the organism's allocations hold its senses' store, kept a week: " + compose);
         // this run's parts serve on ports of its own: the store is told so
-        let senses_yml = text_of(self.app + "/dna/senses.yml");
-        std::test::assert(std::str::contains(senses_yml, "host.docker.internal:9465") && std::str::contains(senses_yml, "honor_labels: true"), "the seed names what the store scrapes: " + senses_yml);
+        let senses_yml = text_of(alloc + "/senses.yml");
+        std::test::assert(std::str::contains(senses_yml, "host.docker.internal:9465") && std::str::contains(senses_yml, "honor_labels: true"), "the allocation names what the store scrapes: " + senses_yml);
         let told = std::str::replace(std::str::replace(senses_yml, "host.docker.internal:9464", "host.docker.internal:" + to_string(spine_port)), "host.docker.internal:9465", "host.docker.internal:" + to_string(node_port));
-        std::io::fs::write_file(self.app + "/dna/senses.yml", told) or discard;
+        std::io::fs::write_file(alloc + "/senses.yml", told) or discard;
         let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
         std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
         // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
@@ -157,7 +164,7 @@ main locus App {
         let reached = dna::run_tool("sh\n-c\nmkdir -p \"$2/.hale/dna\" && cp \"$1/.hale/dna/memory.env\" \"$2/.hale/dna/memory.env\"\nsh\n" + self.app + "\n" + edge);
         std::test::assert_eq_int(reached.code, 0, "the node's clone reaches the record's memory: " + reached.stderr);
 
-        // ---- the nerves and the store, from the seed's compose
+        // ---- the nerves and the store, the organism's allocations
         let nerves = in_dir(self.app, toolchain() + "\ndna\nnerves\nmigrate\n.");
         let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let reflexes_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_REFLEXES");
@@ -220,15 +227,15 @@ main locus App {
         // the scratch root go, which take the fence's mandate with them. One
         // still up is killed here, so nothing outlives the fixture, and the
         // fixture fails.
-        // the record is memory's, and memory is the compose's (GH #1590): what
+        // the record is memory's, and memory is the allocation's (GH #1590): what
         // the assertions below quote is read before compose goes
         let concern_asked = rows(self.app, "concern.requested", "reflexes/");
         let forged_rows = rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged");
         let org_pid = dna::trim_nl(text_of(self.app + "/.hale/dna/org.pid"));
         let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; kill \"$t\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
-        let down = dna::run_tool(dna::local_compose(self.app) + "\ndown\n-v");
+        let down = dna::run_tool(compose_of(self.app) + "\ndown\n-v");
 
-        std::test::assert(up, "the seed compose's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
+        std::test::assert(up, "the organism's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
         std::test::assert_eq_int(built.code, 0, "the reflexes build (HALE_DNA_SOURCE names the repository): " + built.stderr);
         std::test::assert(reading, "the organization reads its facts from the nerves: " + self.logs());
         std::test::assert(deployed.code == 0 && len(first_up) > 0, "the base is deployed and api-0 is up: " + deployed.stdout + deployed.stderr + self.logs());
@@ -246,7 +253,7 @@ main locus App {
         std::test::assert_eq_str(forged_rows, "", "and no forged firing was recorded");
         std::test::assert(len(org_pid) > 0, "the host named its organization's pid: " + self.logs());
         std::test::assert_eq_str(stop.stdout, "", "the organization went with its host: " + self.logs());
-        std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
+        std::test::assert_eq_int(down.code, 0, "the allocations' services and volumes go: " + down.stderr);
         dna::scratch_done(scratch);
     }
     fn wait_log(text: String, secs: Int) -> Bool {

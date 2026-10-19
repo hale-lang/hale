@@ -55,24 +55,26 @@ A part never learns where its readings go.
 
 ## The store
 
-The store is Prometheus, the `senses` service of the seed's
-`dna/compose.yaml`:
+The store is Prometheus, the organism's `senses-<id>` allocation in the
+local habitat ([Memory and the record](./memory.md#the-local-habitat)).
+Its service lives in the allocation's `compose.yaml`, under the
+habitat's `allocations/<id>/`, never in your checkout:
 
 ```yaml
-  senses:
+  senses-<id>:
     image: prom/prometheus:v3.5.0
+    network_mode: bridge
     command: ["--config.file=/etc/prometheus/senses.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      - "127.0.0.1:9351:9090"
     # …
 ```
 
-It keeps a week, listens on 127.0.0.1 only, and its host port is the
-seed's own (93xx, chosen free when `init` made the seed). What it scrapes
-is `dna/senses.yml`, one job per part over the host gateway, with
-`honor_labels` so a part's own labels are the readings':
+It keeps a week, listens on 127.0.0.1 only, and its host port, in the
+39000s, is chosen once and kept in the allocation's `ports.yaml`. What
+it scrapes is the allocation's `senses.yml`, one job per part over the
+host gateway, with `honor_labels` so a part's own labels are the
+readings':
 
 ```yaml
 scrape_configs:
@@ -83,27 +85,29 @@ scrape_configs:
   # …
 ```
 
-`hale dna init` writes both files. `hale dna upgrade` regenerates
-`dna/compose.yaml`, keeping its ports, and writes `dna/senses.yml` when
-it is missing.
+Both files are written the first time a habitat act brings one of the
+organism's allocations up. `hale habitat migrate` brings the store up
+with the organism's memory and nerves;
 
 ```sh
 hale dna senses up [dir]
 ```
 
-brings the service up (`docker compose … up -d --wait senses`) and
-prints its read URL:
+brings the store alone up (`docker compose … up -d --wait senses-<id>`)
+and prints its read URL:
 
 ```text
 HALE_DNA_SENSES_URL=http://127.0.0.1:<port>
 ```
 
-`hale dna dev` does the same with the rest of compose, unless the
-environment names its own memory or nerves (`HALE_DNA_MEMORY_DSN_OWNER`
-or `HALE_DNA_NATS_URL_OWNER`), in which case you run your own store. A
-store that does not come up is said, and nothing stops for it. No part
-of the organism is handed the URL: the store scrapes them, and only the
-reflexes read it.
+`hale dna senses url [dir]` prints the same line for a store that is up,
+and brings nothing up; when the store is not up it says so and names
+`hale habitat migrate`. `hale dna dev` brings nothing up either: it says
+whether the store is up, unless the environment names its own memory or
+nerves (`HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER`), in
+which case you run your own store. Nothing stops for a store that is not
+up. No part of the organism is handed the URL: the store scrapes them,
+and only the reflexes read it.
 
 ## Pressure
 
@@ -197,7 +201,7 @@ tier. It holds two things: the store's read URL
 (`HALE_DNA_SENSES_URL`) and a publish-only credential on the nerves,
 the `reflexes` user (`HALE_DNA_NATS_URL_REFLEXES`, its password the
 vault entry `HALE_DNA_NATS_VAULT_REFLEXES` names, under
-`HALE_DNA_NATS_ORG`; `hale dna nerves migrate` prints all three). That
+`HALE_DNA_NATS_ORG`; `hale dna nerves urls` prints all three). That
 user may publish on `<org>.app.reflexes.>` and nowhere else, and no
 application may publish there. To the organism the reflexes are one
 more application.
@@ -234,19 +238,21 @@ What happens next is all rows:
 
 The face's launcher (`hale dna head`, or `dna/face/start.sh` from a checkout) builds and starts the reflexes when it
 attaches a project under the local sign-in, with that project's store
-and nerves, and stops them with itself. A store or nerves that does not
-come up leaves the face running without them (`face: no reflexes: …`).
+and nerves (`hale dna senses url`, `hale dna nerves urls`), and stops
+them with itself. It brings nothing up: a store or nerves that is not up
+leaves the face running without them (`face: no reflexes: …`, naming
+`hale habitat migrate`).
 Nothing else starts them.
 
-`dna/tests/senses_reflex_test.hl` runs the whole loop on the seed's
-compose.
+`dna/tests/senses_reflex_test.hl` runs the whole loop on the
+organism's allocations in the test file's own habitat.
 
 ## How it breaks
 
 | symptom | cause | what to do |
 | --- | --- | --- |
 | `the <part> cannot serve its readings on port …; it runs unread` | another process holds the port | set `HALE_DNA_SENSES_PORT`, or free the port |
-| `hale dna senses up: no dna/compose.yaml: …` | the seed has no compose file | `hale dna upgrade` |
+| `hale dna senses url: the organism's senses' store in the local habitat is not up …` | the store's allocation is not up | `hale habitat migrate <organism>` |
 | `reflexes: the store at … did not answer (…)` | the store is down | `hale dna senses up` |
 | `reflexes: the vault holds no credential …` | the reflexes' password is not drawn | `hale dna upgrade` |
 | a concern that never becomes a proposal | its source has no parent | name the source as a path under its parent |

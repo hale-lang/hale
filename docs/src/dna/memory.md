@@ -67,7 +67,7 @@ record = "4f1c…"   # the record's identity, written by init
 ```
 
 A clone knows its record from the genome. A second clone reaches the
-record through memory: its pin names the schema, and `hale dna memory
+record through memory: its pin names the schema, and `hale habitat
 migrate` (or `hale dna upgrade` with the owner's DSN) keeps the head's
 DSN there. A pin whose genome is not the one this clone's history
 holds — a `hale.toml` copied from another project — is refused.
@@ -229,12 +229,13 @@ of carrying the password; the driver presents it when it connects.
 
 | variable | who holds it | what it may do |
 |---|---|---|
-| `HALE_DNA_MEMORY_DSN_OWNER` | `hale dna memory migrate`, `hale dna dev`, `hale dna upgrade`, a provisioned body's env file | apply the schema |
+| `HALE_DNA_MEMORY_DSN_OWNER` | `hale habitat migrate`, `hale dna memory migrate`, `hale dna upgrade`, a provisioned body's provisioning script | apply the schema |
 | `HALE_DNA_MEMORY_DSN_SPINE` | the host that runs the organism, and the organization it starts | read and write the record's tables, protected evidence through the functions; no DDL |
 | `HALE_DNA_MEMORY_DSN_HEAD` | a head: the CLI, the face, the API | read; take or fence a claim; write the ledger through its gate; file and read protected evidence |
 
-Apply the schema with the owner's DSN and the verb prints the other
-two:
+Apply the schema with `hale habitat migrate` (it migrates the nerves
+too). `hale dna memory migrate` applies memory's alone and prints the
+other two:
 
 ```text
 $ hale dna memory migrate
@@ -246,28 +247,50 @@ The clone keeps the head's line in `.hale/dna/memory.env`, so the
 `hale dna` verbs you run there afterwards read and write memory as the
 head without being told; a DSN in the environment still wins. The file
 is the head's alone, mode 600, under `.hale/`, which git ignores; a verb
-refuses it if its mode lets anyone else read it.
+refuses it if its mode lets anyone else read it. Beside the DSN it notes
+where the DSN came from (`HALE_DNA_MEMORY_FROM`: your own Postgres, or
+the organism's memory in the local habitat); a kept DSN from anywhere
+else is removed and refused, naming `hale habitat migrate <dir>`.
 
-With no `HALE_DNA_MEMORY_DSN_OWNER` it brings up the `knowledge-db`
-service of `dna/compose.yaml` (it needs `docker compose` on `PATH`)
-and migrates that. That database is the checkout's own: each checkout
-runs the seed's services as a compose project of its own,
-`hale-dna-<seed>-<checkout>` (the seed, and a short hash of the
-checkout's path), with its own volumes and its own host ports, kept in
-`.hale/dna/compose.local.yaml`. Two worktrees of one project never share
-a container; they share the record's identity, which the genome pins,
-and nothing else of memory's on your machine. `hale dna status` names the project. To reach the services by
-hand, name the same project and files:
-`docker compose -p <project> -f dna/compose.yaml -f .hale/dna/compose.local.yaml ps`. The migration is one transaction and can be run
-again at any time. It writes a schema version, and every
-store checks it when it opens: a host whose memory is at another
-version refuses to start, naming both versions and
-`hale dna memory migrate`, and a migration refuses a schema a newer
+### The local habitat
+
+With no `HALE_DNA_MEMORY_DSN_OWNER`, memory is an allocation of the
+machine's **local habitat** (it needs `docker compose` on `PATH`). The
+habitat is one compose project per machine, `hale-habitat-local-<h>`,
+under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`. Each
+organism is a tenant of it: its memory, its nerves and its senses'
+store are the services `memory-<id>`, `nerves-<id>` and `senses-<id>`,
+`<id>` the first twelve hex digits of the record identity the genome
+pins. Two organisms on one machine are two sets of allocations; two
+worktrees or clones of one organism are the same organism, with the
+same allocations, so they share one memory. An allocation's files
+(`compose.yaml`, `ports.yaml` with its host ports, and the servers'
+configuration and secrets) live in the habitat, under
+`allocations/<id>/`, never in your checkout. `hale dna status` names
+the allocation and the project. To reach the services by hand:
+`docker compose -p <project> --project-directory <habitat>/allocations/<id> -f compose.yaml -f ports.yaml ps`.
+
+The habitat is long-lived: nothing takes it down when work ends, and
+your organism's memory is there on the next run. Only the habitat's
+acts provision or migrate. Birth (`hale dna init`, `hale dna new`)
+brings memory and the nerves up, applies memory's schema and creates
+the organization's stream. `hale habitat migrate [organism]` brings
+the organism's allocations up and moves memory's schema and the
+nerves' stream to this toolchain's; it is idempotent, so run it after
+every toolchain update, or whenever a verb names it. Nothing else
+migrates implicitly.
+
+The migration is one transaction. It writes a schema version, and
+every store checks it when it opens: a host whose memory is at another
+version refuses to start, naming both versions and `hale habitat
+migrate <organism>`, and a migration refuses a schema a newer
 toolchain wrote.
 
-`hale dna dev` migrates first and hands the host the spine's DSN
-alone. `hale dna run` migrates nothing: give it
-`HALE_DNA_MEMORY_DSN_SPINE`, and it keeps any owner's or head's DSN
+`hale dna dev` migrates nothing: it derives the spine's DSN from
+memory that is up and migrated and hands the host that DSN alone.
+When memory is not up it says so, names `hale habitat migrate`, and
+the host runs with no memory. `hale dna run` migrates nothing either:
+give it `HALE_DNA_MEMORY_DSN_SPINE`, and it keeps any owner's or head's DSN
 away from the host. Without the spine's DSN the host says so and runs
 with no memory, projecting and admitting nothing; on a record that has
 adopted the ledger, `run` refuses to start at all.

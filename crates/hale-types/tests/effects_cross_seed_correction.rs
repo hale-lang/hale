@@ -215,8 +215,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        512,
-        518,
+        522,
+        527,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -239,16 +239,21 @@ fn host() {
         Node::build  does={syscall,block,env,alloc}
         Projection::build_digest  does={syscall,block,alloc}
         Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use}
+        ReferenceInfrastructure::allocated  does={syscall,env,alloc}
+        ReferenceInfrastructure::allocation  does={syscall,block,alloc}
         ReferenceInfrastructure::credential  does={syscall,block,env,alloc}
         ReferenceInfrastructure::install_unit  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::knowledge_database_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::logs  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::nerves_if_up  does={syscall,block,alloc}
-        ReferenceInfrastructure::nerves_server  does={syscall,block,alloc}
+        ReferenceInfrastructure::nerves_if_up  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::nerves_server  does={syscall,block,env,alloc}
         ReferenceInfrastructure::probe  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::published  does={syscall,block,env,alloc}
         ReferenceInfrastructure::put_credential  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::restart_if_up  does={syscall,block,alloc}
+        ReferenceInfrastructure::restart_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::run_at  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::senses_store  does={syscall,block,alloc}
+        ReferenceInfrastructure::senses_if_up  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::senses_store  does={syscall,block,env,alloc}
         ReferenceInfrastructure::start  does={syscall,block,env,alloc}
         ReferenceInfrastructure::status  does={syscall,block,env,alloc}
         ReferenceInfrastructure::stop  does={syscall,block,env,alloc}
@@ -261,6 +266,7 @@ fn host() {
         SshTransport::probe  does={syscall,block,alloc}
         admits_here  does={syscall,env,alloc}
         alive  does={syscall,block,alloc}
+        allocation_files  does={syscall,block,env,alloc}
         apply_drops  does={syscall,block,alloc}
         attached_application  does={syscall,block,alloc}
         base_of  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -272,7 +278,6 @@ fn host() {
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
         compose_key  does={alloc}
-        compose_seed  does={syscall,alloc}
         compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
@@ -306,18 +311,21 @@ fn host() {
         genome_uncandidate  does={syscall,block,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
         host_main  does={syscall,env,alloc}
-        include_names  does={syscall,block,alloc}
+        include_names  does={syscall,block,env,alloc}
         input_digests  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
+        nats_conf_path  does={syscall,block,env,alloc}
+        nats_secrets_path  does={syscall,block,env,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
         nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
-        nerves_restart_hint  does={syscall,block,alloc}
+        nerves_restart_hint  does={syscall,env,alloc}
+        nerves_urls  does={syscall,block,alloc}
         node_main  does={syscall,env,alloc}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
@@ -328,6 +336,7 @@ fn host() {
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
         plan_rel_of  does={syscall,block,env,alloc}
+        postgres_secrets_path  does={syscall,block,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
         record_genesis_verb  does={syscall,block,env,alloc,secret_use}
@@ -335,7 +344,7 @@ fn host() {
         record_identity_verb  does={syscall,alloc}
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use}
-        senses_up_verb  does={syscall,block,alloc}
+        senses_up_verb  does={syscall,block,env,alloc}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}

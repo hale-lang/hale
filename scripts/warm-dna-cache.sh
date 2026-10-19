@@ -18,10 +18,11 @@ cache=${2:-${XDG_CACHE_HOME:-$HOME/.cache}}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm.XXXXXX")
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # the root goes with whatever compose ran from under it: `dna new` with no
-# owner's DSN brings the knowledge database up from the project's compose
+# owner's DSN brings the organism's memory up in the local habitat, which
+# is the root's own here (XDG_DATA_HOME under it), never the developer's
 # (a teardown that did not finish keeps the root, and fails the script)
 trap 'if "$here/compose-down-under.sh" "$tmp"; then rm -rf -- "$tmp"; else exit 1; fi' EXIT
-export XDG_CACHE_HOME=$cache HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
+export XDG_CACHE_HOME=$cache XDG_DATA_HOME=$tmp/data HALE_DNA_DISCOVER=off HALE_BIN=$hale GIT_TERMINAL_PROMPT=0
 iris_dir=$("$hale" iris --where)
 host_bin=$iris_dir/dna/host/host
 # the host's verb program (GH #1490), built beside the body by the same

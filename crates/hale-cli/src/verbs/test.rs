@@ -292,9 +292,58 @@ pub(crate) fn sweep_dead_test_vaults(root: &Path) {
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         #[cfg(not(unix))]
         let gone = false;
-        if gone {
+        if gone && habitat_down(&e.path()).is_ok() {
             let _ = std::fs::remove_dir_all(e.path());
         }
+    }
+}
+
+/// The local habitat a test file's programs run under (GH #1653): its
+/// `XDG_DATA_HOME`, inside the file's vault directory, so an organism a
+/// fixture births or migrates is a tenant of the file's own habitat and
+/// never of the developer's, and it comes down with the vault.
+pub(crate) fn test_habitat_data(vault: &Path) -> PathBuf {
+    vault.join("data")
+}
+
+/// Take down every compose project run from under `dir` (a test file's
+/// habitat lives there): its containers, networks and volumes, confirmed
+/// by the project's label. Never the developer's own habitat, which no
+/// test's teardown touches; nothing to do where there is no docker.
+/// `Err` names what survived, and the caller keeps `dir`.
+pub(crate) fn habitat_down(dir: &Path) -> Result<(), String> {
+    let docker = |args: &[&str]| std::process::Command::new("docker").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    if !test_habitat_data(dir).exists() {
+        return Ok(());
+    }
+    let Some(listed) = docker(&["ps", "-a", "--filter", "label=com.docker.compose.project", "--format", "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}"]) else { return Ok(()) };
+    let text = dir.display().to_string();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mine = {
+        let h = openssl::sha::sha256(format!("{home}/.local/share/hale/habitat/local").as_bytes());
+        format!("hale-habitat-local-{}", h[..4].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    };
+    let mut projects: Vec<&str> = listed
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .filter(|(p, wd)| !p.is_empty() && *p != mine && (*wd == text || wd.starts_with(&format!("{text}/"))))
+        .map(|(p, _)| p)
+        .collect();
+    projects.sort();
+    projects.dedup();
+    let mut left = Vec::new();
+    for p in projects {
+        let _ = docker(&["compose", "-p", p, "down", "-v", "--remove-orphans"]);
+        let label = format!("label=com.docker.compose.project={p}");
+        let stays = docker(&["ps", "-a", "-q", "--filter", &label]).is_none_or(|o| !o.trim().is_empty()) || docker(&["volume", "ls", "-q", "--filter", &label]).is_none_or(|o| !o.trim().is_empty());
+        if stays {
+            left.push(p.to_string());
+        }
+    }
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the test habitat's compose projects did not come down: {}", left.join(", ")))
     }
 }
 
@@ -335,12 +384,20 @@ pub(crate) fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
                 }
             };
             cmd.env("HALE_VAULT_DIR", &vault).env_remove("HALE_VAULT_ADDR");
+            // GH #1653: and its own local habitat, beside the vault: a
+            // fixture's organisms are never tenants of the developer's
+            cmd.env("XDG_DATA_HOME", test_habitat_data(&vault));
             let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
             if std::env::var("HALE_TEST_KEEP_VAULT").is_ok_and(|v| v == "1") {
-                eprintln!("hale test: {}'s vault is kept at {}", f.display(), vault.display());
+                eprintln!("hale test: {}'s vault and habitat are kept at {}", f.display(), vault.display());
             } else {
-                let _ = std::fs::remove_dir_all(&vault);
+                match habitat_down(&vault) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_dir_all(&vault);
+                    }
+                    Err(why) => eprintln!("hale test: {}: {why}; {} is kept for the next run's sweep", f.display(), vault.display()),
+                }
             }
             match output {
                 Ok(out) => {

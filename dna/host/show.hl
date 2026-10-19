@@ -60,14 +60,14 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
         // is a memory that is not the record's, or none at all
         if len(dna::record_scope(root)) > 0 {
             let why = if record.ensure_open() { "the memory reached here holds none of it" } else { record.last_error() };
-            return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + why + "); `hale dna memory migrate` prints the head's DSN");
+            return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + why + "); `hale habitat migrate <organism>` migrates the organism's memory and keeps the head's DSN");
         }
         eprintln("hale dna show: the record has no rows: `hale dna init` seeds it");
         return show_answer(what, json, show_empty(what), 0, 0, true, "\n");
     }
     let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
     if !dna::dsn_set(env) {
-        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
+        return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + env + "); `hale habitat migrate` migrates the organism's memory and keeps its head's DSN, and a running spine (`hale dna dev`) projects the record into it");
     }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
@@ -78,7 +78,7 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
     let data = store.graph_perspective(what);
     if len(data) == 0 { return fail("hale dna show " + what + ": memory did not answer: " + store.last_error()); }
     if !basis.ok {
-        eprintln("hale dna show: memory's projection stamp vouches for nothing (", store.last_error(), "); `hale dna memory migrate` with the owner's DSN resets it, and the spine projects the record again");
+        eprintln("hale dna show: memory's projection stamp vouches for nothing (", store.last_error(), "); `hale habitat migrate <organism>` resets it, and the spine projects the record again");
     } else if basis.watermark < rows {
         eprintln("hale dna show: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the graph as of row ", to_string(basis.watermark));
     } else if basis.watermark > rows {
@@ -152,7 +152,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     while len(word(args, i)) > 0 { paths = paths + word(args, i) + "\n"; i = i + 1; }
     if len(dna::trim_nl(paths)) == 0 { return fail("usage: hale dna route [--json] (<path>… | --diff <range>)"); }
     let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
-    if !dna::dsn_set(env) { return fail("route: the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it"); }
+    if !dna::dsn_set(env) { return fail("route: the graph is memory's, and no memory is named (" + env + "); `hale habitat migrate <organism>` keeps the head's DSN"); }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
     if !store.reopen() { return fail("route: memory is not open: " + store.last_error()); }

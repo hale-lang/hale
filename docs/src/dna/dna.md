@@ -277,7 +277,7 @@ and does not reseed a record that exists.
 | `tests/main_test.hl` | `new` | you | a test that imports the application |
 | `hale.toml` | `new` writes `[deps]`; `init` adds the environments | you | the application's and the organization's entrypoints |
 | `hale.lock` | `new`, `init`, `upgrade` | the toolchain | pins `[dna] toolchain` |
-| `.gitignore` | `new` writes it; `init` adds to it | you | keeps `vendor/`, `.hale/` and the two secrets files out of git |
+| `.gitignore` | `new` writes it; `init` adds to it | you | keeps `vendor/` and `.hale/` out of git |
 | `vendor/dna/` | `new`, `init`, `upgrade` | the toolchain | the core, pond, the legs, and its `README.md` |
 | `.hale/dna/embedded.digest` | `new`, `init`, `upgrade` | the toolchain | the toolchain and digest that wrote `vendor/dna` |
 | `.hale/dna/baseline.topology` | `init` | the toolchain | the application's topology artifact, cut by `hale check --dump-topology` before anything else reads it; the record is seeded from it |
@@ -289,11 +289,16 @@ and does not reseed a record that exists.
 | `dna/org/work.hl` | `init` | you | a leg's performers and hands ([Legs, hands and voice](./legs.md)) |
 | `dna/org/workflows.hl` | `init`; rewritten by `upgrade` | the toolchain | the catalog: the baseline and your own ([The spine](./spine.md)) |
 | `dna/org/own_workflows.hl` | `init` | you | your own workflow definitions, never rewritten |
-| `dna/compose.yaml` | `init`; rewritten by `upgrade` | generated | memory's Postgres, the nerves' NATS and the senses' store for `hale dna dev` ([Getting started](./getting-started.md)) |
-| `dna/senses.yml` | `init` | you | what the senses' store scrapes ([Senses and reflexes](./senses.md)) |
-| `dna/nats.conf` | `init`; rewritten by `upgrade` | generated | the nerves' users and permissions, with no password in it ([The nerves](./nerves.md)) |
-| `dna/nats.secrets.conf` | `init`, `upgrade` | the vault | the nerves' passwords; mode 600, never tracked ([The skin](./skin.md)) |
-| `dna/postgres.secrets` | `init`, `upgrade` | the vault | the compose database's superuser password; mode 600, never tracked |
+
+No file in the checkout configures or runs a service. The organism's
+memory, nerves and senses' store are allocations of the machine's local
+habitat, and their files (`compose.yaml`, `ports.yaml`, `nats.conf`,
+`nats.secrets.conf`, `postgres.secrets`, `senses.yml`) live there, under
+`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local/allocations/<id>/`
+([Memory and the record](./memory.md#the-local-habitat)). `upgrade`
+removes the `dna/compose.yaml`, `dna/nats.conf`, `dna/nats.secrets.conf`,
+`dna/postgres.secrets` and `dna/senses.yml` an older toolchain wrote
+into the checkout.
 
 Beside the files, `init` writes these rows into the record, unless it is
 run with `--no-library` (`new` takes the flag too):
@@ -358,8 +363,6 @@ checks both.
 # toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is memory's)
 /vendor/
 /.hale/
-/dna/nats.secrets.conf
-/dna/postgres.secrets
 ```
 
 ```toml
@@ -369,9 +372,8 @@ dep = []
 toolchain = "0.21.0"
 ```
 
-The first five lines of the ignore file are `new`'s; `init` adds each
-of `/vendor/`, `/.hale/` and the two secrets files that is not already
-there. The secrets writer refuses a file git would track.
+The ignore file is `new`'s; `init` adds each of `/vendor/` and
+`/.hale/` that is not already there.
 
 ### What the record starts with
 

@@ -1284,14 +1284,14 @@ main locus Host {
         return e;
     }
     // ---- memory, as the spine (GH #985) ----------------------------------
-    // `dev` applies memory's schema before the host starts: the driver runs
-    // `memory-migrate` with the owner's DSN and hands the host only the
-    // record's spine DSN, which the organization inherits. The host refuses
+    // `dev` hands the host only the record's spine DSN, which the
+    // organization inherits: the driver derives it (`memory-migrate
+    // --derive`) from memory the habitat's acts migrated (GH #1653). The host refuses
     // a memory at another schema version, naming both; without a DSN it
     // says so and runs with no memory (nothing is projected or admitted).
     fn start_memory() {
         if !dna::dsn_set(dna::SPINE_DSN_ENV) {
-            self.say("no memory: " + dna::SPINE_DSN_ENV + " is not set (`hale dna dev` applies memory's schema from HALE_DNA_MEMORY_DSN_OWNER or dna/compose.yaml and hands the host the spine's DSN); nothing is projected or admitted");
+            self.say("no memory: " + dna::SPINE_DSN_ENV + " is not set (`hale dna dev` hands the host the spine's DSN of memory that `hale habitat migrate` migrated, from HALE_DNA_MEMORY_DSN_OWNER or the organism's allocation in the local habitat); nothing is projected or admitted");
             return;
         }
         let fence = memory_fence_for(std::env::var(dna::SPINE_DSN_ENV), self.root);
@@ -2079,7 +2079,7 @@ main locus Host {
         self.view = Projection { root: self.root, seed: self.seed, toolchain: self.toolchain, j: dna::RoutedJournal { record: dna::RecordJournal { repo: self.root, author: "host" }, ledger: self.memory.ledger } };
         let viewed = self.view.j.refresh();
         self.relay.mark_past(self.view);
-        if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks"); }
+        if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` hands the host the spine's URL of nerves whose stream `hale habitat migrate` created, on HALE_DNA_NATS_URL_OWNER or the organism's allocation in the local habitat); the organization hears nothing the record asks"); }
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
         let incoming = open_projection(self.root, self.seed, self.toolchain, self.memory);

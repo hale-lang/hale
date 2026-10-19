@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Take down every compose project whose working directory is <root> or
 # under it — its containers, networks and volumes — as dna::scratch_done
-# does for a fixture's root. A `hale dna` verb with no
-# HALE_DNA_MEMORY_DSN_OWNER brings the knowledge database up from the
-# project's dna/compose.yaml, and nothing else takes it down when a
-# script's temporary root goes.
+# does for a fixture's root. A `hale` verb with no
+# HALE_DNA_MEMORY_DSN_OWNER brings the organism's memory up as an
+# allocation of the local habitat, which a script keeps under its root
+# (XDG_DATA_HOME there), and nothing else takes it down when a script's
+# temporary root goes. Never the developer's own habitat (under $HOME),
+# nor the one XDG_DATA_HOME names outside <root>: the machine's habitat is
+# long-lived, and no teardown's (GH #1653).
 #
 # A project is found by the com.docker.compose.project.working_dir label on
 # any container, running or not, or by name in <root>/.dna-compose-projects,
@@ -35,6 +38,13 @@ ask() {
     return 1
 }
 
+# the machine's habitats this teardown never touches
+habitat_project() { printf 'hale-habitat-local-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-8)"; }
+mine=$(habitat_project "$HOME/.local/share/hale/habitat/local")
+here=${XDG_DATA_HOME:-$HOME/.local/share}/hale/habitat/local
+current=
+if [[ "$here" != "$root" && "$here" != "$root"/* ]]; then current=$(habitat_project "$here"); fi
+
 listed=$(ask ps -a --filter label=com.docker.compose.project \
     --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}')
 case $? in 0) ;; 2) exit 0 ;; *) exit 1 ;; esac
@@ -45,7 +55,7 @@ projects=$(
             if [[ "$wd" == "$root" || "$wd" == "$root"/* ]]; then printf '%s\n' "$project"; fi
         done
         [[ -f "$file" ]] && cat -- "$file"
-    } | sed '/^$/d' | sort -u
+    } | sed '/^$/d' | grep -v -x -F -e "$mine" ${current:+-e "$current"} | sort -u
 )
 [[ -n "$projects" ]] || exit 0
 mkdir -p -- "$root" && printf '%s\n' "$projects" >"$file"

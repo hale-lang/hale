@@ -902,7 +902,7 @@ row	M@literal1	M	main	default
 row	M@literal1.r	Recv	main	default
 row	M@literal1.s	Send	main	default
 
-== crates/hale-cli/tests/harness_vault.rs#cffa0d8d
+== crates/hale-cli/tests/harness_vault.rs#52ff5935
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
@@ -14933,7 +14933,7 @@ dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
 dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___memory_record__MemoryRecord	on main|unknown (no instance)
 dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main|unknown (no caller)

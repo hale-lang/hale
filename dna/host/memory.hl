@@ -1,8 +1,9 @@
 // Memory's schema, applied by its owner (GH #985).
 //
-// `hale dna memory migrate` (and `upgrade`, and `dev` before it starts
-// the organism) runs `memory-migrate`: the schema owner's DSN from
-// HALE_DNA_MEMORY_DSN_OWNER, or from dna/compose.yaml brought up, applies
+// `hale habitat migrate` (and birth, `upgrade` and `hale dna memory
+// migrate`) runs `memory-migrate`: the schema owner's DSN from
+// HALE_DNA_MEMORY_DSN_OWNER, or from the organism's memory allocation in
+// the local habitat brought up, applies
 // the record's schema and prints the spine's and the head's DSNs. The host
 // that runs the organism never holds the owner's DSN: it is handed the
 // spine's and checks the schema version before it starts anything on it.
@@ -15,17 +16,26 @@ const OWNER_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_OWNER";
 // `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>=<dsn>` per owner, the role that owner's
 // heads write the Ledger as (GH #1026) — `none: <why>` when there is no
 // database to apply it to.
-fn memory_migrate_verb(root: String) -> Answer {
+//
+// GH #1653: nothing migrates or provisions as a side effect. `derive`
+// (`memory-migrate --derive`, what `dev`, `head` and `show` ask) brings no
+// service up and applies no schema: it derives the roles' DSNs from the
+// owner's DSN, or from the organism's memory allocation when it is already
+// up, and a schema that is behind is the store's refusal when it opens,
+// naming `hale habitat migrate`. Only the habitat's acts migrate:
+// `hale habitat migrate`, and init and upgrade, which are graft's and the
+// habitat's until graft lands.
+fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
     let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
     if len(owner) == 0 {
         let infra = ReferenceInfrastructure { root: root };
-        let db = infra.knowledge_database(root);
+        let db = if derive { infra.knowledge_database_if_up() } else { infra.knowledge_database(root) };
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
     }
     let who = dna::record_identity_at(root);
     if len(who.why) > 0 { return fail("memory migrate: " + who.why); }
-    let m = dna::migrate(dna::parse_dsn(owner), who.id);
+    let m = if derive { dna::derived_dsns(dna::parse_dsn(owner), who.id) } else { dna::migrate(dna::parse_dsn(owner), who.id) };
     if !m.ok { return fail("memory migrate: " + m.why); }
     let mut out = dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n";
     let mut rest = m.owner_dsns;

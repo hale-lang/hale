@@ -450,8 +450,9 @@ fn scratch_done(dir: String) {
     }
     // what compose runs from under the root goes with it, or it outlives
     // the root (a host with no owner's DSN brings its knowledge database
-    // up from the fixture's dna/compose.yaml). A teardown that failed, or
-    // left anything, fails the fixture and keeps the root, its registry
+    // up as an allocation of the local habitat: the test file's own, which
+    // `hale test` takes down with the file's vault, or one a fixture keeps
+    // under its root). A teardown that failed, or left anything, fails the fixture and keeps the root, its registry
     // entry and the projects it names, for the sweep or a run by hand
     let left = scratch_compose_down(dir);
     if len(left) > 0 { eprintln("dna: the compose projects rooted in ", dir, " did not come down; the root and its record are kept for another attempt:\n", left); }
@@ -502,20 +503,35 @@ fn line_set_add(set: String, line: String) -> String {
 fn scratch_compose_projects(dir: String) -> DockerAnswer {
     let ps = docker_ask("ps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}");
     if !ps.ok { return ps; }
+    return DockerAnswer { ok: true, out: scratch_projects_in(ps.out, dir, std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "") };
+}
+
+// The projects of docker's `listed` (`<project>|<working dir>` lines)
+// rooted in `dir`, and the ones `recorded` names. GH #1653: never the
+// developer's own local habitat, nor the one this process's XDG_DATA_HOME
+// names when it lives outside `dir` — the machine's long-lived habitat is
+// no fixture's to take down, whatever a file under a root says. A test
+// file's habitat is `hale test`'s, beside the file's vault, and comes down
+// with it.
+@bounded_by(listed)
+fn scratch_projects_in(listed: String, dir: String, recorded: String) -> String {
+    let mine = developer_habitat_project();
+    let here = local_habitat_dir();
+    let current = if here == dir || std::str::starts_with(here, dir + "/") { "" } else { local_habitat_project() };
     let mut out = "";
-    let mut rest = ps.out + (std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "");
-    let mut from_file = false;
+    let mut rest = listed + recorded;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let bar = std::str::index_of(line, "|");
+        let project = if bar < 0 { line } else { line[0..bar] };
+        if len(project) == 0 || project == mine || project == current { continue; }
         if bar < 0 { out = line_set_add(out, line); continue; }
-        if bar == 0 { continue; }
         let wd = line[(bar + 1)..len(line)];
-        if wd == dir || std::str::starts_with(wd, dir + "/") { out = line_set_add(out, line[0..bar]); }
+        if wd == dir || std::str::starts_with(wd, dir + "/") { out = line_set_add(out, project); }
     }
-    return DockerAnswer { ok: true, out: out };
+    return out;
 }
 
 // Take down every compose project rooted in `dir` — its containers,
@@ -1072,7 +1088,8 @@ fn fixture_keep_head(repo: String, head_dsn: String) -> String {
     // (a directory that is no repository has nothing to exclude it from)
     let excluded = run_tool("sh\n-c\ncd \"$1\" && { git rev-parse --git-dir >/dev/null 2>&1 || exit 0; } && { git check-ignore -q .hale/dna/memory.env || { mkdir -p \"$(git rev-parse --git-path info)\" && echo /.hale/ >> \"$(git rev-parse --git-path info/exclude)\"; }; }\nsh\n" + repo);
     if excluded.code != 0 { return "the clone could not ignore .hale/: " + excluded.stderr; }
-    let kept = run_tool("sh\n-c\numask 077 && printf '%s=%s\\n' \"$2\" \"$3\" > \"$1/.hale/dna/memory.env\" && chmod 600 \"$1/.hale/dna/memory.env\"\nsh\n" + repo + "\n" + HEAD_DSN_ENV + "\n" + head_dsn);
+    // the fixture's memory is the owner's, never a checkout's compose
+    let kept = run_tool("sh\n-c\numask 077 && printf '%s=%s\\n%s=owner\\n' \"$2\" \"$3\" \"$4\" > \"$1/.hale/dna/memory.env\" && chmod 600 \"$1/.hale/dna/memory.env\"\nsh\n" + repo + "\n" + HEAD_DSN_ENV + "\n" + head_dsn + "\n" + MEMORY_FROM_KEY);
     if kept.code != 0 { return "the clone's memory.env could not be written: " + kept.stderr; }
     return "";
 }

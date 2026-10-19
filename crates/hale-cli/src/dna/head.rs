@@ -15,17 +15,17 @@
 //! built and only launches.
 //!
 //! With a project and no `HALE_DNA_MEMORY_DSN_HEAD`, the head's memory
-//! DSN is derived as `hale dna memory migrate` derives it (the same
-//! function, in this process), handed to the launcher on its
-//! environment and never printed. Memory that cannot be reached is said
-//! plainly, with `hale dna dev` as the way to bring it up; the head
-//! starts anyway, with Knowledge unsupported.
+//! DSN is derived from the organism's memory when it is up and migrated
+//! (GH #1653: derived, never migrated, and nothing brought up), handed to
+//! the launcher on its environment and never printed. Memory that is not
+//! up is said plainly, with `hale habitat migrate` as the way to bring it
+//! up; the head starts anyway, with Knowledge unsupported.
 
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use super::{memory_migrate, MemoryPlan};
+use super::{memory_derive, MemoryPlan};
 
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
@@ -46,9 +46,9 @@ pub(crate) fn usage_text() -> &'static str {
      From a hale checkout, dna/face/start.sh starts the same head.\n\
      \n\
      With a project and no HALE_DNA_MEMORY_DSN_HEAD, the head's memory DSN is\n\
-     derived as `hale dna memory migrate` derives it (never printed); when the\n\
-     project's memory is not up, `hale dna dev <project>` brings it and the\n\
-     nerves up, and until then Knowledge is unsupported. The rest of the\n\
+     derived from the organism's memory (never printed); the head migrates and\n\
+     brings up nothing. When it is not up, `hale habitat migrate <project>`\n\
+     brings it and the nerves up, and until then Knowledge is unsupported. The rest of the\n\
      launcher's environment (HALE_DNA_HEAD_STATE, HALE_DNA_NATS_URL_HEAD, …)\n\
      is inherited as dna/face/start.sh --help describes.\n\
      \n\
@@ -158,29 +158,26 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
     Err(format!("cannot run {}: {e}", cache.join(hale_dna::HEAD_LAUNCHER).display()))
 }
 
-/// The head's memory DSN for `project`, as `hale dna memory migrate`
-/// prints it (`HALE_DNA_MEMORY_DSN_HEAD`): the same function, applying
-/// memory's schema with the owner's DSN when it is not applied yet, which
-/// is idempotent. The DSN carries the head role's password, so it travels
-/// on the launcher's environment alone. `None`, said plainly, when there
-/// is no memory to reach — or when the project's compose memory is not
-/// running: the head starts no database (`hale dna dev` does), so the
-/// migration is asked only of memory that is already up.
+/// The head's memory DSN for `project`, derived from the organism's
+/// memory as `hale habitat migrate` keeps it (`HALE_DNA_MEMORY_DSN_HEAD`).
+/// GH #1653: derived only, from memory that is up: nothing is brought up
+/// and no schema is applied here, and a schema that is behind is the
+/// store's refusal, naming `hale habitat migrate`. The DSN carries the
+/// head role's password, so it travels on the launcher's environment
+/// alone. `None`, said plainly with the fix, when there is no memory to
+/// reach.
 fn head_dsn(project: &Path) -> Option<OsString> {
-    let why = match memory_down(project) {
-        Some(why) => why,
-        None => match memory_migrate(project) {
-            Ok(MemoryPlan::Roles { head, .. }) => {
-                eprintln!("hale dna head: the head reads Knowledge from memory (its DSN derived as `hale dna memory migrate` derives it)");
-                return Some(OsString::from(head));
-            }
-            Ok(MemoryPlan::NoDatabase(why)) => why,
-            Err(e) => e,
-        },
+    let why = match memory_derive(project) {
+        Ok(MemoryPlan::Roles { head, .. }) => {
+            eprintln!("hale dna head: the head reads Knowledge from memory (its DSN derived from the organism's memory)");
+            return Some(OsString::from(head));
+        }
+        Ok(MemoryPlan::NoDatabase(why)) => why,
+        Err(e) => e,
     };
     eprintln!("hale dna head: memory is not up: {why}");
     eprintln!(
-        "hale dna head: `hale dna dev {}` brings the project's memory and nerves up; until then the head runs with Knowledge unsupported",
+        "hale dna head: `hale habitat migrate {}` brings the organism's memory and nerves up and migrates them; until then the head runs with Knowledge unsupported",
         project.display()
     );
     None
@@ -190,41 +187,8 @@ fn head_dsn(project: &Path) -> Option<OsString> {
 /// for a verb that reads memory as the head (`hale dna show`): `None`,
 /// quietly, when memory is not up, for that verb to say so its own way.
 pub(super) fn derived_head_dsn(project: &Path) -> Option<OsString> {
-    if memory_down(project).is_some() {
-        return None;
-    }
-    match memory_migrate(project) {
+    match memory_derive(project) {
         Ok(MemoryPlan::Roles { head, .. }) => Some(OsString::from(head)),
         _ => None,
-    }
-}
-
-/// Why memory is not up for `project`, or `None` when it is: an owner's
-/// own server (HALE_DNA_MEMORY_DSN_OWNER) is the owner's to keep up and
-/// is asked directly; otherwise the project's compose `knowledge-db` must
-/// be running already, since migrating would bring it up.
-fn memory_down(project: &Path) -> Option<String> {
-    if set("HALE_DNA_MEMORY_DSN_OWNER") {
-        return None;
-    }
-    let root = match super::project(project) {
-        Ok((root, _)) => root,
-        Err(e) => return Some(e),
-    };
-    let compose = root.join("dna/compose.yaml");
-    if !compose.is_file() {
-        return Some("no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER".to_string());
-    }
-    // the checkout's own compose project (GH #1653): the running
-    // `knowledge-db` compose started from this checkout's dna/
-    let dir = compose.parent().map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf())).unwrap_or_default();
-    let out = Command::new("docker")
-        .args(["ps", "-q", "--filter", "status=running", "--filter", "label=com.docker.compose.service=knowledge-db", "--filter"])
-        .arg(format!("label=com.docker.compose.project.working_dir={}", dir.display()))
-        .output();
-    match out {
-        Ok(o) if o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty() => None,
-        Ok(_) => Some("the project's memory (compose's `knowledge-db`) is not running".to_string()),
-        Err(e) => Some(format!("docker: {e}")),
     }
 }

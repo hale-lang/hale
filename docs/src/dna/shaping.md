@@ -722,10 +722,15 @@ is generated, or missing:
 - It rewrites `dna/org/workflows.hl` to the current shape. Any
   definitions an older one held are named, for you to move into
   `dna/org/own_workflows.hl`.
-- It rewrites `dna/compose.yaml` and `dna/nats.conf`, and draws the
-  nerves' passwords anew into the vault and `dna/nats.secrets.conf`.
+- It removes the `dna/compose.yaml`, `dna/nats.conf`,
+  `dna/nats.secrets.conf`, `dna/postgres.secrets` and `dna/senses.yml`
+  an older toolchain wrote: the organism's memory, nerves and senses'
+  store are allocations of the local habitat, whose files live outside
+  the checkout ([Memory and the record](./memory.md#the-local-habitat)).
+  It draws the nerves' passwords anew into the vault and the nerves
+  allocation's `nats.secrets.conf`.
 - It creates what an older organization lacks: `models.hl`,
-  `work.hl`, `charter.hl`, `own_workflows.hl`, `dna/senses.yml`.
+  `work.hl`, `charter.hl`, `own_workflows.hl`.
 - In `dna/org/main.hl` it rewrites only lines an older generator wrote
   exactly (the loop's tick, the Board's field, the retired owners
   field). Everything else it names as a `note`, with the line to

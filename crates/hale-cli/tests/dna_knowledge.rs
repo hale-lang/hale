@@ -1,6 +1,7 @@
-//! GH #583 K1 — the knowledge graph, in memory. `init` writes
-//! `dna/compose.yaml`; `hale dna dev` applies memory's schema with the
-//! owner's DSN and runs the organization's host as the spine, which
+//! GH #583 K1 — the knowledge graph, in memory. Birth applies memory's
+//! schema with the owner's DSN (or in the organism's memory allocation in
+//! the local habitat, GH #1653) and `hale dna dev` runs the organization's
+//! host as the spine on it, migrating nothing, which
 //! projects the record into memory on its tick (GH #985): a proposal
 //! ratified by the Board becomes a context package for the position it
 //! binds to, with a digest and the record revision, read by a head under
@@ -134,10 +135,9 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         .and_then(|r| r.split(' ').next())
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("init seeded no library:\n{out}"));
-    // init wrote the compose file: the seed's services, which each checkout
-    // runs as a compose project, with volumes and host ports, of its own
-    let compose = std::fs::read_to_string(app.join("dna/compose.yaml")).expect("dna/compose.yaml");
-    assert!(compose.contains("image: pgvector/pgvector:pg16") && compose.contains("x-hale-dna-seed: knowing") && !compose.contains("127.0.0.1:54"), "{compose}");
+    // GH #1653: init wrote no infrastructure into the checkout: the
+    // organism's services are its allocations in the local habitat
+    assert!(!app.join("dna/compose.yaml").exists(), "the checkout holds no compose file");
 
     // the record: a proposal, made by a position, then the Board's verdict
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -150,7 +150,8 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     assert!(ok && reviews.contains(&format!("k:{}", &digest[7..19])) && reviews.contains("needs board"), "the knowledge Review is pending for the Board:\n{reviews}");
 
-    // dev: the organization and the application, the host as the spine
+    // dev: the organization and the application, the host as the spine,
+    // on memory the habitat's act migrated
     let (ok, migrated) = hale(&["dna", "memory", "migrate"], &app, &[]);
     assert!(ok, "{migrated}");
     let head = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).expect("the head's DSN").to_string();
