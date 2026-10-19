@@ -599,7 +599,7 @@ impl Shift for ScalarClause {
     }
 }
 
-shift_struct!(StructField { name, ty, default, tag, indexed_by, span });
+shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, span });
 shift_struct!(EnumVariant { name, fields, class, span, member });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 

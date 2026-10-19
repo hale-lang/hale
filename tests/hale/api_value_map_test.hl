@@ -1,0 +1,91 @@
+// tests/hale/api_value_map_test.hl — a map of values (spec/api.md §
+// Codecs): `bounded[T; N] indexed_by <key> -> <value>` crosses JSON as an
+// object keyed by each record's `<key>`, each member the record's `<value>`
+// alone (`{"db": "ok"}`), the record being the key and that value. A
+// value of every kind a map carries (a `String`, an `Int`, a quantity by
+// its count, a payload-free enum, an instant) reads and writes back as it
+// was; a duplicate key is `duplicate_key`, more entries than the list
+// holds `too_long`, a value of the wrong kind `wrong_type`, and an absent
+// map is empty. Through the program's own codec, `T::api_decode` and
+// `T::api_encode`.
+
+unit cent;
+type Money = quantity Int in cent;
+type Level = enum { low, high };
+
+type Check { name: String; status: String; }
+type Gauge { name: String; depth: Int; }
+type Price { name: String; amount: Money; }
+type Mark { name: String; level: Level; }
+type Stamp { name: String; at: Time; }
+// a value typed by an alias of a scalar is the scalar
+type Label = String;
+type Tag { name: String; label: Label; }
+type Health {
+    checks: bounded[Check; 3] indexed_by name -> status;
+    gauges: bounded[Gauge; 2] indexed_by name -> depth;
+    prices: bounded[Price; 2] indexed_by name -> amount;
+    marks: bounded[Mark; 2] indexed_by name -> level;
+    stamps: bounded[Stamp; 2] indexed_by name -> at;
+    tags: bounded[Tag; 2] indexed_by name -> label;
+    ok: Bool = true;
+}
+
+fn refused(text: String) -> String {
+    let h = Health::api_decode(text) or { return err.kind + ": " + err.field; };
+    return "decoded " + to_string(count(h.checks));
+}
+
+fn main() {
+    let text = "{\"checks\":{\"db\":\"ok\",\"nats\":\"unavailable\"},\"gauges\":{\"queue\":3},\"prices\":{\"tea\":250},"
+        + "\"marks\":{\"disk\":\"high\"},\"stamps\":{\"boot\":\"2026-10-12T03:04:05Z\"},\"tags\":{\"env\":\"prod\"},\"ok\":false}";
+    let h = Health::api_decode(text) or {
+        std::test::assert(false, "a valid health: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(count(h.checks), 2, "two checks");
+    let mut seen = "";
+    for c in h.checks {
+        seen = seen + c.name + "=" + c.status + ";";
+    }
+    std::test::assert_eq_str(seen, "db=ok;nats=unavailable;", "each record the key and its value, in order");
+    for g in h.gauges {
+        std::test::assert_eq_int(g.depth, 3, "an Int value");
+    }
+    for p in h.prices {
+        std::test::assert(p.amount == 250 * 1cent, "a quantity by its count");
+    }
+    for m in h.marks {
+        let high = match m.level { Level::low -> false, Level::high -> true, };
+        std::test::assert(high, "an enum value by its variant");
+    }
+    for t in h.tags {
+        std::test::assert_eq_str(t.label, "prod", "an aliased scalar's value");
+    }
+    std::test::assert(!h.ok, "the other fields as ever");
+    std::test::assert_eq_str(Health::api_encode(h), text, "written back as it was read");
+
+    // absent and empty maps are empty, and write as `{}`
+    let none = Health::api_decode("{\"checks\":{}}") or {
+        std::test::assert(false, "no maps: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(count(none.checks) + count(none.stamps), 0, "absent and empty are empty");
+    std::test::assert_eq_str(
+        Health::api_encode(none),
+        "{\"checks\":{},\"gauges\":{},\"prices\":{},\"marks\":{},\"stamps\":{},\"tags\":{},\"ok\":true}",
+        "an empty map is `{}`"
+    );
+
+    // refusals
+    std::test::assert_eq_str(refused("{\"checks\":{\"db\":\"ok\",\"db\":\"down\"}}"), "duplicate_key: checks", "a duplicate key");
+    std::test::assert_eq_str(
+        refused("{\"checks\":{\"a\":\"1\",\"b\":\"2\",\"c\":\"3\",\"d\":\"4\"}}"),
+        "too_long: checks",
+        "more entries than the list holds"
+    );
+    std::test::assert_eq_str(refused("{\"checks\":{\"db\":1}}"), "wrong_type: checks", "a value of the wrong kind");
+    std::test::assert_eq_str(refused("{\"checks\":{\"db\":{\"status\":\"ok\"}}}"), "wrong_type: checks", "a record is no value");
+    std::test::assert_eq_str(refused("{\"marks\":{\"disk\":\"middle\"}}"), "wrong_type: marks", "no such variant");
+    std::test::assert_eq_str(refused("{\"checks\":[\"ok\"]}"), "wrong_type: checks", "a list is no map");
+}

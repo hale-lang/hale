@@ -769,7 +769,7 @@ fn main() {{ Desk {{ }}; }}
     let check_schema = TypeSchema { properties: vec![("name".to_string(), string()), ("status".to_string(), string())], required: Vec::new() };
     let value = TypeSchema { properties: vec![("status".to_string(), string())], required: Vec::new() };
     let health_schema = TypeSchema {
-        properties: vec![("checks".to_string(), FieldSchema::Map { name: "Check".to_string(), key: "name".to_string(), lifted: "name".to_string(), value, max: 4 })],
+        properties: vec![("checks".to_string(), FieldSchema::Map { name: "Check".to_string(), key: "name".to_string(), lifted: "name".to_string(), value, max: 4, of: None })],
         required: Vec::new(),
     };
     let file = hale_types::proto_gen::from_model(&ClientModel {
@@ -783,4 +783,108 @@ fn main() {{ Desk {{ }}; }}
     assert!(file.text().contains("map<string, Check> checks = 1;"), "{}", file.text());
     let (compiled, reflected) = compiled_and_reflected(&file, "map");
     assert_eq!(reflected, compiled, "the reflected descriptor of a map is the compiled text");
+}
+
+// ---- a map of values is a proto3 map of scalars ----
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PValues {
+    #[prost(btree_map = "string, string", tag = "1")]
+    checks: std::collections::BTreeMap<String, String>,
+    #[prost(btree_map = "string, int64", tag = "2")]
+    gauges: std::collections::BTreeMap<String, i64>,
+}
+
+/// A map of values (`bounded[T; N] indexed_by <key> -> <value>`) is a
+/// proto3 `map<string, V>` of the value's scalar (spec/api.md § Codecs):
+/// what `prost` writes the generated decoder reads (each record its
+/// entry's key and value, a zero value `prost` leaves out read as the
+/// zero), what the generated encoder writes `prost` reads back as the same
+/// maps, and the `.proto`'s descriptor (the implicit `ChecksEntry`, its
+/// value a scalar) is the one a compiler makes of its text.
+#[test]
+fn a_map_of_values_is_a_proto3_map_that_prost_reads_and_writes() {
+    use prost::Message;
+    let health = PValues {
+        checks: [("cache".to_string(), "down".to_string()), ("db".to_string(), "ok".to_string())].into_iter().collect(),
+        gauges: [("idle".to_string(), 0), ("queue".to_string(), 3)].into_iter().collect(),
+    };
+    let program = format!(
+        r#"
+type Check {{ name: String; status: String; }}
+type Gauge {{ name: String; depth: Int; }}
+type Health {{ checks: bounded[Check; 4] indexed_by name -> status; gauges: bounded[Gauge; 4] indexed_by name -> depth; }}
+api Pb {{ rpc Probe::health; }}
+locus Probe {{
+    fn health(h: Health) -> Health {{ return h; }}
+}}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: "" }}; }}
+    fn refused() -> String {{ return "no"; }}
+}}
+main locus Desk {{
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; h: api::Exposure = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse); }}
+    run() {{
+        let h = __api_pb_decode_Health({bytes}) or {{ println("refused " + err.kind + " " + err.field); return; }};
+        println(__api_encode_Health(h));
+        let out = __api_pb_encode_Health(h);
+        let mut text = "";
+        let mut i = 0;
+        while i < len(out) {{
+            if i > 0 {{ text = text + ","; }}
+            text = text + to_string(std::bytes::read_u8(out, i) or 0);
+            i = i + 1;
+        }}
+        println(text);
+    }}
+}}
+fn main() {{ Desk {{ }}; }}
+"#,
+        bytes = bytes_expr(&health.encode_to_vec()),
+    );
+    let bin = harness::unique_bin("api_pb_codec_value_map");
+    build_opts::build_source(&program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    let mut lines = got.lines();
+    assert_eq!(
+        lines.next(),
+        Some(r#"{"checks":{"cache":"down","db":"ok"},"gauges":{"idle":0,"queue":3}}"#),
+        "the generated decoder reads what prost wrote"
+    );
+    let written: Vec<u8> = lines.next().expect("the encoded bytes").split(',').map(|b| b.parse().expect("a byte")).collect();
+    assert_eq!(PValues::decode(written.as_slice()).expect("prost reads it"), health, "prost reads what the generated encoder wrote");
+
+    use hale_types::surface_doc::{ClientError, ClientMember, ClientModel};
+    use hale_types::surfaces::{FieldSchema, TypeSchema};
+    let string = || FieldSchema::Scalar { json: "string", hale_type: None, unit: None };
+    let int = || FieldSchema::Scalar { json: "integer", hale_type: None, unit: None };
+    let check_schema = TypeSchema { properties: vec![("name".to_string(), string()), ("status".to_string(), string())], required: Vec::new() };
+    let gauge_schema = TypeSchema { properties: vec![("name".to_string(), string()), ("depth".to_string(), int())], required: Vec::new() };
+    let map = |record: &str, field: &str, schema: FieldSchema| FieldSchema::Map {
+        name: record.to_string(),
+        key: "name".to_string(),
+        lifted: "name".to_string(),
+        value: TypeSchema { properties: vec![(field.to_string(), schema.clone())], required: Vec::new() },
+        max: 4,
+        of: Some((field.to_string(), Box::new(schema))),
+    };
+    let health_schema = TypeSchema {
+        properties: vec![("checks".to_string(), map("Check", "status", string())), ("gauges".to_string(), map("Gauge", "depth", int()))],
+        required: Vec::new(),
+    };
+    let file = hale_types::proto_gen::from_model(&ClientModel {
+        surface: "S".to_string(),
+        digest: "fnv1a64:0".to_string(),
+        members: vec![ClientMember { name: "R::f".to_string(), digest: String::new(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        types: [("Health".to_string(), health_schema), ("Check".to_string(), check_schema), ("Gauge".to_string(), gauge_schema)]
+            .into_iter()
+            .collect(),
+        streams: Vec::new(),
+    })
+    .expect("a file");
+    assert!(file.text().contains("map<string, string> checks = 1;"), "{}", file.text());
+    assert!(file.text().contains("map<string, int64> gauges = 2;"), "{}", file.text());
+    assert!(!file.text().contains("message Check"), "no record message: each entry is the key and the value: {}", file.text());
+    let (compiled, reflected) = compiled_and_reflected(&file, "value_map");
+    assert_eq!(reflected, compiled, "the reflected descriptor of a map of values is the compiled text");
 }

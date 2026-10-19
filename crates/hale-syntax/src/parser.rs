@@ -6596,6 +6596,13 @@ impl Parser {
         } else {
             None
         };
+        // `-> <field>`: a map of scalars, each element crossing as that
+        // field's value alone
+        let map_value = if indexed_by.is_some() && self.eat(&TokenKind::Arrow) {
+            Some(self.expect_ident("field name after `->`")?)
+        } else {
+            None
+        };
         let default = if self.eat(&TokenKind::Eq) {
             Some(self.parse_expr()?)
         } else {
@@ -6621,6 +6628,7 @@ impl Parser {
             default,
             tag,
             indexed_by,
+            map_value,
         })
     }
 

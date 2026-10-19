@@ -9281,6 +9281,8 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
 /// is a `bounded[T; N]`, `T` a user-declared struct, and `<field>` a
 /// `String` field of it. Any other shape is refused at the clause.
 fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
+    // the maps of values the api codec cannot carry, by its own reading
+    let uncarried = hale_syntax::json_gen::uncarried_wire_maps(programs);
     let mut types: std::collections::HashMap<String, &TypeDecl> = std::collections::HashMap::new();
     for p in programs {
         walk_decls(&p.items, &mut |item| {
@@ -9355,6 +9357,88 @@ fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
                         ),
                     )),
                     Some(_) => {}
+                }
+                // `-> <value>`: a map of scalars, each element crossing as
+                // that field alone, so the element is the key and it
+                if let Some(value) = &f.map_value {
+                    let at = format!("`indexed_by` on `{}.{}`, its value `-> {}`", t.name.name, f.name.name, value.name);
+                    match elem_fields.iter().find(|g| g.name.name == value.name) {
+                        None => diags.push(Diag::ty(
+                            value.span,
+                            format!("{at}: the element type `{elem_name}` has no field `{}`", value.name),
+                        )),
+                        Some(_) if value.name == key.name => diags.push(Diag::ty(
+                            value.span,
+                            format!("{at}: the value is the key; a map's value is the element's other field"),
+                        )),
+                        Some(g) => {
+                            let others: Vec<&str> = elem_fields
+                                .iter()
+                                .map(|h| h.name.name.as_str())
+                                .filter(|n| *n != key.name && *n != value.name)
+                                .collect();
+                            // a record, a list, or an enum with payloads is no
+                            // value a map of values carries (a map's entry
+                            // value is a scalar or a payload-free enum)
+                            // read through its aliases, as the codec reads it
+                            let mut vty = &g.ty;
+                            let mut seen: Vec<&str> = Vec::new();
+                            while let TypeExpr::Named { path, generic_args, .. } = vty {
+                                if path.segments.len() != 1 || !generic_args.is_empty() {
+                                    break;
+                                }
+                                let n = path.segments[0].name.as_str();
+                                let Some(TypeDeclBody::Alias(next)) = types.get(n).map(|td| &td.body) else { break };
+                                if seen.contains(&n) {
+                                    break;
+                                }
+                                seen.push(n);
+                                vty = next;
+                            }
+                            let record = match vty {
+                                TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+                                    match types.get(&path.segments[0].name).map(|td| &td.body) {
+                                        Some(TypeDeclBody::Struct(_)) => true,
+                                        Some(TypeDeclBody::Enum(vs)) => vs.iter().any(|v| !v.fields.is_empty()),
+                                        _ => false,
+                                    }
+                                }
+                                TypeExpr::Bounded { .. } | TypeExpr::Array { .. } | TypeExpr::Tuple(..) => true,
+                                _ => false,
+                            };
+                            if !others.is_empty() {
+                                diags.push(Diag::ty(
+                                    value.span,
+                                    format!(
+                                        "{at}: `{elem_name}` has other fields ({}), which a map of values would \
+                                         drop: its element is the key and the value alone",
+                                        others.join(", ")
+                                    ),
+                                ));
+                            } else if record {
+                                diags.push(Diag::ty(
+                                    value.span,
+                                    format!(
+                                        "{at}: `{elem_name}.{}` is a `{}`: a map's value is a scalar, a `Time` or a \
+                                         payload-free enum; a map of records is `indexed_by {}` alone, each element \
+                                         crossing as the record without its key",
+                                        value.name,
+                                        crate::surfaces::type_text(&g.ty),
+                                        key.name
+                                    ),
+                                ));
+                            } else if let Some((_, _, _, why)) =
+                                uncarried.iter().find(|(r, fld, _, _)| *r == t.name.name && *fld == f.name.name)
+                            {
+                                // whatever else the codec reads differently: its
+                                // answer, never a map it would drop
+                                diags.push(Diag::ty(
+                                    value.span,
+                                    format!("{at}: the api codec cannot carry `{elem_name}.{}`: {why}", value.name),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         });
