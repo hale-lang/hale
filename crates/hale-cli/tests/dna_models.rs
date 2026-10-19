@@ -147,7 +147,7 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     // 3. re-running keeps the catalog the project may have edited
     std::fs::write(d2.join("withkey/dna/org/models.hl"), "// mine\n").unwrap();
     habitat::habitat();
-    let (ok, out) = hale_env(&["habitat", "graft", ".", "--attach", "--no-pack"], &d2.join("withkey"), &[("PATH", &bare_path())], NO_KEYS);
+    let (ok, out) = hale_env(&["habitat", "graft", ".", "--attach", "--no-pack"], &d2.join("withkey"), &[("PATH", &bare_path()), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], NO_KEYS);
     assert!(ok, "{out}");
     assert_eq!(std::fs::read_to_string(d2.join("withkey/dna/org/models.hl")).unwrap(), "// mine\n", "kept on re-run");
     assert!(!out.contains("models  found"), "no discovery report when the catalog is kept:\n{out}");
