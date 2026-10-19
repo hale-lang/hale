@@ -2077,6 +2077,16 @@ and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
 refused by law 5.
 
+**A Float** crosses JSON as the same double: the encoder writes the
+shortest number that reads back as it (`0.30000000000000004`,
+`99.999995`, `100`, `1e-300`), a field, a list's element and a whole
+value alike, and the decoder reads it with `std::str::parse_float`, a
+subnormal included. NaN and the infinities are no JSON number: the
+encoder writes them as `nan`, `inf` and `-inf`, which the decoder (and
+any other JSON reader) refuses, `wrong_type`, so such a value does not
+cross JSON. Protobuf carries a Float as its eight bytes, every double
+included.
+
 **An instant and a duration.** The stdlib's `Time` (a point over
 `Duration` with no origin, `spec/types.md`) is the one point the codec
 carries, as its RFC 3339 text in UTC: what `std::time::iso8601` writes,

@@ -519,6 +519,9 @@ site must address the failure with `or`. `ParseError` carries:
   (s parsed a prefix and had junk after), `"invalid"` (no
   leading numeric prefix), `"overflow"` (`parse_int` only —
   magnitude exceeds Int range).
+  `parse_float` reads every double's text, a subnormal (`5e-324`)
+  included; a magnitude past the largest double, or one that rounds
+  to zero, is refused.
 - `input: String` — the original `s` (truncated to a reasonable
   preview if very long), for diagnostic surfaces.
 

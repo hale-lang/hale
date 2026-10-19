@@ -452,6 +452,7 @@ ns std::str open_prefixes=[]
   view_cp_size pure
   index_of pure
   index_of_from pure
+  __float_text pure
   range_index_of pure
   find pure
   contains pure
@@ -1043,6 +1044,7 @@ std::shm::last_record_user_ns | lookup=shm@2 | locus=false | effects=pure | sig=
 std::source::Walk | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::str::ByteView | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::str::ParseError | lookup=str@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::str::__float_text | lookup=str@2 | locus=false | effects=pure | sig=(Float) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__float_text
 std::str::builder_append | lookup=str@2 | locus=false | effects=pure | sig=(Bytes, Str) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=builder_append
 std::str::builder_finish | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=builder_finish
 std::str::builder_len | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=builder_len

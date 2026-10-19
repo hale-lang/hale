@@ -1337,6 +1337,9 @@ pub const SURFACES: &[NsSurface] = &[
             // scanner's next search without slicing the tail (downstream
             // handoff).
             row!("index_of_from", PURE, [Str, Str, Int] -> Int, Intrinsic(StrIndexOfFrom)),
+            // a Float's shortest text that reads back as the same double:
+            // what the api codec writes (spec/api.md § Codecs)
+            row!("__float_text", PURE, [Float] -> Str, Intrinsic(StrFloatTextRaw)),
             // `index_of_from` for a caller holding the length (a view's
             // `n`): no strlen per call, so a scan with it is linear. The
             // range family's contract, the caller owns the bound; `find`
@@ -1818,6 +1821,7 @@ pub enum IntrinsicId {
     StrRangeCopy,
     StrIndexOf,
     StrIndexOfFrom,
+    StrFloatTextRaw,
     StrRangeIndexOf,
     StrContains,
     StrSplitInto,

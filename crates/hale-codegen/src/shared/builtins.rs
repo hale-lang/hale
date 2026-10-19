@@ -961,6 +961,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into(), f64_t.into()], false);
         self.module
             .add_function("lotus_str_from_float", str_from_float_ty, None);
+        // declare ptr @lotus_str_float_text(ptr arena, double f): the
+        // shortest text that reads back as `f` (the api codec's)
+        self.module
+            .add_function("lotus_str_float_text", str_from_float_ty, None);
         let str_from_dur_ty =
             ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module

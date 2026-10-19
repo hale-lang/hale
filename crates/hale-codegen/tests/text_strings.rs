@@ -1,4 +1,4 @@
-//! The `text_strings` integration-test binary: 9 test files of this area, kept
+//! The `text_strings` integration-test binary: 10 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "case_fold_and_nested_fstring.rs"]
 mod case_fold_and_nested_fstring;
+#[path = "float_text.rs"]
+mod float_text;
 #[path = "fstring_interpolation.rs"]
 mod fstring_interpolation;
 #[path = "printable_rule.rs"]

@@ -339,6 +339,8 @@ impl<'a> Codec<'a> {
             TypeClass::Prim(PrimType::String) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
             TypeClass::Prim(PrimType::Time) => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
             TypeClass::Prim(PrimType::Duration) => format!("to_string({v} / 1ns)"),
+            // the shortest text that reads back as the same double
+            TypeClass::Prim(PrimType::Float) => format!("std::str::__float_text({v})"),
             TypeClass::Prim(_) => format!("to_string({v})"),
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) | TypeClass::Enum { name, .. } => {
                 format!("__api_encode_{name}({v})")
@@ -346,6 +348,7 @@ impl<'a> Codec<'a> {
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("to_string({})", c.to_int(v)),
                 None if base == PrimType::String => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
+                None if base == PrimType::Float => format!("std::str::__float_text({v})"),
                 None => format!("to_string({v})"),
             },
             _ => "\"null\"".to_string(),
