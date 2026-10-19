@@ -3093,6 +3093,19 @@ mod default_scope_tests {
         assert_eq!(errors(&format!("{narrowing}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), Vec::<String>::new());
     }
 
+    /// An assignment's target is a name the default resolves too: one of
+    /// the caller's is refused, written with `=` or `+=`; a local the
+    /// default declares and assigns is its own.
+    #[test]
+    fn an_assignment_in_a_default_resolves_its_target_as_a_read_does() {
+        assert_eq!(errors("type R { b: Int = { a = 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(errors("type R { b: Int = { a += 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(
+            errors("type R { b: Int = { let mut x = 1; x += 2; x = x * 2; x }; }\nfn main() { let r = R { }; }\n"),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
         let shadow = |name: &str| {

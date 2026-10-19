@@ -17442,9 +17442,12 @@ impl<'a> Checker<'a> {
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
         let mut ty = if lv.head.name == "self" {
             self.self_ty()
-        } else if let Some(s) = self.locals.lookup(&lv.head.name) {
-            s.ty.clone()
+        } else if let Some(s) = self.binding_of(&lv.head.name) {
+            s.ty
         } else {
+            // no module item is assigned: a name no binding answers is
+            // unknown, and in a default the caller's
+            self.note_unresolved(&lv.head);
             Ty::Unknown
         };
         let records = self.records_views();
@@ -18742,27 +18745,41 @@ impl<'a> Checker<'a> {
             || BARE_BUILTIN_CALLEES.contains(&name)
     }
 
+    /// The binding a bare name read or written resolves to in this scope,
+    /// if one does: the one path every such resolution takes (an
+    /// expression's read, an assignment's target), so the defaults' hooks
+    /// see every name a default resolves (`note_default_read`).
+    fn binding_of(&mut self, name: &str) -> Option<LocalSym> {
+        let sym = self.locals.lookup(name).cloned()?;
+        self.note_default_read(name);
+        Some(sym)
+    }
+
+    /// A bare name no binding and no module item answers: while a default
+    /// is typed where it is declared, the caller's
+    /// (`judge_defaults_where_declared`); a builtin callee is no such name.
+    fn note_unresolved(&mut self, id: &Ident) {
+        if self.generic_fns.contains_key(id.name.as_str()) || BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
+            return;
+        }
+        if let Some(scan) = self.default_scan.as_mut() {
+            scan.push((id.name.clone(), id.span));
+        }
+    }
+
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         let unshadowed = std::mem::take(&mut self.callee_unshadowed);
-        if self.locals.lookup(&id.name).is_some() && !unshadowed {
-            self.note_default_read(&id.name);
-        }
-        if let Some(s) = self.locals.lookup(&id.name).filter(|_| !unshadowed) {
-            if !self.defaults_judged_at_literals {
-                self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
+        if !unshadowed {
+            if let Some(s) = self.binding_of(&id.name) {
+                if !self.defaults_judged_at_literals {
+                    self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
+                }
+                return s.ty;
             }
-            return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
-            // a default typed where it is declared: a name nothing there
-            // binds is the caller's (a builtin callee is no such name)
-            if self.locals.lookup(&id.name).is_none()
-                && !self.generic_fns.contains_key(id.name.as_str())
-                && !BARE_BUILTIN_CALLEES.contains(&id.name.as_str())
-            {
-                if let Some(scan) = self.default_scan.as_mut() {
-                    scan.push((id.name.clone(), id.span));
-                }
+            if self.locals.lookup(&id.name).is_none() {
+                self.note_unresolved(id);
             }
             // GH #1139: a name a block of this body bound and then
             // released is the block's — `hale check <file>` says so as
