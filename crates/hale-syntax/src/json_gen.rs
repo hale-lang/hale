@@ -1054,6 +1054,8 @@ fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str) -> String {
 /// holds `too_long`.
 fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &str) -> String {
     let ind = "                    ";
+    // the loop body, a level in
+    let inner = format!("{ind}    ");
     let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
     let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
     let mut b = String::new();
@@ -1062,16 +1064,16 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
     b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
     b.push_str(&format!("{ind}while !__mi.done {{\n"));
-    b.push_str(&format!("{ind}    let __mk = std::json::unescape_string(__ma[__mi.key_start..__mi.key_end]);\n"));
-    b.push_str(&format!("{ind}    for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
-    b.push_str(&format!("{ind}    let __es = __mi.val_start;\n"));
-    b.push_str(&format!("{ind}    let __ee = __mi.val_end;\n"));
-    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &format!("{ind}    ")));
+    b.push_str(&format!("{inner}let __mk = std::json::unescape_string(__ma[__mi.key_start..__mi.key_end]);\n"));
+    b.push_str(&format!("{inner}for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
+    b.push_str(&format!("{inner}let __es = __mi.val_start;\n"));
+    b.push_str(&format!("{inner}let __ee = __mi.val_end;\n"));
+    b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner));
     b.push_str(&format!(
-        "{ind}    push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        "{inner}push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
         f.name, v.field, f.key
     ));
-    b.push_str(&format!("{ind}    __mi = std::json::object_next(__mi, __ma);\n"));
+    b.push_str(&format!("{inner}__mi = std::json::object_next(__mi, __ma);\n"));
     b.push_str(&format!("{ind}}}\n"));
     b
 }
