@@ -13,7 +13,7 @@ name: release
 # workflow itself before tagging).
 #
 # Two matrix entries cover the practical surface:
-#   - Linux x86_64 (ubuntu-latest)
+#   - Linux x86_64 (ubuntu-24.04)
 #   - macOS Apple Silicon arm64 (macos-14)
 #
 # Intel Mac (x86_64-apple-darwin / macos-13) was dropped 2026-05-27.
@@ -54,7 +54,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             llvm-prefix: /usr/lib/llvm-18
           - os: ubuntu-24.04-arm
@@ -210,7 +210,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Only run for tag pushes; workflow_dispatch builds artifacts
     # but doesn't create a release (used for smoke-testing the
     # pipeline).

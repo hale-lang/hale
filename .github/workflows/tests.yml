@@ -110,7 +110,7 @@ jobs:
   # `before` sha, a diff it cannot compute — runs everything.
   scope:
     name: scope
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       substrate: ${{ steps.classify.outputs.substrate }}
       # The same verdict under the name the test partitions read it
@@ -188,7 +188,7 @@ jobs:
   # minutes (2026-10-16).
   quick-build:
     name: quick build (LLVM-free test archive)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-quick
     steps:
@@ -244,7 +244,7 @@ jobs:
   quick:
     name: quick ${{ matrix.part }}/6 (parse, typecheck, model)
     needs: quick-build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -301,7 +301,7 @@ jobs:
     name: docs (embedded spec)
     needs: scope
     if: github.event_name == 'merge_group' || needs.scope.outputs.code != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -365,7 +365,7 @@ jobs:
     # The cli and dna jobs' archive: on a pull request only when one of
     # them runs there (`scope.cli` is true whenever `scope.dna` is).
     if: github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-cli
       # What this job archives: the workspace less the LLVM-free crates
@@ -445,7 +445,7 @@ jobs:
     name: build (codegen test archive)
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ARCHIVE: nextest-codegen
       ARCHIVE_SCOPE: -p hale-codegen
@@ -484,7 +484,7 @@ jobs:
     if: needs.scope.outputs.code == 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
@@ -721,7 +721,7 @@ jobs:
     name: codegen ${{ matrix.part }}/5
     needs: [scope, build-codegen]
     if: needs.scope.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -768,7 +768,7 @@ jobs:
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -922,7 +922,7 @@ jobs:
     name: face (DNA API + head)
     needs: scope
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GH #985: the API's Knowledge tests migrate a record into this
     # Postgres with the owner's DSN and read it as the head; without it
     # they say so and exercise nothing.
@@ -1086,7 +1086,7 @@ jobs:
     name: face (browser, ${{ matrix.shard }}/2)
     needs: scope
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -1383,7 +1383,7 @@ jobs:
     needs: scope
     # The merge queue's run, not the pull request's (2026-10-16).
     if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ZIG_VERSION: 0.16.0
       CROSS_TRIPLE: aarch64-unknown-linux-gnu
@@ -1517,7 +1517,7 @@ jobs:
     needs: scope
     # The merge queue's run, not the pull request's (2026-10-16).
     if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1615,7 +1615,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: tsan (form_hashmap_lockfree)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1690,7 +1690,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: sanitizers (asan corpus + ubsan foreign-ring)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1797,7 +1797,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.substrate == 'true'
     name: genmc (substrate race-completeness)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -1840,7 +1840,7 @@ jobs:
   # run, where every job runs, gates the merge through the same check.
   required:
     name: required
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [scope, quick-build, quick, docs, build-cli, build-codegen, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
     if: always()
     steps:
