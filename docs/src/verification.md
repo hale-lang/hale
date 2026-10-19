@@ -565,6 +565,12 @@ locus ApiClient {
 }
 ```
 
+A secret that goes into JSON on its way out is escaped in that
+statement, with `std::json::escape_string`, whose result carries the
+secret on and is held to the same rule; never splice it in raw on the
+grounds that today's values need no escaping. (A handler's returned
+`Response` is not a wire write: a secret there is refused either way.)
+
 With no `HALE_VAULT_ADDR` set, this reads a directory of files keyed
 by name — `HALE_VAULT_DIR`, or the per-user cache root the toolchain
 already uses (`std::secret::vault_local_dir()`) — filesystem

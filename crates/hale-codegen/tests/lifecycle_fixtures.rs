@@ -494,11 +494,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         "l15_sigint_flag.hl" => &["15"],
         "l18_eager_pre_drain.hl" => &["18"],
         "l19_parked_started_coroutine.hl" => {
-            p.abandoned.insert("__StdIoTcpListener".to_string());
-            // the listener's consumer (and its children) is built twice:
-            // inert at params, then on its route by birth, which reclaims
-            // the first (the TCP connection substrate's shape)
-            p.occurrences = count(&[("__StdIoTcpConnections", 2), ("__StdIoTcpFlows", 2), ("__StdIoTcpCallback", 2)]);
+            p.abandoned.insert("Quiet".to_string());
             &["19"]
         }
         "l19_self_post_overflow.hl" => {
@@ -773,7 +769,7 @@ const CONTROLS: &[Control] = &[
         fixture: "l19_parked_started_coroutine.hl",
         skip: "Run.Terminal(CanceledAfterStart)",
         plan: None,
-        fails_with: "edge: __StdIoTcpListener.Reclaim.Completed",
+        fails_with: "edge: Quiet.Reclaim.Completed",
         baseline_passes: false,
     },
     Control {
@@ -1928,10 +1924,6 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l08_sibling_replaced_kept.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     ("l19_pinned_yield_replaces_child.hl", "Kid@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
-        "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
-    // the Listener's birth replaces its inert consumer with the one on its
-    // route (the TCP connection substrate's shape)
-    ("l19_parked_started_coroutine.hl", "__StdIoTcpConnections@Reclaim: emitted [Drain Dissolve Reclaim], the plan owes []",
         "C29: field replacement uses the shared reclaim spine; the producer only names its normal cascade"),
     // L4's restart and resume spine: the producer owes no resume for a
     // held run() failure, whose phase-0 resume C43 names.

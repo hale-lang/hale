@@ -418,3 +418,24 @@ fn the_pinned_bodies_in_the_tree_match_their_pins() {
     let (_, pq) = check_tree("dna/core/pond/pq");
     assert!(pq.contains("It is allowed here by name, in `pq::salted_password`"), "{pq}");
 }
+
+/// `std::json::escape_string` builds a fresh String from its argument
+/// and keeps none of it, so a revealed secret passes through it to the
+/// wire write in its statement — a password in a JSON body is escaped,
+/// never spliced in raw — and its result carries the secret on: bound or
+/// printed, it is refused as the secret itself is. (A handler's returned
+/// `Response` is no wire write: a secret there is refused either way.)
+#[test]
+fn json_escaping_carries_a_secret_on_to_the_wire() {
+    let json = |inner: &str| format!("\"{{\\\"password\\\": \\\"\" + {inner} + \"\\\"}}\"");
+    let post = format!(
+        "let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string({}), \"application/json\") or std::http::ClientResponse {{ status: 0, headers: \"\", body: b\"\" }};",
+        json("std::json::escape_string(self.token.reveal_text())")
+    );
+    let (ok, out) = one(&method(&post, ""), "json_escape_wire");
+    assert!(ok && !out.contains(CONSUMED), "escaped into a JSON body: {out}");
+    let (ok, out) = one(&method("let t = std::json::escape_string(self.token.reveal_text());", ""), "json_escape_bound");
+    assert!(!ok && out.contains(CONSUMED) && out.contains("is bound to `t`"), "bound: {out}");
+    let (ok, out) = one(&method("println(std::json::escape_string(self.token.reveal_text()));", ""), "json_escape_printed");
+    assert!(!ok && out.contains(CONSUMED) && out.contains("is printed"), "printed: {out}");
+}

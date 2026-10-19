@@ -477,7 +477,8 @@ write a manual teardown walk.
 
 This is what makes Ctrl-C trivial: SIGINT (or SIGTERM) drains the
 whole program. Every locus's `self.draining` turns true, a
-`sleep` returns early, and a `run()` that loops on the flag ends —
+`sleep` returns early, every server stops accepting and answers the
+requests it already took, and a `run()` that loops on the flag ends —
 then the tree dissolves in dependency order, leaves first, and the
 process exits 0:
 
