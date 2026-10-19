@@ -102,8 +102,8 @@ main locus App {
     @bounded_by(stream)
     run() {
         let scratch = dna::scratch_root("oidc-head");
-        let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + scratch + "\n" + toolchain());
-        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec env HALE_DNA_HABITAT=\"$3\" \"$2\" habitat graft app\nsh\n" + scratch + "\n" + toolchain() + "\n" + dna::test_habitat());
+        std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let repo = scratch + "/app";
         std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         let git = dna::MemoryRecord { repo: repo };

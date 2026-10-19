@@ -287,8 +287,8 @@ main locus App {
         let g3 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
         let g4 = in_dir(app, "git\nadd\n-A");
         let g5 = in_dir(app, "git\ncommit\n-q\n-m\nthe books intake");
-        let init = in_dir(app, toolchain() + "\ndna\ninit\n.");
-        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        let init = in_dir(app, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach"));
+        std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);
 
         // the organization's models are scripted: the Genome is project-owned,
         // so the test edits it the way a maintainer would

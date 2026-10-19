@@ -22,6 +22,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 pub(crate) fn usage_text() -> &'static str {
     r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
+                          [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat handover [organism]
        hale habitat status
        hale habitat down
@@ -69,7 +70,12 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      the organism's) or a repository that is there
                      already. A graft that stopped part way goes on
                      where it stopped when run again; a record born of
-                     anything but this habitat is refused.
+                     anything but this habitat is refused. --with <pack>
+                     proposes a pack from the toolchain's nursery as
+                     well, planned on the holes the birth proposed (`hale
+                     dna pack apply <pack> --on-holes`, its --set and
+                     --as passed on), so one `review all approve`
+                     ratifies the starting organization whole.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
@@ -1318,11 +1324,28 @@ fn graft(args: &[String]) -> ExitCode {
     let mut attach = false;
     let mut library = true;
     let mut pack = true;
-    for a in args {
-        match a.as_str() {
+    let mut with: Option<String> = None;
+    let mut who: Option<String> = None;
+    let mut sets = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
             "--attach" => attach = true,
             "--no-library" => library = false,
             "--no-pack" => pack = false,
+            "--with" | "--set" | "--as" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `{a}` takes a value\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                match a {
+                    "--with" => with = Some(v.clone()),
+                    "--set" => sets.push(v.clone()),
+                    _ => who = Some(v.clone()),
+                }
+                i += 1;
+            }
             f if f.starts_with("--") => {
                 eprintln!("hale habitat graft: `{f}` is not a flag of `graft`\n{}", usage_text());
                 return ExitCode::from(2);
@@ -1334,20 +1357,47 @@ fn graft(args: &[String]) -> ExitCode {
                 }
             }
         }
+        i += 1;
     }
     let Some(dir) = dir else {
         eprintln!("hale habitat graft: which directory?\n{}", usage_text());
         return ExitCode::from(2);
     };
+    if with.is_none() && (!sets.is_empty() || who.is_some()) {
+        eprintln!("hale habitat graft: `--set` and `--as` go with a pack; name the pack with `--with <pack>`");
+        return ExitCode::from(2);
+    }
     match graft_lines(&dir, attach, library, pack) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
             }
-            ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("hale habitat graft: {e}");
+            return ExitCode::from(1);
+        }
+    }
+    // the pack planned on the holes the birth proposed (a process of its
+    // own: the verb execs the host); its refusal is the graft's exit
+    let Some(pack) = with else { return ExitCode::SUCCESS };
+    let mut pack_args = vec!["dna".to_string(), "pack".to_string(), "apply".to_string(), pack, "--on-holes".to_string()];
+    for v in sets {
+        pack_args.push("--set".to_string());
+        pack_args.push(v);
+    }
+    if let Some(who) = who {
+        pack_args.push("--as".to_string());
+        pack_args.push(who);
+    }
+    pack_args.push(dir.to_string_lossy().to_string());
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let status = std::env::current_exe().and_then(|me| Command::new(me).args(&pack_args).status());
+    match status {
+        Ok(s) if s.success() => ExitCode::SUCCESS,
+        Ok(s) => ExitCode::from(s.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("hale habitat graft: the `--with` pack: {e}");
             ExitCode::from(1)
         }
     }

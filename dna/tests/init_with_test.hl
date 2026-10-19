@@ -172,13 +172,13 @@ locus App {
         // ---- a pack that opens a hole init already proposes is refused
         // when it is proposed: it is planned on the holes
         self.repo = make(scratch, "clash");
-        let clash = self.dna("init\n.\n--no-library\n--with\ndev-team\n--set\npart=api");
+        let clash = dna::grafted(self.repo, ".\n--attach\n--no-library\n--with\ndev-team\n--set\npart=api");
         std::test::assert(clash.code != 0 && std::str::contains(clash.stderr, "apply: refused: `position:api/dev` is a position the graph already states"), "the pack's `open api/dev` meets init's own hole: " + clash.stdout + clash.stderr);
 
         // ---- init --with founder: the pack planned on init's holes
         self.repo = make(scratch, "todo");
-        let init = self.dna("init\n.\n--no-library\n--with\nfounder\n--set\nfounder=riley\n--as\nriley");
-        std::test::assert_eq_int(init.code, 0, "hale dna init --with founder: " + init.stdout + init.stderr);
+        let init = dna::grafted(self.repo, ".\n--attach\n--no-library\n--with\nfounder\n--set\nfounder=riley\n--as\nriley");
+        std::test::assert_eq_int(init.code, 0, "graft --with founder: " + init.stdout + init.stderr);
         std::test::assert(std::str::contains(init.stdout, "+ holds position:board riley\n") && std::str::contains(init.stdout, "+ holds position:compose/operator riley\n") && std::str::contains(init.stdout, "5 line(s) added to the organization"), "every seat init opens, filled by the founder: " + init.stdout);
         std::test::assert(std::str::contains(init.stdout, "planned on 10 pending Review(s) (k:") && std::str::contains(init.stdout, "proposed the batch as k:"), "planned on the five holes and their mandates, and proposed: " + init.stdout);
         let adopted = last_body(self.repo, "batch.proposed");

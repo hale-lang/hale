@@ -116,8 +116,8 @@ locus App {
         self.repo = scratch + "/voice";
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
-        let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + self.repo + "\n" + toolchain());
-        std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
+        let init = dna::grafted(self.repo, ".\n--attach");
+        std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
 
         std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         let identity = dna::MemoryRecord { repo: self.repo }.identity();
