@@ -28,7 +28,7 @@ fn hale_env(args: &[&str], cwd: &Path, home: &Path, stdin: Option<&str>) -> (boo
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HOME", home)
+        .env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local"))
         .env("HALE_VAULT_DIR", home.join("vault"))
         .env_remove("HALE_VAULT_ADDR")
         .env_remove("ANTHROPIC_API_KEY")
@@ -56,7 +56,7 @@ fn journal(cwd: &Path, home: &Path) -> String {
     let _s = trace::Span::new("hale", "dna record-rows");
     let hale = || {
         let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
-        c.env("HOME", home).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
+        c.env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local")).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
         c
     };
     record::text_in(hale(), cwd) + &record::ledger_in(hale(), cwd)
@@ -70,11 +70,11 @@ fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
-        .env("HOME", home)
+        .env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local"))
         .env("HALE_VAULT_DIR", home.join("vault"))
         .env("HALE_DNA_MEMORY_DSN_SPINE", {
             let mut m = Command::new(env!("CARGO_BIN_EXE_hale"));
-            m.env("HOME", home).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
+            m.env("HOME", home).env("HALE_DNA_HABITAT", home.join(".local/share/hale/habitat/local")).env("HALE_VAULT_DIR", home.join("vault")).env_remove("HALE_VAULT_ADDR").env("HALE_DNA_DISCOVER", "off");
             record::spine(m, app)
         })
         .env_remove("HALE_VAULT_ADDR")
