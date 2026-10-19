@@ -10,6 +10,8 @@
 //! `up` (`Lineage::Habitat`, the one birth with no parent) and a child at
 //! `graft`.
 
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/vault.rs"]
 mod vault;
 
@@ -136,14 +138,15 @@ fn only_the_habitat_births_a_record() {
 /// the flags they were given.
 #[test]
 fn the_retired_verbs_name_their_graft() {
-    let d = std::env::temp_dir();
+    let d = scratch::Scratch::new(format!("hale_births_retired_{}", std::process::id()));
+    std::fs::create_dir_all(&*d).expect("scratch");
     for (args, graft) in [
         (vec!["dna", "new", "demo", "--no-library"], "hale habitat graft demo --no-library"),
         (vec!["dna", "new", "bodied", "--profile", "remote-body", "--remote", "git@example.invalid:x/y.git"], "hale habitat graft bodied --profile remote-body --remote git@example.invalid:x/y.git"),
         (vec!["dna", "init"], "hale habitat graft . --attach"),
         (vec!["dna", "init", "app", "--with", "founder", "--set", "founder=alice", "--as", "alice"], "hale habitat graft app --attach --with founder --set founder=alice --as alice"),
     ] {
-        let out = vault::hale().args(&args).current_dir(&d).output().expect("hale");
+        let out = vault::hale().args(&args).current_dir(&*d).output().expect("hale");
         let said = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {said}");
         assert!(said.contains("retired") && said.contains(graft), "{args:?} names `{graft}`: {said}");

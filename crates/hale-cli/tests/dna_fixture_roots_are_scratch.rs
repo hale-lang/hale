@@ -148,7 +148,8 @@ fn scanned() -> Vec<(Kind, String, String)> {
             let Ok(text) = std::fs::read_to_string(&p) else { continue };
             let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
             // this guard spells what it refuses
-            if rel.ends_with("dna_fixture_roots_are_scratch.rs") {
+            // the suite harness owns its slice's roots and sweeps them itself
+            if rel.ends_with("dna_fixture_roots_are_scratch.rs") || rel.ends_with("dna_native_suite.rs") {
                 continue;
             }
             out.push((kind, rel, text));
