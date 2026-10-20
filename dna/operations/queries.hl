@@ -215,6 +215,8 @@ locus Queries {
         location: String = "";
         ledger: dna::MemoryLedger = dna::MemoryLedger { };
         ledger_state: Int = 0; // 0 unread, 1 read, -1 not readable here
+        firsts_built: Bool = false;
+        firsts_text: String = "";
     }
     // The Ledger beside the record, read once: whether it could be.
     @bounded_by(self.location)
@@ -249,34 +251,51 @@ locus Queries {
     fn practice_event(e: dna::Event) -> Bool {
         return e.kind == "knowledge.proposed" && len(std::json::find_string_field(e.body, "name")) > 0;
     }
-    fn first_practice(i: Int) -> Bool {
-        let e = self.j.read(i);
-        if !self.practice_event(e) { return false; }
-        let mut k = 0;
-        while k < i {
-            let earlier = self.j.read(k);
-            if self.practice_event(earlier) && earlier.entity == e.entity { return false; }
-            k = k + 1;
-        }
-        return true;
+    // The catalog's members: the index of each named proposal's first row,
+    // one a line, read once for this reader (a page asks for each of its
+    // items, and a read per item was a pass over the record per item).
+    fn firsts() -> String {
+        if self.firsts_built { return self.firsts_text; }
+        let out = self.collect_firsts();
+        self.firsts_text = out;
+        self.firsts_built = true;
+        return out;
     }
-    fn practice_count() -> Int {
-        let mut n = 0;
+    fn collect_firsts() -> String {
+        let mut out = "";
+        let mut seen = "\n";
         let mut i = 0;
         while i < self.j.revision() {
-            if self.first_practice(i) { n = n + 1; }
+            let e = self.j.read(i);
+            if self.practice_event(e) && !std::str::contains(seen, "\n" + e.entity + "\n") {
+                seen = seen + e.entity + "\n";
+                out = out + to_string(i) + "\n";
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn practice_count() -> Int {
+        let text = self.firsts();
+        let mut n = 0;
+        let mut i = 0;
+        while i < len(text) {
+            if text[i..(i + 1)] == "\n" { n = n + 1; }
             i = i + 1;
         }
         return n;
     }
     fn practice_at(index: Int) -> PracticeRow {
         if index < 0 { return PracticeRow { }; }
+        let text = self.firsts();
         let mut n = 0;
+        let mut start = 0;
         let mut i = 0;
-        while i < self.j.revision() {
-            if self.first_practice(i) {
-                if n == index { return self.practice_of(self.j.read(i).entity); }
+        while i < len(text) {
+            if text[i..(i + 1)] == "\n" {
+                if n == index { return self.practice_of(self.j.read(std::str::parse_int(text[start..i]) or - 1).entity); }
                 n = n + 1;
+                start = i + 1;
             }
             i = i + 1;
         }
@@ -374,9 +393,11 @@ locus Queries {
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            let kind = dna::native_json_string(e.body, "kind");
+            // the row's entity first: a proposal's body is parsed only for the digest asked for
+            let mut kind = "";
+            if e.entity == digest && len(r.id) == 0 { kind = dna::native_json_string(e.body, "kind"); }
             let supported = kind == "idea" || kind == "concept" || kind == "practice" || kind == "task_concept" || kind == "retirement";
-            if (if named_only { self.practice_event(e) } else { e.kind == "knowledge.proposed" && supported }) && e.entity == digest && len(r.id) == 0 {
+            if e.entity == digest && len(r.id) == 0 && (if named_only { self.practice_event(e) } else { e.kind == "knowledge.proposed" && supported }) {
                 r = PracticeRow {
                     id: digest, digest: digest, proposed_seq: i,
                     name: std::json::find_string_field(e.body, "name"),
