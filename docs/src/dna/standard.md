@@ -86,7 +86,7 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 - *Enforced by:* `hale verify` (below), which fails on an unanswered growth; `scripts/unbounded-unused.sh`, which lists none.
 - *Today:* followed by all of `dna/` (GH #1490): no `@unbounded` is left, 270 functions carry `@bounded_by`, and every one silences something. Answering them found real leaks, each a long-lived loop or locus keeping what every pass built: the body's supervision and lease fence, the head's push watch and the books application's intake (each pass a method now), the role readers replaced whole on every record change (reset in place), pending sign-ins and sessions never reclaimed, seven queues of the assembly's records whose emptied slots were never taken again, and its list of optimize walks asked, never shortened.
 
-**A program says when it is healthy and how full it is.** The runtime serves liveness, readiness and capacity from what it already knows, with the application's own readings added, and the deployment backend maps them to the platform's probes and scaling (GH #1477). *Today:* not built.
+**A program says when it is healthy and how full it is.** The runtime serves liveness, readiness and capacity from what it already knows, with the application's own readings added, and the deployment backend maps them to the platform's probes and scaling (GH #1477). *Today:* the runtime serves the three when main holds a `std::observe::Probes { port }` param ([Observing a program](../everyday/observing.md)); no `dna/` program holds one yet, and no deployment backend maps them to a platform.
 
 ## Quality: the toolchain is the gate
 
