@@ -197,7 +197,11 @@ pub fn reserved_for(slices: &[&[TopDecl]]) -> BTreeSet<String> {
                     out.insert(a.name.name.clone());
                     out.insert(crate::proto_gen::message_name(&a.name.name, &a.name.name));
                     for r in &a.rows {
-                        member_names(&format!("{}::{}", r.written, r.method.name), out);
+                        if r.signature.is_some() {
+                            member_names(&r.method.name, out);
+                        } else {
+                            member_names(&format!("{}::{}", r.written, r.method.name), out);
+                        }
                     }
                 }
                 TopDecl::Locus(l) => {

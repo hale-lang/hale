@@ -677,6 +677,21 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
                 return 2;
             }
         }
+        // An imported surface is held to its source (spec/api.md § Imported
+        // surfaces): each row the source has since added, removed or changed
+        // is a line on stderr, the document staying stdout's alone.
+        let files: Vec<std::path::PathBuf> = snap.own_files().iter().filter(|f| f.is_file()).cloned().collect();
+        match crate::api_import::drift(&files, None) {
+            Ok(reports) => {
+                if crate::api_import::print_reports(&reports, &mut std::io::stderr()) != 0 {
+                    return 1;
+                }
+            }
+            Err(msg) => {
+                eprintln!("hale check --api: {msg}");
+                return 2;
+            }
+        }
     }
     // GH #476 Change 2: the canonical-model demand surface. Same
     // refusal rule as the artifact — a model of a program that does

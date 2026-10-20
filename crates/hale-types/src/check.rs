@@ -11576,9 +11576,18 @@ impl<'a> Checker<'a> {
                 // GH #1076: a row of the unit declarations, judged by
                 // the unit laws (`units::unit_laws`).
             }
-            TopDecl::Api(_) => {
+            TopDecl::Api(a) => {
                 // GH #1417: rows of the `surface` family, judged by the
-                // surface laws over the whole bundle.
+                // surface laws over the whole bundle. A signature row's
+                // shapes are written here, so a name they do not resolve
+                // is refused where it is written.
+                for r in &a.rows {
+                    if let Some(sig) = &r.signature {
+                        for t in sig.request.iter().chain(sig.response.iter()) {
+                            self.check_type_annotation(t);
+                        }
+                    }
+                }
             }
         }
     }

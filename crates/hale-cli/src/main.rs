@@ -41,6 +41,7 @@ mod iris;
 mod api_client;
 mod api_drive;
 mod api_gen;
+mod api_import;
 use hale_types::surface_doc;
 mod mcp;
 mod pkg;

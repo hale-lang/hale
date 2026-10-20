@@ -69,6 +69,8 @@ diagnostic's meaning, go there.
 | `hale admin <endpoint>` | a local page over an exposure's description |
 | `hale api export --surface <S> [--out <dir> \| --check <dir>]` | a surface's bundle from its rows: description, OpenAPI, JSON Schema, MCP and the digest; `--check` refuses a stale copy |
 | `hale api client --surface <S> --lang hale\|ts [--out <file> \| --check <file>]` | a typed client of a surface (the five outcomes, the digest sent, a subscription per stream), generated from its rows |
+| `hale api import <openapi-url-or-file \| mcp-url> --as <S> [--out <file>]` | the surface a program consumes, written from an OpenAPI 3 document or an MCP endpoint's tool list: an `api S from openapi\|mcp "…"` block of shape rows and the records they name |
+| `hale api drift [<file> \| <dir>] [--surface <S>]` | each imported surface held to its source: a line per row added, removed or changed, exit 1 on drift (`hale check --api` runs it too) |
 
 Every one of them answers `--help` (or `-h`) as its first argument with
 its own flags, its input shape and where its output goes. `hale build
