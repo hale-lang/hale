@@ -4118,14 +4118,15 @@ fn main() { App { }; }
 ```
 
 **Recognized by its type.** The compiler recognizes a backend param by
-its type, `std::observe::Scrape`, as it recognizes a hub
+its type, `std::observe::Scrape` (metrics) or `std::observe::Otlp`
+(lifecycle events, S4), as it recognizes a hub
 (`observe_expand`, beside `hub_expand`):
 
 - it numbers it: the default literal carries the param's number
   (`oid`), which marks it as the program's backend;
 - a construction that supplies the param is refused at the field:
   its default is the backend;
-- a main locus holds one `std::observe::Scrape`; a second is refused at
+- a main locus holds one backend of each type; a second is refused at
   its param;
 - the backends' source (`observe.hl`) is appended only to a program
   that holds one.
@@ -4141,6 +4142,11 @@ does. It is born, drained and torn down as any param of the main locus:
 a signal's drain stops its listener, and `main`'s `run()` returning does
 not (§ "Drain cascade (whole-process)").
 
+`Otlp` is a locus whose `run()` drains the runtime's event ring and
+sends it to an OpenTelemetry collector until the tree's drain or a
+signal's (`spec/runtime.md` § "Observe backends"); holding one turns the
+event ring on, and nothing in a program that holds none.
+
 **What holding one turns on.** Three things, and only in a program that
 holds one (a program without it lowers none of them and pays nothing):
 every `std::metrics::Registry` registers in the process-wide series
@@ -4153,8 +4159,8 @@ its own. GH #1477's probes will make the port optional and serve
 `/metrics` on the probes listener, so a deployment annotates one port.
 
 **In the topology artifact.** Schema 1.21's `observe` section lists
-each backend param with its endpoint (`param`, `kind`, `backend`,
-`host`, `port`, `path`; a field the literal does not write is its
+each backend param with its endpoint (`param`, `kind`, `backend`, and a
+scrape's `host`, `port` and `path` or an OTLP backend's `endpoint`; a field the literal does not write is its
 declared default, a value the source computes is `null`), so a
 deployment elaborator renders the scrape annotations without parsing
 the source.

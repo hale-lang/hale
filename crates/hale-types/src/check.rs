@@ -12451,7 +12451,7 @@ impl<'a> Checker<'a> {
             let mut seen: Vec<&str> = Vec::new();
             for b in crate::observe_expand::backends(decl) {
                 if seen.contains(&b.kind) {
-                    let ty = if b.kind == "metrics" { "std::observe::Scrape" } else { "std::observe::Otlp" };
+                    let ty = crate::observe_expand::backend_type(b.kind);
                     self.diags.push(Diag::ty(
                         b.span,
                         format!(

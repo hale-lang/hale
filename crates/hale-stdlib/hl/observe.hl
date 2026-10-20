@@ -97,3 +97,180 @@ fn __observe_render() -> String {
     }
     return std::str::from_bytes(b.finish() or raise);
 }
+
+/// The events backend, a param of the main locus as a scrape is: sends the runtime's
+/// lifecycle events (a locus's birth, dissolve, restart and failure) as
+/// OTLP/HTTP JSON log records to `endpoint`, from its own pinned thread,
+/// a batch every `interval`, each send bounded by `timeout_ms` in all. An
+/// empty `endpoint` is `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, else
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/logs`; an empty `service` is
+/// `OTEL_SERVICE_NAME`, else `hale`; `OTEL_RESOURCE_ATTRIBUTES` joins the
+/// resource. The first batch opens with a start record carrying the
+/// build's identity. Nothing waits on the collector: events the ring has
+/// no room for, and a batch the collector does not take, are dropped and
+/// counted (`hale_otlp_dropped_total` on a declared `metrics` page).
+/// A `max_batch` below 1 is 1.
+locus __StdObserveOtlp {
+    params {
+        endpoint: String = "";
+        service: String = "";
+        interval: Duration = 1s;
+        timeout_ms: Int = 2000;
+        max_batch: Int = 512;
+        // resolved at birth: where batches go, and the resource they carry
+        url: String = "";
+        resource: String = "";
+        client: std::http::Client = std::http::Client { timeout_ms: self.timeout_ms, max_retries: 0 };
+        // the param's number, which the compiler writes (`observe_expand`)
+        oid: Int = 0;
+    }
+    birth() {
+        self.url = __otlp_url(self.endpoint);
+        let mut service = self.service;
+        if len(service) == 0 {
+            service = std::env::var("OTEL_SERVICE_NAME");
+        }
+        if len(service) == 0 {
+            service = "hale";
+        }
+        self.resource = __otlp_resource(service, std::env::var("OTEL_RESOURCE_ATTRIBUTES"));
+    }
+    run() {
+        self.flush(true);
+        while !self.draining {
+            std::time::sleep(self.interval);
+            self.flush(false);
+        }
+        // what the drain itself produced
+        self.flush(false);
+    }
+    // One batch at a time, until the ring holds less than a batch.
+    fn flush(start: Bool) {
+        let mut opening = start;
+        let mut more = true;
+        // a batch holds at least one event: `max_batch` below 1 is 1
+        let mut cap = self.max_batch;
+        if cap < 1 {
+            cap = 1;
+        }
+        while more {
+            let n = std::observe::__events_take(cap);
+            more = n == cap;
+            if n > 0 || opening {
+                if len(self.url) == 0 {
+                    std::observe::__events_dropped(n);
+                } else {
+                    let body = __otlp_body(self.resource, n, opening);
+                    let mut sent = false;
+                    let resp = self.client.post(self.url, std::bytes::from_string(body), "application/json") or {
+                        std::http::ClientResponse { status: 0, body: b"" }
+                    };
+                    sent = resp.status >= 200 && resp.status < 300;
+                    if !sent {
+                        std::observe::__events_dropped(n);
+                    }
+                }
+            }
+            opening = false;
+        }
+    }
+}
+
+// Where a batch goes: the endpoint as written, else the OTLP variables'.
+fn __otlp_url(endpoint: String) -> String {
+    if len(endpoint) > 0 {
+        return endpoint;
+    }
+    let logs = std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
+    if len(logs) > 0 {
+        return logs;
+    }
+    let base = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    if len(base) == 0 {
+        return "";
+    }
+    if std::str::ends_with(base, "/") {
+        return base + "v1/logs";
+    }
+    return base + "/v1/logs";
+}
+
+fn __otlp_str_attr(key: String, value: String) -> String {
+    return "{\"key\":\"" + __json_escape_string(key) + "\",\"value\":{\"stringValue\":\""
+        + __json_escape_string(value) + "\"}}";
+}
+
+fn __otlp_int_attr(key: String, value: Int) -> String {
+    return "{\"key\":\"" + __json_escape_string(key) + "\",\"value\":{\"intValue\":\"" + to_string(value) + "\"}}";
+}
+
+// The resource: the service, the build's identity, and
+// `OTEL_RESOURCE_ATTRIBUTES` (`k=v,k=v`).
+fn __otlp_resource(service: String, extra: String) -> String {
+    let mut out = __otlp_str_attr("service.name", service)
+        + "," + __otlp_str_attr("hale.model_hash", std::observe::__event_str(0, 10))
+        + "," + __otlp_str_attr("hale.entity_id_digest", std::observe::__event_str(0, 11));
+    let n = __metrics_tok_count(extra, ",");
+    let mut i = 0;
+    while i < n {
+        let pair = __metrics_tok_at(extra, ",", i);
+        let eq = std::str::index_of(pair, "=");
+        if eq > 0 {
+            out = out + "," + __otlp_str_attr(std::str::trim(pair[0..eq]), std::str::trim(pair[(eq + 1)..len(pair)]));
+        }
+        i = i + 1;
+    }
+    return "{\"attributes\":[" + out + "]}";
+}
+
+// One OTLP log record.
+fn __otlp_record(ts_ns: Int, severity: Int, word: String, body: String, attrs: String) -> String {
+    return "{\"timeUnixNano\":\"" + to_string(ts_ns) + "\",\"severityNumber\":" + to_string(severity)
+        + ",\"severityText\":\"" + word + "\",\"body\":{\"stringValue\":\"" + __json_escape_string(body)
+        + "\"},\"attributes\":[" + attrs + "]}";
+}
+
+// The export request for the `n` events taken, after the start record
+// when `start`.
+fn __otlp_body(resource: String, n: Int, start: Bool) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: 512 + n * 256 };
+    b.append(std::bytes::from_string("{\"resourceLogs\":[{\"resource\":" + resource
+            + ",\"scopeLogs\":[{\"scope\":{\"name\":\"hale.runtime\"},\"logRecords\":["));
+    let mut first = true;
+    if start {
+        let ident = __otlp_str_attr("hale.model_hash", std::observe::__event_str(0, 10))
+            + "," + __otlp_str_attr("hale.entity_id_digest", std::observe::__event_str(0, 11));
+        b.append(std::bytes::from_string(__otlp_record(std::time::unix(std::time::current()) * 1000000000, 9, "INFO", "hale.start", ident)));
+        first = false;
+    }
+    let mut i = 0;
+    while i < n {
+        let kind = std::observe::__event_int(i, 0);
+        let type_name = std::observe::__event_str(i, 0);
+        let mut attrs = __otlp_str_attr("hale.locus", type_name) + "," + __otlp_int_attr("hale.instance", std::observe::__event_int(i, 2));
+        let mut body = "locus.birth";
+        let mut severity = 9;
+        let mut word = "INFO";
+        if kind == 0 || kind == 1 {
+            attrs = attrs + "," + __otlp_int_attr("hale.parent", std::observe::__event_int(i, 3));
+            if kind == 1 {
+                body = "locus.dissolve";
+            }
+        } else if kind == 2 {
+            body = "locus.restart";
+        } else {
+            body = "locus.failure";
+            severity = 13;
+            word = "WARN";
+            attrs = attrs + "," + __otlp_str_attr("hale.closure", std::observe::__event_str(i, 1));
+        }
+        if !first {
+            b.append(std::bytes::from_string(","));
+        }
+        b.append(std::bytes::from_string(__otlp_record(std::observe::__event_int(i, 1), severity, word, body, attrs)));
+        first = false;
+        i = i + 1;
+    }
+    b.append(std::bytes::from_string("]}]}]}"));
+    return std::str::from_bytes(b.finish() or raise);
+}

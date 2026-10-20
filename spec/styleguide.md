@@ -1335,7 +1335,7 @@ holds in review until the compiler can check it. **[convention]**
 
 ---
 
-### C13. Hold the metrics scrape as a param of main, not a hand-wired server
+### C13. Hold the metrics scrape and the event export as params of main
 
 A program's metrics are read by the platform, which scrapes one
 endpoint. Hold it as a param of the main locus, place it, and keep the
@@ -1359,7 +1359,10 @@ annotate. A `std::http::Server` hand-wired to a `std::metrics::Endpoint`
 serves one registry, none of the runtime's series, and a port nothing
 outside the source knows about; keep it for a second page you mean to
 have. Place the scrape `pinned`, so a busy pool never delays a scrape
-and a scrape never delays the pool. **[convention]**
+and a scrape never delays the pool. The same holds for the runtime's
+lifecycle events: hold a `std::observe::Otlp` param, placed `pinned`,
+and let the OTLP environment name the collector, rather than logging
+births and failures by hand. **[convention]**
 
 ## 4. Speed rules
 

@@ -399,6 +399,10 @@ ns std::observe open_prefixes=[]
   __snap_str alloc
   __snap_num pure
   __snap_int pure
+  __events_take alloc
+  __event_str alloc
+  __event_int pure
+  __events_dropped pure
 ns std::os open_prefixes=[]
   getrandom syscall|entropy
 ns std::process open_prefixes=[]
@@ -1007,10 +1011,15 @@ std::metrics::labels_two | lookup=metrics@2 | locus=false | effects=pure | sig=-
 std::metrics::metric_key | lookup=metrics@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=metric_key
 std::mth::sqrt | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::mth` — did you mean `std::math`?
 std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-
+std::observe::Otlp | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Otlp` | suggest=-
 std::observe::Probes | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Probes` | suggest=-
 std::observe::Scrape | lookup=observe@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::observe::Scrape` | suggest=-
 std::observe::__add | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Float) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__add
 std::observe::__drop_registry | lookup=observe@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__drop_registry
+std::observe::__event_int | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__event_int
+std::observe::__event_str | lookup=observe@2 | locus=false | effects=alloc | sig=(Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__event_str
+std::observe::__events_dropped | lookup=observe@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__events_dropped
+std::observe::__events_take | lookup=observe@2 | locus=false | effects=alloc | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__events_take
 std::observe::__observe | lookup=observe@2 | locus=false | effects=pure | sig=(Int, Float) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__observe
 std::observe::__registry | lookup=observe@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__registry
 std::observe::__series | lookup=observe@2 | locus=false | effects=alloc | sig=(Int, Str, Str, Int, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__series

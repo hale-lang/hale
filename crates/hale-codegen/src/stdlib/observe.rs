@@ -2,8 +2,10 @@
 //! series table a `std::observe::Scrape` param scrapes.
 //!
 //! Every call lowers to its runtime function only in a program whose
-//! main locus holds a `std::observe::Scrape` param
-//! ([`Cx::observes_metrics`]). In any other program it lowers to its
+//! main locus holds the backend that serves it: the series table's in
+//! one holding a `std::observe::Scrape` param ([`Cx::observes_metrics`]),
+//! the event ring's (GH #1592 S4) in one holding a `std::observe::Otlp`
+//! ([`Cx::observes_events`]). In any other program it lowers to its
 //! answer when nothing is registered — `-1` for an id, `0`, `0.0` or
 //! `""` — and calls nothing, so a `std::metrics::Registry` there
 //! registers nothing and pays nothing.
@@ -34,7 +36,24 @@ enum Ret {
     Str,
 }
 
-fn shape(id: IntrinsicId) -> Option<(&'static str, &'static [Arg], Ret)> {
+/// The `observe` kind a call serves, and its runtime function's shape.
+fn shape(id: IntrinsicId) -> Option<(&'static str, &'static str, &'static [Arg], Ret)> {
+    use IntrinsicId as Id;
+    let events = match id {
+        Id::ObserveEventsTakeRaw => Some(("lotus_observe_events_take", &[Arg::Int][..], Ret::Int)),
+        Id::ObserveEventStrRaw => Some(("lotus_observe_event_str", &[Arg::Int, Arg::Int][..], Ret::Str)),
+        Id::ObserveEventIntRaw => Some(("lotus_observe_event_int", &[Arg::Int, Arg::Int][..], Ret::Int)),
+        Id::ObserveEventsDroppedRaw => Some(("lotus_observe_events_dropped", &[Arg::Int][..], Ret::Int)),
+        _ => None,
+    };
+    if let Some((c, a, r)) = events {
+        return Some(("events", c, a, r));
+    }
+    let (c, a, r) = metrics_shape(id)?;
+    Some(("metrics", c, a, r))
+}
+
+fn metrics_shape(id: IntrinsicId) -> Option<(&'static str, &'static [Arg], Ret)> {
     use IntrinsicId as Id;
     Some(match id {
         Id::ObserveRegistryRaw => ("lotus_observe_registry", &[Arg::Str], Ret::Id),
@@ -79,7 +98,7 @@ impl<'ctx, 'p> ObserveStdlib<'ctx> for Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let (cname, kinds, ret) =
+        let (kind, cname, kinds, ret) =
             shape(id).ok_or_else(|| CodegenError::Unsupported(format!("{id:?} is not a std::observe call")))?;
         if args.len() != kinds.len() {
             return Err(CodegenError::Unsupported(format!(
@@ -89,8 +108,9 @@ impl<'ctx, 'p> ObserveStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let i64_t = self.context.i64_type();
-        if !self.observes_metrics() {
-            // No scrape: the answer with nothing
+        let declared = if kind == "events" { self.observes_events() } else { self.observes_metrics() };
+        if !declared {
+            // No backend for the kind: the answer with nothing
             // registered, and no call. The arguments are not lowered
             // either: every one is a plain read (a param, a literal, a
             // label set's field) with nothing to run.

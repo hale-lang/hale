@@ -180,8 +180,8 @@ use crate::symbol::Bundle;
 // `adequacy.placement` entry. Historical schemas do not admit this law.
 // 1.21 (GH #1592): an unhashed `observe` section — the observe backends
 // the main locus holds as params (`std::observe::Scrape`), each with its
-// param and a scrape's host, port and path. Absent when the program holds
-// none; shapes are unchanged.
+// param and a scrape's host, port and path, or an OTLP backend's
+// endpoint. Absent when the program holds none; shapes are unchanged.
 pub const TOPOLOGY_SCHEMA: &str = "1.21";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
@@ -1831,6 +1831,7 @@ fn observe_rows(programs: &[&Program]) -> Vec<String> {
             for b in crate::observe_expand::backends(l) {
                 let (backend, locus, fields): (&str, &str, &[&str]) = match b.kind {
                     "metrics" => ("std::observe::Scrape", "__StdObserveScrape", &["host", "port", "path"]),
+                    "events" => ("std::observe::Otlp", "__StdObserveOtlp", &["endpoint"]),
                     _ => continue,
                 };
                 let inits: &[hale_syntax::ast::StructInit] = match b.literal {

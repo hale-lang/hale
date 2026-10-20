@@ -203,3 +203,37 @@ that *run over time and coordinate*: long-lived services, a typed
 bus you design, concurrency, and supervision.
 
 Next: [The lifecycle](../services/lifecycle.md).
+
+## The runtime's events, to a collector
+
+Your logs say what your code did. The runtime can also tell a
+collector what happened to the program's loci — every birth, dissolve,
+restart and failure — as OpenTelemetry log records:
+
+```hale
+main locus App {
+    params {
+        events: std::observe::Otlp = std::observe::Otlp { endpoint: "http://otel-collector:4318/v1/logs" };
+    }
+    placement { events: pinned; }
+}
+
+fn main() { App { }; }
+```
+
+Leave `endpoint` out and the standard variables fill it in
+(`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, or `OTEL_EXPORTER_OTLP_ENDPOINT`
+plus `/v1/logs`), along with `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` — the ones your platform already sets. A
+failure arrives as a `WARN` record naming the locus and the closure that
+broke; every export carries the build's model hash, so a record can be
+tied back to the exact program that wrote it.
+
+Like a scrape, the backend is a param of the main locus: one per
+program, placed by `placement` (`pinned` gives it a thread of its own),
+and it never makes the program wait for the collector. Each send has a deadline (`timeout_ms`, two
+seconds unless you say otherwise); a batch the collector doesn't take
+in time is dropped and counted, and when you also hold a
+scrape, that count is `hale_otlp_dropped_total` on the scrape page. A
+program that holds no `Otlp` keeps no event ring at all.
+

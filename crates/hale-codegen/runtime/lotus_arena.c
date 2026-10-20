@@ -9147,6 +9147,27 @@ void lotus_bus_queue_enqueue_st(lotus_bus_queue_t *q,
  * bus_drain) get their own stack frame and their own buffer. */
 typedef void (*lotus_handler_fn)(void *self, void *payload);
 
+/* GH #1592 S4: `t_events_drainer` is set on a thread while the `Otlp`
+ * exporter runs on it with no coroutine of its own (see
+ * `lotus_observe_events_take`). The exporter only gives that thread to
+ * other code by delivering a handler (a main-queue drain at a statement
+ * boundary or a sleep slice, a pool's park drain, a posted cell), so
+ * every handler call goes through this: the flag is cleared across it
+ * and restored after, and whatever runs while the exporter yields
+ * records its events as the program's. */
+#if LOTUS_OBSERVE
+static __thread int t_events_drainer = 0;
+#define LOTUS_CALL_HANDLER(fn, self, payload)                                  \
+    do {                                                                       \
+        int lotus_saved_drainer_ = t_events_drainer;                           \
+        t_events_drainer = 0;                                                  \
+        ((lotus_handler_fn)(fn))((self), (payload));                           \
+        t_events_drainer = lotus_saved_drainer_;                               \
+    } while (0)
+#else
+#define LOTUS_CALL_HANDLER(fn, self, payload) ((lotus_handler_fn)(fn))((self), (payload))
+#endif
+
 /* Pop and run exactly one cell (single-threaded inline-drain for the
  * bounded-queue block policy, GH #125). Mirrors one iteration of the
  * single-threaded body of lotus_bus_queue_drain. The caller (enqueue)
@@ -9194,7 +9215,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     g_bus_pending_gen = 0;
     g_bus_pending_wire_deser = NULL;
     g_bus_pending_rec_pub = 0;
-    ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+    LOTUS_CALL_HANDLER(handler_fn, handler_self, payload_ptr);
     g_bus_pending_gen = outer_gen;
     g_bus_pending_wire_deser = outer_deser;
     g_bus_pending_rec_pub = outer_rec_pub;
@@ -9670,8 +9691,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                                                    held.rec_pub_id);
                             void *prev_delivery = t_bus_delivery_self;
                             t_bus_delivery_self = held.self_ptr;
-                            ((lotus_handler_fn)held.handler)(
-                                held.self_ptr, pp);
+                            LOTUS_CALL_HANDLER(held.handler, held.self_ptr, pp);
                             t_bus_delivery_self = prev_delivery;
                             if (held.payload_heap)
                                 free(held.payload_heap);
@@ -9745,8 +9765,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                                    cell_copy.rec_pub_id);
             void *prev_delivery = t_bus_delivery_self;
             t_bus_delivery_self = cell_copy.self_ptr;
-            ((lotus_handler_fn)cell_copy.handler)(
-                cell_copy.self_ptr, payload_ptr);
+            LOTUS_CALL_HANDLER(cell_copy.handler, cell_copy.self_ptr, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
             if (cell_copy.payload_region)
@@ -9801,7 +9820,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             lotus_bus_note_consume(handler_self, rec_pub_id);
             void *prev_delivery = t_bus_delivery_self;
             t_bus_delivery_self = handler_self;
-            ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+            LOTUS_CALL_HANDLER(handler_fn, handler_self, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (heap_ptr) free(heap_ptr);
             if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
@@ -10370,7 +10389,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
             : (void *)cell->payload_inline;
     }
     lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
-    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
 }
@@ -11959,7 +11978,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     int outer_in_run = t_pool_in_run;
     t_pool_in_run = cell->run_ticket != NULL;
     lotus_handler_hold_started(hold);
-    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
     t_pool_in_run = outer_in_run;
     /* The run's or the handler's hold, or the one a failure posted from
      * the cell took (`lotus_failure_hold_cell`). */
@@ -13691,7 +13710,7 @@ static void lotus_coro_thunk(void) {
     /* The drain's reclaim state, put back while this coroutine parks. */
     lotus_reclaim_ctx_save(&c->reclaim_outer);
     lotus_bus_note_consume(c->self_ptr, c->rec_pub_id);
-    ((lotus_handler_fn)c->handler)(c->self_ptr, c->payload_ptr);
+    LOTUS_CALL_HANDLER(c->handler, c->self_ptr, c->payload_ptr);
     c->done = 1;
     /* uc_link would handle this implicitly, but being explicit is
      * cheaper to reason about — and lets the worker recognize that
@@ -14127,8 +14146,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         lotus_run_ticket_t *outer = t_run_running;
         t_run_running = hold;
         lotus_handler_hold_started(hold);
-        ((lotus_handler_fn)cell_copy->handler)(
-            cell_copy->self_ptr, payload_ptr);
+        LOTUS_CALL_HANDLER(cell_copy->handler, cell_copy->self_ptr, payload_ptr);
         hold = t_run_running;   /* or a posted failure's (L0-1) */
         t_run_running = outer;
         p->running_label = NULL;
@@ -22431,9 +22449,144 @@ static uint32_t g_observe_gen = 0;
  * restart and violation sites */
 static _Atomic int64_t g_observe_notes[2];
 
-void lotus_observe_note(int64_t what) {
-    if (what >= 0 && what < 2)
-        atomic_fetch_add_explicit(&g_observe_notes[what], 1, memory_order_relaxed);
+/* ---- GH #1592 S4: the lifecycle event ring a `std::observe::Otlp` drains
+ *
+ * A program whose main locus holds a `std::observe::Otlp` param defines
+ * `lotus_observe_events` (codegen emits it). Only then is this ring
+ * filled: by the birth and dissolve probes (lotus_obs.c) and by the
+ * restart and failure notes below. It is bounded: an event that finds it
+ * full is dropped and counted, never waited for, so a backend that falls
+ * behind (a slow collector) costs the program nothing but the events. */
+extern int lotus_observe_events __attribute__((weak));
+static int lotus_observe_events_on(void) {
+    return &lotus_observe_events != NULL && lotus_observe_events;
+}
+
+#define LOTUS_EVENTS_CAP 4096
+
+typedef struct {
+    int64_t kind;         /* 0 birth, 1 dissolve, 2 restart, 3 failure */
+    int64_t ts_ns;        /* wall clock */
+    uint32_t inst, parent;
+    char locus[96];
+    char detail[96];
+} lotus_event_t;
+
+static pthread_mutex_t g_events_lock = PTHREAD_MUTEX_INITIALIZER;
+static lotus_event_t g_events[LOTUS_EVENTS_CAP];
+static uint64_t g_events_head = 0, g_events_tail = 0; /* under the lock */
+static _Atomic int64_t g_events_dropped;
+
+uint32_t lotus_obs_instance_of(void *self) __attribute__((weak));
+uint64_t lotus_obs_identity(int64_t which) __attribute__((weak));
+
+/* The thread that drains the ring (the backend's own, marked by its
+ * first take): what it does to send — a builder, a connection — is not
+ * the program's, and recording it would feed every send back as the
+ * next batch's events. */
+/* (t_events_drainer, declared with the pool dispatch above: a drainer
+ * with no coroutine, its thread while it runs its own cell) */
+static void *_Atomic g_events_drainer_coro;  /* a drainer on a coroutine: that coroutine */
+
+/* Whether the running code is the exporter's own: its coroutine, not the
+ * whole worker thread a cooperative pool shares among other loci. */
+static int lotus_events_in_drainer(void) {
+#if LOTUS_HAVE_ASYNC_IO
+    lotus_coro_t *c = g_current_coro_tls;
+    if (c) return (void *)c == atomic_load_explicit(&g_events_drainer_coro, memory_order_relaxed);
+#endif
+    return t_events_drainer;
+}
+
+void lotus_observe_event(int64_t kind, uint32_t inst, uint32_t parent, const char *locus,
+                         const char *detail) {
+    if (!lotus_observe_events_on() || lotus_events_in_drainer()) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    pthread_mutex_lock(&g_events_lock);
+    if (g_events_tail - g_events_head >= LOTUS_EVENTS_CAP) {
+        pthread_mutex_unlock(&g_events_lock);
+        atomic_fetch_add_explicit(&g_events_dropped, 1, memory_order_relaxed);
+        return;
+    }
+    lotus_event_t *e = &g_events[g_events_tail % LOTUS_EVENTS_CAP];
+    e->kind = kind;
+    e->ts_ns = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    e->inst = inst;
+    e->parent = parent;
+    snprintf(e->locus, sizeof e->locus, "%s", locus ? locus : "");
+    snprintf(e->detail, sizeof e->detail, "%s", detail ? detail : "");
+    g_events_tail++;
+    pthread_mutex_unlock(&g_events_lock);
+}
+
+/* A restart (0) or a delivered failure (1) of the locus at `self`, from
+ * a program declaring `metrics` or `events`: counted for the first, an
+ * event for the second (`detail` the failure's closure). */
+void lotus_observe_note(int64_t what, void *self, const char *locus, const char *detail) {
+    if (what < 0 || what > 1) return;
+    atomic_fetch_add_explicit(&g_observe_notes[what], 1, memory_order_relaxed);
+    if (lotus_observe_events_on()) {
+        uint32_t inst = lotus_obs_instance_of ? lotus_obs_instance_of(self) : 0;
+        lotus_observe_event(what == 0 ? 2 : 3, inst, 0, locus, detail);
+    }
+}
+
+static __thread lotus_event_t *t_events_batch = NULL;
+static __thread int64_t t_events_batch_n = 0;
+
+/* Move up to `max` events into this thread's batch; how many. */
+int64_t lotus_observe_events_take(int64_t max) {
+#if LOTUS_HAVE_ASYNC_IO
+    if (g_current_coro_tls)
+        atomic_store_explicit(&g_events_drainer_coro, (void *)g_current_coro_tls, memory_order_relaxed);
+    else
+#endif
+        t_events_drainer = 1;
+    if (!t_events_batch) {
+        t_events_batch = malloc(sizeof(lotus_event_t) * LOTUS_EVENTS_CAP);
+        if (!t_events_batch) return 0;
+    }
+    if (max > LOTUS_EVENTS_CAP) max = LOTUS_EVENTS_CAP;
+    int64_t n = 0;
+    pthread_mutex_lock(&g_events_lock);
+    while (n < max && g_events_head < g_events_tail) {
+        t_events_batch[n++] = g_events[g_events_head % LOTUS_EVENTS_CAP];
+        g_events_head++;
+    }
+    pthread_mutex_unlock(&g_events_lock);
+    t_events_batch_n = n;
+    return n;
+}
+
+/* A batch event's string: 0 its locus type, 1 its detail. Field 10 and
+ * 11 (any `i`) are the build's model hash and entity-id digest, hex. */
+const char *lotus_observe_event_str(lotus_arena_t *a, int64_t i, int64_t field) {
+    char hex[24];
+    if (field == 10 || field == 11) {
+        uint64_t v = lotus_obs_identity ? lotus_obs_identity(field - 10) : 0;
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)v);
+        return lotus_str_clone(a, hex);
+    }
+    const char *v = "";
+    if (i >= 0 && i < t_events_batch_n)
+        v = field == 0 ? t_events_batch[i].locus : field == 1 ? t_events_batch[i].detail : "";
+    return lotus_str_clone(a, v);
+}
+
+/* A batch event's integer: 0 its kind, 1 its wall time (ns), 2 its
+ * instance id, 3 its parent's. */
+int64_t lotus_observe_event_int(int64_t i, int64_t field) {
+    if (i < 0 || i >= t_events_batch_n) return 0;
+    lotus_event_t *e = &t_events_batch[i];
+    return field == 0 ? e->kind : field == 1 ? e->ts_ns : field == 2 ? e->inst : field == 3 ? e->parent : 0;
+}
+
+/* Count `add` events the backend could not deliver (a failed send);
+ * the total dropped, ring overflow included. */
+int64_t lotus_observe_events_dropped(int64_t add) {
+    if (add > 0) atomic_fetch_add_explicit(&g_events_dropped, add, memory_order_relaxed);
+    return atomic_load_explicit(&g_events_dropped, memory_order_relaxed);
 }
 
 static int64_t lotus_observe_id(uint32_t gen, int64_t slot) {
@@ -22715,6 +22868,9 @@ int64_t lotus_observe_snapshot(void) {
                               (double)atomic_load_explicit(&g_observe_notes[0], memory_order_relaxed));
     lotus_observe_runtime_row(0, "failures_total", "",
                               (double)atomic_load_explicit(&g_observe_notes[1], memory_order_relaxed));
+    if (lotus_observe_events_on())
+        lotus_observe_runtime_row(0, "otlp_dropped_total", "",
+                                  (double)atomic_load_explicit(&g_events_dropped, memory_order_relaxed));
     char labels[96];
     for (size_t i = 0; i < g_coop_pool_count; i++) {
         lotus_coop_pool_t *p = g_coop_pools[i];
@@ -22797,7 +22953,20 @@ void lotus_diag_errno(int level, const char *logger, const char *msg, const char
 #if LOTUS_OBSERVE
 /* GH #1592: no `std::observe::Scrape` serves in the browser
  * (std::http refuses there), so the series table is inert. */
-void lotus_observe_note(int64_t what) { (void)what; }
+void lotus_observe_note(int64_t what, void *self, const char *locus, const char *detail) {
+    (void)what; (void)self; (void)locus; (void)detail;
+}
+void lotus_observe_event(int64_t kind, uint32_t inst, uint32_t parent, const char *locus,
+                         const char *detail) {
+    (void)kind; (void)inst; (void)parent; (void)locus; (void)detail;
+}
+int64_t lotus_observe_events_take(int64_t max) { (void)max; return 0; }
+const char *lotus_observe_event_str(lotus_arena_t *a, int64_t i, int64_t field) {
+    (void)a; (void)i; (void)field;
+    return "";
+}
+int64_t lotus_observe_event_int(int64_t i, int64_t field) { (void)i; (void)field; return 0; }
+int64_t lotus_observe_events_dropped(int64_t add) { (void)add; return 0; }
 int64_t lotus_observe_registry(const char *ns) { (void)ns; return -1; }
 int64_t lotus_observe_registry_drop(int64_t id) { (void)id; return 0; }
 int64_t lotus_observe_series(int64_t reg, const char *name, const char *labels, int64_t kind,
@@ -29486,7 +29655,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             } else {
                 /* same-thread: the whole point — run it now. */
                 g_bus_pending_gen = prev_gen;
-                ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
+                LOTUS_CALL_HANDLER(e->handler, e->self_ptr, (void *)payload);
             }
             g_bus_pending_gen = prev_gen;
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {

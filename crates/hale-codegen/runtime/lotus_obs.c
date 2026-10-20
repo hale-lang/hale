@@ -445,8 +445,16 @@ static _Atomic int g_topic_count = 0;
 
 /* locus instance table: self_ptr → u20 instance id + liveness
  * (for the 0→1 birth replay). */
+#if LOTUS_OBSERVE
+typedef struct { void *self; uint32_t id, type_id, parent; int live;
+                 /* the type's name as codegen passed it (a string
+                  * constant), for a dissolve's event (GH #1592) */
+                 const char *type_name; }
+    obs_inst_t;
+#else
 typedef struct { void *self; uint32_t id, type_id, parent; int live; }
     obs_inst_t;
+#endif
 static obs_inst_t g_inst[OBS_INSTANCE_CAP];
 static _Atomic int g_inst_count = 0;   /* high-water mark of slots used */
 /* Slots whose locus dissolved, most recent last; guarded by
@@ -2158,6 +2166,17 @@ int lotus_obs_live = 0;
 #if LOTUS_OBSERVE
 extern int lotus_observe_metrics __attribute__((weak));
 static int g_obs_counters_only = 0;
+/* GH #1592 S4: a program holding a `std::observe::Otlp` defines this as
+ * 1; the birth and
+ * dissolve probes then add a lifecycle event to the runtime's bounded
+ * event ring (`lotus_observe_event`, lotus_arena.c), which the `Otlp`
+ * backend drains. Any other program leaves it unresolved, and the ring
+ * is never filled. */
+extern int lotus_observe_events __attribute__((weak));
+static int g_obs_events = 0;
+void lotus_observe_event(int64_t kind, uint32_t inst, uint32_t parent,
+                         const char *locus, const char *detail)
+    __attribute__((weak));
 #endif
 
 __attribute__((constructor)) static void obs_live_ctor(void) {
@@ -2165,6 +2184,11 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
   if (e && e[0] == '1') lotus_obs_live = 1;
 #if LOTUS_OBSERVE
   if (&lotus_observe_metrics && lotus_observe_metrics) {
+    g_obs_counters_only = 1;
+    lotus_obs_live = 1;
+  }
+  if (&lotus_observe_events && lotus_observe_events && lotus_observe_event) {
+    g_obs_events = 1;
     g_obs_counters_only = 1;
     lotus_obs_live = 1;
   }
@@ -3263,6 +3287,16 @@ void lotus_obs_adapter_net_deliver(const char *subject, uint64_t origin,
  * at most OBS_INSTANCE_CAP), and the topic counters, for a scrape. */
 static int64_t g_obs_live_loci = 0;
 
+/* A live locus's instance id (0 when the table does not hold it), and
+ * the build's identity stamps, for an event's attributes. */
+uint32_t lotus_obs_instance_of(void *self) {
+  if (!g_seg || !self) return 0;
+  return obs_inst_id_of(self);
+}
+uint64_t lotus_obs_identity(int64_t which) {
+  return which == 0 ? g_obs_model_hash : g_obs_entity_id_digest;
+}
+
 int64_t lotus_obs_live_loci(void) {
   if (!g_seg) return 0;
   pthread_mutex_lock(&g_obs_lock);
@@ -3326,20 +3360,32 @@ void lotus_obs_locus_birth(void *self, const char *type_name,
     g_inst[slot].id = inst_id;
     g_inst[slot].type_id = type_id;
     g_inst[slot].parent = parent;
+#if LOTUS_OBSERVE
+    g_inst[slot].type_name = type_name;
+#endif
     __atomic_store_n(&g_inst[slot].live, 1, __ATOMIC_RELEASE);
 #if LOTUS_OBSERVE
     g_obs_live_loci++;
 #endif
   } else if (n < OBS_INSTANCE_CAP) {
+#if LOTUS_OBSERVE
+    g_inst[n] = (obs_inst_t){ .self = self, .id = inst_id,
+                              .type_id = type_id, .parent = parent,
+                              .live = 1, .type_name = type_name };
+#else
     g_inst[n] = (obs_inst_t){ .self = self, .id = inst_id,
                               .type_id = type_id, .parent = parent,
                               .live = 1 };
+#endif
     atomic_store_explicit(&g_inst_count, n + 1, memory_order_release);
 #if LOTUS_OBSERVE
     g_obs_live_loci++;
 #endif
   }
   pthread_mutex_unlock(&g_obs_lock);
+#if LOTUS_OBSERVE
+  if (g_obs_events) lotus_observe_event(0, inst_id, parent, type_name, "");
+#endif
   if (!obs_gate()) return;
   obs_emit(EK_LOCUS_BIRTH, inst_id, 0,
            ((uint64_t)parent) | ((uint64_t)(type_id & 0xFFFFFu) << 32));
@@ -3347,12 +3393,21 @@ void lotus_obs_locus_birth(void *self, const char *type_name,
 
 void lotus_obs_locus_dissolve(void *self, int64_t reason) {
   if (!obs_on() || !self) return;
+#if LOTUS_OBSERVE
+  uint32_t inst_id = 0, parent = 0;
+  const char *type_name = NULL;
+#else
   uint32_t inst_id = 0;
+#endif
   pthread_mutex_lock(&g_obs_lock);
   int n = atomic_load(&g_inst_count);
   for (int i = 0; i < n; i++) {
     if (g_inst[i].self == self && g_inst[i].live) {
       inst_id = g_inst[i].id;
+#if LOTUS_OBSERVE
+      parent = g_inst[i].parent;
+      type_name = g_inst[i].type_name;
+#endif
       __atomic_store_n(&g_inst[i].live, 0, __ATOMIC_RELEASE);
       g_inst_free[g_inst_free_n++] = i;
 #if LOTUS_OBSERVE
@@ -3362,6 +3417,10 @@ void lotus_obs_locus_dissolve(void *self, int64_t reason) {
     }
   }
   pthread_mutex_unlock(&g_obs_lock);
+#if LOTUS_OBSERVE
+  if (g_obs_events && inst_id)
+    lotus_observe_event(1, inst_id, parent, type_name ? type_name : "", "");
+#endif
   if (inst_id == 0 || !obs_gate()) return;
   obs_emit(EK_LOCUS_DISSOLVE, inst_id, 0, (uint64_t)reason);
 }
