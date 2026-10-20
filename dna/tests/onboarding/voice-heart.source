@@ -7,5 +7,8 @@ at start)
 The tree beside this file is that commit's (`git archive`), vendored for
 dna/tests/first_run_test.hl (GH #1653) and never fetched at test time,
 less its scripts/ and .github/, which neither its programs nor its
-documents (which the graft reads) name. Moving the pin is re-vendoring the tree at the
+documents (which the graft reads) name, and less the `.gitignore`
+rules that hide a compiled binary (`/api`, `/brain`, `/node`, `/store`:
+this repository refuses such a rule, and a build writes no binary into the
+tree). Moving the pin is re-vendoring the tree at the
 new commit and naming it here.

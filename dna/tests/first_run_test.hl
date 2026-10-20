@@ -264,11 +264,13 @@ fn main() {
 
     // ---- 8. a request answered, and one streamed: the node's seat over
     // the broker. The limits are the organization's, read through the
-    // head: until the first read lands, a keyed request is 503
+    // head: until the first read lands, a keyed request is 503 (a slow
+    // runner's first read can time out against the head and land on the
+    // next, a second later), so the first request waits it out, bounded
     let headers = scratch + "/answer.headers";
     let mut plain = ask(scratch, base, caller, false, headers);
     tries = 0;
-    while status_of(plain) == "503" && std::str::contains(plain, "metering_unavailable") && tries < dna::wait_secs(180) {
+    while status_of(plain) == "503" && tries < dna::wait_secs(180) {
         std::time::sleep(1s);
         plain = ask(scratch, base, caller, false, headers);
         tries = tries + 1;
