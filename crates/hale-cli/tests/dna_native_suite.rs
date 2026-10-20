@@ -1045,6 +1045,7 @@ fn dna_fixture_set_is_complete() {
             "build_fingerprint_location_test.hl",
             "build_seed_out_of_tree_test.hl",
             "claims_test.hl",
+            "codebase_attach_test.hl",
             "command_relay_trust_test.hl",
             "compose_projects_test.hl",
             "concern_identity_test.hl",
