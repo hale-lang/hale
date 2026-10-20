@@ -315,6 +315,23 @@ jobs:
           echo "$PG/bin" >> "$GITHUB_PATH"
           echo "HALE_DNA_MEMORY_DSN_OWNER=postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" >> "$GITHUB_ENV"
 
+      - name: NATS with JetStream for nerves (GH #1653)
+        # A slice whose fixtures graft births a habitat on the operator's
+        # backends when it has both a memory DSN and a NATS; with only the
+        # DSN it falls back to its own backends, which run under docker
+        # compose, and a Mac runner has none. The Linux jobs run nats:2
+        # in a container; here it is Homebrew's nats-server.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          set -eux
+          brew install nats-server
+          nohup nats-server -js -a 127.0.0.1 -p 4222 -sd /tmp/hale-nats > /tmp/hale-nats.log 2>&1 &
+          for _ in $(seq 1 50); do nc -z 127.0.0.1 4222 && break; sleep 0.2; done
+          nc -z 127.0.0.1 4222
+          echo "HALE_DNA_NATS_URL_OWNER=nats://127.0.0.1:4222" >> "$GITHUB_ENV"
+
       - name: (h) GH #970 — the whole DNA suite on macOS
         # The DNA fixtures on a Mac: until this ran here, every macOS gap
         # DNA had — a refused connect that spent its socket, `timeout` and
