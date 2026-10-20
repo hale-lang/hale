@@ -2,8 +2,8 @@
 // are queries over memory, and on voice they are GRAPH.md's two renderings
 // (GH #1086).
 //
-// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
-// under dna/tests/onboarding/voice. `hale habitat graft` reads it into the
+// The fixture is hale-lang/voice at aaa3d39d, vendored
+// under dna/tests/onboarding/voice-heart. `hale habitat graft` reads it into the
 // record; the holes GRAPH.md fills for its org chart (the ones init
 // derives from the edges: a board, a dev where a gate guards a part, a
 // reviewer where a part serves or consumes a contract, an operator under
@@ -29,16 +29,18 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// GRAPH.md at a32b295f, "The two perspectives, as queries".
+// GRAPH.md, "The two perspectives, as queries", as the vendored tree yields
+// them: it carries no CI, so no gate guards a part (a dev holds `mandate:
+// none`), and the compose deployment runs the `migrate` process too.
 const ORG: String = "purpose
   board {mandate: pending}
-  postgres    dev {mandate: pending}, reviewer(store.md) {mandate: pending}
-  api         dev {mandate: pending}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: pending}
-  brain       dev {mandate: pending}, reviewer(internal.yaml, store.md) {mandate: pending}
-  node        dev {mandate: pending}, reviewer(node.yaml, openapi.yaml, protocol.yaml) {mandate: pending}
+  postgres    dev {mandate: none}, reviewer(store.md) {mandate: pending}
+  api         dev {mandate: none}, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) {mandate: pending}
+  brain       dev {mandate: none}, reviewer(internal.yaml, store.md) {mandate: pending}
+  node        dev {mandate: none}, reviewer(node.yaml, openapi.yaml, protocol.yaml) {mandate: pending}
   compose     operator {mandate: pending}
-  validate    dev {mandate: pending}
-  ui          dev {mandate: pending}, reviewer(openapi.yaml) {mandate: pending}
+  validate    dev {mandate: none}
+  ui          dev {mandate: none}, reviewer(openapi.yaml) {mandate: pending}
   personal    operator {mandate: pending}
   scaled-out  operator {mandate: pending}
 ";
@@ -49,7 +51,7 @@ api  --NATS: protocol.yaml-->  node  (carried by nats)
 openapi.yaml, protocol.yaml  --open-responses-->  (nobody here)
 api, brain  --SQL: store.md-->  postgres
 api  --NATS: internal.yaml-->  brain  (carried by nats)
-compose runs { postgres, nats, api, brain, node }
+compose runs { postgres, nats, migrate, api, brain, node }
 personal runs { api, brain, postgres, nats, node }
 scaled-out runs { api, brain, postgres, nats, node }
 ";
@@ -114,7 +116,7 @@ locus App {
         std::test::assert(two.code == 2 && std::str::contains(two.stderr, "one project at most"), "a second project is refused: " + two.stderr);
 
         self.repo = scratch + "/voice";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        let made = dna::voice_repo(source(), self.repo, "t", false);
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = dna::grafted(self.repo, ".\n--attach");
         std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
@@ -206,7 +208,7 @@ locus App {
         self.append(j, "graph.node", "position:lone", ops::graph_node_body("position", "lone", "", ""));
         self.project(owner, identity);
         let held = self.show("org");
-        std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada] {mandate: pending}\n  postgres    dev {mandate: pending}, reviewer(store.md) {mandate: pending}\n"), "the board, held by ada: " + held.stdout);
+        std::test::assert(std::str::starts_with(held.stdout, "purpose\n  board [ada] {mandate: pending}\n  postgres    dev {mandate: none}, reviewer(store.md) {mandate: pending}\n"), "the board, held by ada: " + held.stdout);
         std::test::assert(std::str::contains(held.stdout, "\n  (unplaced)  lone {mandate: none}\n"), "a position under no node: " + held.stdout);
 
         // ---- a retired node leaves the rendering
@@ -214,7 +216,7 @@ locus App {
         self.project(owner, identity);
         let retired = self.show("processes");
         std::test::assert(std::str::contains(retired.stdout, "callers, ui  --HTTP: openapi.yaml-->  api\nthe machine's operator  --HTTP: node.yaml-->  (nobody here)\n"), "node, retired, is no consumer and no server: " + retired.stdout);
-        std::test::assert(std::str::contains(retired.stdout, "compose runs { postgres, nats, api, brain }"), "and runs nowhere: " + retired.stdout);
+        std::test::assert(std::str::contains(retired.stdout, "compose runs { postgres, nats, migrate, api, brain }"), "and runs nowhere: " + retired.stdout);
 
         // ---- a row memory has not reached is said beside the graph, not shown
         self.append(j, "graph.retired", "runs:deployment:scaled-out", "{}");

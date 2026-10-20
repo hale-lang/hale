@@ -2,7 +2,7 @@
 // head's socket, with a deterministic performer standing in for the model
 // (GH #946, item D: the dogfood run).
 //
-// The vendored voice repository (dna/tests/onboarding/voice) is read into
+// The vendored voice repository (dna/tests/onboarding/voice-heart) is read into
 // its graph (`hale habitat graft`), its holes ratified, and the suite's user
 // mapped to riley (`dna.unix.member`). The record declares no trust, so
 // the graph's `holds` edges say who holds what: until riley holds a
@@ -251,7 +251,7 @@ locus App {
         self.repo = scratch + "/voice";
 
         // ---- voice, a repository of its own, read into its graph, holes ratified
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        let made = dna::voice_repo(source(), self.repo, "riley", true);
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.init();
         std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);

@@ -12184,12 +12184,6 @@ dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in the seed
 dynamic	__StdBytesBytesBuilder	on pinned:SilentDesk@literal1.sense	in the stdlib
 shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
-== dna/tests/onboarding/voice/api/tests/endpoints_test.hl
-row	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints	main	default
-
-== dna/tests/onboarding/voice/node/tests/node_test.hl
-row	__lib____admin__AdminApi@main1	__lib____admin__AdminApi	main	default
-
 == dna/tests/onboarding/voice-heart/api/tests/accounts_test.hl
 hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
 hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
@@ -16601,22 +16595,6 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_ws|unknown (no instance)
 dynamic	__StdIoTcpStream	on pinned:App@literal1.sense|pool:__api_http|pool:__api_ws|unknown (no instance)
-
-== dna/tests/onboarding/voice/node
-root	Node	the entry
-domain	pinned:Node@literal1.admin
-domain	pinned:Node@literal1.session
-row	Node@literal1	Node	main	default
-row	Node@literal1.admin	Admin	pinned:Node@literal1.admin	entry	off owner
-row	Node@literal1.session	Session	pinned:Node@literal1.session	entry	off owner
--- dynamic	sites in the seed
-dynamic	AdminApi	on pinned:Node@literal1.admin
-dynamic	__StdBytesBytesBuilder	on pinned:Node@literal1.admin
-dynamic	__StdHttpResponder	on pinned:Node@literal1.admin
-dynamic	__StdHttpServer	on pinned:Node@literal1.admin
-dynamic	__StdIoTcpConnInline	on pinned:Node@literal1.admin
-dynamic	__StdIoTcpConnections	on pinned:Node@literal1.admin
-dynamic	__StdIoTcpStream	on pinned:Node@literal1.admin
 
 == dna/tests/onboarding/voice-heart/api
 root	Api	the entry

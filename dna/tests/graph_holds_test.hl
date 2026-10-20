@@ -2,7 +2,7 @@
 // `hale dna fill`, the Board's verdicts on it, and the trust it is judged
 // under.
 //
-// On hale-lang/voice at a32b295f (dna/tests/onboarding/voice), on a record
+// On hale-lang/voice at aaa3d39d (dna/tests/onboarding/voice-heart), on a record
 // of its own: graph_holes_test holds the proposals and the Board's round
 // over all 40; here the Board ratifies the four holes the holds need,
 // each by its own Review (the board, api's dev and reviewer, and compose's
@@ -248,7 +248,7 @@ locus App {
     run() {
         let scratch = dna::scratch_root("graph-holds");
         self.repo = scratch + "/voice";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        let made = dna::voice_repo(source(), self.repo, "t", true);
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = dna::grafted(self.repo, ".\n--attach");
         std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);

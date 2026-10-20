@@ -1,8 +1,8 @@
 // dna/tests/graph_holes_test.hl — the holes, proposed at record birth, and
 // the org chart they fill once the Board ratifies them (GH #1091).
 //
-// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
-// under dna/tests/onboarding/voice. `hale habitat graft` proposes exactly what
+// The fixture is hale-lang/voice at aaa3d39d, vendored
+// under dna/tests/onboarding/voice-heart (dna::voice_repo copies it). `hale habitat graft` proposes exactly what
 // its GRAPH.md lists under "The holes", each derived from the graph's edges:
 // 15 positions, each followed by its mandate, 6 work items and the 4
 // practices DIRECTION.md marks `derived` — 40 proposals, one Board Review
@@ -47,7 +47,7 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// GRAPH.md at a32b295f, "The holes": the proposals, in the order init
+// GRAPH.md, "The holes": the proposals, in the order init
 // makes them (`<group> <name>` per line).
 const PROPOSED: String = "holes board
 holes mandate/board
@@ -91,7 +91,7 @@ practices The catalog
 practices Projects and keys
 ";
 
-// GRAPH.md at a32b295f, the org chart once the proposals are ratified.
+// GRAPH.md at a32b295f (the holes' shape; the heart's graph has more seeds), the org chart once the proposals are ratified.
 const ORG: String = "purpose
   board {mandate: ratified}
   postgres    dev {mandate: ratified}, reviewer(store.md) {mandate: ratified}
@@ -225,7 +225,7 @@ locus App {
     run() {
         let scratch = dna::scratch_root("graph-holes");
         self.repo = scratch + "/voice";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        let made = dna::voice_repo(source(), self.repo, "t", true);
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = dna::grafted(self.repo, ".\n--attach");
         std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);

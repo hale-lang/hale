@@ -1,5 +1,0 @@
-# hale.toml — the project manifest. The only section is [deps]:
-# a project is identified by its directory name and its source.
-# `hale fetch` clones each dep into vendor/<name>/ and pins it in hale.lock.
-
-[deps]
