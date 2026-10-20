@@ -1,0 +1,40 @@
+// A full page of the change log is written in memory linear in its size:
+// a page of 1000 changes, each a project as it was and as it became, grows
+// the process's peak by about ten megabytes. A page built by `+` in a loop kept
+// every prefix it made, which for this page is about half a gigabyte.
+import ".." as api;
+
+fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
+    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+}
+
+/// The process's peak resident memory so far, in kB (`VmHWM`).
+fn peak_kb() -> Int {
+    let status = std::io::fs::read_file("/proc/self/status") or "";
+    let at = std::str::index_of(status, "VmHWM:");
+    if at < 0 { return 0; }
+    let rest = std::str::trim(status[at + 6..len(status)]);
+    let end = std::str::index_of(rest, " ");
+    return std::str::parse_int(rest[0..end]) or 0;
+}
+
+fn main() {
+    let e = api::Endpoints { };
+    let long = "a project whose name is long enough that each of its changes carries a few hundred bytes of JSON, before and after";
+    std::test::assert_eq_int(call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"" + long + "\"}").status, 201, "a project");
+    let mut i = 1;
+    while i < 1000 {
+        let r = call(e, "PATCH", "/admin/v1/projects/work", "{\"name\": \"" + long + " " + to_string(i) + "\"}");
+        std::test::assert_eq_int(r.status, 200, "rename " + to_string(i));
+        i = i + 1;
+    }
+
+    let before = peak_kb();
+    std::test::assert(before > 0, "the peak is readable from /proc/self/status");
+    let page = call(e, "GET", "/admin/v1/changes?limit=1000", "");
+    let after = peak_kb();
+    std::test::assert_eq_int(page.status, 200, "a page");
+    std::test::assert(len(page.body) > 400000, "1000 changes of a few hundred bytes each: " + to_string(len(page.body)));
+    std::test::assert(std::str::contains(page.body, long + " 999") && std::str::contains(page.body, "\"next_cursor\": null"), "all of them, newest first, on one page");
+    std::test::assert(after - before < 32768, "the page grew the peak by " + to_string(after - before) + " kB; under 32 MB is linear");
+}

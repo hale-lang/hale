@@ -1,0 +1,365 @@
+// dna/tests/first_run_test.hl — the first run, end to end (GH #1653).
+//
+// A machine with no habitat: `hale habitat up` births it, on its own
+// backends (its memory, nerves and senses' store as allocations of its
+// compose project); `hale habitat graft voice --attach` grafts voice, a
+// Hale heart vendored at a commit of hale-lang/voice
+// (onboarding/voice-heart.source), whose genome needs memory, the nerves,
+// a `database` and a `broker`, and hands its database's migration to the
+// habitat (`api migrate`). The habitat provisions all four, runs the
+// migration, and hands the heart what it needs (`hale habitat handover`):
+// voice's api and a node run on that alone, no secret written by hand. A
+// request is answered by the node's static seat over the broker, plain and
+// streamed; voice tells the organization each one, which lands as a reading
+// in voice's own Ledger. The head runs for voice's organization, and voice
+// reads its limits through it as the service client graft mapped: the
+// Board ratifies `operating/limits/personal` (two requests a window), voice
+// reads it, and the next request past it is refused `429 rate_limited`.
+// Then the habitat goes down and comes back: nothing is born or migrated
+// again, voice's data stands, and a second graft keeps everything. Each
+// step's time is said on stderr, as the cycle harness says its own.
+//
+// Own backends: the broker is a user of the organism's own nerves
+// server, which a habitat on the operator's backends does not configure.
+// Without docker compose, nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// Run `argv` (newline-separated) in `dir`, with no server of anyone
+// else's named: the habitat is this test file's own (`hale test` gives
+// each file one, beside its vault), on its own backends.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// `argv` started in `dir` in the background, under the same environment
+// and `extra` (NAME=value lines) with stdout and stderr in `log`: its pid.
+fn started(dir: String, extra: String, argv: String, log: String) -> String {
+    let r = dna::run_tool("sh\n-c\ncd \"$1\" && log=$2 && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && nohup timeout --foreground 1500 env \"$@\" >\"$log\" 2>&1 </dev/null & echo $!\nsh\n" + dir + "\n" + log + "\n" + extra + argv);
+    return dna::trim_nl(r.stdout);
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// The last 150 lines of the head's log and of each log its children keep
+// (its API child among them): what a failing step prints, so a CI run
+// that fails says what the head was doing.
+fn head_tails(scratch: String) -> String {
+    return dna::run_tool("sh\n-c\nfor f in \"$1\"/head.log \"$1\"/head-state/children/*.log \"$1\"/head-state/*/children/*.log; do [ -f \"$f\" ] || continue; echo \"== $f\"; tail -n 150 \"$f\"; done\nsh\n" + scratch).stdout;
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, name + "=") { return line[(len(name) + 1)..len(line)]; }
+    }
+    return "";
+}
+
+// The lines of `text` that start with `prefix`, each newline-terminated.
+fn lines_starting(text: String, prefix: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, prefix) { out = out + line + "\n"; }
+    }
+    return out;
+}
+
+// How many times `needle` occurs in `text`.
+fn occurrences(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    let mut at = std::str::index_of(rest, needle);
+    while at >= 0 {
+        n = n + 1;
+        rest = rest[(at + len(needle))..len(rest)];
+        at = std::str::index_of(rest, needle);
+    }
+    return n;
+}
+
+// Whether `log` says `text` within `secs` (scaled).
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::monotonic_ns() + dna::wait_secs(secs) * 1000000000;
+    while std::time::monotonic_ns() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// An HTTP call by curl: `<status>\n<body>`; extra argv lines in `args`.
+// The body goes through a file of the call's own beside the scratch's.
+fn http(dir: String, method: String, url: String, args: String) -> String {
+    let body = dir + "/answer-" + to_string(std::time::monotonic_ns());
+    let r = dna::run_tool("curl\n-s\n-N\n-m\n60\n-o\n" + body + "\n-w\n%{http_code}\n-X\n" + method + "\n" + args + url);
+    let text = std::io::fs::read_file(body) or "";
+    let gone = dna::run_tool("rm\n-f\n" + body);
+    return dna::trim_nl(r.stdout) + "\n" + text;
+}
+
+fn status_of(answer: String) -> String { return answer[0..std::str::index_of(answer, "\n")]; }
+fn body_of(answer: String) -> String { return answer[(std::str::index_of(answer, "\n") + 1)..len(answer)]; }
+
+fn post(dir: String, url: String, json: String) -> String {
+    return http(dir, "POST", url, "-H\ncontent-type: application/json\n-d\n" + json + "\n");
+}
+
+// A keyed request to voice: `/v1/responses`, or with `stream` a streamed
+// chat completion.
+fn ask(dir: String, base: String, key: String, stream: Bool, headers: String) -> String {
+    if stream {
+        return http(dir, "POST", base + "/v1/chat/completions", "-H\nAuthorization: Bearer " + key + "\n-H\ncontent-type: application/json\n-d\n{\"model\":\"echo-1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}\n");
+    }
+    return http(dir, "POST", base + "/v1/responses", "-H\nAuthorization: Bearer " + key + "\n-H\ncontent-type: application/json\n-D\n" + headers + "\n-d\n{\"model\":\"echo-1\",\"input\":\"hi\"}\n");
+}
+
+// The pids listening on `port` on this machine, a line each.
+fn listeners(port: Int) -> String {
+    return dna::run_tool("sh\n-c\nss -ltnpH \"sport = :$1\" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u\nsh\n" + to_string(port)).stdout;
+}
+
+fn stop(pids: String) {
+    let killed = dna::run_tool("sh\n-c\nfor p in $1; do kill \"$p\" 2>/dev/null; done; sleep 1; for p in $1; do kill -9 \"$p\" 2>/dev/null; done; true\nsh\n" + std::str::replace(pids, "\n", " "));
+}
+
+// Each step's time, as the cycle harness keeps its own: said on stderr,
+// and kept beside the run as `first-run.timings` (HALE_DNA_KEEP_SCRATCH
+// keeps the root, and so the table).
+locus Clock {
+    params { started: Int = 0; at: Int = 0; said: String = ""; file: String = ""; }
+    fn begin() { self.started = std::time::monotonic_ns(); self.at = self.started; }
+    // The step `name` is done: its time beside the others'.
+    fn step(name: String) {
+        let now = std::time::monotonic_ns();
+        let ms = (now - self.at) / 1000000;
+        self.said = self.said + to_string(ms) + " ms\t" + name + "\n";
+        eprintln("first run: ", name, " ", ms, " ms");
+        if len(self.file) > 0 { std::io::fs::write_file(self.file, self.said) or discard; }
+        self.at = now;
+    }
+    fn total() -> Int { return (std::time::monotonic_ns() - self.started) / 1000000; }
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("first_run_test: not exercised (docker compose is not on PATH)"); return; }
+    if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("first_run_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); return; }
+    let scratch = dna::scratch_root("first-run");
+    dna::reap_on_exit(scratch);
+    let clock = Clock { file: scratch + "/first-run.timings" };
+    clock.begin();
+    let hale = toolchain();
+
+    // ---- 1. a machine with no habitat
+    let none = in_dir(scratch, hale + "\nhabitat\nstatus");
+    std::test::assert(none.code == 0 && std::str::contains(none.stdout, "allocations: none") && !std::str::contains(none.stdout, "(record "), "no habitat yet: " + none.stdout + none.stderr);
+    clock.step("status (no habitat)");
+
+    // ---- 2. `hale habitat up`: the habitat born, on its own backends
+    let up = in_dir(scratch, hale + "\nhabitat\nup\n--no-body\n--backends\nown");
+    std::test::assert(up.code == 0 && std::str::contains(up.stdout, "the one organism with no parent"), "the habitat is born: " + up.stdout + up.stderr);
+    let genome = dna::local_habitat_dir() + "/genome";
+    let parent = dna::record_scope(genome);
+    std::test::assert(len(parent) == 64, "and pins its record: " + parent);
+    clock.step("habitat up (born)");
+
+    // ---- 3. voice, a repository of its own, its programs built
+    let voice = scratch + "/voice";
+    let copied = dna::run_tool("sh\n-c\ncp -r \"$1/dna/tests/onboarding/voice-heart\" \"$2\" && cd \"$2\" && git init -q -b main && git config user.name fixture && git config user.email fixture@dna && git add -A && git commit -qm voice\nsh\n" + source() + "\n" + voice);
+    std::test::assert_eq_int(copied.code, 0, "voice, a repository of its own: " + copied.stderr);
+    let built_api = in_dir(voice, hale + "\nbuild\napi");
+    let built_node = in_dir(voice, hale + "\nbuild\nnode");
+    std::test::assert(built_api.code == 0 && built_node.code == 0 && std::io::fs::file_exists(voice + "/api/api") && std::io::fs::file_exists(voice + "/node/node"), "voice's api and node build with this toolchain: " + built_api.stderr + built_node.stderr);
+    clock.step("voice built");
+
+    // ---- 4. `hale habitat graft voice --attach`: every need provisioned,
+    // the migration the heart hands over run, the graft recorded
+    let grafted = in_dir(scratch, hale + "\nhabitat\ngraft\nvoice\n--attach");
+    std::test::assert(grafted.code == 0 && std::str::contains(grafted.stdout, "(parent " + parent[0..12] + "…; needs memory, nerves, database, broker)"), "voice is grafted as the habitat's child, with the roles it declares: " + grafted.stdout + grafted.stderr);
+    let key = dna::allocation_key(voice);
+    std::test::assert(std::str::contains(grafted.stdout, "database a tenant database of the organism's memory server") && std::str::contains(grafted.stdout, "broker  heart-" + key + " and its nodes' heart-" + key + "-node"), "its database and its broker are provisioned: " + grafted.stdout);
+    std::test::assert(std::str::contains(grafted.stdout, "heart   the heart's database migration ran (`api/api migrate --migrations store/migrations`, exit 0)"), "the migration voice hands the habitat ran at graft: " + grafted.stdout);
+    std::test::assert(std::str::contains(grafted.stdout, "recorded the graft of " + key) && std::str::contains(grafted.stdout, "proposed the `standard` pack to the child's Board"), "the graft is recorded, and the standard pack proposed: " + grafted.stdout);
+    let rows = in_dir(genome, hale + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(occurrences(rows, "\"habitat.grafted\"") >= 1 && std::str::contains(rows, "\"entity\": \"" + key + "/database\"") && std::str::contains(rows, "\"entity\": \"" + key + "/broker\""), "the habitat's record holds the graft and the allocations");
+    clock.step("graft voice");
+
+    // ---- 5. the handover: everything the heart needs, no secret in it
+    // where its head will listen, and its sign-in, set on the organism
+    // before the handover names them
+    let head_port = dna::free_port(0);
+    let api_port = dna::free_port(1);
+    let oidc_port = dna::free_port(2);
+    let commands_port = dna::free_port(3);
+    let voice_port = dna::free_port(4);
+    let node_port = dna::free_port(5);
+    let configured = dna::run_tool("sh\n-c\ncd \"$1\" && git config dna.head.url \"http://127.0.0.1:$2\" && git config dna.oidc.issuer \"http://127.0.0.1:$3\" && git add -A && git commit -qm organism\nsh\n" + voice + "\n" + to_string(head_port) + "\n" + to_string(oidc_port));
+    std::test::assert_eq_int(configured.code, 0, "the organism committed, and its head's addresses set: " + configured.stderr);
+    let handed = in_dir(voice, hale + "\nhabitat\nhandover\n.").stdout;
+    let dsn = line_value(handed, "HALE_DNA_DATABASE_DSN");
+    std::test::assert(std::str::starts_with(dsn, "postgres://heart_" + key + "@") && std::str::contains(dsn, "vault=postgres-heart_" + key), "the database's DSN names its vault slot, not its password: " + dsn);
+    std::test::assert(line_value(handed, "HALE_DNA_BROKER_SUBJECTS") == "heart." + key + ".>" && len(line_value(handed, "HALE_DNA_BROKER_NODE_VAULT")) > 0 && !std::str::contains(handed, "INBOX"), "the broker, confined to the heart's subjects: " + handed);
+    std::test::assert(line_value(handed, "HALE_DNA_OIDC_CLIENT") == "voice" && line_value(handed, "HALE_DNA_APPLICATION_ID") == dna::record_scope(voice), "the service client voice signs in as: " + handed);
+    clock.step("handover");
+
+    // ---- 6. the organization, and the head for it
+    let dev_log = scratch + "/dev.log";
+    let dev = started(voice, "", hale + "\ndna\ndev\n.\n--no-iris", dev_log);
+    std::test::assert(len(dev) > 0 && logged(dev_log, "the organization reads its facts from the nerves", 300), "the organization runs: " + text_of(dev_log));
+    let head_log = scratch + "/head.log";
+    let head = started(voice, "HALE_DNA_HEAD_STATE=" + scratch + "/head-state\nHALE_DNA_OIDC_SERVICES=voice\n", hale + "\ndna\nhead\n.\n--port\n" + to_string(head_port) + "\n--api-port\n" + to_string(api_port) + "\n--oidc-port\n" + to_string(oidc_port) + "\n--commands-port\n" + to_string(commands_port), head_log);
+    std::test::assert(len(head) > 0 && logged(head_log, "hale dna head: http://127.0.0.1:" + to_string(head_port) + "/", 300), "the head runs for voice's organization: " + text_of(head_log));
+    clock.step("organization and head");
+
+    // ---- 7. voice on the handover alone: its api, then a node
+    let nerves = in_dir(voice, hale + "\ndna\nnerves\nmigrate\n.").stdout;
+    let env = lines_starting(handed, "HALE_DNA_") + lines_starting(nerves, "HALE_DNA_NATS_ORG=") + lines_starting(nerves, "HALE_DNA_NATS_URL_APP=") + lines_starting(nerves, "HALE_DNA_NATS_USER_APP=") + lines_starting(nerves, "HALE_DNA_NATS_VAULT_APP=") + "VOICE_LIMITS_EVERY_S=1\n";
+    let api_log = scratch + "/voice.log";
+    let api = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", api_log);
+    let base = "http://127.0.0.1:" + to_string(voice_port);
+    let mut healthy = false;
+    let mut tries = 0;
+    while !healthy && tries < dna::wait_secs(30) * 2 {
+        healthy = status_of(http(scratch, "GET", base + "/healthz", "")) == "200";
+        if !healthy { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(len(api) > 0 && healthy && std::str::contains(text_of(api_log), "grafted: the store's database is the one the habitat provisioned") && std::str::contains(text_of(api_log), "grafted: voice's own NATS is the habitat's broker"), "voice's api runs on the habitat's database and broker: " + text_of(api_log));
+    // its admin plane: a model, an account, the project the limit names, a
+    // key, and a node with a static seat
+    let model = post(scratch, base + "/admin/v1/models", "{\"id\": \"echo-1\"}");
+    let account = post(scratch, base + "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
+    let personal = post(scratch, base + "/admin/v1/projects", "{\"id\": \"personal\", \"name\": \"Personal\"}");
+    std::test::assert(std::str::starts_with(model, "20") && std::str::starts_with(account, "20") && std::str::starts_with(personal, "20"), "voice's admin plane: a model, an account, the project the limit names: " + model + "\n" + account + "\n" + personal);
+    let caller = std::json::find_string_field(body_of(post(scratch, base + "/admin/v1/projects/personal/keys", "{\"name\": \"fixture\"}")), "secret");
+    std::test::assert(std::str::starts_with(caller, "vk-"), "a key for the project: " + caller);
+    let token = std::json::find_string_field(body_of(post(scratch, base + "/admin/v1/nodes", "{\"id\": \"laptop\"}")), "enrollment_token");
+    let seat = post(scratch, base + "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": {\"text\": \"hello from voice\", \"chunk_chars\": 8}}");
+    std::test::assert(len(token) > 0 && (status_of(seat) == "201" || status_of(seat) == "200"), "a node to enroll, and its static seat: " + seat);
+    // the node's enrollment token, from the vault: never on its command line
+    let kept = dna::run_tool("sh\n-c\numask 077 && printf '%s' \"$2\" > \"$1/voice-node-laptop\"\nsh\n" + std::secret::vault_local_dir() + "\n" + token);
+    std::test::assert_eq_int(kept.code, 0, "the enrollment token in the vault: " + kept.stderr);
+    let node_log = scratch + "/node.log";
+    let node = started(voice, env, voice + "/node/node\n--id\nlaptop\n--api\n" + base + "\n--token-vault\nvoice-node-laptop\n--data\n" + scratch + "/node-data\n--capabilities\n" + voice + "/deploy/node/capabilities.json\n--port\n" + to_string(node_port), node_log);
+    let mut seat_up = false;
+    tries = 0;
+    while !seat_up && tries < dna::wait_secs(60) * 2 {
+        seat_up = std::json::find_string_field(body_of(http(scratch, "GET", base + "/admin/v1/nodes/laptop/seats/static", "")), "status") == "up";
+        if !seat_up { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(len(node) > 0 && seat_up, "the node registers over the broker, and its seat is up: " + text_of(node_log));
+    clock.step("voice up (api, node, seat)");
+
+    // ---- 8. a request answered, and one streamed: the node's seat over
+    // the broker. The limits are the organization's, read through the
+    // head: until the first read lands, a keyed request is 503 (a slow
+    // runner's first read can time out against the head and land on the
+    // next, a second later), so the first request waits it out, bounded
+    let headers = scratch + "/answer.headers";
+    let mut plain = ask(scratch, base, caller, false, headers);
+    tries = 0;
+    while status_of(plain) == "503" && tries < dna::wait_secs(180) {
+        std::time::sleep(1s);
+        plain = ask(scratch, base, caller, false, headers);
+        tries = tries + 1;
+    }
+    std::test::assert(status_of(plain) == "200" && std::str::contains(plain, "\"status\":\"completed\"") && std::str::contains(plain, "hello from voice"), "a request answered by the node's seat: " + plain + "\n" + text_of(api_log) + "\n" + head_tails(scratch));
+    let streamed = ask(scratch, base, caller, true, headers);
+    std::test::assert(status_of(streamed) == "200" && std::str::contains(streamed, "chat.completion.chunk") && std::str::contains(streamed, "data: [DONE]"), "and one streamed: " + streamed);
+    clock.step("requests (plain, streamed)");
+
+    // ---- 9. voice tells the organization each one: a reading in voice's
+    // own Ledger
+    let mut ledger = "";
+    tries = 0;
+    while occurrences(ledger, "\"voice/usage.recorded/") < 2 && tries < dna::wait_secs(60) {
+        std::time::sleep(1s);
+        ledger = in_dir(voice, hale + "\ndna\nledger\nrows").stdout;
+        tries = tries + 1;
+    }
+    std::test::assert(occurrences(ledger, "\"kind\": \"reading.recorded\", \"entity\": \"voice/usage.recorded/") >= 2, "both requests are readings in voice's Ledger: " + ledger);
+    clock.step("usage readings");
+
+    // ---- 10. the Board changes the limit; voice reads it; the next
+    // request past it is refused
+    let member = std::env::var("USER");
+    let grammar = "The rate limit for the project personal: one name: value per line, from window_seconds (the window, in seconds), requests, input_tokens, output_tokens and concurrent, each a whole number alone after its name; a name left out is unlimited.";
+    // the text is three lines: a shell builds it, one argument
+    let proposed = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER && export HALE_DNA_DISCOVER=off && exec \"$2\" dna practice propose operating/limits/personal --text \"$(printf '%s\\nwindow_seconds: 600\\nrequests: 2' \"$3\")\" --because 'the first limit' --as \"$4\"\nsh\n" + voice + "\n" + hale + "\n" + grammar + "\n" + member);
+    let at = std::str::index_of(proposed.stdout, "hale dna review k:");
+    std::test::assert(proposed.code == 0 && at >= 0, "the limit proposed: " + proposed.stdout + proposed.stderr);
+    let rest = proposed.stdout[(at + 16)..len(proposed.stdout)];
+    let review = rest[0..std::str::index_of(rest, " ")];
+    let mut pending = false;
+    tries = 0;
+    while !pending && tries < dna::wait_secs(60) {
+        let list = in_dir(voice, hale + "\ndna\npractice").stdout;
+        pending = std::str::contains(list, "awaiting the Board (" + review + ")");
+        if !pending { std::time::sleep(1s); }
+        tries = tries + 1;
+    }
+    std::test::assert(pending, "its Review awaits the Board: " + review);
+    let verdict = in_dir(voice, hale + "\ndna\nreview\n" + review + "\napprove\n--as\n" + member + "\n--no-wait");
+    std::test::assert(verdict.code == 0, "the Board approves it: " + verdict.stdout + verdict.stderr);
+    let mut ratified = false;
+    tries = 0;
+    while !ratified && tries < dna::wait_secs(300) {
+        let shown = body_of(http(scratch, "GET", base + "/admin/v1/projects/personal/limits", ""));
+        ratified = std::str::contains(shown, "\"source\": \"practice\"") && std::str::contains(shown, "\"requests\": 2");
+        if !ratified { std::time::sleep(1s); }
+        tries = tries + 1;
+    }
+    std::test::assert(ratified, "voice reads the ratified limit through the head, as its service client: " + text_of(api_log) + "\n" + head_tails(scratch));
+    clock.step("the Board's limit, read by voice");
+    let first = ask(scratch, base, caller, false, headers);
+    let second = ask(scratch, base, caller, false, headers);
+    let third = ask(scratch, base, caller, false, headers);
+    std::test::assert(status_of(first) == "200" && status_of(second) == "200", "the limit admits two in its window: " + first + "\n" + second);
+    std::test::assert(status_of(third) == "429" && std::str::contains(third, "rate_limited") && std::str::contains(std::str::lower(text_of(headers)), "retry-after: "), "and the next is refused by it: " + third + "\n" + text_of(headers));
+    clock.step("the request past the limit refused");
+
+    // ---- 11. down, and up again: nothing born or migrated again, voice's
+    // data standing, a second graft keeping everything
+    stop(api + "\n" + node + "\n" + head + "\n" + dev + "\n" + listeners(api_port) + listeners(oidc_port) + listeners(commands_port) + listeners(head_port));
+    let status = in_dir(scratch, hale + "\nhabitat\nstatus").stdout;
+    std::test::assert(std::str::contains(status, "allocation " + key + " (" + voice + ")") && std::str::contains(status, "its migration last ran with exit 0"), "status names voice's allocation and how its migration last ran: " + status);
+    let down = in_dir(scratch, hale + "\nhabitat\ndown");
+    std::test::assert(down.code == 0 && std::str::contains(down.stdout, "its data is kept"), "the habitat goes down, keeping its data: " + down.stdout + down.stderr);
+    let back = in_dir(scratch, hale + "\nhabitat\nup\n--no-body");
+    std::test::assert(back.code == 0 && !std::str::contains(back.stdout, "born    ") && std::str::contains(back.stdout, "up      allocation " + key), "up again: no birth, voice's allocations back: " + back.stdout + back.stderr);
+    let again = in_dir(scratch, hale + "\nhabitat\ngraft\nvoice\n--attach");
+    std::test::assert(again.code == 0 && std::str::contains(again.stdout, "kept    the graft of " + key) && std::str::contains(again.stdout, "kept    the `standard` pack"), "a second graft keeps everything: " + again.stdout + again.stderr);
+    let api2 = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", scratch + "/voice2.log");
+    let mut project = "";
+    tries = 0;
+    while status_of(project) != "200" && tries < dna::wait_secs(30) * 2 {
+        std::time::sleep(500ms);
+        project = http(scratch, "GET", base + "/admin/v1/projects/personal", "");
+        tries = tries + 1;
+    }
+    std::test::assert(status_of(project) == "200" && std::str::contains(project, "\"id\": \"personal\""), "voice's data stands in its database: " + project);
+    stop(api2);
+    clock.step("down, up, graft again");
+
+    clock.step("in all: " + to_string(clock.total()) + " ms; the last step");
+    dna::scratch_done(scratch);
+}

@@ -1,0 +1,48 @@
+// pond/migrations — shape types (pattern 5, pure-data records).
+//
+// Migration is one schema-change unit, registered into a
+// `Migrations` set (migrate.hl) by the app. `down_sql` is
+// optional: empty string means the migration is irreversible —
+// down()/goto() below it fail with kind="irreversible" BEFORE
+// running anything.
+type Migration {
+    version: Int = 0; // strictly ascending, >= 1
+    name: String = ""; // human label, recorded in the tracking table
+    up_sql: String = "";
+    down_sql: String = ""; // "" = irreversible
+}
+
+// MigrationError — the fallible(MigrationError) payload for every
+// Migrator operation.
+//
+// `kind` vocabulary:
+//   "bad_set"          — the registered set is invalid (empty,
+//                        non-ascending / duplicate versions, or an
+//                        empty name); nothing was run
+//   "ensure_failed"    — tracking-table bringup/upgrade DDL failed
+//   "dirty"            — the tracking table has dirty rows from an
+//                        earlier failed run whose rollback also
+//                        failed; refuse everything until force(v)
+//   "lock_failed"      — advisory-lock acquisition failed (postgres)
+//   "not_found"        — goto() target not in the set, or an
+//                        applied version has no set entry to revert
+//   "irreversible"     — a revert step's down_sql is empty
+//   "migration_failed" — a step's SQL failed and the transaction
+//                        rolled back cleanly (schema unchanged)
+//   "rollback_failed"  — a step's SQL failed AND the rollback
+//                        failed; connection state unknown, a dirty
+//                        marker was written (best effort)
+//   "force_failed"     — force(v)'s tracking-table repair failed
+//
+// `version` / `name` identify the migration a step-level failure
+// belongs to (0 / "" for set-level failures). `engine_code`
+// carries the backend-native code from the underlying db::DbError;
+// `detail` is the human-readable explanation, prefixed with the
+// failing stage ("up_sql: ...", "record: ...", "commit: ...").
+type MigrationError {
+    kind: String = "";
+    version: Int = 0;
+    name: String = "";
+    detail: String = "";
+    engine_code: Int = 0;
+}

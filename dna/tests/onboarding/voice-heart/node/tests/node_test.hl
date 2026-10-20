@@ -1,0 +1,31 @@
+// The node's capabilities file, local controls and local API, in process.
+import ".." as node;
+
+fn main() {
+    let good = "{\"max_in_flight\": 4, \"engines\": [{\"id\": \"static\", \"kind\": \"static\", \"local\": {\"x\": 1}}]}";
+    std::test::assert_eq_str(node::capabilities_problem(good), "", "a valid capabilities file");
+    std::test::assert(len(node::capabilities_problem("{\"engines\": []}")) > 0, "max_in_flight is required");
+    std::test::assert(len(node::capabilities_problem("{\"max_in_flight\": 1, \"engines\": [{\"id\": \"c\", \"kind\": \"claude-cli\"}]}")) > 0, "a kind this build cannot run");
+    std::test::assert(len(node::capabilities_problem("{\"max_in_flight\": 1, \"engines\": [{\"id\": \"a\", \"kind\": \"static\"}, {\"id\": \"a\", \"kind\": \"static\"}]}")) > 0, "duplicate engine ids");
+    let declared = node::declared_capabilities(good);
+    std::test::assert(std::str::contains(declared, "config_schema"), "declared engines carry their config schema");
+    std::test::assert(!std::str::contains(declared, "\"local\""), "local objects are never declared");
+
+    std::test::assert_eq_str(node::local_problem("{\"paused\": true, \"paused_seats\": [\"static\"], \"max_in_flight\": 0}"), "", "valid local controls");
+    std::test::assert(len(node::local_problem("{\"paused\": true, \"paused_seats\": [1]}")) > 0, "seat ids are strings");
+    std::test::assert(len(node::local_problem("{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": -1}")) > 0, "a cap is not negative");
+    std::test::assert_eq_int(node::effective_cap(declared, "{\"max_in_flight\": 2}"), 2, "a local cap lowers the effective cap");
+    std::test::assert_eq_int(node::effective_cap(declared, "{\"max_in_flight\": 9}"), 4, "a local cap never raises it");
+    std::test::assert_eq_int(node::effective_cap(declared, node::LOCAL_DEFAULT), 4, "no local cap");
+
+    let dir = "/tmp/voice-node-test-" + to_string(std::process::pid());
+    std::io::fs::mkdir(dir) or discard;
+    let api = node::AdminApi { id: "laptop", data: dir, capabilities: declared };
+    std::test::assert_eq_int(api.handle(std::http::Request { method: "GET", path: "/node/v1/capabilities" }).status, 200, "capabilities");
+    std::test::assert_eq_int(api.handle(std::http::Request { method: "PUT", path: "/node/v1/local", body: "{\"paused\": true, \"paused_seats\": []}" }).status, 200, "set local controls");
+    let local = api.handle(std::http::Request { method: "GET", path: "/node/v1/local" });
+    std::test::assert(std::str::contains(local.body, "\"paused\": true"), "local controls persist");
+    std::test::assert(std::str::contains(local.body, "\"max_in_flight\": null"), "missing fields are filled with null");
+    std::test::assert_eq_int(api.handle(std::http::Request { method: "PUT", path: "/node/v1/local", body: "[]" }).status, 400, "invalid local controls");
+    std::test::assert_eq_int(api.handle(std::http::Request { method: "GET", path: "/node/v1/seats" }).status, 404, "seats are the coordinator's");
+}

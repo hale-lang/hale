@@ -1,0 +1,43 @@
+{
+  "id": "resp_01j8z3q4v7m2k9x0",
+  "created_at": "2026-09-24T12:00:00Z",
+  "project": "work",
+  "key": "k_ci",
+  "requested_model": "echo-1",
+  "requested_account": null,
+  "endpoint": "responses",
+  "status": "served",
+  "served": {
+    "model": "echo-1",
+    "quantization": null,
+    "node": "laptop",
+    "seat": "laptop/static",
+    "account": "static",
+    "engine": "static",
+    "provider": null
+  },
+  "data_class": "internal",
+  "input_tokens": 12,
+  "cached_input_tokens": 0,
+  "cache_write_input_tokens": 0,
+  "output_tokens": 4,
+  "reasoning_tokens": 0,
+  "price_micros": 96,
+  "currency": "USD",
+  "timing": {
+    "wall_ms": 3,
+    "queue_ms": 0,
+    "load_ms": 0
+  },
+  "attempts": [
+    {
+      "seat": "laptop/static",
+      "account": "static",
+      "outcome": "served",
+      "wall_ms": 2
+    }
+  ],
+  "metadata": {
+    "dna.attempt_id": "w-41/a2"
+  }
+}

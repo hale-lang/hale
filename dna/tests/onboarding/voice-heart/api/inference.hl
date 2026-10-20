@@ -1,0 +1,833 @@
+// Inference: POST /v1/responses and POST /v1/chat/completions.
+//
+// A request is admitted as the contract says (its key, its model, the
+// account it names, its data class), then offered to its eligible seats in
+// turn over the link (protocol.yaml): an enabled seat serving the model,
+// up on a node that is up and not draining and not held by a local
+// control, spending an account the key may spend, carrying the request's
+// data class. A seat that refuses, does not answer, or fails before any
+// output is an attempt, and the next seat is offered the request; every
+// attempt is in the answer's `voice.attempts`. Budgets and limits are
+// configuration only: they are reserved against in the store's
+// reservation transaction, which comes with the Postgres store.
+//
+// The api serves its callers in turn, one request at a time: a request
+// holds the api until its seat answers.
+//
+// With `"stream": true` the answer is the standard event stream, sent as
+// it comes (stream.hl). A request body is at most 12 MiB
+// (`MAX_REQUEST_BYTES`), and a larger one is answered `413
+// request_too_large` by the Server (main.hl).
+
+/// An inference request: what admission reads, and `body`, the standard
+/// request a node is sent (a Chat Completions request converted).
+/// `account` "" names none; `data_class` defaults to `internal`.
+type InferenceRequest {
+    // responses | chat
+    endpoint: String = "responses";
+    // required: a request without one is refused
+    has_model: Bool = false;
+    model: String = "";
+    stream: Bool = false;
+    has_previous_response_id: Bool = false;
+    previous_response_id: String = "";
+    account: String = "";
+    data_class: String = "internal";
+    // the voice.deadline as written, "" for none
+    deadline: String = "";
+    body: String = "{}";
+}
+
+/// `Served`: what actually served a request.
+type ServedBy {
+    model: String = "";
+    has_quantization: Bool = false;
+    quantization: String = "";
+    node: String = "";
+    seat: String = "";
+    account: String = "";
+    engine: String = "";
+    has_provider: Bool = false;
+    provider: String = "";
+}
+
+/// `Attempt`. `error` "" when it served; nothing is counted yet, so no
+/// output is known before a failure.
+type Attempt {
+    seat: String = "";
+    account: String = "";
+    outcome: AttemptOutcome;
+    error: String = "";
+    has_output_tokens_before_failure: Bool = false;
+    output_tokens_before_failure: Int = 0;
+    wall_ms: Int = 0;
+}
+
+type Attempts { items: bounded[Attempt; 8]; }
+
+/// `VoiceResponseExtension`; its timing is the wall time, since nothing
+/// queues or loads yet.
+type VoiceExtension {
+    request_id: String = "";
+    project: String = "";
+    key: String = "";
+    served: ServedBy = ServedBy { };
+    price_micros: Int = 0;
+    currency: String = "USD";
+    wall_ms: Int = 0;
+    attempts: bounded[Attempt; 8];
+}
+
+/// A served request. `response` is the standard response object the node
+/// produced, as JSON (the codec carries no free-form object); the rest is
+/// what a Chat Completion is written from.
+type Served {
+    request_id: String = "";
+    // the model the caller named
+    model: String = "";
+    // completed | incomplete
+    status: String = "completed";
+    text: String = "";
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    response: String = "{}";
+    voice: VoiceExtension = VoiceExtension { };
+    // the rate-limit headers its answer carries (admission.hl), "" for none
+    headers: String = "";
+}
+
+/// One seat a request could be offered, and its own name for the model.
+type Candidate { seat: st::SeatRow = st::SeatRow { }; engine_name: String = ""; }
+
+type Candidates { items: bounded[Candidate; 8]; serving: Int = 0; }
+
+locus Inference {
+    params {
+        store: st::Store;
+        link: Link;
+        // how long a seat may take to its first output (a slow model, or an
+        // engine that answers at the end), then how long it may go without
+        // sending anything: waits between events, not for the whole answer
+        first: Duration = 120s;
+        idle: Duration = 30s;
+        // how often an open stream that is waiting gets a keep-alive comment
+        keep_alive: Duration = 15s;
+        // tell the organization each served request (events.hl): set when
+        // voice is attached to one (main.hl)
+        pulse: Bool = false;
+        // the rate limits: the organization's ratified practices when it
+        // has a head (`governed`; governance.hl), as its reader last left
+        // them in `held`, the stored ones otherwise, and this instance's
+        // counters over them (admission.hl)
+        governed: Bool = false;
+        held: HeldLimits = HeldLimits { };
+        windows: Windows = Windows { };
+    }
+    bus { publish UsageToTell; }
+
+    /// `createResponse`.
+    fn respond(r: InferenceRequest, ctx: std::api::Context) -> Served fallible(ApiError) {
+        return self.serve(r, ctx) or raise;
+    }
+
+    /// `createChatCompletion`: the same request, converted.
+    fn chat(r: InferenceRequest, ctx: std::api::Context) -> Served fallible(ApiError) {
+        return self.serve(r, ctx) or raise;
+    }
+
+    /// Hold the request to its rate limits, admit it, then offer it to
+    /// each eligible seat in turn until one serves it. A limit is policy:
+    /// it refuses before anything is looked for to serve.
+    fn serve(r: InferenceRequest, ctx: std::api::Context) -> Served fallible(ApiError) {
+        let held = self.hold(r, ctx) or raise;
+        let candidates = self.admit(r, ctx) or raise;
+        let mut s = self.serve_held(r, ctx, candidates) or raise;
+        s.headers = held.headers;
+        return s;
+    }
+
+    fn serve_held(r: InferenceRequest, ctx: std::api::Context, candidates: Candidates) -> Served fallible(ApiError) {
+        let started = std::time::monotonic_ns();
+        let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
+        let m = self.store.model(r.model) or fail metering_failed(err);
+        let id_hex = random_hex(12) or fail entropy_failed(err.message);
+        let request_id = "resp_" + id_hex;
+        let mut attempts = Attempts { };
+        let mut why = "";
+        let mut n = 0;
+        for c in candidates.items {
+            // each attempt answers on a subject of its own, so a seat left
+            // behind cannot answer for the next one
+            n = n + 1;
+            let reply_to = self.link.root() + ".reply." + request_id + "." + to_string(n);
+            let t0 = std::time::monotonic_ns();
+            let o = serve_over(self.link, c.seat.node, reply_to, serve_message(request_id, reply_to, c, r), self.first, self.idle);
+            let ms = (std::time::monotonic_ns() - t0) / 1000000;
+            if o.ack == "accepted" && (o.outcome == "served" || o.outcome == "incomplete") && len(o.response) > 0 {
+                push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::served, wall_ms: ms }) or discard;
+                let s = served(request_id, r.model, k, m, c, o, attempts.items, (std::time::monotonic_ns() - started) / 1000000);
+                self.settled(r, s);
+                return s;
+            }
+            let reason = failure_of(o);
+            why = c.seat.ref + ": " + reason;
+            push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::failed, error: reason, wall_ms: ms }) or discard;
+            if o.output || (o.ack == "accepted" && o.outcome == "failed" && !o.retryable) {
+                if o.output { self.unfinished(r, request_id, k, m, c, "failed", started); }
+                fail ApiError { status: 502, kind: "model_error", code: ErrorCode::upstream_failed, message: "seat " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+            }
+        }
+        fail ApiError { status: 502, kind: "server_error", code: ErrorCode::upstream_failed, message: "every eligible seat failed; the last, " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+    }
+
+    /// A streamed answer (stream.hl): admitted as any request, then
+    /// offered seat by seat, each event sent to `out` as it comes. Until a
+    /// seat sends its first event, or one that accepted stays quiet for the
+    /// keep-alive span, nothing is sent, so a request every seat refuses is
+    /// answered whole, as a `502`.
+    fn stream(r: InferenceRequest, ctx: std::api::Context, out: EventStream) -> std::http::Response fallible(ApiError) {
+        let held = self.hold(r, ctx) or raise;
+        let candidates = self.admit(r, ctx) or raise;
+        return self.stream_held(r, ctx, out, candidates, held) or raise;
+    }
+
+    fn stream_held(r: InferenceRequest, ctx: std::api::Context, out: EventStream, candidates: Candidates, held: Held) -> std::http::Response fallible(ApiError) {
+        let started = std::time::monotonic_ns();
+        let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
+        let m = self.store.model(r.model) or fail metering_failed(err);
+        let id_hex = random_hex(12) or fail entropy_failed(err.message);
+        let request_id = "resp_" + id_hex;
+        out.headers = "X-Request-Id: " + request_id + (if len(held.headers) > 0 { "\r\n" + held.headers } else { "" });
+        // the keep-alive span runs from here until something is sent
+        out.sent_ns = std::time::monotonic_ns();
+        let mut st = StreamState { endpoint: r.endpoint, request_id: request_id, model: r.model, created: std::time::unix(now_seconds()) };
+        let mut attempts = Attempts { };
+        // attempts already told the caller (`voice:attempt`)
+        let mut told = 0;
+        let mut why = "";
+        let mut n = 0;
+        for c in candidates.items {
+            n = n + 1;
+            let reply_to = self.link.root() + ".reply." + request_id + "." + to_string(n);
+            let t0 = std::time::monotonic_ns();
+            let mut o = self.link.offer(c.seat.node, reply_to, serve_message(request_id, reply_to, c, r));
+            let mut ending = "";
+            if o.ack == "accepted" {
+                st.output = false;
+                // the seat has `first` from one message to the next until
+                // its first output, then `idle`
+                let mut deadline = std::time::monotonic() + self.first;
+                let mut done = false;
+                while !done && std::time::monotonic() < deadline {
+                    let msg = self.link.next(1s);
+                    if msg.kind == "event" {
+                        o = take_event(o, msg.json);
+                        if terminal(std::json::find_string_field(msg.json, "type")) {
+                            ending = msg.json;
+                        } else {
+                            while told < count(attempts.items) {
+                                let a = at(attempts.items, told) or Attempt { outcome: AttemptOutcome::failed };
+                                st = attempt_event(out, st, a, c.seat.ref);
+                                told = told + 1;
+                            }
+                            st = forward(out, st, msg.json);
+                        }
+                    } else if msg.kind == "result" {
+                        o = take_result(o, msg.json);
+                        done = true;
+                    } else if msg.kind == "lost" {
+                        done = true;
+                    } else {
+                        // a quiet gap: a comment, which opens the stream if
+                        // nothing has, and finds a caller that has gone
+                        out.keep_alive(self.keep_alive);
+                    }
+                    if msg.kind == "event" || msg.kind == "result" { deadline = std::time::monotonic() + (if o.output { self.idle } else { self.first }); }
+                    if out.gone {
+                        // the caller went away: the seat is told to stop,
+                        // and what it spent on the caller is told
+                        self.link.finish();
+                        if st.output || o.output { self.unfinished(r, request_id, k, m, c, "cancelled", started); }
+                        return out.end();
+                    }
+                }
+                self.link.finish();
+            }
+            let ms = (std::time::monotonic_ns() - t0) / 1000000;
+            if o.ack == "accepted" && (o.outcome == "served" || o.outcome == "incomplete") && len(o.response) > 0 {
+                while told < count(attempts.items) {
+                    let a = at(attempts.items, told) or Attempt { outcome: AttemptOutcome::failed };
+                    st = attempt_event(out, st, a, c.seat.ref);
+                    told = told + 1;
+                }
+                push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::served, wall_ms: ms }) or discard;
+                let s = served(request_id, r.model, k, m, c, o, attempts.items, (std::time::monotonic_ns() - started) / 1000000);
+                finish_stream(out, st, ending, s);
+                self.settled(r, s);
+                return out.end();
+            }
+            let reason = failure_of(o);
+            why = c.seat.ref + ": " + reason;
+            push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::failed, error: reason, wall_ms: ms }) or discard;
+            if st.output || o.output || (o.ack == "accepted" && o.outcome == "failed" && !o.retryable) {
+                if st.output || o.output { self.unfinished(r, request_id, k, m, c, "failed", started); }
+                if out.opened {
+                    fail_stream(out, st, "upstream_failed", "seat " + why, failed_voice(request_id, k, m, c, attempts.items, (std::time::monotonic_ns() - started) / 1000000));
+                    return out.end();
+                }
+                fail ApiError { status: 502, kind: "model_error", code: ErrorCode::upstream_failed, message: "seat " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+            }
+        }
+        if out.opened {
+            let last = at(candidates.items, count(candidates.items) - 1) or Candidate { };
+            fail_stream(out, st, "upstream_failed", "every eligible seat failed; the last, " + why, failed_voice(request_id, k, m, last, attempts.items, (std::time::monotonic_ns() - started) / 1000000));
+            return out.end();
+        }
+        fail ApiError { status: 502, kind: "server_error", code: ErrorCode::upstream_failed, message: "every eligible seat failed; the last, " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+    }
+
+    /// A request that seat `c` began and did not finish: its usage told,
+    /// `status` saying how it ended (`cancelled`, `failed`).
+    fn unfinished(r: InferenceRequest, request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, status: String, started: Int) {
+        if self.pulse { UsageToTell <- unfinished_usage(r, request_id, k, m, c, status, (std::time::monotonic_ns() - started) / 1000000); }
+    }
+
+    /// The limits `r` is held to, from the one source in force: the
+    /// project's ratified practice under a head, as last read (never read
+    /// here: governance.hl), the stored limits otherwise (the project's, its
+    /// model-scope ones for `r.model`, and the key's).
+    @unbounded
+    fn applied(r: InferenceRequest, k: st::KeyRow, p: st::ProjectRow) -> Applied fallible(ApiError) {
+        let mut out = Applied { };
+        if self.governed {
+            if !limits_landed(self.held) { fail limits_unavailable(1); }
+            let pl = held_limit(self.held, k.project);
+            if pl.closed { fail limit_unsettled(pl); }
+            if len(pl.project) > 0 { out = apply(out, "practice:" + k.project, pl.limit); }
+            return out;
+        }
+        for l in p.limits.items {
+            let model = l.scope == st::LimitScope::model && l.model == r.model;
+            if l.scope == st::LimitScope::project || model { out = apply(out, if model { "model:" + p.id + "/" + l.model } else { "project:" + p.id }, l); }
+        }
+        for l in k.limits.items {
+            if l.scope == st::LimitScope::key { out = apply(out, "key:" + k.id, l); }
+        }
+        return out;
+    }
+
+    /// `project`'s limits as the organization ratified them (under a
+    /// head), as last read: its practice's limit, or none, and where it was
+    /// read from.
+    fn ratified(project: String) -> LimitSet fallible(ApiError) {
+        if !limits_landed(self.held) { fail limits_unavailable(1); }
+        let pl = held_limit(self.held, project);
+        if pl.closed { fail limit_unsettled(pl); }
+        let mut out = LimitSet { source: LimitSource::practice };
+        if len(pl.project) > 0 {
+            push(out.limits, pl.limit) or discard;
+            out.has_practice = true;
+            out.practice = PracticeRef { name: pl.name, id: pl.id };
+        }
+        return out;
+    }
+
+    /// Hold `r` to its limits: refused past any of them, or counted once
+    /// in each of their counters. Nothing is counted for a request refused.
+    @unbounded
+    fn hold(r: InferenceRequest, ctx: std::api::Context) -> Held fallible(ApiError) {
+        let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
+        if !k.present { return Held { }; }
+        let p = self.store.project(k.project) or fail metering_failed(err);
+        let now = std::time::monotonic_ns();
+        let a = self.applied(r, k, p) or raise;
+        let mut i = 0;
+        while i < count(a.keys) {
+            let key = at(a.keys, i) or "";
+            let l = at(a.limits, i) or st::Limit { scope: st::LimitScope::project };
+            let w = window_of(self.windows, key, l, now);
+            if w.used >= l.requests {
+                fail rate_limited(l, "project " + k.project + " is past its limit of " + to_string(l.requests) + " requests per " + to_string(l.window_seconds) + "s", reset_of(w, l, now));
+            }
+            i = i + 1;
+        }
+        let mut out = Held { };
+        let mut fewest = -1;
+        i = 0;
+        while i < count(a.keys) {
+            let key = at(a.keys, i) or "";
+            let l = at(a.limits, i) or st::Limit { scope: st::LimitScope::project };
+            let mut w = window_of(self.windows, key, l, now);
+            // counted once, by the first of the limits that read it
+            let mut first = true;
+            let mut k = 0;
+            while k < i {
+                if (at(a.keys, k) or "") == key { first = false; }
+                k = k + 1;
+            }
+            if first {
+                w.used = w.used + 1;
+                put_window(self.windows, w);
+            }
+            let left = l.requests - w.used;
+            if fewest < 0 || left < fewest {
+                fewest = left;
+                out.headers = limited_headers(l, left, reset_of(w, l, now));
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /// A request a seat served: its usage told to the organization, when
+    /// voice is attached to one: handed to the teller (teller.hl), never
+    /// waited on.
+    fn settled(r: InferenceRequest, s: Served) {
+        if self.pulse { UsageToTell <- usage_event(r, s); }
+    }
+
+    /// Admit `r` for the caller `ctx` names: the seats it may be offered,
+    /// or the refusal.
+    fn admit(r: InferenceRequest, ctx: std::api::Context) -> Candidates fallible(ApiError) {
+        if !r.has_model { fail invalid("`model` is a required string", "model"); }
+        if r.has_previous_response_id {
+            fail ApiError { status: 400, kind: "invalid_request", code: ErrorCode::previous_response_not_found, message: "responses are not stored, so no previous response can be continued", has_param: true, param: "previous_response_id" };
+        }
+        let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
+        if !k.present { fail invalid_key(); }
+        let p = self.store.project(k.project) or fail metering_failed(err);
+        let m = self.store.model(r.model) or fail metering_failed(err);
+        if !m.present || m.removed {
+            fail ApiError { status: 404, kind: "not_found", code: ErrorCode::model_not_found, message: "no model " + r.model + " in the catalog", has_param: true, param: "model" };
+        }
+        if !visible(p, k, r.model) {
+            fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::model_not_permitted, message: "this key may not use model " + r.model, has_param: true, param: "model" };
+        }
+        if len(r.account) > 0 {
+            let a = self.store.account(r.account) or fail metering_failed(err);
+            if !a.present || a.archived || !allows(p.accounts, r.account) || !allows(k.accounts, r.account) {
+                fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::account_not_permitted, message: "this key may not spend account " + r.account, has_param: true, param: "voice.account" };
+            }
+        }
+        if !has_name(p.data_classes.items, r.data_class) {
+            fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::data_class_refused, message: "project " + p.id + " may not send data of class " + r.data_class, has_param: true, param: "voice.data_class" };
+        }
+
+        let seats = self.store.seats() or fail metering_failed(err);
+        let mut out = Candidates { };
+        for s in seats.rows {
+            for sm in s.serves.items {
+                if sm.model == r.model {
+                    out.serving = out.serving + 1;
+                    let eligible = self.eligible(s, p, k, r) or raise;
+                    if eligible { push(out.items, Candidate { seat: s, engine_name: if sm.has_engine_name { sm.engine_name } else { "" } }) or discard; }
+                }
+            }
+        }
+        if count(out.items) == 0 {
+            let why = if out.serving == 0 { "no seat serves model " + r.model } else { to_string(out.serving) + " seat(s) serve model " + r.model + ", none up on a node that is up, with an account this key may spend and data class " + r.data_class };
+            fail ApiError { status: 503, kind: "server_error", code: ErrorCode::no_eligible_seat, message: why };
+        }
+        return out;
+    }
+
+    /// True when `s` could take the request: enabled, carrying its data
+    /// class, spending an account the key may spend (the one it names, if
+    /// it names one) that is not archived, reported `up` by its node for
+    /// the node's current assignment, on a node that is up, not draining
+    /// and not holding the seat by a local control.
+    fn eligible(s: st::SeatRow, p: st::ProjectRow, k: st::KeyRow, r: InferenceRequest) -> Bool fallible(ApiError) {
+        if !s.enabled || !has_name(s.data_classes.items, r.data_class) { return false; }
+        if len(r.account) > 0 && s.account != r.account { return false; }
+        if !allows(p.accounts, s.account) || !allows(k.accounts, s.account) { return false; }
+        return seat_ready(self.store, s) or raise;
+    }
+}
+
+/// Why an offer did not serve, in a line.
+fn failure_of(o: ServeOutcome) -> String {
+    if o.ack == "refused" { return "refused: " + o.reason; }
+    if o.ack != "accepted" { return o.ack + ": " + o.reason; }
+    if o.outcome == "failed" { return "failed (" + o.error_code + "): " + o.error_message; }
+    if o.outcome == "unfinished" { return if o.output { "the seat sent nothing within the idle span" } else { "the seat sent no output within the first-output span" }; }
+    return o.outcome;
+}
+
+/// The answer: the node's response, its text and usage, and the voice
+/// object that says what served it and what it cost.
+fn served(request_id: String, model: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, o: ServeOutcome, attempts: bounded[Attempt; 8], wall_ms: Int) -> Served {
+    let usage = std::json::find_field_raw(o.response, "usage");
+    let input = std::json::find_int_field(usage, "input_tokens");
+    let output = std::json::find_int_field(usage, "output_tokens");
+    let price = if m.priced { (input * m.price.input_per_mtok_micros + output * m.price.output_per_mtok_micros + 999999) / 1000000 } else { 0 };
+    let mut voice = VoiceExtension {
+        request_id: request_id,
+        project: k.project,
+        key: k.id,
+        served: ServedBy { model: if len(o.model) > 0 { o.model } else { model }, node: c.seat.node, seat: c.seat.ref, account: c.seat.account, engine: c.seat.engine },
+        price_micros: price,
+        currency: if m.priced { m.price.currency } else { "USD" },
+        wall_ms: wall_ms
+    };
+    voice.attempts = attempts;
+    return Served {
+        request_id: request_id,
+        model: model,
+        status: if o.outcome == "incomplete" { "incomplete" } else { "completed" },
+        text: output_text(o.response),
+        input_tokens: input,
+        output_tokens: output,
+        response: o.response,
+        voice: voice
+    };
+}
+
+/// The `voice` object of a request that failed on seat `c` once its stream
+/// had begun: nothing charged, every attempt listed.
+fn failed_voice(request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, attempts: bounded[Attempt; 8], wall_ms: Int) -> VoiceExtension {
+    let mut v = VoiceExtension {
+        request_id: request_id,
+        project: k.project,
+        key: k.id,
+        served: ServedBy { model: m.id, node: c.seat.node, seat: c.seat.ref, account: c.seat.account, engine: c.seat.engine },
+        price_micros: 0,
+        currency: if m.priced { m.price.currency } else { "USD" },
+        wall_ms: wall_ms
+    };
+    v.attempts = attempts;
+    return v;
+}
+
+/// The text of a response's output messages, joined.
+fn output_text(response: String) -> String {
+    let text = std::bytes::BytesBuilder { initial_cap: 1024 };
+    let mut items = std::json::array_first(std::json::find_field_raw(response, "output"));
+    while !items.done {
+        let mut parts = std::json::array_first(std::json::find_field_raw(items.element, "content"));
+        while !parts.done {
+            if std::json::find_string_field(parts.element, "type") == "output_text" {
+                text.append_str(std::json::find_string_field(parts.element, "text"));
+            }
+            parts = std::json::array_next(parts);
+        }
+        items = std::json::array_next(items);
+    }
+    let b = text.snapshot() or b"";
+    return std::str::from_bytes(b);
+}
+
+/// The `serve` message (protocol.yaml `Serve`).
+fn serve_message(request_id: String, reply_to: String, c: Candidate, r: InferenceRequest) -> String {
+    return "{\"type\": \"serve\", \"request_id\": " + jq(request_id) + ", \"reply_to\": " + jq(reply_to) + ", \"seat\": " + jq(c.seat.id)
+        + ", \"model\": " + jq(r.model) + ", \"engine_model\": " + (if len(c.engine_name) > 0 { jq(c.engine_name) } else { "null" })
+        + ", \"deadline\": " + (if len(r.deadline) > 0 { jq(r.deadline) } else { "null" }) + ", \"body\": " + r.body + "}";
+}
+
+// ---- the wire ----------------------------------------------------------
+
+/// The body's members but `voice`, `stream`, `stream_options` and
+/// `background`, which the coordinator keeps (protocol.yaml `Serve.body`).
+/// Those members are small and the rest may be 12 MiB, so a body with none
+/// of them is passed on as it is, and one with any is cut around them, each
+/// kept member copied once as written, not rebuilt.
+fn standard_body(body: String) -> String {
+    let mut it = std::json::object_first(body);
+    let mut dropping = false;
+    while !it.done && !dropping {
+        dropping = coordinator_member(std::json::obj_key_string(it, body));
+        it = std::json::object_next(it, body);
+    }
+    if !dropping { return body; }
+    let src = std::bytes::from_string(body);
+    let out = std::bytes::BytesBuilder { initial_cap: len(body) + 2 };
+    out.append_str("{");
+    let mut kept = 0;
+    it = std::json::object_first(body);
+    while !it.done {
+        if !coordinator_member(std::json::obj_key_string(it, body)) {
+            if kept > 0 { out.append_str(", "); }
+            // from the key's opening quote to the value's end
+            out.append_slice(src, it.key_start - 1, it.val_end);
+            kept = kept + 1;
+        }
+        it = std::json::object_next(it, body);
+    }
+    out.append_str("}");
+    let b = out.finish() or b"{}";
+    return std::str::from_bytes(b);
+}
+
+/// A member of a request the coordinator keeps from the seat.
+fn coordinator_member(key: String) -> Bool {
+    return key == "voice" || key == "stream" || key == "stream_options" || key == "background";
+}
+
+/// A Chat Completions request as the standard request: its messages as
+/// input items, its tools, its output cap, its sampling and its metadata.
+/// Content parts become the standard's (`text` as `input_text`, or
+/// `output_text` in an assistant's message, `image_url` as `input_image`),
+/// an assistant's `tool_calls` become `function_call` items and a `tool`
+/// message a `function_call_output`. What has no standard form is refused
+/// `400 unsupported`, never dropped.
+fn chat_body(body: String) -> String fallible(ApiError) {
+    let input_list = st::JsonList { };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "messages"));
+    while !it.done {
+        chat_message(std::str::trim(it.element), input_list) or raise;
+        it = std::json::array_next(it);
+    }
+    let input = input_list.text();
+    let mut out = "{\"model\": " + jq(std::json::find_string_field(body, "model")) + ", \"input\": [" + input + "]";
+    let cap = std::str::trim(if sets(body, "max_completion_tokens") { std::json::find_field_raw(body, "max_completion_tokens") } else { std::json::find_field_raw(body, "max_tokens") });
+    if len(cap) > 0 { out = out + ", \"max_output_tokens\": " + cap; }
+    if sets(body, "temperature") { out = out + ", \"temperature\": " + std::str::trim(std::json::find_field_raw(body, "temperature")); }
+    if sets(body, "top_p") { out = out + ", \"top_p\": " + std::str::trim(std::json::find_field_raw(body, "top_p")); }
+    if kind_of(body, "metadata") == "object" { out = out + ", \"metadata\": " + std::str::trim(std::json::find_field_raw(body, "metadata")); }
+    if sets(body, "tools") { out = out + ", \"tools\": " + (chat_tools(body) or raise); }
+    if sets(body, "tool_choice") { out = out + ", \"tool_choice\": " + (chat_tool_choice(body) or raise); }
+    if kind_of(body, "parallel_tool_calls") == "bool" { out = out + ", \"parallel_tool_calls\": " + std::str::trim(std::json::find_field_raw(body, "parallel_tool_calls")); }
+    return out + "}";
+}
+
+/// One Chat Completions message as input items, onto `out`.
+fn chat_message(msg: String, out: st::JsonList) -> Bool fallible(ApiError) {
+    if !std::json::valid_object(msg) { fail invalid("a message is an object", "messages"); }
+    let role = std::json::find_string_field(msg, "role");
+    let content = std::str::trim(std::json::find_field_raw(msg, "content"));
+    let ckind = kind_of(msg, "content");
+    if role == "tool" {
+        if kind_of(msg, "tool_call_id") != "string" { fail invalid("a `tool` message names its `tool_call_id`", "messages"); }
+        let output = if ckind == "string" { std::json::find_string_field(msg, "content") } else { parts_text(content) or raise };
+        out.add("{\"type\": \"function_call_output\", \"call_id\": " + jq(std::json::find_string_field(msg, "tool_call_id")) + ", \"output\": " + jq(output) + "}");
+        return true;
+    }
+    if role != "system" && role != "developer" && role != "user" && role != "assistant" {
+        fail invalid("a message's `role` is system, developer, user, assistant or tool", "messages");
+    }
+    let calls = kind_of(msg, "tool_calls");
+    if calls != "missing" && calls != "null" && role != "assistant" { fail invalid("only an assistant's message has `tool_calls`", "messages"); }
+    let has_calls = role == "assistant" && calls == "array";
+    if ckind == "array" {
+        out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": " + (chat_parts(content, role) or raise) + "}");
+    } else if ckind == "string" {
+        out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": " + content + "}");
+    } else if ckind == "missing" || ckind == "null" {
+        if !has_calls { out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": \"\"}"); }
+    } else {
+        fail invalid("a message's `content` is text, a list of content parts or null", "messages");
+    }
+    if has_calls {
+        let mut c = std::json::array_first(std::json::find_field_raw(msg, "tool_calls"));
+        while !c.done {
+            let call = std::str::trim(c.element);
+            if std::json::find_string_field(call, "type") != "function" { fail unsupported("only `function` tool calls are supported", "messages"); }
+            let f = std::str::trim(std::json::find_field_raw(call, "function"));
+            if kind_of(call, "id") != "string" || kind_of(f, "name") != "string" { fail invalid("a tool call has an `id` and a `function.name`", "messages"); }
+            let args = if kind_of(f, "arguments") == "string" { std::json::find_string_field(f, "arguments") } else { "{}" };
+            out.add("{\"type\": \"function_call\", \"call_id\": " + jq(std::json::find_string_field(call, "id")) + ", \"name\": " + jq(std::json::find_string_field(f, "name")) + ", \"arguments\": " + jq(args) + "}");
+            c = std::json::array_next(c);
+        }
+    }
+    return true;
+}
+
+/// A message's content parts as the standard's.
+fn chat_parts(parts: String, role: String) -> String fallible(ApiError) {
+    let out = st::JsonList { };
+    let mut it = std::json::array_first(parts);
+    while !it.done {
+        let p = std::str::trim(it.element);
+        let kind = std::json::find_string_field(p, "type");
+        if kind == "text" {
+            if kind_of(p, "text") != "string" { fail invalid("a `text` content part has `text`", "messages"); }
+            out.add("{\"type\": " + (if role == "assistant" { "\"output_text\"" } else { "\"input_text\"" }) + ", \"text\": " + jq(std::json::find_string_field(p, "text")) + "}");
+        } else if kind == "image_url" && role != "assistant" {
+            let image = std::str::trim(std::json::find_field_raw(p, "image_url"));
+            let url = if kind_of(p, "image_url") == "string" { std::json::find_string_field(p, "image_url") } else { std::json::find_string_field(image, "url") };
+            if len(url) == 0 { fail invalid("an `image_url` content part has a `url`", "messages"); }
+            let detail = if kind_of(image, "detail") == "string" { std::json::find_string_field(image, "detail") } else { "auto" };
+            out.add("{\"type\": \"input_image\", \"image_url\": " + jq(url) + ", \"detail\": " + jq(detail) + "}");
+        } else {
+            fail unsupported("a content part of type `" + kind + "`" + (if role == "assistant" { " in an assistant's message" } else { "" }) + " is not supported", "messages");
+        }
+        it = std::json::array_next(it);
+    }
+    return "[" + out.text() + "]";
+}
+
+/// The text of a `tool` message's content parts, joined.
+fn parts_text(parts: String) -> String fallible(ApiError) {
+    if std::str::trim(parts) == "null" || len(std::str::trim(parts)) == 0 { return ""; }
+    let text = std::bytes::BytesBuilder { initial_cap: 256 };
+    let mut it = std::json::array_first(parts);
+    while !it.done {
+        let p = std::str::trim(it.element);
+        if std::json::find_string_field(p, "type") != "text" { fail unsupported("a `tool` message's content is text", "messages"); }
+        text.append_str(std::json::find_string_field(p, "text"));
+        it = std::json::array_next(it);
+    }
+    let b = text.snapshot() or b"";
+    return std::str::from_bytes(b);
+}
+
+/// Chat Completions `tools` as the standard's function tools.
+fn chat_tools(body: String) -> String fallible(ApiError) {
+    if kind_of(body, "tools") != "array" { fail invalid("`tools` is a list", "tools"); }
+    let out = st::JsonList { };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "tools"));
+    while !it.done {
+        let t = std::str::trim(it.element);
+        if std::json::find_string_field(t, "type") != "function" { fail unsupported("only `function` tools are supported", "tools"); }
+        let f = std::str::trim(std::json::find_field_raw(t, "function"));
+        if kind_of(f, "name") != "string" { fail invalid("a tool's `function` has a `name`", "tools"); }
+        let mut one = "{\"type\": \"function\", \"name\": " + jq(std::json::find_string_field(f, "name"));
+        if kind_of(f, "description") == "string" { one = one + ", \"description\": " + jq(std::json::find_string_field(f, "description")); }
+        if kind_of(f, "parameters") == "object" { one = one + ", \"parameters\": " + std::str::trim(std::json::find_field_raw(f, "parameters")); }
+        if kind_of(f, "strict") == "bool" { one = one + ", \"strict\": " + std::str::trim(std::json::find_field_raw(f, "strict")); }
+        out.add(one + "}");
+        it = std::json::array_next(it);
+    }
+    return "[" + out.text() + "]";
+}
+
+/// `tool_choice`: `none`, `auto` or `required` as they are; a named
+/// function as the standard names one.
+fn chat_tool_choice(body: String) -> String fallible(ApiError) {
+    let kind = kind_of(body, "tool_choice");
+    if kind == "string" {
+        let c = std::json::find_string_field(body, "tool_choice");
+        if c != "none" && c != "auto" && c != "required" { fail invalid("`tool_choice` is none, auto, required or a function", "tool_choice"); }
+        return jq(c);
+    }
+    let choice = std::str::trim(std::json::find_field_raw(body, "tool_choice"));
+    let name = std::json::find_string_field(std::json::find_field_raw(choice, "function"), "name");
+    if kind != "object" || std::json::find_string_field(choice, "type") != "function" || len(name) == 0 {
+        fail invalid("`tool_choice` is none, auto, required or a function", "tool_choice");
+    }
+    return "{\"type\": \"function\", \"name\": " + jq(name) + "}";
+}
+
+/// What admission reads of a `CreateResponseRequest` or a
+/// `ChatCompletionRequest`, and the standard request a node is sent.
+fn read_inference(body: String, endpoint: String) -> InferenceRequest fallible(ApiError) {
+    object_body(body) or raise;
+    let model = required_string(body, "model") or raise;
+    if endpoint == "chat" {
+        if kind_of(body, "messages") != "array" { fail invalid("`messages` is a required list", "messages"); }
+        let first = std::json::array_first(std::json::find_field_raw(body, "messages"));
+        if first.done { fail invalid("`messages` holds at least one message", "messages"); }
+        if sets(body, "n") && std::json::find_int_field(body, "n") != 1 { fail unsupported("`n` greater than 1 is not supported", "n"); }
+    }
+    let voice = std::json::find_field_raw(body, "voice");
+    let has_voice = kind_of(body, "voice") == "object";
+    let standard = if endpoint == "chat" { chat_body(body) or raise } else { standard_body(body) };
+    return InferenceRequest {
+        endpoint: endpoint,
+        has_model: true,
+        model: model,
+        stream: bool_or(body, "stream", false) or raise,
+        has_previous_response_id: endpoint == "responses" && kind_of(body, "previous_response_id") == "string",
+        previous_response_id: if endpoint == "responses" { nullable_string(body, "previous_response_id") or raise } else { "" },
+        account: if has_voice { nullable_string(voice, "account") or raise } else { "" },
+        data_class: if has_voice { string_or(voice, "data_class", "internal") or raise } else { "internal" },
+        deadline: if has_voice { nullable_string(voice, "deadline") or raise } else { "" },
+        body: standard
+    };
+}
+
+/// `Attempt`s, as a JSON array.
+fn attempts_json(attempts: bounded[Attempt; 8]) -> String {
+    let attempts_list = st::JsonList { };
+    for a in attempts {
+        let mut one = "{\"seat\": " + jq(a.seat) + ", \"account\": " + jq(a.account) + ", \"outcome\": " + jq(outcome_name(a.outcome));
+        if len(a.error) > 0 { one = one + ", \"error\": " + jq(a.error); }
+        attempts_list.add(one + ", \"wall_ms\": " + to_string(a.wall_ms) + "}");
+    }
+    return "[" + attempts_list.text() + "]";
+}
+
+/// An error's `voice` object for a request that reached seats: its id and
+/// every attempt (`ErrorResponse.error.voice`).
+fn attempts_voice(request_id: String, attempts: bounded[Attempt; 8]) -> ErrorVoice {
+    let mut v = ErrorVoice { request_id: request_id };
+    v.attempts = attempts;
+    return v;
+}
+
+/// An error's `voice` object, as JSON. A store failure's has no
+/// attempts, and says none.
+fn error_voice_json(v: ErrorVoice) -> String {
+    let out = st::JsonList { };
+    // a request refused before it was numbered (a rate limit) has no id
+    if len(v.request_id) > 0 { out.add("\"request_id\": " + jq(v.request_id)); }
+    if v.has_limit { out.add("\"limit\": " + limit_json(v.limit)); }
+    if v.has_budget { out.add("\"budget\": " + budget_json(v.budget)); }
+    if count(v.attempts) > 0 { out.add("\"attempts\": " + attempts_json(v.attempts)); }
+    return "{" + out.text() + "}";
+}
+
+fn voice_json(v: VoiceExtension) -> String {
+    let attempts = attempts_json(v.attempts);
+    let s = v.served;
+    return "{\"request_id\": " + jq(v.request_id) + ", \"project\": " + jq(v.project) + ", \"key\": " + jq(v.key)
+        + ", \"served\": {\"model\": " + jq(s.model) + ", \"quantization\": " + jstring_or_null(s.has_quantization, s.quantization) + ", \"node\": " + jq(s.node) + ", \"seat\": " + jq(s.seat)
+        + ", \"account\": " + jq(s.account) + ", \"engine\": " + jq(s.engine) + ", \"provider\": " + jstring_or_null(s.has_provider, s.provider) + "}"
+        + ", \"price_micros\": " + to_string(v.price_micros) + ", \"currency\": " + jq(v.currency)
+        + ", \"timing\": {\"wall_ms\": " + to_string(v.wall_ms) + ", \"queue_ms\": 0, \"load_ms\": 0}, \"attempts\": " + attempts + "}";
+}
+
+/// The node's response object with voice's `voice` object in it.
+fn response_json(s: Served) -> String {
+    let body = std::str::trim(s.response);
+    return body[0..(len(body) - 1)] + ", \"voice\": " + voice_json(s.voice) + "}";
+}
+
+/// The served request as a Chat Completion.
+fn chat_completion_json(s: Served) -> String {
+    let calls = tool_calls_json(s.response);
+    let called = len(calls) > 0;
+    let finish = if called { "tool_calls" } else if s.status == "incomplete" { "length" } else { "stop" };
+    let content = if called && len(s.text) == 0 { "null" } else { jq(s.text) };
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion\", \"created\": " + to_string(std::time::unix(now_seconds()))
+        + ", \"model\": " + jq(s.model) + ", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": " + content
+        + (if called { ", \"tool_calls\": [" + calls + "]" } else { "" }) + "}, \"finish_reason\": " + jq(finish) + "}]"
+        + ", \"usage\": {\"prompt_tokens\": " + to_string(s.input_tokens) + ", \"completion_tokens\": " + to_string(s.output_tokens) + ", \"total_tokens\": " + to_string(s.input_tokens + s.output_tokens) + "}"
+        + ", \"voice\": " + voice_json(s.voice) + "}";
+}
+
+/// A response's `function_call` output items as Chat Completions
+/// `tool_calls` entries, comma-separated; "" for none.
+fn tool_calls_json(response: String) -> String {
+    let out = st::JsonList { };
+    let mut items = std::json::array_first(std::json::find_field_raw(response, "output"));
+    while !items.done {
+        let item = std::str::trim(items.element);
+        if std::json::find_string_field(item, "type") == "function_call" {
+            out.add("{\"id\": " + jq(std::json::find_string_field(item, "call_id")) + ", \"type\": \"function\", \"function\": {\"name\": " + jq(std::json::find_string_field(item, "name"))
+                    + ", \"arguments\": " + jq(std::json::find_string_field(item, "arguments")) + "}}");
+        }
+        items = std::json::array_next(items);
+    }
+    return out.text();
+}
+
+/// True when the seat could take a request now: its account is not
+/// archived, and its node is up, not draining, has applied its assignment,
+/// reports the seat `up` and holds it by no local control.
+fn seat_ready(store: st::Store, s: st::SeatRow) -> Bool fallible(ApiError) {
+    let a = store.account(s.account) or fail metering_failed(err);
+    if !a.present || a.archived { return false; }
+    let n = store.node(s.node) or fail metering_failed(err);
+    if !n.present { return false; }
+    let status = node_status(store, n, now_seconds()) or raise;
+    if status != "up" { return false; }
+    let f = store.fleet(n.id) or fail metering_failed(err);
+    if f.draining || f.applied_version < n.assignment_version || locally_paused(f.local, s.id) { return false; }
+    // a node whose local cap is 0 refuses every request: it is at its cap
+    if kind_of(f.local, "max_in_flight") == "number" && std::json::find_int_field(f.local, "max_in_flight") < 1 { return false; }
+    let states = store.seat_states(n.id) or fail metering_failed(err);
+    for st in states.rows {
+        if st.seat == s.id { return st.status == "up"; }
+    }
+    return false;
+}

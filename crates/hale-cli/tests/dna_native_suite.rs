@@ -70,31 +70,35 @@ const SLICES: usize = 24;
 /// in listing order, two at a time. Three of the suite's other tests
 /// sort before the slices, so slice `i` runs in job `(i + 3) % 6 + 1`
 /// with every sixth slice from it: each job gets two of the heavy slices
-/// 0-11 and two of the light slices 12-23 (one heavy slot is free, for
-/// the next heavy fixture). GH #1653 added `habitat_up_test`, which
-/// births a habitat on its own backends, stops it, drains it and brings
-/// it back, and the sixth job with it: the job count and HEAVY move
-/// together. So a heavy fixture's position picks its job
-/// and how early it starts there. They are placed so the five jobs'
-/// slice minutes come out level (610-770 s each, from the slice times
-/// of CI's runs on 2026-10-12), each job starts its two longest slices
+/// 0-11 and two of the light slices 12-23. GH #1653 added
+/// `habitat_up_test`, which births a habitat on its own backends, stops
+/// it, drains it and brings it back, and the sixth job with it: the job
+/// count and HEAVY move together. It then added `first_run_test`, which
+/// grafts voice onto a habitat of its own and serves it, in the last
+/// heavy slot (slice 11), in job 3, the lightest. So a heavy fixture's
+/// position picks its job and how early it starts there. They are
+/// placed so the jobs' slice minutes come out level (from the slice
+/// times of CI's merge-queue runs on 2026-10-19: 600-1220 s of slices a
+/// job, run two at a time), each job starts its two longest slices
 /// first (a job used to start `legs_test`, its longest, last and leave
-/// its other worker idle behind that tail), and the two graph
-/// fixtures, which need the host's bound to themselves, sit in
-/// different jobs (slices 0 and 6: jobs 4 and 5). Move one only with a
-/// look at those runs' per-slice times.
-const HEAVY: [&str; 11] = [
+/// its other worker idle behind that tail), and the two graph fixtures,
+/// which need the host's bound to themselves, sit in different jobs
+/// (slices 0 and 7: jobs 4 and 5; with six jobs, slice 6 is job 4
+/// again, so `graph_holds_test` moved to 7). Move one only with a look
+/// at those runs' per-slice times.
+const HEAVY: [&str; 12] = [
     "graph_holes_test.hl",
     "dogfood_voice_test.hl",
     "legs_test.hl",
     "books_slice_test.hl",
     "body_lease_start_test.hl",
     "body_claim_expired_test.hl",
-    "graph_holds_test.hl",
     "body_lease_blocked_test.hl",
+    "graph_holds_test.hl",
     "senses_reflex_test.hl",
     "receipt_retention_test.hl",
     "habitat_up_test.hl",
+    "first_run_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -1054,6 +1058,7 @@ fn dna_fixture_set_is_complete() {
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
             "extensions_test.hl",
+            "first_run_test.hl",
             "forge_gates_test.hl",
             "genome_pull_test.hl",
             "grant_layering_test.hl",

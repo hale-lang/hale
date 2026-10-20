@@ -1,0 +1,374 @@
+// The catalog: configured on the admin plane (`Catalog`), read by callers
+// through their key (`Models`).
+//
+// A model lists the seats configured to serve it, and is available while
+// one of them could take a request (inference.hl, `seat_ready`); the data
+// classes a caller sees are those such seats carry.
+
+locus Catalog {
+    params { store: st::Store; }
+
+    /// `listCatalogModels`: every model not removed.
+    fn list() -> CatalogList fallible(ApiError) {
+        let rows = self.store.models() or fail store_failed(err);
+        let mut out = CatalogList { };
+        for r in rows.rows {
+            if !r.removed {
+                let v = self.view(r) or raise;
+                push(out.data, v) or discard;
+            }
+        }
+        return out;
+    }
+
+    /// `createCatalogModel`.
+    fn create(m: CatalogModelCreate) -> CatalogModel fallible(ApiError) {
+        if len(m.id) == 0 || len(m.id) > 128 { fail invalid("`id` is 1 to 128 characters", "id"); }
+        check_model_fields(m.context_length, m.max_output_tokens) or raise;
+        let row = st::ModelRow {
+            id: m.id,
+            owned_by: if len(m.owned_by) > 0 { m.owned_by } else { "local" },
+            kind: if m.has_kind { model_kind_name(m.kind) } else { "local" },
+            context_length: m.context_length,
+            max_output_tokens: m.max_output_tokens,
+            priced: m.has_price,
+            price: m.price,
+            created_at: now_seconds()
+        };
+        let v = self.view(row) or raise;
+        let added = self.store.insert_model(row, change("create", "models/" + m.id, "", catalog_model_json(v))) or fail store_failed(err);
+        if !added { fail conflict("model " + m.id + " exists; a model id is never reused"); }
+        return v;
+    }
+
+    /// `getCatalogModel`.
+    fn get(r: ModelRef) -> CatalogModel fallible(ApiError) {
+        let row = self.live(r.model) or raise;
+        return self.view(row) or raise;
+    }
+
+    /// `updateCatalogModel`: the fields the request sets.
+    fn update(u: CatalogModelUpdate) -> CatalogModel fallible(ApiError) {
+        self.store.hold("models/" + u.model) or fail store_failed(err);
+        let out = self.update_held(u) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `update`, holding the resource from its read to its write.
+    fn update_held(u: CatalogModelUpdate) -> CatalogModel fallible(ApiError) {
+        let mut row = self.live(u.model) or raise;
+        let before = self.view(row) or raise;
+        if u.has_owned_by { row.owned_by = u.owned_by; }
+        if u.has_kind { row.kind = model_kind_name(u.kind); }
+        if u.has_context_length { row.context_length = u.context_length; }
+        if u.has_max_output_tokens { row.max_output_tokens = u.max_output_tokens; }
+        if u.set_price {
+            row.priced = u.priced;
+            row.price = u.price;
+        }
+        check_model_fields(row.context_length, row.max_output_tokens) or raise;
+        let after = self.view(row) or raise;
+        self.store.update_model(row, change("update", "models/" + row.id, catalog_model_json(before), catalog_model_json(after))) or fail store_failed(err);
+        return after;
+    }
+
+    /// `removeCatalogModel`: callers naming it get `model_not_found`; the
+    /// id stays taken.
+    fn remove(r: ModelRef) -> CatalogModel fallible(ApiError) {
+        self.store.hold("models/" + r.model) or fail store_failed(err);
+        let out = self.remove_held(r) or {
+            self.store.let_go();
+            fail err;
+        };
+        self.store.let_go();
+        return out;
+    }
+
+    /// `remove`, holding the resource from its read to its write.
+    fn remove_held(r: ModelRef) -> CatalogModel fallible(ApiError) {
+        let mut row = self.live(r.model) or raise;
+        let before = self.view(row) or raise;
+        row.removed = true;
+        row.removed_at = now_seconds();
+        self.store.update_model(row, change("delete", "models/" + row.id, catalog_model_json(before), "")) or fail store_failed(err);
+        return before;
+    }
+
+    /// The model `id`, unless it is absent or removed.
+    fn live(id: String) -> st::ModelRow fallible(ApiError) {
+        let row = self.store.model(id) or fail store_failed(err);
+        if !row.present || row.removed { fail not_found("no model " + id + " in the catalog"); }
+        return row;
+    }
+
+    /// The row with the seats that serve it.
+    fn view(r: st::ModelRow) -> CatalogModel fallible(ApiError) {
+        let seats = self.store.seats() or fail store_failed(err);
+        let mut v = catalog_view(r);
+        let a = availability(self.store, r.id) or raise;
+        v.available = a.available;
+        for s in seats.rows {
+            if seat_serves(s, r.id) { push(v.seats, s.ref) or discard; }
+        }
+        return v;
+    }
+}
+
+/// The catalog as the key a caller presented sees it: the models its
+/// project and the key itself are not restricted from.
+locus Models {
+    params { store: st::Store; }
+
+    /// `listModels`.
+    fn list(ctx: std::api::Context) -> ModelList fallible(ApiError) {
+        let k = self.caller_key(ctx) or raise;
+        let p = self.store.project(k.project) or fail metering_failed(err);
+        let rows = self.store.models() or fail metering_failed(err);
+        let mut out = ModelList { };
+        for r in rows.rows {
+            if !r.removed && visible(p, k, r.id) {
+                let v = model_with_seats(self.store, r) or raise;
+                push(out.data, v) or discard;
+            }
+        }
+        return out;
+    }
+
+    /// `getModel`. A model the key cannot see is answered as one that
+    /// does not exist.
+    fn get(r: ModelRef, ctx: std::api::Context) -> Model fallible(ApiError) {
+        let k = self.caller_key(ctx) or raise;
+        let p = self.store.project(k.project) or fail metering_failed(err);
+        let row = self.store.model(r.model) or fail metering_failed(err);
+        if !row.present || row.removed || !visible(p, k, r.model) {
+            fail ApiError { status: 404, kind: "not_found", code: ErrorCode::model_not_found, message: "no model " + r.model, has_param: true, param: "model" };
+        }
+        return model_with_seats(self.store, row) or raise;
+    }
+
+    /// `getCapabilities`: the project and key, the models the key may
+    /// name, the accounts it may spend, every limit that applies to it at
+    /// any scope, and the project's budget.
+    fn capabilities(ctx: std::api::Context) -> Capabilities fallible(ApiError) {
+        let k = self.caller_key(ctx) or raise;
+        let p = self.store.project(k.project) or fail metering_failed(err);
+        let rows = self.store.models() or fail metering_failed(err);
+        let mut out = Capabilities {
+            project_id: p.id,
+            project_name: p.name,
+            key_id: k.id,
+            key_name: k.name,
+            has_budget: p.budgeted,
+            budget: budget_view(p.budget, now_seconds())
+        };
+        let spends = if k.accounts.any { p.accounts } else { k.accounts };
+        out.has_accounts = !spends.any;
+        out.accounts = spends.names.items;
+        out.data_classes = p.data_classes.items;
+        for r in rows.rows {
+            if !r.removed && visible(p, k, r.id) { push(out.models, r.id) or discard; }
+        }
+        for l in p.limits.items {
+            push(out.limits, l) or discard;
+        }
+        for l in k.limits.items {
+            push(out.limits, l) or discard;
+        }
+        let accounts = self.store.accounts() or fail metering_failed(err);
+        for a in accounts.rows {
+            if !a.archived && allows(spends, a.id) {
+                for l in a.limits.items {
+                    push(out.limits, l) or discard;
+                }
+            }
+        }
+        return out;
+    }
+
+    /// The key the caller is, as the bearer source named it.
+    fn caller_key(ctx: std::api::Context) -> st::KeyRow fallible(ApiError) {
+        let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
+        if !k.present { fail invalid_key(); }
+        return k;
+    }
+}
+
+/// True when the project and the key both let `model` through.
+fn visible(p: st::ProjectRow, k: st::KeyRow, model: String) -> Bool {
+    return allows(p.models, model) && allows(k.models, model);
+}
+
+/// True when `r` is no restriction or names `name`.
+fn allows(r: st::Restriction, name: String) -> Bool {
+    return r.any || has_name(r.names.items, name);
+}
+
+fn has_name(ns: bounded[String; 32], name: String) -> Bool {
+    for n in ns {
+        if n == name { return true; }
+    }
+    return false;
+}
+
+fn check_model_fields(context_length: Int, max_output_tokens: Int) -> Bool fallible(ApiError) {
+    if context_length < 0 { fail invalid("`context_length` is at least 1", "context_length"); }
+    if max_output_tokens < 0 { fail invalid("`max_output_tokens` is at least 1", "max_output_tokens"); }
+    return true;
+}
+
+/// The row alone; `Catalog.view` adds its seats.
+fn catalog_view(r: st::ModelRow) -> CatalogModel {
+    return CatalogModel {
+        id: r.id,
+        owned_by: r.owned_by,
+        kind: model_kind_of(r.kind),
+        context_length: r.context_length,
+        max_output_tokens: r.max_output_tokens,
+        has_price: r.priced,
+        price: r.price,
+        available: false,
+        created_at: r.created_at
+    };
+}
+
+fn model_view(r: st::ModelRow) -> Model {
+    return Model {
+        id: r.id,
+        created: std::time::unix(r.created_at),
+        owned_by: r.owned_by,
+        kind: r.kind,
+        context_length: r.context_length,
+        max_output_tokens: r.max_output_tokens,
+        has_price: r.priced,
+        price: r.price,
+        available: false
+    };
+}
+
+// ---- errors ----------------------------------------------------------
+
+fn invalid(message: String, param: String) -> ApiError {
+    return ApiError { status: 400, kind: "invalid_request", code: ErrorCode::invalid_request, message: message, has_param: len(param) > 0, param: param };
+}
+
+fn unsupported(message: String, param: String) -> ApiError {
+    return ApiError { status: 400, kind: "invalid_request", code: ErrorCode::unsupported, message: message, has_param: len(param) > 0, param: param };
+}
+
+fn not_found(message: String) -> ApiError {
+    return ApiError { status: 404, kind: "not_found", code: ErrorCode::not_found, message: message };
+}
+
+fn conflict(message: String) -> ApiError {
+    return ApiError { status: 409, kind: "invalid_request", code: ErrorCode::conflict, message: message };
+}
+
+fn invalid_key() -> ApiError {
+    return ApiError { status: 401, kind: "authentication_error", code: ErrorCode::invalid_key, message: "a valid project key is required: Authorization: Bearer vk-..." };
+}
+
+/// A store that could not answer an admin request. A full list is the
+/// caller's to fix; a store that is down is a failure inside the api.
+fn store_failed(e: st::StoreError) -> ApiError {
+    if e.kind == "full" { return invalid(e.message, ""); }
+    let id = store_incident(e);
+    return ApiError { status: 500, kind: "server_error", code: ErrorCode::internal_error, message: "the store could not complete the request (" + id + ")", has_voice: true, voice: ErrorVoice { request_id: id } };
+}
+
+/// The caller plane's store failure: nothing is served while the store
+/// cannot record usage.
+fn metering_failed(e: st::StoreError) -> ApiError {
+    let id = store_incident(e);
+    return ApiError { status: 503, kind: "server_error", code: ErrorCode::metering_unavailable, message: "the store is unavailable; nothing is served until it is back (" + id + ")", has_voice: true, voice: ErrorVoice { request_id: id } };
+}
+
+/// A store failure, on the api's stderr with an id the answer quotes. What
+/// the store said (Postgres's own text, which can name constraints and
+/// the values they refused) stays here and never reaches a response.
+fn store_incident(e: st::StoreError) -> String {
+    let id = "err_" + (random_hex(8) or "0");
+    log_error("store failure", fields2(std::log::kv("incident", id), fields2(std::log::kv("kind", e.kind), std::log::kv("detail", e.message))));
+    return id;
+}
+
+/// Now, to the second: what every timestamp voice writes is.
+fn now_seconds() -> Time {
+    return std::time::time_from_unix(std::time::unix(std::time::current()));
+}
+
+// ---- capabilities ------------------------------------------------------
+
+/// Model ids, as many as the catalog holds (`ModelRows`).
+type ModelIds { items: bounded[String; 256]; }
+
+/// Limits at every scope that applies to one key: the project's (16), the
+/// key's (16) and each of at most 64 accounts' (16 each), so the bound
+/// holds them all and nothing is dropped.
+type AppliedLimits { items: bounded[st::Limit; 1056]; }
+
+/// `Capabilities`. `budget` is `null` for a project with none.
+type Capabilities {
+    project_id: String = "";
+    project_name: String = "";
+    key_id: String = "";
+    key_name: String = "";
+    data_classes: bounded[String; 32];
+    models: bounded[String; 256];
+    has_accounts: Bool = false;
+    accounts: bounded[String; 32];
+    limits: bounded[st::Limit; 1056];
+    has_budget: Bool = false;
+    budget: Budget = Budget { };
+}
+
+fn capabilities_json(c: Capabilities) -> String {
+    let models_list = st::JsonList { };
+    for m in c.models {
+        models_list.add(jq(m));
+    }
+    let models = models_list.text();
+    let limits_list = st::JsonList { };
+    for l in c.limits {
+        limits_list.add(limit_json(l));
+    }
+    let limits = limits_list.text();
+    return "{\"project\": {\"id\": " + jq(c.project_id) + ", \"name\": " + jq(c.project_name) + "}, \"key\": {\"id\": " + jq(c.key_id) + ", \"name\": " + jq(c.key_name) + "}"
+        + ", \"data_classes\": " + st::jnames(c.data_classes) + ", \"models\": [" + models + "], \"accounts\": " + jnames_or_null(c.has_accounts, c.accounts)
+        + ", \"limits\": [" + limits + "], \"budget\": " + (if c.has_budget { budget_json(c.budget) } else { "null" }) + "}";
+}
+
+/// Whether a model can be served now, and the data classes the seats that
+/// could serve it carry.
+type Availability { available: Bool = false; data_classes: bounded[String; 32]; }
+
+/// A seat could serve `model` when it is enabled, spends an account that
+/// is not archived, and its node is up, not draining, has applied its
+/// assignment, reports it `up` and holds it by no local control.
+fn availability(store: st::Store, model: String) -> Availability fallible(ApiError) {
+    let seats = store.seats() or fail store_failed(err);
+    let mut out = Availability { };
+    for s in seats.rows {
+        if seat_serves(s, model) && s.enabled {
+            let ready = seat_ready(store, s) or raise;
+            if ready {
+                out.available = true;
+                for dc in s.data_classes.items {
+                    if !has_name(out.data_classes, dc) { push(out.data_classes, dc) or discard; }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+fn model_with_seats(store: st::Store, r: st::ModelRow) -> Model fallible(ApiError) {
+    let mut v = model_view(r);
+    let a = availability(store, r.id) or raise;
+    v.available = a.available;
+    v.data_classes = a.data_classes;
+    return v;
+}

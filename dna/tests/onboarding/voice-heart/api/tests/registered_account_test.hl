@@ -1,0 +1,40 @@
+// Grafted, registration's answer hands a node the nodes' broker account,
+// written by the api on the node's own connection with the password
+// revealed into that write alone, escaped as a JSON string: a quote and a
+// backslash survive the trip (node/tests/joined_test.hl reads the same
+// answer back the node's way).
+import ".." as api;
+
+const ENTRY: String = "voice-registered-account-test";
+const PASSWORD: String = "no\"de\\pw";
+
+fn main() {
+    let entry = std::secret::vault_local_dir() + "/" + ENTRY;
+    std::io::fs::write_file(entry, PASSWORD) or discard;
+    let listener = std::io::tcp::listen_socket("127.0.0.1", 0) or - 1;
+    let node_side = std::io::tcp::connect("127.0.0.1", std::io::tcp::__local_port(listener)) or - 1;
+    let api_side = std::io::tcp::__accept_one(listener);
+    std::test::assert(listener >= 0 && node_side >= 0 && api_side >= 0, "a connection, as the node's");
+    let e = api::Endpoints { node_user: "heart-abc-node", node_secret: std::secret::Credential { vault: ENTRY } };
+    let a = api::Registered { nats_url: "nats://broker:4222", nats_subject: "heart.abc.node.laptop" };
+    let r = e.registered_with_account(std::http::Request { method: "POST", path: "/node/v1/register", headers: "", body: "", conn_fd: api_side }, a);
+    std::test::assert(r.takeover_raw, "the api wrote the answer itself");
+    std::io::tcp::set_recv_timeout(node_side, 2s) or discard;
+    let s = std::io::tcp::Stream { conn_fd: node_side, owns_fd: true };
+    let mut got = "";
+    let mut tries = 0;
+    while tries < 20 {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 { tries = 20; } else { got = got + chunk; }
+        tries = tries + 1;
+    }
+    let answer = api::parse_answer(got);
+    std::test::assert(answer.status == 200 && answer.framed, "a whole answer: " + got);
+    std::test::assert(std::str::contains(std::str::lower(got), "cache-control: no-store"), "not to be stored");
+    let n = std::json::find_field_raw(answer.body, "nats");
+    std::test::assert_eq_str(std::json::find_string_field(n, "password"), PASSWORD, "the password, a quote and a backslash in it, as the vault holds it: " + answer.body);
+    std::test::assert(std::json::find_string_field(n, "user") == "heart-abc-node" && std::json::find_string_field(n, "subject") == "heart.abc.node.laptop", "with its user and subject");
+    std::test::assert(std::str::contains(answer.body, "\"assignment\": {"), "and the assignment after it");
+    std::io::fs::unlink(entry) or discard;
+    std::io::tcp::close_fd(listener);
+}

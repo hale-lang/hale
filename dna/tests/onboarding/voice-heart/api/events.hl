@@ -1,0 +1,108 @@
+// What the api tells the organization that runs it (Hale's DNA, GH #987):
+// its events, each on its own subject under `app.voice.`, told on the
+// organization's nerves when voice is attached to one (teller.hl). An
+// event is a signal: the organization records it as a reading and acts on
+// nothing it says; what it does to voice goes the other way, through this
+// API. The event names itself with its own `id`, and the organization
+// refuses an id it has recorded already, so a redelivery lands once.
+
+/// One request's usage, as it ended: the ledger's `UsageRecord`
+/// (spec/openapi.yaml), cut to what the organization reads: who asked, for
+/// which model, where it was served, how it ended, and what it cost. `id`
+/// is the request id. A request that did not run to its end (the caller
+/// left, or the seat failed after output) is told too, its tokens left out
+/// when its seat reported none.
+type UsageEvent {
+    id: String;
+    created_at: Time;
+    project: String;
+    key: String;
+    requested_model: String;
+    served_model: String;
+    // responses | chat.completions
+    endpoint: String;
+    // served | incomplete | cancelled (the caller left) | failed
+    status: String;
+    data_class: String;
+    seat: String;
+    account: String;
+    has_input_tokens: Bool = false;
+    input_tokens: Int = 0;
+    has_output_tokens: Bool = false;
+    output_tokens: Int = 0;
+    price_micros: Int;
+    currency: String;
+    wall_ms: Int;
+}
+
+/// A request ended: its usage, for the teller to tell (teller.hl). It
+/// never leaves the process on this subject.
+topic UsageToTell { payload: UsageEvent; subject: "voice.usage.to_tell"; }
+
+/// The subject the organization reads a usage event on, under its token.
+const USAGE_SUBJECT: String = "app.voice.usage.recorded";
+
+/// The usage of `s`, a request of `r` that a seat served.
+fn usage_event(r: InferenceRequest, s: Served) -> UsageEvent {
+    let v = s.voice;
+    return UsageEvent {
+        id: s.request_id,
+        created_at: now_seconds(),
+        project: v.project,
+        key: v.key,
+        requested_model: r.model,
+        served_model: v.served.model,
+        endpoint: endpoint_name(r),
+        status: if s.status == "incomplete" { "incomplete" } else { "served" },
+        data_class: r.data_class,
+        seat: v.served.seat,
+        account: v.served.account,
+        has_input_tokens: true,
+        input_tokens: s.input_tokens,
+        has_output_tokens: true,
+        output_tokens: s.output_tokens,
+        price_micros: v.price_micros,
+        currency: v.currency,
+        wall_ms: v.wall_ms
+    };
+}
+
+/// The usage of a request of `r` that seat `c` began and did not finish:
+/// `status` says how it ended. Nothing is charged, and the seat reported
+/// no tokens.
+fn unfinished_usage(r: InferenceRequest, request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, status: String, wall_ms: Int) -> UsageEvent {
+    return UsageEvent {
+        id: request_id,
+        created_at: now_seconds(),
+        project: k.project,
+        key: k.id,
+        requested_model: r.model,
+        served_model: if len(c.engine_name) > 0 { c.engine_name } else { m.id },
+        endpoint: endpoint_name(r),
+        status: status,
+        data_class: r.data_class,
+        seat: c.seat.ref,
+        account: c.seat.account,
+        price_micros: 0,
+        currency: if m.priced { m.price.currency } else { "USD" },
+        wall_ms: wall_ms
+    };
+}
+
+fn endpoint_name(r: InferenceRequest) -> String {
+    return if r.endpoint == "chat" { "chat.completions" } else { "responses" };
+}
+
+type CodecError { kind: String = ""; }
+
+/// A usage event on the wire: one JSON object, the api codec's
+/// (`UsageEvent::api_encode`), every field as named above, a token count
+/// left out when it is not known.
+locus UsageJson {
+    fn encode(u: UsageEvent) -> Bytes fallible(CodecError) {
+        return std::bytes::from_string(UsageEvent::api_encode(u));
+    }
+    fn decode(b: Bytes) -> UsageEvent fallible(CodecError) {
+        return UsageEvent::api_decode(std::str::from_bytes(b)) or fail CodecError { kind: "usage_event" };
+    }
+}

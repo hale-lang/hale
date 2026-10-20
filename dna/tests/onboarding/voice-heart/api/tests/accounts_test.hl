@@ -1,0 +1,56 @@
+// Accounts on the admin plane: GET/POST /admin/v1/accounts and
+// GET/PATCH/DELETE /admin/v1/accounts/{account}, through the router.
+import ".." as api;
+
+fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
+    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+}
+
+fn expect(r: std::http::Response, status: Int, what: String) {
+    std::test::assert_eq_int(r.status, status, what + ": " + r.body);
+}
+
+fn raw(r: std::http::Response, name: String) -> String {
+    return std::str::trim(std::json::find_field_raw(r.body, name));
+}
+
+fn main() {
+    let e = api::Endpoints { };
+    std::test::assert_eq_str(std::str::trim(call(e, "GET", "/admin/v1/accounts", "").body), "{\"data\": []}", "none yet");
+
+    let work = call(e, "POST", "/admin/v1/accounts", "{\"id\": \"claude-work\", \"name\": \"Claude (work)\", \"provider\": \"anthropic\", \"billing\": \"subscription\", \"limits\": [{\"scope\": \"account\", \"window_seconds\": 18000, \"requests\": 900}]}");
+    expect(work, 201, "create");
+    std::test::assert_eq_str(std::json::find_string_field(work.body, "status"), "active", "active");
+    std::test::assert_eq_str(std::json::find_string_field(work.body, "provider"), "anthropic", "its provider");
+    std::test::assert_eq_str(raw(work, "seats"), "[]", "no seat spends it yet");
+    std::test::assert_eq_str(raw(work, "windows"), "[]", "no window reported");
+    std::test::assert_eq_str(raw(work, "exhausted_until"), "null", "not exhausted");
+    std::test::assert_eq_str(std::json::find_string_field(std::json::array_first(raw(work, "limits")).element, "account"), "claude-work", "an account limit names the account");
+
+    let local = call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
+    expect(local, 201, "a local account");
+    std::test::assert_eq_str(std::json::find_string_field(local.body, "billing"), "none", "billing defaults to none");
+    std::test::assert_eq_str(raw(local, "provider"), "null", "no provider");
+
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Again\"}"), 409, "an id is taken once");
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"x\", \"name\": \"X\", \"billing\": \"free\"}"), 400, "billing is subscription, metered or none");
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"X\", \"name\": \"X\"}"), 400, "an id is a slug");
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"x\", \"name\": \"X\", \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60}]}"), 400, "an account's limits are account-scope");
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"x\", \"name\": \"X\", \"limits\": [{\"scope\": \"account\", \"account\": \"other\", \"window_seconds\": 60}]}"), 400, "and name it");
+
+    expect(call(e, "GET", "/admin/v1/accounts/claude-work", ""), 200, "get");
+    expect(call(e, "GET", "/admin/v1/accounts/nope", ""), 404, "an unknown account");
+    let changed = call(e, "PATCH", "/admin/v1/accounts/claude-work", "{\"name\": \"Claude\", \"billing\": \"metered\", \"provider\": null}");
+    expect(changed, 200, "patch");
+    std::test::assert_eq_str(std::json::find_string_field(changed.body, "billing"), "metered", "billing changed");
+    std::test::assert_eq_str(raw(changed, "provider"), "null", "provider cleared");
+    std::test::assert(std::str::contains(raw(changed, "limits"), "900"), "a field not set stays");
+
+    let gone = call(e, "DELETE", "/admin/v1/accounts/static", "");
+    expect(gone, 200, "archive");
+    std::test::assert_eq_str(std::json::find_string_field(gone.body, "status"), "archived", "archived");
+    expect(call(e, "DELETE", "/admin/v1/accounts/static", ""), 200, "archiving again changes nothing");
+    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}"), 409, "its id is never reused");
+    std::test::assert(!std::str::contains(call(e, "GET", "/admin/v1/accounts", "").body, "\"static\""), "the list leaves it out");
+    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/accounts?include_archived=true", "").body, "\"static\""), "unless asked");
+}

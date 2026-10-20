@@ -1,0 +1,29 @@
+// The node's log. Every line the node writes goes through `std::log`, under
+// the logger `voice.node`: a message, and its fields as logfmt (`k=v`,
+// built with `std::log::kv`). `main` holds the one sink,
+// voice's RecordSink (lib/logfmt: one logfmt record a line, info on
+// stdout, warnings and errors on stderr), so a test
+// that drives the node's loci prints nothing.
+
+fn log_info(msg: String, fields: String) {
+    let log = std::log::Logger { name: "voice.node" };
+    log.info_kv(msg, fields);
+}
+
+fn log_warn(msg: String, fields: String) {
+    let log = std::log::Logger { name: "voice.node" };
+    log.warn_kv(msg, fields);
+}
+
+fn log_error(msg: String, fields: String) {
+    let log = std::log::Logger { name: "voice.node" };
+    log.error_kv(msg, fields);
+}
+
+/// Fields joined: `kv` pairs, each already rendered. A log line's fields
+/// are a few short pairs, written at start and on a failure (the api or
+/// NATS that does not answer).
+@unbounded
+fn fields2(a: String, b: String) -> String {
+    return a + " " + b;
+}

@@ -1,0 +1,254 @@
+// The contract's enums (spec/openapi.yaml): each a Hale enum on the surface,
+// so the export says its values. The store keeps their names as text; each
+// enum has `<name>_name`, its name, and `<name>_of`, the variant a name
+// stands for, which a reader calls once it has refused any other name.
+
+/// Whether a project or an account is in use (`status`).
+type Lifecycle = enum { active, archived };
+
+fn lifecycle_name(v: Lifecycle) -> String {
+    return match v {
+        Lifecycle::active -> "active",
+        Lifecycle::archived -> "archived"
+    };
+}
+
+/// The variant `s` names; `active` for any other.
+fn lifecycle_of(s: String) -> Lifecycle {
+    if s == "archived" { return Lifecycle::archived; }
+    return Lifecycle::active;
+}
+
+/// How an account is paid for (`Account.billing`).
+type Billing = enum { subscription, metered, none };
+
+fn billing_name(v: Billing) -> String {
+    return match v {
+        Billing::subscription -> "subscription",
+        Billing::metered -> "metered",
+        Billing::none -> "none"
+    };
+}
+
+/// The variant `s` names; `subscription` for any other.
+fn billing_of(s: String) -> Billing {
+    if s == "metered" { return Billing::metered; }
+    if s == "none" { return Billing::none; }
+    return Billing::subscription;
+}
+
+/// How one seat's attempt at a request ended (`Attempt.outcome`).
+type AttemptOutcome = enum { served, failed, abandoned };
+
+fn outcome_name(v: AttemptOutcome) -> String {
+    return match v {
+        AttemptOutcome::served -> "served",
+        AttemptOutcome::failed -> "failed",
+        AttemptOutcome::abandoned -> "abandoned"
+    };
+}
+
+/// The variant `s` names; `served` for any other.
+fn outcome_of(s: String) -> AttemptOutcome {
+    if s == "failed" { return AttemptOutcome::failed; }
+    if s == "abandoned" { return AttemptOutcome::abandoned; }
+    return AttemptOutcome::served;
+}
+
+/// Where a catalog model runs (`CatalogModel.kind`).
+type ModelKind = enum { local, hosted };
+
+fn model_kind_name(v: ModelKind) -> String {
+    return match v {
+        ModelKind::local -> "local",
+        ModelKind::hosted -> "hosted"
+    };
+}
+
+/// The variant `s` names; `local` for any other.
+fn model_kind_of(s: String) -> ModelKind {
+    if s == "hosted" { return ModelKind::hosted; }
+    return ModelKind::local;
+}
+
+/// What a change did (`Change.action`).
+type ChangeAction = enum { create, update, delete, archive, revoke, rotate };
+
+fn action_name(v: ChangeAction) -> String {
+    return match v {
+        ChangeAction::create -> "create",
+        ChangeAction::update -> "update",
+        ChangeAction::delete -> "delete",
+        ChangeAction::archive -> "archive",
+        ChangeAction::revoke -> "revoke",
+        ChangeAction::rotate -> "rotate"
+    };
+}
+
+/// The variant `s` names; `create` for any other.
+fn action_of(s: String) -> ChangeAction {
+    if s == "update" { return ChangeAction::update; }
+    if s == "delete" { return ChangeAction::delete; }
+    if s == "archive" { return ChangeAction::archive; }
+    if s == "revoke" { return ChangeAction::revoke; }
+    if s == "rotate" { return ChangeAction::rotate; }
+    return ChangeAction::create;
+}
+
+/// A probe's answer (`Health.status`).
+type HealthStatus = enum { ok, unavailable };
+
+fn health_name(v: HealthStatus) -> String {
+    return match v {
+        HealthStatus::ok -> "ok",
+        HealthStatus::unavailable -> "unavailable"
+    };
+}
+
+/// The variant `s` names; `ok` for any other.
+fn health_of(s: String) -> HealthStatus {
+    if s == "unavailable" { return HealthStatus::unavailable; }
+    return HealthStatus::ok;
+}
+
+/// A seat's state as its node reports it (`SeatState.status`).
+type SeatStateStatus = enum { starting, up, down, disabled, paused, refused };
+
+fn seat_state_name(v: SeatStateStatus) -> String {
+    return match v {
+        SeatStateStatus::starting -> "starting",
+        SeatStateStatus::up -> "up",
+        SeatStateStatus::down -> "down",
+        SeatStateStatus::disabled -> "disabled",
+        SeatStateStatus::paused -> "paused",
+        SeatStateStatus::refused -> "refused"
+    };
+}
+
+/// The variant `s` names; `starting` for any other.
+fn seat_state_of(s: String) -> SeatStateStatus {
+    if s == "up" { return SeatStateStatus::up; }
+    if s == "down" { return SeatStateStatus::down; }
+    if s == "disabled" { return SeatStateStatus::disabled; }
+    if s == "paused" { return SeatStateStatus::paused; }
+    if s == "refused" { return SeatStateStatus::refused; }
+    return SeatStateStatus::starting;
+}
+
+/// Whether a key may be used (`Key.status`).
+type KeyStatus = enum { active, revoked, expired };
+
+fn key_status_name(v: KeyStatus) -> String {
+    return match v {
+        KeyStatus::active -> "active",
+        KeyStatus::revoked -> "revoked",
+        KeyStatus::expired -> "expired"
+    };
+}
+
+/// The variant `s` names; `active` for any other.
+fn key_status_of(s: String) -> KeyStatus {
+    if s == "revoked" { return KeyStatus::revoked; }
+    if s == "expired" { return KeyStatus::expired; }
+    return KeyStatus::active;
+}
+
+/// Whether a node is up (`Node.status`).
+type NodeStatus = enum { pending, up, down, revoked };
+
+fn node_state_name(v: NodeStatus) -> String {
+    return match v {
+        NodeStatus::pending -> "pending",
+        NodeStatus::up -> "up",
+        NodeStatus::down -> "down",
+        NodeStatus::revoked -> "revoked"
+    };
+}
+
+/// The variant `s` names; `pending` for any other.
+fn node_state_of(s: String) -> NodeStatus {
+    if s == "up" { return NodeStatus::up; }
+    if s == "down" { return NodeStatus::down; }
+    if s == "revoked" { return NodeStatus::revoked; }
+    return NodeStatus::pending;
+}
+
+/// A seat's state as the admin plane sees it (`SeatView.status`): the node's report, `pending` until the node reports on the assignment that carries it, `offline` while the node is not up.
+type SeatStatus = enum { pending, offline, starting, up, down, disabled, paused, refused };
+
+fn seat_status_name(v: SeatStatus) -> String {
+    return match v {
+        SeatStatus::pending -> "pending",
+        SeatStatus::offline -> "offline",
+        SeatStatus::starting -> "starting",
+        SeatStatus::up -> "up",
+        SeatStatus::down -> "down",
+        SeatStatus::disabled -> "disabled",
+        SeatStatus::paused -> "paused",
+        SeatStatus::refused -> "refused"
+    };
+}
+
+/// The variant `s` names; `pending` for any other.
+fn seat_status_of(s: String) -> SeatStatus {
+    if s == "offline" { return SeatStatus::offline; }
+    if s == "starting" { return SeatStatus::starting; }
+    if s == "up" { return SeatStatus::up; }
+    if s == "down" { return SeatStatus::down; }
+    if s == "disabled" { return SeatStatus::disabled; }
+    if s == "paused" { return SeatStatus::paused; }
+    if s == "refused" { return SeatStatus::refused; }
+    return SeatStatus::pending;
+}
+
+/// An error's `code` (`ErrorResponse.error.code`).
+type ErrorCode = enum { invalid_request, unsupported, request_too_large, invalid_key, model_not_found, model_not_permitted, account_not_permitted, data_class_refused, previous_response_not_found, rate_limited, budget_exhausted, no_eligible_seat, no_capacity, metering_unavailable, upstream_failed, deadline_exceeded, not_found, conflict, internal_error, route_table_unavailable };
+
+fn error_code_name(v: ErrorCode) -> String {
+    return match v {
+        ErrorCode::invalid_request -> "invalid_request",
+        ErrorCode::unsupported -> "unsupported",
+        ErrorCode::request_too_large -> "request_too_large",
+        ErrorCode::invalid_key -> "invalid_key",
+        ErrorCode::model_not_found -> "model_not_found",
+        ErrorCode::model_not_permitted -> "model_not_permitted",
+        ErrorCode::account_not_permitted -> "account_not_permitted",
+        ErrorCode::data_class_refused -> "data_class_refused",
+        ErrorCode::previous_response_not_found -> "previous_response_not_found",
+        ErrorCode::rate_limited -> "rate_limited",
+        ErrorCode::budget_exhausted -> "budget_exhausted",
+        ErrorCode::no_eligible_seat -> "no_eligible_seat",
+        ErrorCode::no_capacity -> "no_capacity",
+        ErrorCode::metering_unavailable -> "metering_unavailable",
+        ErrorCode::upstream_failed -> "upstream_failed",
+        ErrorCode::deadline_exceeded -> "deadline_exceeded",
+        ErrorCode::not_found -> "not_found",
+        ErrorCode::conflict -> "conflict",
+        ErrorCode::internal_error -> "internal_error",
+        ErrorCode::route_table_unavailable -> "route_table_unavailable"
+    };
+}
+
+/// The variant `s` names; `invalid_request` for any other.
+fn error_code_of(s: String) -> ErrorCode {
+    if s == "unsupported" { return ErrorCode::unsupported; }
+    if s == "request_too_large" { return ErrorCode::request_too_large; }
+    if s == "invalid_key" { return ErrorCode::invalid_key; }
+    if s == "model_not_found" { return ErrorCode::model_not_found; }
+    if s == "model_not_permitted" { return ErrorCode::model_not_permitted; }
+    if s == "account_not_permitted" { return ErrorCode::account_not_permitted; }
+    if s == "data_class_refused" { return ErrorCode::data_class_refused; }
+    if s == "previous_response_not_found" { return ErrorCode::previous_response_not_found; }
+    if s == "rate_limited" { return ErrorCode::rate_limited; }
+    if s == "budget_exhausted" { return ErrorCode::budget_exhausted; }
+    if s == "no_eligible_seat" { return ErrorCode::no_eligible_seat; }
+    if s == "no_capacity" { return ErrorCode::no_capacity; }
+    if s == "metering_unavailable" { return ErrorCode::metering_unavailable; }
+    if s == "upstream_failed" { return ErrorCode::upstream_failed; }
+    if s == "deadline_exceeded" { return ErrorCode::deadline_exceeded; }
+    if s == "not_found" { return ErrorCode::not_found; }
+    if s == "conflict" { return ErrorCode::conflict; }
+    if s == "internal_error" { return ErrorCode::internal_error; }
+    if s == "route_table_unavailable" { return ErrorCode::route_table_unavailable; }
+    return ErrorCode::invalid_request;
+}

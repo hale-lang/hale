@@ -1,0 +1,17 @@
+/// A top-level member's raw value in a JSON object, or "" when absent.
+fn top_value(json: String, key: String) -> String {
+    let mut it = std::json::object_first(json);
+    while !it.done {
+        if std::json::obj_key_string(it, json) == key { return std::json::obj_value_raw(it, json); }
+        it = std::json::object_next(it, json);
+    }
+    return "";
+}
+
+fn json_response(status: Int, body: String) -> std::http::Response {
+    return std::http::Response { status: status, content_type: "application/json", body: body };
+}
+
+fn error_response(status: Int, kind: String, code: String, message: String) -> std::http::Response {
+    return json_response(status, "{\"error\": {\"message\": \"" + std::json::escape_string(message) + "\", \"type\": \"" + kind + "\", \"code\": \"" + code + "\"}}");
+}

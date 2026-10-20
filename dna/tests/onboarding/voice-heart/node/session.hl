@@ -1,0 +1,299 @@
+/// The node's session on NATS (../spec/protocol.yaml), on a thread of its
+/// own.
+///
+/// It takes what registration gave the node from the plane (plane.hl):
+/// where NATS is, its subject, its assignment. Then it holds NATS on its
+/// subject: an `assign` replaces the assignment, a `serve` is answered at
+/// once (accepted or refused) and then served on its seat, the events and
+/// the result on the reply subject the request named, and a `cancel` stops
+/// the request it names. Every time it is on NATS again it asks the plane
+/// to read the assignment, since an `assign` sent while it was not is lost.
+///
+/// It makes no call to the api: those wait on the api, which serves its
+/// callers one at a time, and a session waiting there could not answer a
+/// `serve`. It serves one request at a time; a `serve` that arrives while
+/// it serves is refused at once, so the coordinator offers the request
+/// elsewhere.
+///
+/// What the admin API shows of it is in `<data>/session.json`.
+
+import "../lib/pond/realtime/nats" as nats;
+
+locus Session {
+    params {
+        id: String = "";
+        data: String = "node-data";
+        // the api the plane registers with, as the status shows it
+        api: String = "";
+        capabilities: String = "";
+        joined: Bool = false;
+        // the plane's side: connecting | registered | refused
+        plane_state: String = "connecting";
+        // NATS: connecting | connected
+        nats_state: String = "connecting";
+        last_error: String = "";
+        connected_at: String = "";
+        nats_url: String = "";
+        subject: String = "";
+        // the assignment as received, and as applied
+        assignment: String = "";
+        seats: NodeSeats = NodeSeats { };
+        local: String = "";
+        subscribed: Bool = false;
+        // the request being served, and whether it was cancelled
+        serving: String = "";
+        // the seat it is served on
+        busy: String = "";
+        cancelled: Bool = false;
+        // monotonic ns of the last look at NATS while serving
+        looked: Int = 0;
+        client: nats::NatsClient = nats::NatsClient { name: "voice-node" };
+    }
+
+    bus {
+        subscribe PlaneJoined as on_joined;
+        subscribe AssignmentRead as on_assignment;
+        subscribe LocalApplied as on_local;
+        subscribe PlaneReport as on_plane;
+        publish SeatsApplied;
+        publish NatsConnected;
+        publish LoadChanged;
+    }
+
+    run() {
+        while true {
+            self.step();
+        }
+    }
+
+    /// One turn of the loop. A method, so each turn's memory is reclaimed;
+    /// its sleep is where the plane's messages arrive.
+    fn step() {
+        if !self.joined {
+            std::time::sleep(100ms);
+            return;
+        }
+        if !self.client.connected || !self.subscribed { self.connect(); }
+        if self.client.connected {
+            if self.client.read_msg(200ms) { self.on_message(); }
+            std::time::sleep(1ms);
+        } else {
+            std::time::sleep(500ms);
+        }
+    }
+
+    /// Registration's answer, from the plane: adopt its assignment.
+    @unbounded
+    fn on_joined(j: Joined) {
+        // a new place, or a new account there (grafted: the nodes' user on
+        // the habitat's broker, handed over at registration)
+        if j.nats_url != self.nats_url || j.user != self.client.user || j.password != self.client.pass {
+            self.nats_url = j.nats_url;
+            self.client.close();
+            self.client.url = j.nats_url;
+            self.client.user = j.user;
+            self.client.pass = j.password;
+            self.subscribed = false;
+        }
+        if j.subject != self.subject { self.subscribed = false; }
+        self.subject = j.subject;
+        self.local = j.local;
+        self.joined = true;
+        self.adopt(j.assignment);
+    }
+
+    /// An assignment the plane read: adopted when it is newer.
+    fn on_assignment(a: AssignmentText) {
+        if std::json::find_int_field(a.assignment, "version") > self.seats.version { self.adopt(a.assignment); }
+    }
+
+    /// New local controls: the assignment applied again within them.
+    @unbounded
+    fn on_local(l: LocalText) {
+        self.local = l.local;
+        self.seats = apply_assignment(self.assignment, self.capabilities, self.local);
+        self.applied();
+    }
+
+    fn on_plane(p: PlaneState) {
+        if len(p.state) > 0 { self.plane_state = p.state; }
+        self.last_error = p.detail;
+        self.report();
+    }
+
+    /// NATS, and the node's subject on it; once on, the plane reads the
+    /// assignment.
+    @unbounded
+    fn connect() {
+        if len(self.nats_url) == 0 { return; }
+        if !self.client.connected {
+            self.subscribed = false;
+            if !self.client.open() {
+                self.nats_state = "connecting";
+                self.last_error = "NATS unreachable at " + self.nats_url + ": " + self.client.last_error;
+                self.report();
+                std::time::sleep(1s);
+                return;
+            }
+        }
+        let sid = self.client.sub_to(self.subject + ".>", "") or - 1;
+        if sid < 0 {
+            self.last_error = "could not subscribe to " + self.subject + ": " + self.client.last_error;
+            self.report();
+            return;
+        }
+        self.subscribed = true;
+        self.nats_state = "connected";
+        self.last_error = "";
+        self.connected_at = std::time::iso8601(std::time::time_from_unix(std::time::unix(std::time::current())));
+        self.report();
+        NatsConnected <- NatsState { connected: true };
+    }
+
+    /// Apply an assignment, and hand its seat states to the plane.
+    @unbounded
+    fn adopt(assignment: String) {
+        self.assignment = assignment;
+        self.seats = apply_assignment(assignment, self.capabilities, self.local);
+        self.applied();
+    }
+
+    fn applied() {
+        SeatsApplied <- AppliedSeats { version: self.seats.version, states: states_json(self.seats, self.busy) };
+        self.report();
+    }
+
+    /// One message on the node's subject.
+    fn on_message() {
+        let subject = self.client.last.subject;
+        let body = std::str::from_bytes(self.client.last.data);
+        if subject == self.subject + ".assign" {
+            let a = std::str::trim(std::json::find_field_raw(body, "assignment"));
+            if std::json::find_int_field(a, "version") > self.seats.version { self.adopt(a); }
+        } else if subject == self.subject + ".serve" {
+            self.serve(body, self.client.last.reply);
+        }
+    }
+
+    /// While a request is served: the messages that arrived. A `cancel`
+    /// for it stops it, a `serve` is refused at once, an `assign` is
+    /// adopted.
+    fn interject() {
+        self.looked = std::time::monotonic_ns();
+        let mut n = 0;
+        while n < 16 && self.client.read_msg(1ms) {
+            n = n + 1;
+            let subject = self.client.last.subject;
+            let body = std::str::from_bytes(self.client.last.data);
+            if subject == self.subject + ".cancel" {
+                if std::json::find_string_field(body, "request_id") == self.serving { self.cancelled = true; }
+            } else if subject == self.subject + ".serve" {
+                let ack = "{\"request_id\": " + q(std::json::find_string_field(body, "request_id")) + ", \"outcome\": \"refused\", \"reason\": \"the node is serving another request\"}";
+                self.client.pub_msg(self.client.last.reply, "", std::bytes::from_string(ack)) or discard;
+            } else if subject == self.subject + ".assign" {
+                let a = std::str::trim(std::json::find_field_raw(body, "assignment"));
+                if std::json::find_int_field(a, "version") > self.seats.version { self.adopt(a); }
+            }
+        }
+    }
+
+    /// Wait `ms`, in short slices that read what arrives meanwhile, until
+    /// the request is cancelled.
+    fn pause(ms: Int) {
+        let until = std::time::monotonic_ns() + ms * 1000000;
+        while !self.cancelled && std::time::monotonic_ns() < until {
+            let left = (until - std::time::monotonic_ns()) / 1000000;
+            std::time::sleep((if left > 50 { 50 } else if left > 0 { left } else { 0 }) * 1ms);
+            self.interject();
+        }
+    }
+
+    /// Answer a `serve` at once, then serve it on its seat.
+    fn serve(msg: String, inbox: String) {
+        let id = std::json::find_string_field(msg, "request_id");
+        let reply_to = std::json::find_string_field(msg, "reply_to");
+        let seat = seat_of(self.seats, std::json::find_string_field(msg, "seat"));
+        let mut refusal = "";
+        if len(seat.id) == 0 {
+            refusal = "no seat " + std::json::find_string_field(msg, "seat") + " is assigned to this node";
+        } else if seat.status != "up" {
+            refusal = "seat " + seat.id + " is " + seat.status + (if len(seat.reason) > 0 { ": " + seat.reason } else { "" });
+        } else if node_cap(self.capabilities, self.seats.max_in_flight, read_local(self.data)) < 1 {
+            refusal = "the node takes no requests: its cap is 0";
+        }
+        let ack = "{\"request_id\": " + q(id) + ", \"outcome\": " + (if len(refusal) > 0 { "\"refused\", \"reason\": " + q(refusal) } else { "\"accepted\", \"reason\": null" }) + "}";
+        self.client.pub_msg(inbox, "", std::bytes::from_string(ack)) or discard;
+        if len(refusal) > 0 { return; }
+
+        self.serving = id;
+        self.busy = seat.id;
+        self.cancelled = false;
+        self.loaded();
+        self.looked = std::time::monotonic_ns();
+        let t0 = std::time::monotonic_ns();
+        let model = std::json::find_string_field(msg, "model");
+        let engine_model = std::json::string_field(msg, "engine_model");
+        let run = run_static(id, model, if engine_model.kind == "string" { engine_model.text } else { model }, std::str::trim(std::json::find_field_raw(msg, "body")), static_config(seat.config));
+        let mut first = -1;
+        let v = std::str::bytes_view(run.script);
+        let mut start = 0;
+        while start < v.n && !self.cancelled {
+            let at = line_end(v, start);
+            let line = std::str::slice(v, start, at);
+            start = at + 1;
+            if std::str::starts_with(line, "pause ") {
+                self.pause(std::str::parse_int(line[6..len(line)]) or 0);
+            } else {
+                if first < 0 && std::str::contains(line, "response.output_text.delta") { first = (std::time::monotonic_ns() - t0) / 1000000; }
+                self.client.pub_msg(reply_to + ".event", "", std::bytes::from_string("{\"type\":\"event\",\"request_id\":" + q(id) + ",\"event\":" + line + "}")) or discard;
+                // a look costs up to a millisecond when nothing waits, so
+                // a run of events looks every 50 ms, not after each
+                if std::time::monotonic_ns() - self.looked > 50000000 { self.interject(); }
+            }
+        }
+        let elapsed = (std::time::monotonic_ns() - t0) / 1000000;
+        let result = if self.cancelled { cancelled_result(id) } else if run.outcome == "failed" { failed_result(id, "engine_failed", run.failure, true) } else { result_message(id, run, if first < 0 { 0 } else { first }, elapsed) };
+        self.client.pub_msg(reply_to + ".result", "", std::bytes::from_string(result)) or discard;
+        self.serving = "";
+        self.busy = "";
+        self.cancelled = false;
+        self.loaded();
+    }
+
+    /// A request began or ended: the plane's next heartbeat, and the
+    /// status, say so.
+    fn loaded() {
+        LoadChanged <- Load { in_flight: if len(self.busy) > 0 { 1 } else { 0 }, states: states_json(self.seats, self.busy) };
+        self.report();
+    }
+
+    /// What the admin API shows: the connection, the assignment applied,
+    /// the effective cap and every seat with its state.
+    fn report() {
+        let local = read_local(self.data);
+        let state = if self.plane_state == "refused" { "refused" } else if self.plane_state == "registered" && self.nats_state == "connected" { "connected" } else { "connecting" };
+        let coordinator = "{\"url\": " + q(self.api) + ", \"state\": " + q(state) + ", \"connected_at\": " + (if len(self.connected_at) > 0 { q(self.connected_at) } else { "null" })
+            + ", \"last_error\": " + (if len(self.last_error) > 0 { q(self.last_error) } else { "null" }) + "}";
+        let body = "{\"coordinator\": " + coordinator + ", \"assignment_version\": " + (if self.seats.version >= 0 { to_string(self.seats.version) } else { "null" })
+            + ", \"max_in_flight\": " + to_string(node_cap(self.capabilities, self.seats.max_in_flight, local)) + ", \"in_flight\": " + (if len(self.busy) > 0 { "1" } else { "0" }) + ", \"seats\": " + status_seats(self.assignment, self.seats, self.busy) + "}";
+        std::io::fs::write_file(self.data + "/session.json", body) or discard;
+    }
+}
+
+/// The assigned seats, each with its state on this node (node.yaml
+/// `NodeStatus.seats`).
+fn status_seats(assignment: String, seats: NodeSeats, busy: String) -> String {
+    let out = std::bytes::BytesBuilder { initial_cap: 1024 };
+    let mut any = false;
+    let mut it = std::json::array_first(std::json::find_field_raw(assignment, "seats"));
+    while !it.done {
+        let s = std::str::trim(it.element);
+        let st = seat_of(seats, std::json::find_string_field(s, "id"));
+        if any { out.append_str(", "); }
+        any = true;
+        out.append_str(s[0..(len(s) - 1)] + ", \"status\": " + q(st.status) + ", \"reason\": " + (if len(st.reason) > 0 { q(st.reason) } else { "null" }) + ", \"in_flight\": " + (if st.id == busy { "1" } else { "0" }) + "}");
+        it = std::json::array_next(it);
+    }
+    let b = out.snapshot() or b"";
+    return "[" + std::str::from_bytes(b) + "]";
+}

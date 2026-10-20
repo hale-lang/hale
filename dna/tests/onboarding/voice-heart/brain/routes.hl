@@ -1,0 +1,218 @@
+// The route table (internal.yaml `RouteTable`), computed from the fleet as
+// reported (store.md, "The brain's read"): per catalog model, the seats
+// that can serve it now, best first, and the accounts that could serve it
+// but have no headroom left.
+//
+// A seat routes when it is enabled, reported `up` for its node's current
+// assignment, held by no local control, on a node that is up (a heartbeat
+// younger than three intervals) and not draining, for an account that is
+// active and not exhausted. An account is exhausted while one of its
+// provider windows is at 100%; it is listed with the earliest reset. Rank
+// is account headroom first (the fullest window), then seat load, with a
+// little jitter so instances spread. Limits are not counted yet (nothing
+// reserves against them), so they do not narrow a seat's headroom.
+
+/// The heartbeat interval nodes are told (the api's `HEARTBEAT_MS`); a node
+/// is up while its last heartbeat is younger than three.
+const NODE_UP_SECONDS: Int = 15;
+
+/// One seat, as the read below gives it, judged.
+type SeatLine {
+    seat: String = "";
+    node: String = "";
+    account: String = "";
+    // the JSON array of `SeatModel`s it serves
+    serves: String = "[]";
+    data_classes: String = "[]";
+    routes: Bool = false;
+    exhausted: Bool = false;
+    exhausted_until: String = "";
+    rank: Float = 0.0;
+    free: Int = 0;
+}
+
+/// What a seat needs to be judged: the seat, its node, its account, the
+/// node's report and the seat's state, its account's fullest window and
+/// the earliest reset of a full one, and its heartbeat's age in seconds.
+const SEAT_READ: String = "SELECT row_to_json(t) FROM (SELECT s.node || '/' || s.id AS seat, s.node, s.id, s.account, s.serves, s.data_classes, s.concurrency, s.enabled, n.max_in_flight AS node_cap, n.assignment_version, ns.capabilities, ns.local, ns.in_flight AS node_in_flight, ns.applied_version, ns.draining, extract(epoch FROM now() - ns.last_heartbeat_at)::int AS beat_age, st.status AS seat_status, st.in_flight AS seat_in_flight, a.status AS account_status, (SELECT max(used_percent) FROM quota_window q WHERE q.account = s.account) AS used, (SELECT min(resets_at) FROM quota_window q WHERE q.account = s.account AND q.used_percent >= 100) AS exhausted_until, EXISTS (SELECT 1 FROM quota_window q WHERE q.account = s.account AND q.used_percent >= 100) AS exhausted FROM seat s JOIN node n ON n.id = s.node JOIN account a ON a.id = s.account LEFT JOIN node_state ns ON ns.node = s.node LEFT JOIN seat_state st ON st.node = s.node AND st.seat = s.id WHERE n.status <> 'revoked' ORDER BY s.node, s.id) t";
+
+const MODEL_READ: String = "SELECT id FROM catalog_model WHERE removed_at IS NULL ORDER BY created_at, id";
+
+fn int_or(json: String, name: String, otherwise: Int) -> Int {
+    return if std::json::string_field(json, name).kind == "number" { std::json::find_int_field(json, name) } else { otherwise };
+}
+
+/// One row of `SEAT_READ`, judged. `jitter` is in [0, 1).
+fn judge(row: String, jitter: Float) -> SeatLine {
+    let mut out = SeatLine {
+        seat: st::pg_text(row, "seat"),
+        node: st::pg_text(row, "node"),
+        account: st::pg_text(row, "account"),
+        serves: std::str::trim(std::json::find_field_raw(row, "serves")),
+        data_classes: std::str::trim(std::json::find_field_raw(row, "data_classes"))
+    };
+    let id = st::pg_text(row, "id");
+    let local = std::json::find_field_raw(row, "local");
+    let held = std::json::find_bool_field(local, "paused") || names_seat(std::json::find_field_raw(local, "paused_seats"), id);
+    let beat = int_or(row, "beat_age", 1000000);
+    let applied = int_or(row, "applied_version", -1);
+    // the beat is written with the store's clock and judged with it
+    let node_up = beat <= NODE_UP_SECONDS && !std::json::find_bool_field(row, "draining");
+    let seat_up = std::json::find_bool_field(row, "enabled") && st::pg_text(row, "seat_status") == "up" && applied >= std::json::find_int_field(row, "assignment_version") && !held;
+    let active = st::pg_text(row, "account_status") == "active";
+    out.exhausted = active && std::json::find_bool_field(row, "exhausted");
+    out.exhausted_until = st::pg_text(row, "exhausted_until");
+    out.routes = node_up && seat_up && active && !out.exhausted;
+
+    let concurrency = int_or(row, "concurrency", 1);
+    let in_flight = int_or(row, "seat_in_flight", 0);
+    let mut cap = int_or(std::json::find_field_raw(row, "capabilities"), "max_in_flight", concurrency);
+    let coordinator = int_or(row, "node_cap", -1);
+    if coordinator > 0 && coordinator < cap { cap = coordinator; }
+    let local_cap = int_or(local, "max_in_flight", -1);
+    if local_cap >= 0 && local_cap < cap { cap = local_cap; }
+    let node_free = cap - int_or(row, "node_in_flight", 0);
+    let mut free = concurrency - in_flight;
+    if node_free < free { free = node_free; }
+    out.free = if free < 0 { 0 } else { free };
+
+    let used = if std::json::string_field(row, "used").kind == "number" { std::str::parse_float(std::str::trim(std::json::find_field_raw(row, "used"))) or 0.0 } else { 0.0 };
+    out.rank = used / 100.0 + (Float(in_flight) / Float(if concurrency > 0 { concurrency } else { 1 })) * 0.01 + jitter * 0.001;
+    return out;
+}
+
+/// True when the JSON list of seat ids names `id`.
+fn names_seat(list: String, id: String) -> Bool {
+    let mut it = std::json::array_first(list);
+    while !it.done {
+        if std::str::trim(it.element) == "\"" + id + "\"" { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+/// The seats judged, as many as the store holds (256), so none is left out
+/// of the table.
+type Ranked { items: bounded[SeatLine; 256]; }
+
+/// A catalog model's place in the table.
+type ModelSlot { model: String = ""; index: Int = -1; present: Bool = false; }
+
+@form(hashmap)
+locus ModelSlots { capacity { pool rows of ModelSlot indexed_by model; } }
+
+/// One (model, seat) a seat's `serves` names: the model's place, the
+/// seat's, and the seat's own name for the model as JSON (`null` for none).
+type Pair { model: Int = 0; seat: Int = 0; named: String = "null"; }
+
+/// Every pair of a fleet at the bounds: 256 seats, each serving 16 models.
+type Pairs { items: bounded[Pair; 4096]; }
+
+type Picks { items: bounded[Int; 256]; }
+
+/// The table's `models`, from the seats judged and the catalog's model ids
+/// (one a line), as `{"models": [...]}`; its version and time are the
+/// store's (store.md, "The route table"). Each seat's `serves` is read
+/// once and each model's seats are ranked once, so a tick at the bounds
+/// (256 seats each serving 16 of 256 models) takes milliseconds.
+@bounded_by(models)
+fn route_table(seats: Ranked, models: String) -> String {
+    let slots = ModelSlots { };
+    let mut names = 0;
+    let lines = std::str::bytes_view(models);
+    let mut start = 0;
+    while start < lines.n {
+        let nl = st::line_end(lines, start);
+        let model = std::str::trim(std::str::slice(lines, start, nl));
+        start = nl + 1;
+        if len(model) > 0 {
+            slots.set(ModelSlot { model: model, index: names, present: true });
+            names = names + 1;
+        }
+    }
+    // one pass over the seats: the pairs they serve, each serves read once
+    let mut pairs = Pairs { };
+    let mut si = 0;
+    for s in seats.items {
+        if s.routes || s.exhausted {
+            let mut it = std::json::array_first(s.serves);
+            while !it.done {
+                let slot = slots.get(st::pg_text(it.element, "model")) or ModelSlot { };
+                if slot.present {
+                    let named = st::pg_text(it.element, "as");
+                    push(pairs.items, Pair { model: slot.index, seat: si, named: if len(named) > 0 { st::jq(named) } else { "null" } }) or discard;
+                }
+                it = std::json::array_next(it);
+            }
+        }
+        si = si + 1;
+    }
+    let entries = st::JsonList { };
+    start = 0;
+    let mut mi = 0;
+    while start < lines.n {
+        let nl = st::line_end(lines, start);
+        let model = std::str::trim(std::str::slice(lines, start, nl));
+        start = nl + 1;
+        if len(model) > 0 {
+            entries.add(model_routes(seats, pairs, mi, model));
+            mi = mi + 1;
+        }
+    }
+    return "{\"models\": [" + entries.text() + "]}";
+}
+
+/// One model's routes: its routable seats best first (rank, then the
+/// seat's place, so the order is total), and its exhausted accounts, each
+/// once.
+fn model_routes(seats: Ranked, pairs: Pairs, mi: Int, model: String) -> String {
+    let mut mine = Picks { };
+    let mut k = 0;
+    for p in pairs.items {
+        if p.model == mi { push(mine.items, k) or discard; }
+        k = k + 1;
+    }
+    let routes = st::JsonList { };
+    // each pass takes the best seat after the one taken last
+    let mut last_rank = -1.0;
+    let mut last_seat = -1;
+    let mut more = true;
+    while more {
+        let mut best = -1;
+        let mut best_rank = 0.0;
+        let mut best_seat = 0;
+        for pi in mine.items {
+            let p = at(pairs.items, pi) or Pair { };
+            let s = at(seats.items, p.seat) or SeatLine { };
+            let after = s.rank > last_rank || (s.rank == last_rank && p.seat > last_seat);
+            let better = best < 0 || s.rank < best_rank || (s.rank == best_rank && p.seat < best_seat);
+            if s.routes && after && better {
+                best = pi;
+                best_rank = s.rank;
+                best_seat = p.seat;
+            }
+        }
+        if best < 0 {
+            more = false;
+        } else {
+            let p = at(pairs.items, best) or Pair { };
+            let s = at(seats.items, p.seat) or SeatLine { };
+            last_rank = s.rank;
+            last_seat = p.seat;
+            routes.add("{\"seat\": " + st::jq(s.seat) + ", \"node\": " + st::jq(s.node) + ", \"account\": " + st::jq(s.account)
+                    + ", \"engine_model\": " + p.named + ", \"rank\": " + to_string(s.rank) + ", \"free\": " + to_string(s.free)
+                    + ", \"data_classes\": " + s.data_classes + "}");
+        }
+    }
+    let mut seen = "\n";
+    let exhausted = st::JsonList { };
+    for pi in mine.items {
+        let p = at(pairs.items, pi) or Pair { };
+        let s = at(seats.items, p.seat) or SeatLine { };
+        if s.exhausted && !std::str::contains(seen, "\n" + s.account + "\n") {
+            seen = seen + s.account + "\n";
+            exhausted.add("{\"account\": " + st::jq(s.account) + ", \"until\": " + (if len(s.exhausted_until) > 0 { st::jq(s.exhausted_until) } else { "null" }) + "}");
+        }
+    }
+    return "{\"model\": " + st::jq(model) + ", \"seats\": [" + routes.text() + "], \"exhausted\": [" + exhausted.text() + "]}";
+}

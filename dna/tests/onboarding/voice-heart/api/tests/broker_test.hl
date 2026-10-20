@@ -1,0 +1,43 @@
+// Voice's own NATS grafted (lib/broker): the habitat's hand-over read, and
+// every subject under its prefix, inboxes too; standalone, as it was.
+import "../../lib/broker" as broker;
+import "../../lib/pond/realtime/nats" as nats;
+import ".." as api;
+
+fn main() {
+    let alone = broker::broker_or("nats://127.0.0.1:4222");
+    std::test::assert(!alone.grafted && alone.url == "nats://127.0.0.1:4222" && alone.root == "voice" && alone.inbox == "_INBOX" && alone.problem == "", "standalone: the server --nats names, under voice.");
+    let b = broker::broker_of("nats://127.0.0.1:4333", "heart-abc", "nats-heart-abc", "heart.abc.>");
+    std::test::assert(b.grafted && b.problem == "" && b.root == "heart.abc" && b.inbox == "heart.abc._INBOX" && b.user == "heart-abc" && b.vault == "nats-heart-abc", "grafted: the prefix is the root: " + b.root);
+    std::test::assert(std::str::starts_with(nats::new_inbox_under(b.inbox), "heart.abc._INBOX."), "a request's inbox is under it");
+    let handed = broker::with_inbox(b, "_INBOX.heart.abc.>");
+    std::test::assert(handed.inbox == "_INBOX.heart.abc" && handed.root == "heart.abc", "or under the inbox prefix the habitat hands over: " + handed.inbox);
+    std::test::assert(len(broker::with_inbox(b, "_INBOX.*").problem) > 0, "an inbox that is not a prefix is refused");
+    std::test::assert(len(broker::broker_of("nats://u:p@127.0.0.1:4333", "u", "v", "heart.abc.>").problem) > 0, "a URL with credentials is refused");
+    std::test::assert(len(broker::broker_of("nats://127.0.0.1:4333", "u", "v", "heart.*.x").problem) > 0, "a subject that is not a prefix is refused");
+    std::test::assert(len(broker::broker_of("nats://127.0.0.1:4333", "", "v", "heart.abc.>").problem) > 0, "a hand-over without its user is refused");
+    let nodes = broker::with_nodes(b, "heart-abc-node", "nats-heart-abc-node");
+    std::test::assert(nodes.problem == "" && nodes.node_user == "heart-abc-node" && nodes.node_vault == "nats-heart-abc-node", "the nodes' account handed over");
+    std::test::assert(len(broker::with_nodes(b, "heart-abc-node", "").problem) > 0, "its user without its vault entry is refused");
+    std::test::assert(broker::with_nodes(b, "", "").node_user == "", "and none is none");
+    // a hand-over is whole or absent: every partial set of its four
+    // variables is refused, never read as standalone
+    let mut mask = 1;
+    while mask < 16 {
+        let p = broker::broker_from("nats://127.0.0.1:4222", if mask % 2 == 1 { "nats://broker:4222" } else { "" }, if (mask / 2) % 2 == 1 { "heart-abc" } else { "" }, if (mask / 4) % 2 == 1 { "nats-heart-abc" } else { "" }, if (mask / 8) % 2 == 1 { "heart.abc.>" } else { "" }, "", "", "");
+        if mask == 15 {
+            std::test::assert(p.grafted && p.problem == "", "all four: grafted");
+        } else {
+            std::test::assert(len(p.problem) > 0 && !p.grafted, "a partial hand-over is refused (set " + to_string(mask) + " of 15): " + p.root);
+        }
+        mask = mask + 1;
+    }
+    std::test::assert(len(broker::broker_from("x", "", "", "", "", "heart.abc._INBOX", "", "").problem) > 0, "an inbox alone is refused");
+    std::test::assert(len(broker::broker_from("x", "", "", "", "", "", "heart-abc-node", "nats-heart-abc-node").problem) > 0, "the nodes' account alone is refused");
+    std::test::assert(len(broker::broker_from("x", "nats://broker:4222", "heart-abc", "nats-heart-abc", "heart.abc.>", "", "heart-abc-node", "").problem) > 0, "the nodes' user without its vault entry is refused");
+    let none = broker::broker_from("nats://127.0.0.1:4222", "", "", "", "", "", "", "");
+    std::test::assert(!none.grafted && none.problem == "" && none.url == "nats://127.0.0.1:4222" && none.root == "voice", "none set: standalone");
+
+    let link = api::NatsLink { url: b.url, user: b.user, vault: b.vault, subjects: b.root, inbox: b.inbox };
+    std::test::assert_eq_str(link.root(), "heart.abc", "the link's subjects are under it");
+}

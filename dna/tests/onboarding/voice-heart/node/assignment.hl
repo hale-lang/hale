@@ -1,0 +1,111 @@
+// An assignment, applied (protocol.yaml): the node runs exactly the seats
+// the coordinator assigned, and refuses any outside what it offers. Local
+// controls only restrict: a paused node or seat is `paused`, and a local
+// cap only lowers the effective one.
+
+/// One assigned seat as the node holds it.
+type NodeSeat {
+    id: String = "";
+    engine: String = "";
+    // the engine's JSON config, as assigned
+    config: String = "{}";
+    concurrency: Int = 1;
+    // starting | up | down | disabled | paused | refused
+    status: String = "starting";
+    // why, for refused, paused and down; "" for none
+    reason: String = "";
+    in_flight: Int = 0;
+}
+
+/// The assignment as applied: its seats, its version and its cap.
+type NodeSeats { items: bounded[NodeSeat; 16]; version: Int = -1; max_in_flight: Int = 0; }
+
+/// Apply `assignment` (its JSON) within `capabilities` and `local`.
+@bounded_by(assignment)
+fn apply_assignment(assignment: String, capabilities: String, local: String) -> NodeSeats {
+    let mut out = NodeSeats { version: std::json::find_int_field(assignment, "version"), max_in_flight: std::json::find_int_field(assignment, "max_in_flight") };
+    let paused = std::json::find_bool_field(local, "paused");
+    let held = std::json::find_field_raw(local, "paused_seats");
+    let mut it = std::json::array_first(std::json::find_field_raw(assignment, "seats"));
+    while !it.done {
+        let s = std::str::trim(it.element);
+        let mut seat = NodeSeat {
+            id: std::json::find_string_field(s, "id"),
+            engine: std::json::find_string_field(s, "engine"),
+            config: std::str::trim(std::json::find_field_raw(s, "config")),
+            concurrency: if std::json::string_field(s, "concurrency").kind == "number" { std::json::find_int_field(s, "concurrency") } else { 1 }
+        };
+        let kind = engine_kind(capabilities, seat.engine);
+        let enabled = std::json::string_field(s, "enabled").kind != "bool" || std::json::find_bool_field(s, "enabled");
+        if len(kind) == 0 {
+            seat.status = "refused";
+            seat.reason = "this node offers no engine " + seat.engine;
+        } else if kind != "static" {
+            seat.status = "refused";
+            seat.reason = "engine " + seat.engine + " is of kind " + kind + ", which this build does not run";
+        } else if len(static_config(seat.config).problem) > 0 {
+            seat.status = "refused";
+            seat.reason = static_config(seat.config).problem;
+        } else if !enabled {
+            seat.status = "disabled";
+        } else if paused || names_seat(held, seat.id) {
+            seat.status = "paused";
+            seat.reason = "held by a local control on the node";
+        } else {
+            seat.status = "up";
+        }
+        push(out.items, seat) or discard;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+/// The kind of the engine `id` the node declared, "" when it declared none.
+fn engine_kind(capabilities: String, id: String) -> String {
+    let mut it = std::json::array_first(std::json::find_field_raw(capabilities, "engines"));
+    while !it.done {
+        if std::json::find_string_field(it.element, "id") == id { return std::json::find_string_field(it.element, "kind"); }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+/// True when the JSON list of seat ids names `id`.
+fn names_seat(list: String, id: String) -> Bool {
+    let mut it = std::json::array_first(list);
+    while !it.done {
+        if std::str::trim(it.element) == "\"" + id + "\"" { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+/// The seat `id`, or one with no id when it is not assigned.
+fn seat_of(seats: NodeSeats, id: String) -> NodeSeat {
+    for s in seats.items {
+        if s.id == id { return s; }
+    }
+    return NodeSeat { };
+}
+
+/// The node's effective cap: the smallest of its declared cap, the
+/// coordinator's and its local one.
+fn node_cap(capabilities: String, assigned: Int, local: String) -> Int {
+    let mut cap = effective_cap(capabilities, local);
+    if assigned > 0 && assigned < cap { cap = assigned; }
+    return cap;
+}
+
+/// The seats' states, as the node plane takes them (`SeatState`s); `busy`
+/// is the seat serving a request, "" for none.
+fn states_json(seats: NodeSeats, busy: String) -> String {
+    let out = std::bytes::BytesBuilder { initial_cap: 1024 };
+    let mut first = true;
+    for s in seats.items {
+        if !first { out.append_str(", "); }
+        first = false;
+        out.append_str("{\"id\": " + q(s.id) + ", \"status\": " + q(s.status) + ", \"reason\": " + (if len(s.reason) > 0 { q(s.reason) } else { "null" }) + ", \"in_flight\": " + (if s.id == busy { "1" } else { "0" }) + "}");
+    }
+    let b = out.snapshot() or b"";
+    return "[" + std::str::from_bytes(b) + "]";
+}

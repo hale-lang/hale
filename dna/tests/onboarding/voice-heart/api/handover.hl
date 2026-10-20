@@ -1,0 +1,28 @@
+// The head and this service's client there, as the habitat hands them
+// over (spec/dna.md): HALE_DNA_HEAD_URL, HALE_DNA_APPLICATION_ID,
+// HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and HALE_DNA_OIDC_CLIENT_VAULT.
+// They come together or not at all: any one set without the rest is
+// refused, never read as no hand-over, which would run the api ungoverned
+// on its stored limits. With none set, the flags say it (standalone).
+
+/// A hand-over of the head, or why it is refused (`problem`); `handed`
+/// false when none of it is set.
+type HeadHandover {
+    handed: Bool = false;
+    head: String = "";
+    application: String = "";
+    issuer: String = "";
+    client: String = "";
+    client_vault: String = "";
+    problem: String = "";
+}
+
+const HEAD_FAMILY: String = "HALE_DNA_HEAD_URL, HALE_DNA_APPLICATION_ID, HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and HALE_DNA_OIDC_CLIENT_VAULT";
+
+/// The hand-over these variables make.
+fn head_handover(head: String, application: String, issuer: String, client: String, client_vault: String) -> HeadHandover {
+    let set = (if len(head) > 0 { 1 } else { 0 }) + (if len(application) > 0 { 1 } else { 0 }) + (if len(issuer) > 0 { 1 } else { 0 }) + (if len(client) > 0 { 1 } else { 0 }) + (if len(client_vault) > 0 { 1 } else { 0 });
+    if set == 0 { return HeadHandover { }; }
+    if set < 5 { return HeadHandover { problem: "a hand-over of the head is incomplete: it is " + HEAD_FAMILY + ", all of them" }; }
+    return HeadHandover { handed: true, head: head, application: application, issuer: issuer, client: client, client_vault: client_vault };
+}

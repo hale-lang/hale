@@ -1,0 +1,303 @@
+// Rate limits and budgets, as configuration: what a project, a key or an
+// account is allowed, set on the admin plane and read back with the
+// window it is in. Nothing is counted yet (no request is served until a
+// seat can serve it), so a budget has spent and reserved nothing and a
+// limit carries no `remaining`; the counters come with reservation.
+
+/// `Budget`: the allowance in its current window. `window_end` is `null`
+/// for a lifetime cap.
+type Budget {
+    set: st::BudgetSet = st::BudgetSet { period: st::Period::month };
+    spent_micros: Int = 0;
+    reserved_micros: Int = 0;
+    remaining_micros: Int = 0;
+    window_start: Time = `1970-01-01T00:00:00Z`;
+    has_window_end: Bool = false;
+    window_end: Time = `1970-01-01T00:00:00Z`;
+}
+
+/// `BudgetSet` as a request gives it. One that names no `period_anchor`
+/// counts from the start of the current calendar period.
+type BudgetInput {
+    allowance_micros: Int;
+    currency: String = "USD";
+    period: st::Period;
+    has_period_anchor: Bool = false;
+    period_anchor: Time = `1970-01-01T00:00:00Z`;
+}
+
+/// `PUT .../budget`: the `BudgetSet` for the project the path names.
+type BudgetRequest {
+    project: String;
+    allowance_micros: Int;
+    currency: String = "USD";
+    period: st::Period;
+    has_period_anchor: Bool = false;
+    period_anchor: Time = `1970-01-01T00:00:00Z`;
+}
+
+/// The budget a request sets: its anchor the start of the current
+/// calendar period when it names none.
+fn budget_set_of(allowance_micros: Int, currency: String, period: st::Period, has_anchor: Bool, anchor: Time) -> st::BudgetSet {
+    return st::BudgetSet { allowance_micros: allowance_micros, currency: currency, period: period, period_anchor: if has_anchor { anchor } else { period_start(period, now_seconds()) } };
+}
+
+/// `LimitSet`, for the project the path names.
+type LimitsRequest { project: String; limits: bounded[st::Limit; 16]; }
+
+/// `LimitSet` as answered.
+type LimitSet {
+    limits: bounded[st::Limit; 16];
+    // where they come from: the stored limits, or under a head the
+    // organization's ratified practice
+    source: LimitSource = LimitSource::stored;
+    has_practice: Bool = false;
+    practice: PracticeRef = PracticeRef { name: "", id: "" };
+}
+
+/// Where a project's limits come from (`LimitSet.source`).
+type LimitSource = enum { stored, practice };
+
+/// The practice a ratified limit was read from.
+type PracticeRef { name: String; id: String; }
+
+fn limit_source_name(s: LimitSource) -> String {
+    return match s {
+        LimitSource::stored -> "stored",
+        LimitSource::practice -> "practice"
+    };
+}
+
+fn limit_set_json(l: LimitSet) -> String {
+    return "{\"limits\": " + limits_json(l.limits) + ", \"source\": " + jq(limit_source_name(l.source))
+        + (if l.has_practice { ", \"practice\": {\"name\": " + jq(l.practice.name) + ", \"id\": " + jq(l.practice.id) + "}" } else { "" }) + "}";
+}
+
+// ---- rules -------------------------------------------------------------
+
+/// Each limit in `ls` is one of `scopes` (comma-separated) and names what
+/// its scope needs.
+fn check_limits(ls: bounded[st::Limit; 16], scopes: String, field: String) -> Bool fallible(ApiError) {
+    for l in ls {
+        let scope = st::scope_name(l.scope);
+        if !std::str::contains("," + scopes + ",", "," + scope + ",") {
+            fail invalid("`" + field + "` holds limits of scope " + scopes + ", not " + scope, field);
+        }
+        if scope == "model" && len(l.model) == 0 { fail invalid("a model limit names its `model`", field); }
+        if scope != "model" && len(l.model) > 0 { fail invalid("only a model limit names a `model`", field); }
+        if scope == "account" && len(l.account) == 0 { fail invalid("an account limit names its `account`", field); }
+        if scope != "account" && len(l.account) > 0 { fail invalid("only an account limit names an `account`", field); }
+        if l.window_seconds < 1 { fail invalid("`window_seconds` is at least 1", field); }
+    }
+    return true;
+}
+
+/// An account's limits all name it; one that names none is given it.
+fn own_account_limits(ls: bounded[st::Limit; 16], account: String) -> st::Limits fallible(ApiError) {
+    let mut out = st::Limits { };
+    for l in ls {
+        let mut x = l;
+        if len(x.account) == 0 { x.account = account; }
+        if x.account != account { fail invalid("an account's limits name that account, not " + x.account, "limits"); }
+        push(out.items, x) or discard;
+    }
+    return out;
+}
+
+fn check_budget(b: st::BudgetSet) -> Bool fallible(ApiError) {
+    if b.allowance_micros < 0 { fail invalid("`allowance_micros` is at least 0", "allowance_micros"); }
+    return true;
+}
+
+/// When periods count from by default: the start of the current UTC
+/// calendar period (a week starts on Monday). A lifetime cap counts from now.
+fn period_start(period: st::Period, now: Time) -> Time {
+    let day = std::time::time_from_unix((std::time::unix(now) / 86400) * 86400);
+    if period == st::Period::day { return day; }
+    if period == st::Period::week {
+        // 1970-01-01 was a Thursday: three days after a Monday
+        let days = std::time::unix(day) / 86400;
+        return std::time::time_from_unix((days - (days + 3) % 7) * 86400);
+    }
+    if period == st::Period::month {
+        let text = std::time::iso8601(now);
+        return std::time::parse_time(text[0..8] + "01T00:00:00Z") or day;
+    }
+    return now;
+}
+
+/// `t` moved by `k` calendar months, on the same day and time; the last
+/// day of the month when that month is shorter.
+fn add_months(t: Time, k: Int) -> Time {
+    let text = std::time::iso8601(t);
+    let year = std::str::parse_int(text[0..4]) or 1970;
+    let month = std::str::parse_int(text[5..7]) or 1;
+    let day = std::str::parse_int(text[8..10]) or 1;
+    let total = year * 12 + (month - 1) + k;
+    let ny = total / 12;
+    let nm = total % 12 + 1;
+    let d = if day > days_in(ny, nm) { days_in(ny, nm) } else { day };
+    return std::time::parse_time(st::pad(ny, 4) + "-" + st::pad(nm, 2) + "-" + st::pad(d, 2) + text[10..len(text)]) or t;
+}
+
+fn days_in(year: Int, month: Int) -> Int {
+    if month == 2 {
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+        return if leap { 29 } else { 28 };
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 { return 30; }
+    return 31;
+}
+
+/// Calendar months from `a` to `b`, counting the month numbers only.
+fn months_between(a: Time, b: Time) -> Int {
+    let x = std::time::iso8601(a);
+    let y = std::time::iso8601(b);
+    let ma = (std::str::parse_int(x[0..4]) or 1970) * 12 + (std::str::parse_int(x[5..7]) or 1);
+    let mb = (std::str::parse_int(y[0..4]) or 1970) * 12 + (std::str::parse_int(y[5..7]) or 1);
+    return mb - ma;
+}
+
+/// The budget in the window `now` is in, or, before the anchor, the first
+/// window. Nothing is spent or reserved yet: no request is served until a
+/// seat can serve it.
+fn budget_view(b: st::BudgetSet, now: Time) -> Budget {
+    let anchor = std::time::unix(b.period_anchor);
+    let at = std::time::unix(now);
+    let mut out = Budget { set: b, remaining_micros: b.allowance_micros, window_start: b.period_anchor };
+    if b.period == st::Period::none { return out; }
+    if b.period == st::Period::day || b.period == st::Period::week {
+        let span = if b.period == st::Period::day { 86400 } else { 7 * 86400 };
+        let start = if at < anchor { anchor } else { anchor + ((at - anchor) / span) * span };
+        out.window_start = std::time::time_from_unix(start);
+        out.has_window_end = true;
+        out.window_end = std::time::time_from_unix(start + span);
+        return out;
+    }
+    // month: the window starts the k-th month after the anchor
+    let mut k = 0;
+    if at >= anchor {
+        k = months_between(b.period_anchor, now);
+        if std::time::unix(add_months(b.period_anchor, k)) > at { k = k - 1; }
+    }
+    let start = add_months(b.period_anchor, k);
+    let end = add_months(b.period_anchor, k + 1);
+    out.window_start = start;
+    out.has_window_end = true;
+    out.window_end = end;
+    return out;
+}
+
+// ---- the wire ----------------------------------------------------------
+
+/// A count that may be `null` (-1); -1 when absent.
+fn nullable_count(obj: String, name: String) -> Int fallible(ApiError) {
+    let kind = kind_of(obj, name);
+    if kind == "missing" || kind == "null" { return -1; }
+    let raw = std::str::trim(std::json::find_field_raw(obj, name));
+    if kind != "number" || !is_integer(raw) { fail invalid("`" + name + "` is an integer or null", name); }
+    let n = std::str::parse_int(raw) or fail invalid("`" + name + "` is out of range", name);
+    if n < 0 { fail invalid("`" + name + "` is at least 0", name); }
+    return n;
+}
+
+/// One `Limit` object; `remaining` and `resets_at` are read-only and ignored.
+fn read_limit(obj: String) -> st::Limit fallible(ApiError) {
+    if !std::json::valid_object(obj) { fail invalid("a limit is an object", "limits"); }
+    let scope = required_string(obj, "scope") or raise;
+    if scope != "project" && scope != "key" && scope != "model" && scope != "account" { fail invalid("a limit's `scope` is project, key, model or account", "limits"); }
+    let raw = std::str::trim(std::json::find_field_raw(obj, "window_seconds"));
+    if kind_of(obj, "window_seconds") != "number" || !is_integer(raw) { fail invalid("a limit's `window_seconds` is a required integer", "window_seconds"); }
+    let window = std::str::parse_int(raw) or fail invalid("a limit's `window_seconds` is out of range", "window_seconds");
+    return st::counted(st::Limit {
+        scope: st::scope_of(scope),
+        model: string_or(obj, "model", "") or raise,
+        account: string_or(obj, "account", "") or raise,
+        window_seconds: window,
+        requests: nullable_count(obj, "requests") or raise,
+        input_tokens: nullable_count(obj, "input_tokens") or raise,
+        output_tokens: nullable_count(obj, "output_tokens") or raise,
+        concurrent: nullable_count(obj, "concurrent") or raise
+    });
+}
+
+/// A `limits` array; empty when absent.
+fn limits_field(body: String, name: String) -> st::Limits fallible(ApiError) {
+    let kind = kind_of(body, name);
+    if kind == "missing" { return st::Limits { }; }
+    if kind != "array" { fail invalid("`" + name + "` is a list of limits", name); }
+    let mut out = st::Limits { };
+    let mut it = std::json::array_first(std::json::find_field_raw(body, name));
+    while !it.done {
+        let l = read_limit(std::str::trim(it.element)) or raise;
+        push(out.items, l) or fail invalid("`" + name + "` holds at most 16 limits", name);
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+/// A `BudgetSet` object.
+fn read_budget_set(obj: String) -> BudgetInput fallible(ApiError) {
+    if !std::json::valid_object(obj) { fail invalid("a budget is an object", "budget"); }
+    let anchored = sets(obj, "period_anchor");
+    let period = required_string(obj, "period") or raise;
+    if period != "day" && period != "week" && period != "month" && period != "none" { fail invalid("`period` is day, week, month or none", "period"); }
+    return BudgetInput {
+        allowance_micros: required_amount(obj, "allowance_micros") or raise,
+        currency: string_or(obj, "currency", "USD") or raise,
+        period: st::period_of(period),
+        has_period_anchor: anchored,
+        period_anchor: if anchored { time_field(obj, "period_anchor") or raise } else { `1970-01-01T00:00:00Z` }
+    };
+}
+
+/// `PUT /admin/v1/projects/{project}/budget`.
+fn read_budget_request(body: String, project: String) -> BudgetRequest fallible(ApiError) {
+    let b = read_budget_set(body) or raise;
+    return BudgetRequest { project: project, allowance_micros: b.allowance_micros, currency: b.currency, period: b.period, has_period_anchor: b.has_period_anchor, period_anchor: b.period_anchor };
+}
+
+/// `PUT /admin/v1/projects/{project}/limits`.
+fn read_limits_request(body: String, project: String) -> LimitsRequest fallible(ApiError) {
+    object_body(body) or raise;
+    if kind_of(body, "limits") != "array" { fail invalid("`limits` is a required list of limits", "limits"); }
+    let limits = limits_field(body, "limits") or raise;
+    let mut r = LimitsRequest { project: project };
+    r.limits = limits.items;
+    return r;
+}
+
+/// A count, or `null` when it is not set.
+fn jcount_or_null(has: Bool, n: Int) -> String {
+    return if has { to_string(n) } else { "null" };
+}
+
+fn limit_json(l: st::Limit) -> String {
+    let mut out = "{\"scope\": " + jq(st::scope_name(l.scope));
+    if len(l.model) > 0 { out = out + ", \"model\": " + jq(l.model); }
+    if len(l.account) > 0 { out = out + ", \"account\": " + jq(l.account); }
+    return out + ", \"window_seconds\": " + to_string(l.window_seconds) + ", \"requests\": " + jcount_or_null(l.has_requests, l.requests)
+        + ", \"input_tokens\": " + jcount_or_null(l.has_input_tokens, l.input_tokens) + ", \"output_tokens\": " + jcount_or_null(l.has_output_tokens, l.output_tokens)
+        + ", \"concurrent\": " + jcount_or_null(l.has_concurrent, l.concurrent) + "}";
+}
+
+fn limits_json(ls: bounded[st::Limit; 16]) -> String {
+    let entries_list = st::JsonList { };
+    for l in ls {
+        entries_list.add(limit_json(l));
+    }
+    let entries = entries_list.text();
+    return "[" + entries + "]";
+}
+
+fn budget_set_json(b: st::BudgetSet) -> String {
+    return "{\"allowance_micros\": " + to_string(b.allowance_micros) + ", \"currency\": " + jq(b.currency) + ", \"period\": " + jq(st::period_name(b.period))
+        + ", \"period_anchor\": " + jtime(b.period_anchor) + "}";
+}
+
+fn budget_json(b: Budget) -> String {
+    return "{\"allowance_micros\": " + to_string(b.set.allowance_micros) + ", \"currency\": " + jq(b.set.currency) + ", \"period\": " + jq(st::period_name(b.set.period))
+        + ", \"period_anchor\": " + jtime(b.set.period_anchor) + ", \"spent_micros\": " + to_string(b.spent_micros)
+        + ", \"reserved_micros\": " + to_string(b.reserved_micros) + ", \"remaining_micros\": " + to_string(b.remaining_micros)
+        + ", \"window_start\": " + jtime(b.window_start) + ", \"window_end\": " + jtime_or_null(b.has_window_end, b.window_end) + "}";
+}

@@ -1,0 +1,14 @@
+// The nodes' account in registration's answer (grafted: the habitat's
+// broker), as the node takes it: its password a JSON string, a quote and a
+// backslash in it unescaped.
+import ".." as node;
+
+const ANSWER: String = "{\"protocol\": 2, \"heartbeat_interval_ms\": 5000, \"nats\": {\"url\": \"nats://broker:4222\", \"subject\": \"heart.abc.node.laptop\", \"user\": \"heart-abc-node\", \"password\": \"no\\\"de\\\\pw\"}, \"assignment\": {\"version\": 0, \"max_in_flight\": 1, \"seats\": []}}";
+
+fn main() {
+    let j = node::joined_of(ANSWER, "{}");
+    std::test::assert_eq_str(j.password, "no\"de\\pw", "the password, its quote and backslash unescaped");
+    std::test::assert(j.user == "heart-abc-node" && j.subject == "heart.abc.node.laptop" && j.nats_url == "nats://broker:4222", "the account and its place");
+    let alone = node::joined_of("{\"protocol\": 2, \"heartbeat_interval_ms\": 5000, \"nats\": {\"url\": \"nats://nats:4222\", \"subject\": \"voice.node.laptop\"}, \"assignment\": {\"version\": 0, \"max_in_flight\": 1, \"seats\": []}}", "{}");
+    std::test::assert(alone.user == "" && alone.password == "" && alone.subject == "voice.node.laptop", "standalone, no account");
+}

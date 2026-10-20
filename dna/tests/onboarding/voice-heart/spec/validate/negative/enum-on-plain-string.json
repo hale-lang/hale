@@ -1,0 +1,7 @@
+{
+  "why": "A row enum on a plain contract string narrows what the row accepts, and must fail.",
+  "side": "bundle",
+  "set": ["components", "schemas", "Key", "properties", "name"],
+  "value": { "type": "string", "enum": ["ci", "laptop"] },
+  "expect": "Key.name (narrowed to an enum)"
+}

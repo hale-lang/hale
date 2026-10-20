@@ -1,0 +1,21 @@
+// A project's rate limit from the Board to the caller, end to end through
+// a DNA organization's head (voice#1, #8): admin_limits.sh.
+//
+// It needs docker and a hale whose DNA keeps its record in memory
+// (hale-lang/hale#1590, v0.26.0 on), named by HALE_BIN; set
+// VOICE_DNA_FIXTURE=1 to run it. Without it, it is skipped and says so: it
+// brings up an organization's compose services, which voice's CI does not.
+fn script() -> String {
+    if std::io::fs::file_exists("api/tests/admin_limits.sh") { return "api/tests/admin_limits.sh"; }
+    return "tests/admin_limits.sh";
+}
+
+fn main() {
+    if std::env::var("VOICE_DNA_FIXTURE") != "1" || len(std::env::var("HALE_BIN")) == 0 {
+        let log = std::log::Logger { name: "voice.test" };
+        log.info("admin_limits_test: skipped: set VOICE_DNA_FIXTURE=1 and HALE_BIN to a hale with the memory-backed record (v0.26.0 on) to run it");
+        return;
+    }
+    let ran = std::process::run("bash\n" + script()) or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "could not start bash" };
+    std::test::assert_eq_int(ran.code, 0, "admin_limits.sh: " + ran.stdout + ran.stderr);
+}

@@ -1,0 +1,424 @@
+/// Every endpoint in ../spec/openapi.yaml, in the order it has there. An
+/// endpoint with a row in the surface (surface.hl) is routed to its
+/// handler: the router matches method and path, decodes the request
+/// (wire.hl), calls the row's handler on its receiver and encodes what it
+/// answers or fails with. The rest still answer their canned happy path;
+/// each is replaced by a row as it is made real.
+///
+/// One locus serves them all (the styleguide's one-locus-many-endpoints
+/// shape) and holds the store and the receivers, which borrow it.
+/// `is_route` takes the first match in written order, so a literal
+/// segment comes before a capture in the same position (`usage/summary`
+/// before `usage/:request_id`).
+locus Endpoints {
+    params {
+        canned: String = "canned";
+        ui: String = "";
+        // the configuration and the fleet as reported: in the process
+        // unless the api is given a database (main.hl)
+        store: st::Store = st::MemoryStore { };
+        // the nodes, over NATS
+        link: Link = NatsLink { };
+        probes: Probes = Probes { store: self.store };
+        bearer: KeyBearer = KeyBearer { store: self.store };
+        node_bearer: NodeBearer = NodeBearer { store: self.store };
+        models: Models = Models { store: self.store };
+        // the organization's ratified limits as its reader last read them,
+        // under a head (governance.hl): the api's, shared with the reader
+        held: HeldLimits = HeldLimits { };
+        inference: Inference = Inference { store: self.store, link: self.link, held: self.held };
+        catalog: Catalog = Catalog { store: self.store };
+        projects: Projects = Projects { store: self.store };
+        keys: Keys = Keys { store: self.store };
+        accounts: Accounts = Accounts { store: self.store };
+        nodes: Nodes = Nodes { store: self.store, link: self.link };
+        seats: Seats = Seats { store: self.store, link: self.link };
+        changes: Changes = Changes { store: self.store };
+        node_plane: NodePlane = NodePlane { store: self.store, link: self.link };
+        // grafted, the nodes' account on the habitat's broker (lib/broker),
+        // handed to a node in its registration's answer; "" standalone
+        node_user: String = "";
+        node_secret: std::secret::Credential = std::secret::Credential { };
+    }
+
+    /// The registration's answer with the nodes' account in it, written
+    /// by this method on the node's own connection: the password is
+    /// revealed into that write alone (spec/semantics.md, "@sealed"), never
+    /// into a value the server writes later, escaped as a JSON string in
+    /// that same write.
+    fn registered_with_account(req: std::http::Request, a: Registered) -> std::http::Response {
+        let head = registered_head(a) + ", \"user\": " + jq(self.node_user) + ", \"password\": \"";
+        let tail = "\"}, \"assignment\": " + assignment_json(a.assignment) + "}";
+        std::io::tcp::send_fd(req.conn_fd, std::bytes::from_string("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(head) + len(std::json::escape_string(self.node_secret.reveal_text())) + len(tail)) + "\r\nConnection: close\r\n\r\n" + head + std::json::escape_string(self.node_secret.reveal_text()) + tail)) or discard;
+        std::io::tcp::close_fd(req.conn_fd);
+        return std::http::Response { status: 200, body: "", takeover_raw: true };
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return self.route(req) or failed(err);
+    }
+
+    fn route(req: std::http::Request) -> std::http::Response fallible(ApiError) {
+        let c = std::http::build_context(req);
+        whole_body(req) or raise;
+        admin_body(req) or raise;
+
+        // health
+        if std::http::is_route(c, "GET", "/healthz") { return json_answer(200, health_json(self.probes.liveness(), false)); }
+        if std::http::is_route(c, "GET", "/readyz") {
+            let h = self.probes.readiness();
+            return json_answer(if h.status == HealthStatus::ok { 200 } else { 503 }, health_json(h, true));
+        }
+
+        // caller plane
+        if std::http::is_route(c, "POST", "/v1/responses") { return self.infer(req, "responses") or raise; }
+        if std::http::is_route(c, "POST", "/v1/chat/completions") { return self.infer(req, "chat") or raise; }
+        if std::http::is_route(c, "GET", "/v1/models") {
+            let ctx = self.bearer.context(std::http::header(req, "Authorization")) or raise;
+            let l = self.models.list(ctx) or raise;
+            return caller_json(model_list_json(l));
+        }
+        if std::http::is_route(c, "GET", "/v1/models/:model") {
+            let ctx = self.bearer.context(std::http::header(req, "Authorization")) or raise;
+            let m = self.models.get(ModelRef { model: std::http::path_param(c.params, "model") }, ctx) or raise;
+            return caller_json(model_json(m));
+        }
+        if std::http::is_route(c, "GET", "/v1/capabilities") {
+            let ctx = self.bearer.context(std::http::header(req, "Authorization")) or raise;
+            let caps = self.models.capabilities(ctx) or raise;
+            return caller_json(capabilities_json(caps));
+        }
+
+        // projects, budgets, limits, keys
+        if std::http::is_route(c, "GET", "/admin/v1/projects") {
+            let q = ProjectQuery { include_archived: std::http::query_param(c.params, "include_archived") == "true" };
+            let l = self.projects.list(q) or raise;
+            return json_answer(200, project_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/projects") {
+            let r = read_project_create(req.body) or raise;
+            let v = self.projects.create(r) or raise;
+            return json_answer(201, project_json(v));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project") {
+            let v = self.projects.get(ProjectRef { project: std::http::path_param(c.params, "project") }) or raise;
+            return json_answer(200, project_json(v));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/projects/:project") {
+            let r = read_project_update(req.body, std::http::path_param(c.params, "project")) or raise;
+            let v = self.projects.update(r) or raise;
+            return json_answer(200, project_json(v));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/projects/:project") {
+            let v = self.projects.archive(ProjectRef { project: std::http::path_param(c.params, "project") }) or raise;
+            return json_answer(200, project_json(v));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/budget") {
+            let b = self.projects.budget(ProjectRef { project: std::http::path_param(c.params, "project") }) or raise;
+            return json_answer(200, budget_json(b));
+        }
+        if std::http::is_route(c, "PUT", "/admin/v1/projects/:project/budget") {
+            let r = read_budget_request(req.body, std::http::path_param(c.params, "project")) or raise;
+            let b = self.projects.set_budget(r) or raise;
+            return json_answer(200, budget_json(b));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/limits") {
+            let project = std::http::path_param(c.params, "project");
+            let l = self.projects.limits(ProjectRef { project: project }) or raise;
+            // under a head, the organization's ratified limit (governance.hl)
+            if self.inference.governed {
+                let ratified = self.inference.ratified(project) or raise;
+                return json_answer(200, limit_set_json(ratified));
+            }
+            return json_answer(200, limit_set_json(l));
+        }
+        if std::http::is_route(c, "PUT", "/admin/v1/projects/:project/limits") {
+            let r = read_limits_request(req.body, std::http::path_param(c.params, "project")) or raise;
+            let l = self.projects.set_limits(r) or raise;
+            return json_answer(200, limit_set_json(l));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/keys") {
+            let l = self.keys.list(ProjectRef { project: std::http::path_param(c.params, "project") }) or raise;
+            return json_answer(200, key_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/projects/:project/keys") {
+            let r = read_key_create(req.body, std::http::path_param(c.params, "project")) or raise;
+            let v = self.keys.create(r) or raise;
+            return json_answer(201, key_json(v));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/projects/:project/keys/:key") {
+            let v = self.keys.get(KeyRef { project: std::http::path_param(c.params, "project"), key: std::http::path_param(c.params, "key") }) or raise;
+            return json_answer(200, key_json(v));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/projects/:project/keys/:key") {
+            let r = read_key_update(req.body, std::http::path_param(c.params, "project"), std::http::path_param(c.params, "key")) or raise;
+            let v = self.keys.update(r) or raise;
+            return json_answer(200, key_json(v));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/projects/:project/keys/:key") {
+            let v = self.keys.revoke(KeyRef { project: std::http::path_param(c.params, "project"), key: std::http::path_param(c.params, "key") }) or raise;
+            return json_answer(200, key_json(v));
+        }
+
+        // usage
+        if std::http::is_route(c, "GET", "/admin/v1/usage") { return self.json("listUsage", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/usage/summary") { return self.json("summarizeUsage", 200); }
+        if std::http::is_route(c, "GET", "/admin/v1/usage/:request_id") { return self.json("getUsage", 200); }
+
+        // the catalog
+        if std::http::is_route(c, "GET", "/admin/v1/models") {
+            let l = self.catalog.list() or raise;
+            return json_answer(200, catalog_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/models") {
+            let r = read_model_create(req.body) or raise;
+            let m = self.catalog.create(r) or raise;
+            return json_answer(201, catalog_model_json(m));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/models/:model") {
+            let m = self.catalog.get(ModelRef { model: std::http::path_param(c.params, "model") }) or raise;
+            return json_answer(200, catalog_model_json(m));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/models/:model") {
+            let r = read_model_update(req.body, std::http::path_param(c.params, "model")) or raise;
+            let m = self.catalog.update(r) or raise;
+            return json_answer(200, catalog_model_json(m));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/models/:model") {
+            let m = self.catalog.remove(ModelRef { model: std::http::path_param(c.params, "model") }) or raise;
+            return json_answer(200, catalog_model_json(m));
+        }
+
+        // accounts
+        if std::http::is_route(c, "GET", "/admin/v1/accounts") {
+            let l = self.accounts.list(AccountQuery { include_archived: std::http::query_param(c.params, "include_archived") == "true" }) or raise;
+            return json_answer(200, account_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/accounts") {
+            let r = read_account_create(req.body) or raise;
+            let a = self.accounts.create(r) or raise;
+            return json_answer(201, account_json(a));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/accounts/:account") {
+            let a = self.accounts.get(AccountRef { account: std::http::path_param(c.params, "account") }) or raise;
+            return json_answer(200, account_json(a));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/accounts/:account") {
+            let r = read_account_update(req.body, std::http::path_param(c.params, "account")) or raise;
+            let a = self.accounts.update(r) or raise;
+            return json_answer(200, account_json(a));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/accounts/:account") {
+            let a = self.accounts.archive(AccountRef { account: std::http::path_param(c.params, "account") }) or raise;
+            return json_answer(200, account_json(a));
+        }
+
+        // nodes
+        if std::http::is_route(c, "GET", "/admin/v1/nodes") {
+            let l = self.nodes.list() or raise;
+            return json_answer(200, node_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes") {
+            let r = read_node_create(req.body) or raise;
+            let n = self.nodes.create(r) or raise;
+            return json_answer(201, node_json(n));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node") {
+            let n = self.nodes.get(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            return json_answer(200, node_json(n));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node") {
+            let r = read_node_update(req.body, std::http::path_param(c.params, "node")) or raise;
+            let n = self.nodes.update(r) or raise;
+            return json_answer(200, node_json(n));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node") {
+            let n = self.nodes.revoke(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            return json_answer(200, node_json(n));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats") {
+            let l = self.seats.list(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            return json_answer(200, seat_list_json(l));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/seats") {
+            let r = read_seat_create(req.body, std::http::path_param(c.params, "node")) or raise;
+            let v = self.seats.create(r) or raise;
+            return json_answer(201, seat_json(v));
+        }
+        if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats/:seat") {
+            let v = self.seats.get(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
+            return json_answer(200, seat_json(v));
+        }
+        if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node/seats/:seat") {
+            let r = read_seat_update(req.body, std::http::path_param(c.params, "node"), std::http::path_param(c.params, "seat")) or raise;
+            let v = self.seats.update(r) or raise;
+            return json_answer(200, seat_json(v));
+        }
+        if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node/seats/:seat") {
+            let v = self.seats.remove(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
+            return json_answer(200, seat_json(v));
+        }
+        if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/token") {
+            let n = self.nodes.rotate_token(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            return json_answer(200, node_json(n));
+        }
+
+        // routes
+        if std::http::is_route(c, "GET", "/admin/v1/routes") {
+            // the brain's last table, from the store: no wait on NATS
+            let table = self.store.route_table() or fail store_failed(err);
+            if len(table) == 0 { fail ApiError { status: 503, kind: "server_error", code: ErrorCode::route_table_unavailable, message: "no route table yet: no brain has written one" }; }
+            return json_answer(200, table);
+        }
+
+        // node plane
+        if std::http::is_route(c, "POST", "/node/v1/register") {
+            let ctx = self.node_ctx(req) or raise;
+            let r = read_registration(req.body) or raise;
+            let answer = self.node_plane.register(r, ctx) or raise;
+            if len(self.node_user) > 0 { return self.registered_with_account(req, answer); }
+            return json_answer(200, registered_json(answer));
+        }
+        if std::http::is_route(c, "GET", "/node/v1/assignment") {
+            let ctx = self.node_ctx(req) or raise;
+            let a = self.node_plane.assignment(ctx) or raise;
+            return json_answer(200, assignment_json(a));
+        }
+        if std::http::is_route(c, "POST", "/node/v1/heartbeat") {
+            let ctx = self.node_ctx(req) or raise;
+            let h = read_heartbeat(req.body) or raise;
+            self.node_plane.heartbeat(h, ctx) or raise;
+            return no_content();
+        }
+        if std::http::is_route(c, "POST", "/node/v1/seats") {
+            let ctx = self.node_ctx(req) or raise;
+            let st = read_seat_states(req.body) or raise;
+            self.node_plane.seat_states(st, ctx) or raise;
+            return no_content();
+        }
+        if std::http::is_route(c, "PUT", "/node/v1/capabilities") {
+            let ctx = self.node_ctx(req) or raise;
+            let r = read_node_report(req.body) or raise;
+            self.node_plane.capabilities(r, ctx) or raise;
+            return no_content();
+        }
+        if std::http::is_route(c, "PUT", "/node/v1/local") {
+            let ctx = self.node_ctx(req) or raise;
+            object_body(req.body) or raise;
+            let r = read_local(std::str::trim(req.body)) or raise;
+            self.node_plane.local(r, ctx) or raise;
+            return no_content();
+        }
+        if std::http::is_route(c, "POST", "/node/v1/quota") {
+            let ctx = self.node_ctx(req) or raise;
+            let q = read_quota(req.body) or raise;
+            self.node_plane.quota(q, ctx) or raise;
+            return no_content();
+        }
+        if std::http::is_route(c, "POST", "/node/v1/draining") {
+            let ctx = self.node_ctx(req) or raise;
+            let d = read_draining(req.body) or raise;
+            self.node_plane.going_away(d, ctx) or raise;
+            return no_content();
+        }
+
+        // events
+        if std::http::is_route(c, "GET", "/admin/v1/events") { return canned_body(self.canned, "streamAdminEvents.stream.sse", 200, "text/event-stream", ""); }
+
+        // changes
+        if std::http::is_route(c, "GET", "/admin/v1/changes") {
+            let q = read_change_query(c.params) or raise;
+            let l = self.changes.list(q) or raise;
+            return json_answer(200, change_list_json(l));
+        }
+
+        if len(self.ui) > 0 && req.method == "GET" && is_ui_path(req.path) {
+            return serve_static(self.ui, req);
+        }
+        return no_route(req);
+    }
+
+    /// `<name>.json` with `status`.
+    fn json(name: String, status: Int) -> std::http::Response {
+        return canned_body(self.canned, name + ".json", status, "application/json", "");
+    }
+
+    /// An inference request: the caller's key, then the row's handler,
+    /// which admits it and has a seat serve it.
+    fn infer(req: std::http::Request, endpoint: String) -> std::http::Response fallible(ApiError) {
+        let ctx = self.bearer.context(std::http::header(req, "Authorization")) or raise;
+        let r = read_inference(req.body, endpoint) or raise;
+        if r.stream {
+            // the standard event stream, on this connection (stream.hl)
+            let out = EventStream { conn_fd: req.conn_fd };
+            return self.inference.stream(r, ctx, out) or raise;
+        }
+        if endpoint == "chat" {
+            let s = self.inference.chat(r, ctx) or raise;
+            return served_answer(s, chat_completion_json(s));
+        }
+        let s = self.inference.respond(r, ctx) or raise;
+        return served_answer(s, response_json(s));
+    }
+
+    /// The node an enrollment token names.
+    fn node_ctx(req: std::http::Request) -> std::api::Context fallible(ApiError) {
+        return self.node_bearer.context(std::http::header(req, "Authorization")) or raise;
+    }
+}
+
+/// A JSON answer.
+fn json_answer(status: Int, body: String) -> std::http::Response {
+    return std::http::Response { status: status, content_type: "application/json", body: body };
+}
+
+/// A caller-plane answer: JSON with the request's id. The rate-limit and
+/// budget headers come with limits and budgets.
+fn caller_json(body: String) -> std::http::Response {
+    let id = random_hex(12) or "unnumbered";
+    return std::http::Response { status: 200, content_type: "application/json", headers: "X-Request-Id: req_" + id, body: body };
+}
+
+/// A served inference request, under its request id, with its rate-limit
+/// headers.
+fn served_answer(s: Served, body: String) -> std::http::Response {
+    return std::http::Response { status: 200, content_type: "application/json", headers: "X-Request-Id: " + s.request_id + (if len(s.headers) > 0 { "\r\n" + s.headers } else { "" }), body: body };
+}
+
+/// A row's failure, in the contract's envelope.
+fn failed(e: ApiError) -> std::http::Response {
+    if e.status == 401 {
+        return std::http::Response { status: 401, content_type: "application/json", headers: "WWW-Authenticate: Bearer", body: error_json(e) };
+    }
+    if e.retry_after > 0 {
+        return std::http::Response { status: e.status, content_type: "application/json", headers: "Retry-After: " + to_string(e.retry_after), body: error_json(e) };
+    }
+    return json_answer(e.status, error_json(e));
+}
+
+/// A request body comes with its `Content-Length`. hale's Server does not
+/// read a chunked one (`Transfer-Encoding: chunked`; FRICTION.md), so the
+/// handler would see it empty: it is refused for what it is, not as a body
+/// that is not JSON.
+fn whole_body(req: std::http::Request) -> Bool fallible(ApiError) {
+    if std::str::contains(std::str::lower(std::http::header(req, "Transfer-Encoding")), "chunked") {
+        fail invalid("a chunked request body is not accepted: send it with Content-Length", "");
+    }
+    return true;
+}
+
+/// An admin-plane write carries its body as JSON, as the contract declares,
+/// and is refused otherwise. A browser sends a cross-origin `text/plain`
+/// POST without asking first; this refusal is what keeps a page open on
+/// the operator's machine from writing to an api on loopback. The token
+/// rotation has no body.
+fn admin_body(req: std::http::Request) -> Bool fallible(ApiError) {
+    if !std::str::starts_with(req.path, "/admin/") { return true; }
+    if req.method != "POST" && req.method != "PUT" && req.method != "PATCH" { return true; }
+    if std::str::ends_with(req.path, "/token") { return true; }
+    let ct = std::str::lower(std::str::trim(std::http::header(req, "Content-Type")));
+    if ct != "application/json" && !std::str::starts_with(ct, "application/json;") {
+        fail invalid("an admin write carries its body as Content-Type: application/json", "");
+    }
+    return true;
+}

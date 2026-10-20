@@ -1,0 +1,234 @@
+/// The node's calls to the api's node plane (../spec/openapi.yaml, tag
+/// `node`), on a thread of their own.
+///
+/// It registers with the enrollment token, its capabilities and its local
+/// controls, and hands what comes back to the session (`PlaneJoined`). It
+/// reports every seat state the session applies, heartbeats every interval
+/// with the version it applied, tells the coordinator when the local
+/// controls change, and reads the assignment whenever the session is on
+/// NATS again, since an `assign` sent while it was not is lost. When the
+/// coordinator stops taking its token (a rotation or a revocation), it
+/// registers again.
+///
+/// The api serves its callers one at a time, so a node-plane call can wait
+/// for as long as a request holds the api. These calls block only this
+/// thread: the session keeps reading NATS, and answers a `serve` at once.
+
+/// What registration gave the node: where NATS is, its subject, its
+/// assignment and the local controls it registered with.
+/// Registration's answer as the session takes it, with `local` the
+/// controls it was sent with; JSON strings unescaped.
+fn joined_of(answer: String, local: String) -> Joined {
+    let nats_place = std::json::find_field_raw(answer, "nats");
+    return Joined {
+        nats_url: std::json::find_string_field(nats_place, "url"),
+        subject: std::json::find_string_field(nats_place, "subject"),
+        user: std::json::find_string_field(nats_place, "user"),
+        password: std::json::find_string_field(nats_place, "password"),
+        assignment: std::str::trim(std::json::find_field_raw(answer, "assignment")),
+        local: local
+    };
+}
+
+/// What registration answered. `user` and `password` are the nodes'
+/// account on the habitat's broker when voice is grafted, "" otherwise.
+type Joined { nats_url: String = ""; subject: String = ""; user: String = ""; password: String = ""; assignment: String = ""; local: String = ""; }
+
+topic PlaneJoined { payload: Joined; }
+
+/// An assignment the plane read, as JSON.
+type AssignmentText { assignment: String = ""; }
+
+topic AssignmentRead { payload: AssignmentText; }
+
+/// Local controls the coordinator now has, as JSON.
+type LocalText { local: String = ""; }
+
+topic LocalApplied { payload: LocalText; }
+
+/// The seats as the session applied them: their version and their states
+/// as `SeatState` JSON.
+type AppliedSeats { version: Int = -1; states: String = "[]"; }
+
+topic SeatsApplied { payload: AppliedSeats; }
+
+/// The requests in flight on the node, and the seats' states with theirs.
+type Load { in_flight: Int = 0; states: String = "[]"; }
+
+topic LoadChanged { payload: Load; }
+
+/// The session is on NATS (again).
+type NatsState { connected: Bool = true; }
+
+topic NatsConnected { payload: NatsState; }
+
+/// The plane's side of the connection, for the node's status:
+/// `connecting`, `registered` or `refused` ("" leaves it as it was), and
+/// the last error ("" for none).
+type PlaneState { state: String = "connecting"; detail: String = ""; }
+
+topic PlaneReport { payload: PlaneState; }
+
+locus Plane {
+    params {
+        data: String = "node-data";
+        api: String = "";
+        // the enrollment token: `--token`'s, in the open (standalone), or
+        // else the credential's, revealed only into a request's header
+        token: String = "";
+        credential: std::secret::Credential = std::secret::Credential { };
+        capabilities: String = "";
+        registered: Bool = false;
+        interval_ms: Int = 5000;
+        // the local controls the coordinator was last told
+        local: String = "";
+        // the seats as last applied, for the heartbeat
+        applied: Int = -1;
+        states: String = "[]";
+        in_flight: Int = 0;
+        // work the session asked for
+        report_due: Bool = false;
+        read_due: Bool = false;
+        // monotonic ns
+        next_beat: Int = 0;
+        retry_at: Int = 0;
+    }
+
+    bus {
+        subscribe SeatsApplied as on_seats;
+        subscribe NatsConnected as on_nats;
+        subscribe LoadChanged as on_load;
+        publish PlaneJoined;
+        publish AssignmentRead;
+        publish LocalApplied;
+        publish PlaneReport;
+    }
+
+    run() {
+        while true {
+            self.step();
+        }
+    }
+
+    /// One turn. Its sleep is where the session's messages arrive.
+    fn step() {
+        if !self.registered {
+            if std::time::monotonic_ns() >= self.retry_at {
+                self.register();
+                if !self.registered { self.retry_at = std::time::monotonic_ns() + 5000000000; }
+            }
+            std::time::sleep(100ms);
+            return;
+        }
+        if self.read_due {
+            self.read_due = false;
+            self.read_assignment();
+        }
+        if self.report_due {
+            self.report_due = false;
+            self.report_seats();
+        }
+        self.check_local();
+        if std::time::monotonic_ns() >= self.next_beat { self.heartbeat(); }
+        std::time::sleep(100ms);
+    }
+
+    fn on_seats(s: AppliedSeats) {
+        self.applied = s.version;
+        self.states = s.states;
+        self.report_due = true;
+    }
+
+    /// A request began or ended: the next heartbeat says so.
+    fn on_load(l: Load) {
+        self.in_flight = l.in_flight;
+        self.states = l.states;
+    }
+
+    fn on_nats(n: NatsState) {
+        if n.connected { self.read_due = true; }
+    }
+
+    /// `POST /node/v1/register`; what comes back goes to the session.
+    @unbounded
+    fn register() {
+        let local = read_local(self.data);
+        let body = "{\"protocol\": 2, \"version\": " + q(NODE_VERSION) + ", \"capabilities\": " + self.capabilities + ", \"local\": " + local + "}";
+        let resp = self.call("POST", "/node/v1/register", body);
+        if resp.status == 0 { return; }
+        if resp.status == 401 || resp.status == 403 {
+            PlaneReport <- PlaneState { state: "refused", detail: "the coordinator refused this node's enrollment token (" + to_string(resp.status) + ")" };
+            return;
+        }
+        if resp.status != 200 {
+            PlaneReport <- PlaneState { state: "connecting", detail: "registration answered " + to_string(resp.status) + ": " + std::str::from_bytes(resp.body) };
+            return;
+        }
+        let answer = std::str::from_bytes(resp.body);
+        self.interval_ms = std::json::find_int_field(answer, "heartbeat_interval_ms");
+        if self.interval_ms < 1000 { self.interval_ms = 5000; }
+        self.local = local;
+        self.registered = true;
+        self.next_beat = std::time::monotonic_ns() + self.interval_ms * 1000000;
+        PlaneReport <- PlaneState { state: "registered", detail: "" };
+        PlaneJoined <- joined_of(answer, local);
+    }
+
+    /// `GET /node/v1/assignment`, for the session to adopt when it is newer.
+    fn read_assignment() {
+        let resp = self.call("GET", "/node/v1/assignment", "");
+        if resp.status == 401 || resp.status == 403 { self.registered = false; }
+        if resp.status != 200 { return; }
+        AssignmentRead <- AssignmentText { assignment: std::str::trim(std::str::from_bytes(resp.body)) };
+    }
+
+    /// `POST /node/v1/seats`: the seats as applied.
+    fn report_seats() {
+        let resp = self.call("POST", "/node/v1/seats", "{\"assignment_version\": " + to_string(self.applied) + ", \"seats\": " + self.states + "}");
+        if resp.status == 401 || resp.status == 403 { self.registered = false; }
+    }
+
+    /// Tell the coordinator when the local controls changed; then the
+    /// session applies them.
+    @unbounded
+    fn check_local() {
+        let local = read_local(self.data);
+        if local == self.local { return; }
+        let resp = self.call("PUT", "/node/v1/local", local);
+        if resp.status == 0 { return; }
+        self.local = local;
+        LocalApplied <- LocalText { local: local };
+    }
+
+    /// `POST /node/v1/heartbeat`, with the version applied, so a missed
+    /// `assign` is sent again; a coordinator that no longer takes the
+    /// token is registered with again.
+    fn heartbeat() {
+        self.next_beat = std::time::monotonic_ns() + self.interval_ms * 1000000;
+        let version = if self.applied >= 0 { ", \"assignment_version\": " + to_string(self.applied) } else { "" };
+        let resp = self.call("POST", "/node/v1/heartbeat", "{\"in_flight\": " + to_string(self.in_flight) + ", \"seats\": " + self.states + version + "}");
+        if resp.status == 401 || resp.status == 403 || resp.status == 400 { self.registered = false; }
+    }
+
+    /// One node-plane call; a status of 0 when the api cannot be reached.
+    fn call(method: String, path: String, body: String) -> std::http::ClientResponse {
+        let url = std::http::parse_url(self.api + path) or std::http::Url { };
+        if len(url.host) == 0 {
+            PlaneReport <- PlaneState { state: "", detail: "bad api address: " + self.api };
+            return std::http::ClientResponse { status: 0, body: b"" };
+        }
+        // the token goes on the wire as it is held: a revealed secret is
+        // consumed by the request it is written into (spec/semantics.md,
+        // "@sealed")
+        if len(self.token) > 0 {
+            return std::http::request(std::http::ClientRequest { method: method, url: url, headers: "Authorization: Bearer " + self.token + "\r\nContent-Type: application/json", body: std::bytes::from_string(body) }) or self.unreachable(err);
+        }
+        return std::http::request(std::http::ClientRequest { method: method, url: url, headers: "Authorization: Bearer " + self.credential.reveal_text() + "\r\nContent-Type: application/json", body: std::bytes::from_string(body) }) or self.unreachable(err);
+    }
+
+    /// The api could not be reached: say so and hand back a zero status.
+    fn unreachable(e: std::http::HttpError) -> std::http::ClientResponse {
+        PlaneReport <- PlaneState { state: "", detail: "api unreachable at " + self.api + " (" + e.kind + ")" };
+        return std::http::ClientResponse { status: 0, body: b"" };
+    }
+}
