@@ -283,7 +283,7 @@ main locus App {
         // a person the record retires writes nothing more in memory
         let retired = dna::RecordJournal { repo: shared, author: "bob" }.append(dna::RecordJournal { repo: shared }.revision(), "person.retired", "bob", "{\"successor\": \"\"}");
         std::test::assert(retired.ok, "bob's retirement is a row of the record: " + retired.error);
-        std::test::assert(chart_holds(north, srecord, "org_retired WHERE person = 'bob'", 300), "the nodes project the retirement: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
+        std::test::assert(chart_holds(north, srecord, "org_retired WHERE person = 'bob'", 300), "the nodes project the retirement: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or "") + dna::organization_state(shared));
         std::test::assert(std::str::contains(write_as(north, srecord, "task.planned", "i9", "{}", "bob", ""), "bob retired from this organism"), "north's head writes nothing in a retired member's name");
         let after = as_head(shared, acme, toolchain() + "\ndna\nledger\nrows").stdout;
         std::test::assert(std::str::contains(after, "\"entity\": \"i4\"") && std::str::contains(after, "\"entity\": \"t1\"") && !std::str::contains(after, "\"entity\": \"i5\"") && !std::str::contains(after, "\"entity\": \"i6\"") && !std::str::contains(after, "\"entity\": \"i7\"") && !std::str::contains(after, "\"entity\": \"m1\"") && !std::str::contains(after, "\"entity\": \"i9\""), "exactly the writes the gate took are rows: " + after);

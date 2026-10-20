@@ -249,6 +249,14 @@ fn sha256_file(path: String) -> String {
     return if sp < 0 { trim_nl(r.stdout) } else { r.stdout[0..sp] };
 }
 
+// What a fixture says when it waited for the organization of the project at
+// `root` and it never showed: the pid its file names, what `ps` knows of
+// that pid, and the tail of the organization's own log.
+fn organization_state(root: String) -> String {
+    let r = run_tool("sh\n-c\ncd \"$1/.hale/dna\" 2>/dev/null || { echo \"no .hale/dna\"; exit 0; }; p=$(cat org.pid 2>/dev/null); echo \"org.pid=[$p] exit=[$(cat org.exit 2>/dev/null)]\"; [ -z \"$p\" ] || ps -p \"$p\" -o pid=,ppid=,stat=,command= 2>&1; echo \"org.log:\"; tail -c 1500 org.log 2>&1\nsh\n" + root);
+    return "\n" + r.stdout + r.stderr;
+}
+
 // The regular files under `dir`, relative and one per line, sorted;
 // vendor, `.git` (a worktree's is a FILE, so it is named as well as
 // its tree) and `.hale` are never part of a change (GH #583 M3/M4).

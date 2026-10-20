@@ -47,7 +47,7 @@ fn person_signing_key(repo: String) -> String {
 // `digest` signed with the ssh key at `key`: "ssh:<base64 of the armored
 // signature>", "" when it could not be signed.
 fn ssh_sign(key: String, digest: String) -> String {
-    let r = run_tool("sh\n-c\nt=$(mktemp) && printf '%s' \"$2\" > \"$t\" && ssh-keygen -Y sign -q -f \"$1\" -n " + RECORD_SIG_NAMESPACE + " \"$t\" >/dev/null 2>&1 && base64 -w0 \"$t.sig\"; s=$?; rm -f \"$t\" \"$t.sig\"; exit $s\nsh\n" + key + "\n" + digest);
+    let r = run_tool("sh\n-c\nt=$(mktemp) && printf '%s' \"$2\" > \"$t\" && ssh-keygen -Y sign -q -f \"$1\" -n " + RECORD_SIG_NAMESPACE + " \"$t\" >/dev/null 2>&1 && base64 < \"$t.sig\" | tr -d '\\n'; s=$?; rm -f \"$t\" \"$t.sig\"; exit $s\nsh\n" + key + "\n" + digest);
     if r.code != 0 || len(trim_nl(r.stdout)) == 0 { return ""; }
     return "ssh:" + trim_nl(r.stdout);
 }

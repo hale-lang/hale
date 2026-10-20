@@ -795,7 +795,9 @@ locus App {
     // opened there; the organism's genome is never asked for a Mutation.
     fn codebase() {
         let root = dna::scratch_root("legs-codebase");
-        let bare = root + "/foreign.git";
+        // attach names a local repository by its physical path (`pwd -P`), which
+        // is not the scratch path where /tmp is a link (macOS: /private/tmp)
+        let bare = dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd -P\nsh\n" + root).stdout) + "/foreign.git";
         let made = in_dir(root, "sh\n-c\nmkdir seed && cd seed && git init -q -b trunk && git config user.name f && git config user.email f@f && printf 'echo built > built.txt\\n' > build.sh && printf 'test -f built.txt && grep -q leg greeting.txt\\n' > test.sh && printf 'hello\\n' > greeting.txt && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed foreign.git");
         std::test::assert_eq_int(made.code, 0, "the foreign repository is made: " + made.stderr);
         std::io::fs::write_file(self.app + "/dna/org/work.hl", CODEBASE_WORK) or discard;

@@ -337,7 +337,7 @@ main locus App {
         std::test::assert_eq_str(self.core.evidence.redact(proposed, "mara", "superseded", "retention:30d"), "", "its receipt redacted");
         let at = dna::RecordJournal { repo: app }.revision();
         let projected = self.projected_to(record, at, 300);
-        std::test::assert(projected >= at, "the spine still projects the record past the redaction: at " + to_string(projected) + " of " + to_string(at) + "; " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+        std::test::assert(projected >= at, "the spine still projects the record past the redaction: at " + to_string(projected) + " of " + to_string(at) + "; " + (std::io::fs::read_file(app + "/.hale/dev.log") or "") + dna::organization_state(app));
 
         stop_spine(app, spine2);
         self.owner_conn.conn.close();

@@ -385,7 +385,7 @@ locus App {
         self.head = head;
         let started = dna::run_tool(start_of(self.repo, owner, nats));
         let body = dna::trim_nl(started.stdout);
-        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + dna::organization_state(self.repo));
 
         // ---- the Board decides, in the listing's order: a position, then its mandate
         let listed = self.dna("review");
@@ -443,7 +443,7 @@ locus App {
         self.head = apphead;
         let appstarted = dna::run_tool(start_of(self.repo, owner, nats));
         let appbody = dna::trim_nl(appstarted.stdout);
-        std::test::assert(self.organization_up(600), "the organization runs on an application's record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        std::test::assert(self.organization_up(600), "the organization runs on an application's record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + dna::organization_state(self.repo));
         let applisted = self.dna("review");
         std::test::assert(std::str::contains(applisted.stdout, "ratify the position `api/dev`") && std::str::contains(applisted.stdout, "ratify the mandate of `api/reviewer`"), "the application's holes are listed: " + applisted.stdout);
         let apph = self.dna("review\nholes\napprove\n--as\nada\n--authority\nboard\n--no-wait");
