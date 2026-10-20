@@ -57,6 +57,7 @@ type Integration {
 type IntegrationSeen {
     ok: Bool = false;
     text: String = "";
+    summary: String = ""; // openapi: the drift lines, which the receipt leads with
     why: String = "";
 }
 
@@ -242,16 +243,26 @@ fn integration_fetch(url: String) -> IntegrationSeen {
 // an OpenAPI surface's drift lines. `root` is the genome, where a surface is.
 fn integration_observe(w: Integration, root: String, hale: String) -> IntegrationSeen {
     if w.source == "openapi" {
+        // the document itself identifies the upstream revision; the drift
+        // lines (a row and a slot) summarize it against the surface, and
+        // stay the same through a second change to a row that drifted
+        let doc = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\" --document\nsh\n" + root + "\n" + hale + "\n" + w.surface);
+        if doc.code != 0 { return IntegrationSeen { why: drift_failure(w, doc) }; }
         let r = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\"\nsh\n" + root + "\n" + hale + "\n" + w.surface);
-        if r.code == 0 { return IntegrationSeen { ok: true, text: "" }; }
-        if r.code == 1 { return IntegrationSeen { ok: true, text: drift_lines(r.stdout) }; }
-        let said = std::str::trim(r.stderr + " " + r.stdout);
-        return IntegrationSeen { why: "the drift check of " + w.surface + " exited " + to_string(r.code) + (if len(said) > 0 { ": " + (if len(said) > 400 { said[0..400] } else { said }) } else { "" }) };
+        if r.code != 0 && r.code != 1 { return IntegrationSeen { why: drift_failure(w, r) }; }
+        if len(doc.stdout) > INTEGRATION_FETCH_MAX { return IntegrationSeen { why: "the source is over " + to_string(INTEGRATION_FETCH_MAX) + " bytes" }; }
+        return IntegrationSeen { ok: true, text: doc.stdout, summary: drift_lines(r.stdout) };
     }
     let got = integration_fetch(w.url);
     if !got.ok { return got; }
     if w.source == "feed" { return IntegrationSeen { ok: true, text: feed_entries(got.text) }; }
     return IntegrationSeen { ok: true, text: page_text(got.text) };
+}
+
+// Why the drift check of `w`'s surface could not read its source.
+fn drift_failure(w: Integration, r: RunResult) -> String {
+    let said = std::str::trim(r.stderr + " " + r.stdout);
+    return "the drift check of " + w.surface + " exited " + to_string(r.code) + (if len(said) > 0 { ": " + (if len(said) > 400 { said[0..400] } else { said }) } else { "" });
 }
 
 // The `drift …` lines of `hale api drift`'s output.
@@ -550,10 +561,12 @@ locus IntegrationRecord {
             if len(r) > 0 { return IntegrationAnswer { narrative: r }; }
             return IntegrationAnswer { ok: true, outcome: "baseline", narrative: w.name + " baseline at " + short_digest(digest) };
         }
-        let diff = integration_diff(w.name, self.receipts.read(before), seen.text, before, digest);
+        let unified = integration_diff(w.name, self.receipts.read(before), seen.text, before, digest);
+        // an API's receipt leads with its drift lines, the summary of the move
+        let diff = if len(seen.summary) > 0 { seen.summary + unified } else { unified };
         let diff_digest = self.receipts.store(diff);
         if len(diff_digest) == 0 { return IntegrationAnswer { narrative: "the diff of " + w.name + " was not kept" }; }
-        let reading = self.land_changed(task, w, before, digest, diff_digest, diff);
+        let reading = self.land_changed(task, w, before, digest, diff_digest, diff, seen.summary);
         if len(reading) == 0 { return IntegrationAnswer { narrative: "the reading of " + w.name + " was not taken" }; }
         let r = self.observed(task, w, "moved", digest, before, "sha256:" + diff_digest, reading);
         if len(r) > 0 { return IntegrationAnswer { narrative: r }; }
@@ -576,11 +589,12 @@ locus IntegrationRecord {
     }
     // The reading `integration.<name>.changed`, its payload naming the
     // diff's receipt and carrying the diff; its entity, "" when not taken.
-    fn land_changed(task: String, w: Integration, from: String, to: String, diff_digest: String, diff: String) -> String {
+    fn land_changed(task: String, w: Integration, from: String, to: String, diff_digest: String, diff: String, drift: String) -> String {
         let b = std::json::Builder { };
         integration_payload(b, task, w);
         b.string_field("from", from);
         b.string_field("to", to);
+        if w.source == "openapi" { b.string_field("drift", drift); }
         b.string_field("receipt", "sha256:" + diff_digest);
         b.string_field("diff", diff);
         b.end_object();

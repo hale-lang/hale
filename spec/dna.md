@@ -1693,9 +1693,14 @@ Each occurrence's `check` reads the source and normalizes it:
 - `feed`: the entries (RSS `item`, Atom `entry`), a line each, `title |
   link` (the `guid` or `id` without a link); the feed's own fields and
   dates are not read.
-- `openapi`: the `drift …` lines of `hale api drift <surface>`, run in
-  the genome; a surface in step is the empty text, and an exit other
-  than 0 or 1 is a failed read.
+- `openapi`: the source document itself, canonical (`hale api drift
+  <surface> --document`, run in the genome: the parsed OpenAPI document,
+  JSON or YAML alike, as JSON with its keys sorted), with the `drift …`
+  lines of `hale api drift <surface>` as its summary. The document, not
+  the drift lines, is what is digested: a drift line names a row and a
+  slot, so a second change to a row that already drifted reads the same.
+  An exit of `--document` other than 0, or of the drift check other than
+  0 or 1, is a failed read.
 
 A fetch is one GET (`std::http::get`, 30 seconds, no redirects followed:
 a status outside 2xx fails) or a file read, at most 4 MiB, in UTF-8. The
@@ -1712,7 +1717,8 @@ receipt under it. Against the integration's last `integration.observed`:
   `integrations/integration.<name>.changed/<task>`, `app` `integrations`,
   `event` and `subject` `integration.<name>.changed`, its payload `{id,
   integration, source, url | surface, position, codebase?, task, from,
-  to, receipt, diff}`; then `integration.observed {outcome: moved}`; and
+  to, drift (openapi), receipt, diff}`; an API's receipt leads with its
+  drift lines, then the diff of the canonical document; then `integration.observed {outcome: moved}`; and
   the organization admits a concern (`on_concern`) from
   `<position>/integration.<name>`, so it is routed to the position, its
   `request` the reading's entity and its words naming the reading and

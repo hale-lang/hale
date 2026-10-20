@@ -80,6 +80,14 @@ const PAY_REFUNDS: String = "  /refunds:
           description: ok
 ";
 
+// The refund operation changed again: it takes a body now.
+const PAY_REFUND_BODY: String = "      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCharge'
+";
+
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
     return "hale";
@@ -220,7 +228,9 @@ main locus App {
         std::test::assert_eq_str(std::json::find_string_field(payload, "position"), "position:app/dev", "the reading names the owning position");
         let api = std::json::find_string_field(self.last_body("reading.recorded", "integrations/integration.pay-api.changed/"), "payload");
         std::test::assert_eq_int(self.rows("reading.recorded", "integrations/integration.pay-api.changed/"), 1, "one reading of the API's move");
-        std::test::assert(std::str::contains(std::json::find_string_field(api, "diff"), "\n+drift Pay added create_refund\n"), "its diff is of the drift lines: " + api);
+        std::test::assert_eq_str(std::json::find_string_field(api, "drift"), "drift Pay added create_refund\n", "its drift lines summarize the move");
+        let api_diff = std::json::find_string_field(api, "diff");
+        std::test::assert(std::str::starts_with(api_diff, "drift Pay added create_refund\n--- integration.pay-api ") && std::str::contains(api_diff, "\n+    \"/refunds\": {\n"), "and lead its receipt, a diff of the canonical document: " + api_diff);
         // the concerns, routed to the positions that own the integrations
         std::test::assert_eq_int(self.rows("concern.raised", "app/dev/integration.changelog"), 1, "one concern from the changelog's watch");
         let c = self.last_body("concern.raised", "app/dev/integration.changelog");
@@ -244,6 +254,20 @@ main locus App {
         std::test::assert_eq_int(self.rows("reading.recorded", "integrations/integration.status.unreachable/"), 1, "its third failure is one unreachable reading");
         std::test::assert(std::str::contains(std::json::find_string_field(self.last_body("reading.recorded", "integrations/integration.status.unreachable/"), "payload"), "no file at "), "naming why");
         std::test::assert_eq_int(self.rows("concern.raised", "app/dev/integration.status"), 0, "and raises no concern");
+
+        // ---- the same operation changes again upstream: its drift line
+        // reads the same, and the document still tells the revisions apart
+        std::io::fs::write_file(self.upstream + "/pay.yaml", std::str::replace(PAY, "components:\n", PAY_REFUNDS + PAY_REFUND_BODY + "components:\n")) or discard;
+        t = t + every;
+        self.d.tick(t);
+        self.settle(12, "the second change's checks settle");
+        std::test::assert_eq_int(self.rows("reading.recorded", "integrations/integration.pay-api.changed/"), 2, "a second reading of the API");
+        let again = std::json::find_string_field(self.last_body("reading.recorded", "integrations/integration.pay-api.changed/"), "payload");
+        std::test::assert_eq_str(std::json::find_string_field(again, "drift"), "drift Pay added create_refund\n", "whose drift lines are the first's");
+        std::test::assert(std::str::contains(std::json::find_string_field(again, "diff"), "+        \"requestBody\": {"), "and whose diff is the second change: " + again);
+        std::test::assert_eq_int(self.rows("concern.raised", "app/ops/integration.pay-api"), 2, "a second concern, under the second reading");
+        std::test::assert_eq_int(self.rows("reading.recorded", "integrations/integration.changelog."), 1, "the unmoved changelog lands nothing");
+        std::test::assert_eq_int(self.rows("reading.recorded", "integrations/integration.status.unreachable/"), 1, "and a fourth failure no second unreachable reading");
 
         dna::scratch_done(self.scratch);
     }

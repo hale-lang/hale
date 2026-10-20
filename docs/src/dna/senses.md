@@ -289,19 +289,24 @@ cannot stand is an `integration.refused` row saying why.
 
 Each check reads the source and keeps only what can move for a reason:
 a page's text, without its markup, scripts, styles, head or comments;
-a feed's entries, a line each; an API's drift lines. The first check is
+a feed's entries, a line each; an API's document, parsed and canonical
+(`hale api drift --document`), summarized by its drift lines. The
+document is what is compared, so a second change to an operation that
+already drifted is still a move. The first check is
 the baseline and says nothing. After that, a check that finds the same
 text writes nothing at all, and one that finds it moved lands:
 
 - a reading, `integrations/integration.<name>.changed/<task>`, whose
   payload carries the unified diff and names the receipt memory keeps it
-  under:
+  under; an API's leads with its drift lines:
 
   ```text
-  --- integration.pay-api e3b0c44298fc
+  drift Pay added create_refund
+  --- integration.pay-api 3a71c0d2e9b4
   +++ integration.pay-api 92c69fb5be46
-  @@ -0,0 +1 @@
-  +drift Pay added create_refund
+  @@ -30,6 +30,15 @@
+  …
+  +    "/refunds": {
   ```
 
 - a concern from `<position>/integration.<name>`, so it is routed to the
