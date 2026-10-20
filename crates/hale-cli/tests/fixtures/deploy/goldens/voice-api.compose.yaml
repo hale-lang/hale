@@ -6,5 +6,5 @@ services:
     image: debian:stable-slim
     working_dir: /app
     volumes:
-      - "api:/app:ro"
+      - "./api:/app:ro"
     command: ["/app/api"]

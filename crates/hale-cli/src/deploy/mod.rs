@@ -35,8 +35,6 @@ pub(crate) struct Scrape {
 pub(crate) struct Prog {
     /// The workload's name: the seed's directory, or the lone instance's id.
     pub name: String,
-    /// The built binary, relative to the render's base directory.
-    pub binary: Option<String>,
     pub probes_port: Option<i64>,
     pub scrape: Option<Scrape>,
 }
@@ -44,6 +42,8 @@ pub(crate) struct Prog {
 #[derive(Debug, Clone)]
 pub(crate) struct Inst {
     pub id: String,
+    /// The built binary, relative to the render's base directory.
+    pub binary: Option<String>,
     pub prog: usize,
 }
 
@@ -142,7 +142,10 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
         None => PathBuf::from("."),
     };
     let (file, text) = match backend.as_deref() {
-        Some("compose") => ("compose.yaml", compose::render(&model, &dest, &mut notes)),
+        Some("compose") => (
+            "compose.yaml",
+            Ok(compose::render(&model, &dest, &mut notes)),
+        ),
         Some("kubernetes") => ("kubernetes.yaml", kubernetes::render(&model, &mut notes)),
         Some(other) => {
             eprintln!("unknown backend `{other}`: compose or kubernetes");
@@ -151,6 +154,13 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
         None => {
             eprintln!("no backend: pass --backend compose|kubernetes, or set `backend` in [environments.<name>] and pass --env");
             return ExitCode::from(2);
+        }
+    };
+    let text = match text {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
         }
     };
     for n in &notes {
@@ -274,12 +284,7 @@ fn gather(
                 None => {
                     let p = if let Some(seed) = &inst.seed {
                         let dir = anchor.join(seed);
-                        let mut p = seed_prog(&dir, notes)?;
-                        p.binary = Some(match &inst.binary {
-                            Some(b) => b.clone(),
-                            None => format!("{}/{}", seed.trim_end_matches('/'), dir_name(&dir)),
-                        });
-                        p
+                        seed_prog(&dir, env, notes)?
                     } else {
                         let facts = topology_facts(&anchor.join(&inst.artifact), true)?;
                         notes.push(format!(
@@ -288,7 +293,6 @@ fn gather(
                         ));
                         Prog {
                             name: inst.id.clone(),
-                            binary: inst.binary.clone(),
                             probes_port: None,
                             scrape: facts,
                         }
@@ -298,8 +302,18 @@ fn gather(
                     progs.len() - 1
                 }
             };
+            let binary = match (&inst.binary, &inst.seed) {
+                (Some(b), _) => Some(b.clone()),
+                (None, Some(seed)) => Some(format!(
+                    "{}/{}",
+                    seed.trim_end_matches('/'),
+                    dir_name(&anchor.join(seed))
+                )),
+                _ => None,
+            };
             insts.push(Inst {
                 id: inst.id.clone(),
+                binary,
                 prog: idx,
             });
         }
@@ -325,14 +339,15 @@ fn gather(
         } else {
             anchor.clone()
         };
-        let mut p = seed_prog(path, notes)?;
-        p.binary = Some(if path.is_dir() {
+        let p = seed_prog(path, env, notes)?;
+        let binary = Some(if path.is_dir() {
             dir_name(path)
         } else {
             path.file_stem().unwrap().to_string_lossy().into_owned()
         });
         insts.push(Inst {
             id: p.name.clone(),
+            binary,
             prog: 0,
         });
         progs.push(p);
@@ -398,7 +413,7 @@ fn nearest_manifest(from: &Path) -> Option<PathBuf> {
 
 /// A seed's facts: the scrape endpoint from its checked topology, the probes
 /// from its main locus.
-fn seed_prog(seed: &Path, notes: &mut Vec<String>) -> Result<Prog, String> {
+fn seed_prog(seed: &Path, env: Option<&str>, notes: &mut Vec<String>) -> Result<Prog, String> {
     let name = dir_name(seed);
     let tmp = std::env::temp_dir().join(format!(
         "hale_deploy_{}_{}.topology.json",
@@ -409,6 +424,7 @@ fn seed_prog(seed: &Path, notes: &mut Vec<String>) -> Result<Prog, String> {
     let r = std::process::Command::new(me)
         .arg("check")
         .arg(seed)
+        .args(env.into_iter().flat_map(|e| ["--env", e]))
         .arg(format!("--dump-topology={}", tmp.display()))
         .output()
         .map_err(|e| format!("hale check {}: {e}", seed.display()))?;
@@ -428,7 +444,6 @@ fn seed_prog(seed: &Path, notes: &mut Vec<String>) -> Result<Prog, String> {
     let probes_port = probes_of(seed, &name, notes);
     Ok(Prog {
         name,
-        binary: None,
         probes_port,
         scrape,
     })

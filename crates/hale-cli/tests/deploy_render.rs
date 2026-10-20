@@ -139,3 +139,42 @@ fn the_backend_is_required_and_known() {
     let (ok, _, err) = render(&fixtures(), &["svc", "--backend", "nomad"]);
     assert!(!ok && err.contains("unknown backend"), "{err}");
 }
+
+#[test]
+fn a_relative_mount_is_a_bind_not_a_named_volume() {
+    let (_, out, _) = render(&fixtures(), &["svc", "--backend", "compose"]);
+    assert!(out.contains("\"./svc:/app:ro\""), "{out}");
+}
+
+#[test]
+fn the_selected_environment_gates_the_seed_check() {
+    // the seed holds without an environment and violates `strict`'s constitution
+    let (ok, _, err) = render(&fixtures(), &["served", "--backend", "compose"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = render(&fixtures(), &["served", "--env", "strict"]);
+    assert!(!ok && err.contains("logs_structured"), "{err}");
+}
+
+#[test]
+fn instances_of_one_seed_keep_their_own_binaries() {
+    let (ok, out, err) = render(&fixtures(), &["env.plan.json", "--backend", "compose"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("[\"/app/out/a\"]") && out.contains("[\"/app/out/b\"]"),
+        "{out}"
+    );
+    let (ok, _, err) = render(&fixtures(), &["env.plan.json", "--backend", "kubernetes"]);
+    assert!(
+        !ok && err.contains("`svc-0` and `svc-1`") && err.contains("different binaries"),
+        "{err}"
+    );
+}
+
+#[test]
+fn names_that_normalize_alike_are_refused_with_both_ids() {
+    let (ok, _, err) = render(&fixtures(), &["clash.plan.json", "--backend", "kubernetes"]);
+    assert!(
+        !ok && err.contains("`worker_a`") && err.contains("`worker-a`"),
+        "{err}"
+    );
+}

@@ -19,6 +19,12 @@ fn healthcheck(port: i64) -> String {
 pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String {
     let mut o = String::new();
     let mount = relative(dest, &m.base);
+    // a bind source is a path; a bare name is a named volume in the short syntax
+    let mount = if mount.starts_with('.') || mount.starts_with('/') {
+        mount
+    } else {
+        format!("./{mount}")
+    };
     let _ = writeln!(
         o,
         "# Rendered by `hale deploy render` from {}: a pure function of the checked program.",
@@ -46,7 +52,7 @@ pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String 
             "    volumes:\n      - {}",
             q(&format!("{mount}:/app:ro"))
         );
-        match &p.binary {
+        match &inst.binary {
             Some(b) => {
                 let _ = writeln!(o, "    command: [{}]", q(&format!("/app/{b}")));
             }

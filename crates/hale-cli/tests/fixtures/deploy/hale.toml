@@ -12,3 +12,8 @@ REGION = "eu"
 [environments.staging]
 source_only = true
 backend = "kubernetes"
+
+[environments.strict]
+constitution = "std::law::Standard"
+backend = "compose"
+entrypoints = ["served"]

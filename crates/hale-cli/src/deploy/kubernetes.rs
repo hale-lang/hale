@@ -4,7 +4,30 @@ use std::fmt::Write;
 
 use super::{dns, q, Model, LIVENESS_PATH, READINESS_PATH};
 
-pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> String {
+pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> Result<String, String> {
+    // names are normalized to DNS labels, which is not injective: refuse a clash
+    let mut seen: std::collections::BTreeMap<String, &str> = Default::default();
+    for p in &m.progs {
+        if let Some(prev) = seen.insert(dns(&p.name), &p.name) {
+            return Err(format!(
+                "`{prev}` and `{}` both become the Kubernetes name `{}`: rename one",
+                p.name,
+                dns(&p.name)
+            ));
+        }
+    }
+    // a Deployment runs one command: instances of a program that differ in binary cannot share it
+    for (pi, p) in m.progs.iter().enumerate() {
+        let mut it = m.insts.iter().filter(|i| i.prog == pi);
+        if let Some(first) = it.next() {
+            if let Some(other) = it.find(|i| i.binary != first.binary) {
+                return Err(format!(
+                    "instances `{}` and `{}` of `{}` run different binaries; a Deployment runs one",
+                    first.id, other.id, p.name
+                ));
+            }
+        }
+    }
     let mut o = String::new();
     let _ = writeln!(
         o,
@@ -52,7 +75,12 @@ pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> String {
             "    spec:\n      containers:\n        - name: {name}\n          image: {}",
             q(&format!("{name}:latest"))
         );
-        match &p.binary {
+        match m
+            .insts
+            .iter()
+            .find(|i| i.prog == pi)
+            .and_then(|i| i.binary.as_ref())
+        {
             Some(b) => {
                 let _ = writeln!(o, "          command: [{}]", q(&format!("/app/{b}")));
             }
@@ -111,5 +139,5 @@ pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> String {
             );
         }
     }
-    o
+    Ok(o)
 }

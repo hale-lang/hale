@@ -6,7 +6,7 @@ services:
     image: debian:stable-slim
     working_dir: /app
     volumes:
-      - "svc:/app:ro"
+      - "./svc:/app:ro"
     command: ["/app/svc"]
     ports:
       - "127.0.0.1:9100:9100"
