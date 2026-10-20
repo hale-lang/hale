@@ -1198,6 +1198,7 @@ crates/hale-codegen/tests/observe_events.rs#1 5659fe80cf2d7a4b
 crates/hale-codegen/tests/observe_events.rs#2 d2ddf74dbea4b160
 crates/hale-codegen/tests/observe_events.rs#3 527e881dd94af5da
 crates/hale-codegen/tests/observe_events.rs#4 95ee8646fffe715c
+crates/hale-codegen/tests/observe_events.rs#5 ec0ca56f442a5082
 crates/hale-codegen/tests/observe_metrics.rs#0 8c806583d21ef6f7
 crates/hale-codegen/tests/observe_metrics.rs#1 3ce3f013e46edbd8
 crates/hale-codegen/tests/observe_metrics.rs#2 fe52d6241aabc8c1

@@ -430,3 +430,66 @@ fn a_subscriber_on_the_exporters_classic_pool_still_emits_events() {
     assert!(seen.contains("Spawned"), "a handler's birth on the exporter's pool: {seen}");
     assert!(!seen.contains("__StdHttpConn"), "the backend's sends are not events: {seen}");
 }
+
+/// On the main queue the exporter's sleep slices and statement
+/// boundaries deliver the queue's other subscribers' handlers; what they
+/// birth is the program's.
+const MAIN_QUEUE: &str = r#"
+type Tick { n: Int = 0; }
+topic Ticks { payload: Tick; subject: "otlp.mainq.tick"; }
+
+locus Child { params { n: Int = 0; } }
+
+locus Worker {
+    bus { subscribe Ticks as on_tick; }
+    fn on_tick(t: Tick) {
+        Child { n: t.n };
+    }
+}
+
+locus Sender {
+    bus { publish Ticks; }
+    run() {
+        let mut i = 0;
+        while i < 10 && !self.draining {
+            std::time::sleep(60ms);
+            Ticks <- Tick { n: i };
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        s: Sender = Sender { };
+        events: std::observe::Otlp = std::observe::Otlp { service: "mainq", interval: 50ms };
+    }
+    placement { s: pinned; }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_main_queue_subscriber_beside_the_exporter_still_emits_events() {
+    let (url, rx) = collector();
+    let bin = harness::unique_bin("observe_events_main_queue");
+    build_opts::build_source(MAIN_QUEUE, &bin, &build_opts::options()).expect("build");
+    // a default-placed exporter holds the main thread in its own run(),
+    // as a default-placed scrape does, so the program is ended by a signal
+    let mut c = Command::new(&bin)
+        .env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", &url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    std::thread::sleep(Duration::from_millis(1500));
+    Command::new("kill").args(["-TERM", &c.id().to_string()]).status().expect("kill");
+    let _ = c.wait();
+    let mut seen = String::new();
+    while let Ok((_, body)) = rx.recv_timeout(Duration::from_millis(500)) {
+        seen.push_str(&body);
+    }
+    assert!(seen.contains("\"Child\""), "a main-queue handler's birth: {seen}");
+    assert!(!seen.contains("__StdHttpConn"), "the backend's sends are not events: {seen}");
+}

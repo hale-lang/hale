@@ -9147,6 +9147,27 @@ void lotus_bus_queue_enqueue_st(lotus_bus_queue_t *q,
  * bus_drain) get their own stack frame and their own buffer. */
 typedef void (*lotus_handler_fn)(void *self, void *payload);
 
+/* GH #1592 S4: `t_events_drainer` is set on a thread while the `Otlp`
+ * exporter runs on it with no coroutine of its own (see
+ * `lotus_observe_events_take`). The exporter only gives that thread to
+ * other code by delivering a handler (a main-queue drain at a statement
+ * boundary or a sleep slice, a pool's park drain, a posted cell), so
+ * every handler call goes through this: the flag is cleared across it
+ * and restored after, and whatever runs while the exporter yields
+ * records its events as the program's. */
+#if LOTUS_OBSERVE
+static __thread int t_events_drainer = 0;
+#define LOTUS_CALL_HANDLER(fn, self, payload)                                  \
+    do {                                                                       \
+        int lotus_saved_drainer_ = t_events_drainer;                           \
+        t_events_drainer = 0;                                                  \
+        ((lotus_handler_fn)(fn))((self), (payload));                           \
+        t_events_drainer = lotus_saved_drainer_;                               \
+    } while (0)
+#else
+#define LOTUS_CALL_HANDLER(fn, self, payload) ((lotus_handler_fn)(fn))((self), (payload))
+#endif
+
 /* Pop and run exactly one cell (single-threaded inline-drain for the
  * bounded-queue block policy, GH #125). Mirrors one iteration of the
  * single-threaded body of lotus_bus_queue_drain. The caller (enqueue)
@@ -9194,7 +9215,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     g_bus_pending_gen = 0;
     g_bus_pending_wire_deser = NULL;
     g_bus_pending_rec_pub = 0;
-    ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+    LOTUS_CALL_HANDLER(handler_fn, handler_self, payload_ptr);
     g_bus_pending_gen = outer_gen;
     g_bus_pending_wire_deser = outer_deser;
     g_bus_pending_rec_pub = outer_rec_pub;
@@ -9670,8 +9691,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                                                    held.rec_pub_id);
                             void *prev_delivery = t_bus_delivery_self;
                             t_bus_delivery_self = held.self_ptr;
-                            ((lotus_handler_fn)held.handler)(
-                                held.self_ptr, pp);
+                            LOTUS_CALL_HANDLER(held.handler, held.self_ptr, pp);
                             t_bus_delivery_self = prev_delivery;
                             if (held.payload_heap)
                                 free(held.payload_heap);
@@ -9745,8 +9765,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                                    cell_copy.rec_pub_id);
             void *prev_delivery = t_bus_delivery_self;
             t_bus_delivery_self = cell_copy.self_ptr;
-            ((lotus_handler_fn)cell_copy.handler)(
-                cell_copy.self_ptr, payload_ptr);
+            LOTUS_CALL_HANDLER(cell_copy.handler, cell_copy.self_ptr, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
             if (cell_copy.payload_region)
@@ -9801,7 +9820,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             lotus_bus_note_consume(handler_self, rec_pub_id);
             void *prev_delivery = t_bus_delivery_self;
             t_bus_delivery_self = handler_self;
-            ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
+            LOTUS_CALL_HANDLER(handler_fn, handler_self, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (heap_ptr) free(heap_ptr);
             if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
@@ -10370,7 +10389,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
             : (void *)cell->payload_inline;
     }
     lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
-    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
 }
@@ -11918,14 +11937,6 @@ static void lotus_pool_start_job(void *self_ptr, void *payload);
  * does not re-enter main's drain. */
 static __thread int t_pool_in_run = 0;
 static __thread int t_pool_park_draining = 0;
-#if LOTUS_OBSERVE
-/* GH #1592 S4: set on the thread of the `Otlp` exporter's own run (see
- * `lotus_observe_events_take`). A cell this thread dispatches is some
- * other locus's handler, so the flag is cleared across it and restored
- * after: the exporter's sleep drains other subscribers' cells, and their
- * events are the program's. */
-static __thread int t_events_drainer = 0;
-#endif
 
 static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
                                           lotus_bus_cell_t *cell) {
@@ -11967,14 +11978,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     int outer_in_run = t_pool_in_run;
     t_pool_in_run = cell->run_ticket != NULL;
     lotus_handler_hold_started(hold);
-#if LOTUS_OBSERVE
-    int outer_drainer = t_events_drainer;
-    t_events_drainer = 0;
-#endif
-    ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
-#if LOTUS_OBSERVE
-    t_events_drainer = outer_drainer;
-#endif
+    LOTUS_CALL_HANDLER(cell->handler, cell->self_ptr, payload_ptr);
     t_pool_in_run = outer_in_run;
     /* The run's or the handler's hold, or the one a failure posted from
      * the cell took (`lotus_failure_hold_cell`). */
@@ -13706,7 +13710,7 @@ static void lotus_coro_thunk(void) {
     /* The drain's reclaim state, put back while this coroutine parks. */
     lotus_reclaim_ctx_save(&c->reclaim_outer);
     lotus_bus_note_consume(c->self_ptr, c->rec_pub_id);
-    ((lotus_handler_fn)c->handler)(c->self_ptr, c->payload_ptr);
+    LOTUS_CALL_HANDLER(c->handler, c->self_ptr, c->payload_ptr);
     c->done = 1;
     /* uc_link would handle this implicitly, but being explicit is
      * cheaper to reason about — and lets the worker recognize that
@@ -14142,8 +14146,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         lotus_run_ticket_t *outer = t_run_running;
         t_run_running = hold;
         lotus_handler_hold_started(hold);
-        ((lotus_handler_fn)cell_copy->handler)(
-            cell_copy->self_ptr, payload_ptr);
+        LOTUS_CALL_HANDLER(cell_copy->handler, cell_copy->self_ptr, payload_ptr);
         hold = t_run_running;   /* or a posted failure's (L0-1) */
         t_run_running = outer;
         p->running_label = NULL;
@@ -29652,7 +29655,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             } else {
                 /* same-thread: the whole point — run it now. */
                 g_bus_pending_gen = prev_gen;
-                ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
+                LOTUS_CALL_HANDLER(e->handler, e->self_ptr, (void *)payload);
             }
             g_bus_pending_gen = prev_gen;
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
