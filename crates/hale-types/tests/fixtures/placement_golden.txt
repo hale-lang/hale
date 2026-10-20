@@ -697,15 +697,19 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 == crates/hale-cli/tests/api_client_binding.rs#da1c8079
 root	App	the entry
 row	App@literal1	App	main	default
+row	App@literal1.creds	__StdApiVaultPrincipals	main	default
 -- App@literal1.shelf	__ApiClient_Shelf
 row	~	__ApiClient_Shelf	main	default
 row	~.__transport	__StdApiHttpClient	main	inherited
+row	~.__transport.principals	__StdApiVaultPrincipals	main	inherited
 -- App@literal1.shop	__ApiClient_Shop
 row	~	__ApiClient_Shop	main	default
 row	~.__transport	__StdApiHttpClient	main	inherited
+row	~.__transport.principals	__StdApiVaultPrincipals	main	inherited
 -- App@literal1.shop_mcp	__ApiClient_Shop
 row	~	__ApiClient_Shop	main	default
 row	~.__transport	__StdApiMcpClient	main	inherited
+row	~.__transport.principals	__StdApiVaultPrincipals	main	inherited
 -- App@literal1.tools	__ApiClient_Tools
 row	~	__ApiClient_Tools	main	default
 row	~.__transport	__StdApiMcpClient	main	inherited
@@ -768,6 +772,7 @@ row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
+row	~.conns.handler.handler	Api	pool:web	inherited
 row	~.handler	Api	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
@@ -2721,6 +2726,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Api	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.web	Web	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -2740,6 +2746,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Api	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.knowledge	<hole>	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -2760,6 +2767,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Api	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.provider	Provider	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -3678,6 +3686,7 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Routes	main	inherited
 row	~.handler	Routes	main	inherited
 row	~.handler.hello	Hello	main	inherited
 row	~.handler.router	__StdHttpRouter	main	inherited
@@ -3708,6 +3717,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Routes	pool:io	inherited
 row	~.handler	Routes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	dynamic	sites in the seed #08d84dd7
@@ -3716,14 +3726,14 @@ shared	dynamic	sites in the seed #08d84dd7
 root	App	the entry
 domain	pool:web	async_io
 row	App@literal1	App	main	default
-shared	App@literal1.web	__StdHttpServer #23fa7bd1
+shared	App@literal1.web	__StdHttpServer #969ca977
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_concurrent.rs#d69c042a
 root	App	the entry
 domain	pool:web	async_io
 row	App@literal1	App	main	default
-shared	App@literal1.web	__StdHttpServer #23fa7bd1
+shared	App@literal1.web	__StdHttpServer #969ca977
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_memory.rs#b0d4feca
@@ -3732,6 +3742,7 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Big	main	inherited
 row	~.handler	Big	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -3745,6 +3756,7 @@ row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
+row	~.conns.handler.handler	Big	pool:web	inherited
 row	~.handler	Big	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
@@ -3755,6 +3767,7 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Count	main	inherited
 row	~.handler	Count	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -3765,12 +3778,15 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Echo	main	inherited
 row	~.handler	Echo	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_upgrade.rs#715cadda
 hole	__StdHttpServer@main2.handler	reuse `h`
+hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	TakeoverHandler@main1	TakeoverHandler	main	default
 row	__StdIoTcpStream@main3	__StdIoTcpStream	main	default
 -- __StdHttpServer@main2	__StdHttpServer
@@ -3778,18 +3794,22 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	TakeoverHandler	main	inherited	built by TakeoverHandler@main1
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_upgrade.rs#b623a938
 hole	__StdHttpServer@main2.handler	reuse `h`
+hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
+hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	RawHandler@main1	RawHandler	main	default
 -- __StdHttpServer@main2	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	RawHandler	main	inherited	built by RawHandler@main1
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -3907,6 +3927,7 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	Routes	main	inherited
 row	~.handler	Routes	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -5275,6 +5296,7 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
+row	~.conns.handler.handler	__StdMetricsEndpoint	main	inherited
 row	~.handler	__StdMetricsEndpoint	main	inherited
 row	~.handler.registry	__StdMetricsRegistry	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
@@ -5491,6 +5513,7 @@ row	~	__StdHttpServer	pinned:~	entry	off owner
 row	~.conns	__StdIoTcpConnections	pinned:~	inherited
 row	~.conns.flows	__StdIoTcpFlows	pinned:~	inherited
 row	~.conns.handler	__StdHttpResponder	pinned:~	inherited
+row	~.conns.handler.handler	Tag	pinned:~	inherited
 row	~.handler	Tag	pinned:~	inherited
 row	~.relay	__StdIoTcpRelay	pinned:~	inherited
 -- dynamic	sites in the seed
@@ -5510,6 +5533,7 @@ row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
+row	~.conns.handler.handler	Tag	pool:web	inherited
 row	~.handler	Tag	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
@@ -8290,8 +8314,8 @@ dynamic	Cache	on main|unresolved arguments	in the seed
 root	App	the entry
 domain	pool:io	async_io
 row	App@literal1	App	main	default
-shared	App@literal1.plain	__StdHttpServer #a4f10215
-shared	App@literal1.small	__StdHttpServer #a4f10215
+shared	App@literal1.plain	__StdHttpServer #578e2388
+shared	App@literal1.small	__StdHttpServer #578e2388
 -- dynamic	sites in the seed
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpResponder	on pool:io
@@ -8315,6 +8339,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Streams	pool:io	inherited
 row	~.handler	Streams	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in the seed
@@ -9959,7 +9984,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-shared	App@literal1.server	__StdHttpServer #bab40621
+shared	App@literal1.server	__StdHttpServer #e3960846
 -- dynamic	sites in api/tests
 dynamic	Cases	on main
 dynamic	__StdBytesBytesBuilder	on pool:io|unknown (no instance)
@@ -10839,6 +10864,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	FakeAnthropic	pool:io	inherited
 row	~.handler	FakeAnthropic	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	App@literal1.wrong_scheme	__lib_dna__core___models__AnthropicMessages #d1670536
@@ -11645,7 +11671,7 @@ row	App@literal1.head	__StdProcessChild	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #a94d581e
 shared	App@literal1.journal	__lib_dna__core___routing__RoutedJournal #d907b0f2
-shared	App@literal1.server	__StdHttpServer #bab40621
+shared	App@literal1.server	__StdHttpServer #e3960846
 shared	dynamic	sites in core #3f3692f5
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in oidc #f5f825c3
@@ -12104,7 +12130,7 @@ domain	pool:io
 row	App@literal1	App	main	default
 row	App@literal1.head	__StdProcessChild	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
-shared	App@literal1.server	__StdHttpServer #bab40621
+shared	App@literal1.server	__StdHttpServer #e3960846
 shared	dynamic	sites in core #de2fb49b
 shared	dynamic	sites in oidc #f5f825c3
 -- dynamic	sites in tests
@@ -12163,7 +12189,7 @@ shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/voice-heart/api/tests/accounts_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12201,35 +12227,35 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/capabilities_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/catalog_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/change_page_memory_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/changes_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/endpoints_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12239,7 +12265,7 @@ row	__lib____events__UsageJson@main1	__lib____events__UsageJson	main	default
 
 == dna/tests/onboarding/voice-heart/api/tests/free_json_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12259,7 +12285,7 @@ row	__lib____governance__PracticeLimits@main9	__lib____governance__PracticeLimit
 
 == dna/tests/onboarding/voice-heart/api/tests/health_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 -- __lib____health__Probes@main2	__lib____health__Probes
 row	~	__lib____health__Probes	main	default
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
@@ -12286,57 +12312,82 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/inference_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/keys_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/limits_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/models_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/node_plane_test.hl
 hole	__lib____endpoints__Endpoints@main2.link	reuse `link`
+hole	__lib____endpoints__Endpoints@main2.inference.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main2.inference.held	reuse `self.held`
+hole	__lib____endpoints__Endpoints@main2.nodes.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.nodes.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main2.seats.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.seats.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main2.node_plane.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.node_plane.link	unresolved declaration `__lib____link__Link`
 row	Recorder@main1	Recorder	main	default
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- __lib____endpoints__Endpoints@main2	__lib____endpoints__Endpoints
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
+row	~.accounts.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
+row	~.bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
+row	~.catalog.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
+row	~.changes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
+row	~.inference.link	<hole>	main	inherited
+row	~.inference.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
+row	~.keys.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.link	Recorder	main	inherited	built by Recorder@main1
 row	~.models	__lib____catalog__Models	main	inherited
+row	~.models.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
+row	~.node_bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
+row	~.node_plane.link	<hole>	main	inherited
+row	~.node_plane.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
+row	~.nodes.link	<hole>	main	inherited
+row	~.nodes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
+row	~.probes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
+row	~.projects.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
+row	~.seats.link	<hole>	main	inherited
+row	~.seats.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited
@@ -12359,7 +12410,7 @@ shared	dynamic	sites in api #a6ea2058
 
 == dna/tests/onboarding/voice-heart/api/tests/nodes_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12368,7 +12419,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/projects_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12393,36 +12444,61 @@ dynamic	__lib____governance__Governance	on main
 == dna/tests/onboarding/voice-heart/api/tests/registered_account_test.hl
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
 row	__StdIoTcpStream@main2	__StdIoTcpStream	main	default
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #d536f6be
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/serve_test.hl
 hole	__lib____endpoints__Endpoints@main2.link	reuse `nodes`
+hole	__lib____endpoints__Endpoints@main2.inference.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main2.inference.held	reuse `self.held`
+hole	__lib____endpoints__Endpoints@main2.nodes.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.nodes.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main2.seats.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.seats.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main2.node_plane.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main2.node_plane.link	unresolved declaration `__lib____link__Link`
 row	Nodes@main1	Nodes	main	default
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- __lib____endpoints__Endpoints@main2	__lib____endpoints__Endpoints
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
+row	~.accounts.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
+row	~.bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
+row	~.catalog.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
+row	~.changes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
+row	~.inference.link	<hole>	main	inherited
+row	~.inference.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
+row	~.keys.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.link	Nodes	main	inherited	built by Nodes@main1
 row	~.models	__lib____catalog__Models	main	inherited
+row	~.models.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
+row	~.node_bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
+row	~.node_plane.link	<hole>	main	inherited
+row	~.node_plane.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
+row	~.nodes.link	<hole>	main	inherited
+row	~.nodes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
+row	~.probes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
+row	~.projects.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
+row	~.seats.link	<hole>	main	inherited
+row	~.seats.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited
@@ -12504,6 +12580,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	FakeOpenAi	pool:io	inherited
 row	~.handler	FakeOpenAi	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	dynamic	sites in core #b4d712d4
@@ -14297,6 +14374,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Api	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -14327,6 +14405,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Api	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -14552,6 +14631,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -14601,6 +14681,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -15058,6 +15139,7 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Head	pool:io	inherited
 row	~.handler	Head	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.slots	PushSlots	pool:io	inherited
@@ -15154,7 +15236,7 @@ shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
-shared	FixtureHead@literal1.srv	__StdHttpServer #70fbeaf2
+shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
 -- FixtureProvider@main4	FixtureProvider
 row	~	FixtureProvider	main	default
 row	~.original	__lib_dna__operations___definitions__DeclaredWorkflowCatalog	main	inherited
@@ -15229,7 +15311,7 @@ shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
-shared	FixtureHead@literal1.srv	__StdHttpServer #70fbeaf2
+shared	FixtureHead@literal1.srv	__StdHttpServer #2c83e381
 shared	dynamic	sites in api #ff9a194b
 -- dynamic	sites in api/tests/commands
 dynamic	__StdApiHttpConns	on pool:__api_http
@@ -17237,19 +17319,12 @@ row	~.entries	__StdHttpEntryList	main	inherited
 row	~.mws	__StdHttpMwList	main	inherited
 row	~.not_found	__StdHttpNotFound404	main	inherited
 
-== shared __StdHttpServer #23fa7bd1
-row	~	__StdHttpServer	pool:web	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:web	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
-row	~.conns.handler	__StdHttpResponder	pool:web	inherited
-row	~.handler	Slow	pool:web	inherited
-row	~.relay	__StdIoTcpRelay	pool:web	inherited
-
-== shared __StdHttpServer #70fbeaf2
+== shared __StdHttpServer #2c83e381
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -17294,19 +17369,30 @@ row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
-== shared __StdHttpServer #a4f10215
+== shared __StdHttpServer #578e2388
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Echo	pool:io	inherited
 row	~.handler	Echo	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
-== shared __StdHttpServer #bab40621
+== shared __StdHttpServer #969ca977
+row	~	__StdHttpServer	pool:web	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:web	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
+row	~.conns.handler	__StdHttpResponder	pool:web	inherited
+row	~.conns.handler.handler	Slow	pool:web	inherited
+row	~.handler	Slow	pool:web	inherited
+row	~.relay	__StdIoTcpRelay	pool:web	inherited
+
+== shared __StdHttpServer #e3960846
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -17371,17 +17457,24 @@ row	~.store	__StdMetricsMap	main	inherited
 row	~	__StdObserveOtlp	pinned:~	entry	off owner
 row	~.client	__StdHttpClient	pinned:~	inherited
 
-== shared __lib____endpoints__Endpoints #3b993c9f
+== shared __lib____endpoints__Endpoints #d536f6be
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
+row	~.accounts.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
+row	~.bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
+row	~.catalog.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
+row	~.changes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
+row	~.inference.link	__lib____link__NatsLink	main	inherited
+row	~.inference.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
+row	~.keys.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.link	__lib____link__NatsLink	main	inherited
 row	~.link.attempt	__lib____link__NatsAttempt	main	inherited
 row	~.link.attempt.c	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___client__NatsClient	main	inherited
@@ -17401,13 +17494,23 @@ row	~.link.attempt.c.stash_meta.starts	__lib_x2e_x2e__x2e_x2e__lib__pond__realti
 row	~.link.attempt.c.stash_meta.subj_lens	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.link.attempt.c.stash_sids	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.models	__lib____catalog__Models	main	inherited
+row	~.models.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
+row	~.node_bearer.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
+row	~.node_plane.link	__lib____link__NatsLink	main	inherited
+row	~.node_plane.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
+row	~.nodes.link	__lib____link__NatsLink	main	inherited
+row	~.nodes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
+row	~.probes.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
+row	~.projects.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
+row	~.seats.link	__lib____link__NatsLink	main	inherited
+row	~.seats.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited

@@ -896,11 +896,11 @@ pub fn is_observe_pos(pos: u32) -> bool {
 }
 
 /// Whether an offset is in stdlib source appended to the program because
-/// it names it, and not in the stdlib copy: the TCP substrate's, or the
-/// observe backends'. A `std::` path to one of its loci names the
+/// it names it, and not in the stdlib copy: the TCP substrate's, the
+/// observe backends', or the client binding's (`client_expand`). A `std::` path to one of its loci names the
 /// program's declaration.
 pub fn is_appended_stdlib_pos(pos: u32) -> bool {
-    is_tcp_serve_pos(pos) || is_observe_pos(pos)
+    is_tcp_serve_pos(pos) || is_observe_pos(pos) || crate::client_expand::is_client_runtime_pos(pos)
 }
 
 /// The backends of `std::observe`, once, for a program whose main locus

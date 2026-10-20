@@ -50,6 +50,14 @@ pub const CLIENT_BASE: u32 = API_SYNTH_BASE + 0x0E00_0000;
 /// appended runtime's space, so it is stdlib source in every judgment.
 pub const CLIENT_RUNTIME_BASE: u32 = crate::rpc_expand::RUNTIME_BASE + 0x0060_0000;
 
+/// Whether an offset is in the client runtime's appended source
+/// (`api_client.hl`): a `std::api` path to one of its loci
+/// (`std::api::VaultPrincipals`) names the program's declaration.
+pub fn is_client_runtime_pos(pos: u32) -> bool {
+    (CLIENT_RUNTIME_BASE..CLIENT_RUNTIME_BASE + hale_stdlib::API_CLIENT_SOURCE.len() as u32)
+        .contains(&pos)
+}
+
 /// Whether an offset is in the generated client loci.
 pub fn is_client_pos(pos: u32) -> bool {
     (CLIENT_BASE..CLIENT_BASE + 0x0100_0000).contains(&pos)

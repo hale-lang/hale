@@ -1705,7 +1705,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 if let Some(d) = realized {
                     let owner = Owner { key: &key, domain, guarded: false };
                     let mut stack = vec![d.site];
-                    self.fields(d, inits, &BTreeMap::new(), &owner, None, None, &mut stack);
+                    self.fields(d, inits, &BTreeMap::new(), &owner, None, None, None, &mut stack);
                 }
             }
         }
@@ -1749,7 +1749,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         let mut stack = vec![decl.site];
         let subst = decl.decl.generics.iter().map(|g| g.name.name.clone())
             .zip(self.type_args(decl, declared, literal.universe).unwrap_or_default()).collect();
-        self.fields(decl, inits, &subst, &owner, root, lets, &mut stack);
+        self.fields(decl, inits, &subst, &owner, root, lets, None, &mut stack);
     }
 
     /// The templates the entry builds besides the root: each locus
@@ -1866,6 +1866,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         owner: &Owner<'_>,
         root: Option<&RootEntries<'a>>,
         lets: Option<&Lets>,
+        scope: Option<&InstanceKey>,
         stack: &mut Vec<SiteRef>,
     ) {
         if stack.len() > 64 {
@@ -1894,15 +1895,64 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
                 let alts = init.and_then(alternatives);
                 let reused = if alts.is_none() { init.and_then(reused_source) } else { None };
-                // A contract-typed slot handed an instance the scope already
-                // holds (`principals: self.creds`, a client's or a
-                // transport's source) is a reference to that instance, which
-                // has its row where it was built: no row of its own, and
-                // nothing unknown about it.
-                if matches!(declared_named, Named::Contract)
-                    && reused.as_deref().is_some_and(|r| r.starts_with("self."))
-                {
-                    continue;
+                // The instance `self` names where this field's initializer is
+                // written: the caller's scope for one its literal writes, this
+                // owner for its declaration's default.
+                let field_scope: Option<InstanceKey> =
+                    if written_here.is_some() { scope.cloned() } else { Some(owner.key.clone()) };
+                // A contract-typed slot handed `self.<f>`, where `f` is an
+                // instance its scope built by a literal (`principals:
+                // self.creds`, a client's or a transport's source), is a
+                // reference to that instance: its row realizes what the
+                // source's does, in the source's domain, so a call through
+                // it is judged against where that instance runs, and it is
+                // no hole. A source the table holds no literal-built row for
+                // (a field that is itself held) stays a held instance.
+                if matches!(declared_named, Named::Contract) {
+                    if let (Some(f), Some(sc)) =
+                        (reused.as_deref().and_then(|r| r.strip_prefix("self.")), field_scope.as_ref())
+                    {
+                        let linked = (!f.contains('.'))
+                            .then(|| {
+                                self.table.instances.iter().find(|(k, r)| {
+                                    k.origin == sc.origin
+                                        && k.replica == sc.replica
+                                        && k.path.len() == sc.path.len() + 1
+                                        && k.path.starts_with(&sc.path)
+                                        && k.path.last().is_some_and(|st| st.field == f)
+                                        && r.literal.is_some()
+                                        && r.realizes.is_some()
+                                })
+                            })
+                            .flatten()
+                            .map(|(k, r)| (k.clone(), r.clone()));
+                        if let Some((src_key, src)) = linked {
+                            if !self.table.holes.iter().any(|h| h.at == HoleAt::Instance(src_key.clone())) {
+                                let mut path = owner.key.path.clone();
+                                path.push(Step { field: field.to_string(), alternative: None });
+                                let key = InstanceKey { origin: owner.key.origin, path, replica: owner.key.replica };
+                                let owner_relative = if src.domain == owner.domain {
+                                    OwnerRelative::SameAsOwner
+                                } else {
+                                    OwnerRelative::OffOwner
+                                };
+                                self.table.instances.insert(
+                                    key,
+                                    InstanceRow {
+                                        realizes: src.realizes,
+                                        literal: None,
+                                        owner: Some(owner.key.clone()),
+                                        domain: src.domain,
+                                        decided_by: Decision::Inherited { from: src_key },
+                                        owner_relative,
+                                        guarded: owner.guarded,
+                                        built_by: None,
+                                    },
+                                );
+                                continue;
+                            }
+                        }
+                    }
                 }
                 // The literal a held instance was built from: a local of
                 // the template's scope bound to one.
@@ -2071,7 +2121,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                         stack.push(d.site);
                         let next = Owner { key: &key, domain, guarded };
                         let lets_below = if written_here.is_some() { lets } else { None };
-                        self.fields(d, lit_inits, &below, &next, None, lets_below, stack);
+                        self.fields(d, lit_inits, &below, &next, None, lets_below, field_scope.as_ref(), stack);
                         stack.pop();
                     }
                 }
