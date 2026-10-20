@@ -740,6 +740,7 @@ fn main() { Caller { }; }
 /// client of the same surface. Every error class the handler fails with
 /// reaches the caller as the variant it failed with.
 #[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
 fn a_client_reads_a_served_surfaces_outcomes_as_the_server_wrote_them() {
     let dir = unique_dir("round_trip");
     std::fs::write(
