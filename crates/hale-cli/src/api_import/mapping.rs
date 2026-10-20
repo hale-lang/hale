@@ -409,10 +409,16 @@ impl<'d> Mapper<'d> {
 /// Fields from their keys: each a name of its own, its `has_` flag's
 /// name kept free beside an optional one.
 fn name_fields(fields: Vec<(String, Ty, bool)>, taken: &mut BTreeSet<String>) -> Vec<Field> {
-    // the plain names first, so a key keeps its own name before a flag takes it
     let mut out: Vec<Field> = Vec::new();
     for (key, ty, optional) in fields {
-        let mut name = fresh(snake(&key, "field"), taken, "_");
+        // a field named `has_…` or `clear_…` would read as another field's
+        // presence flag (spec/api.md § Codecs), so a key spelled so keeps its
+        // key in a tag and takes a name that is no flag's
+        let mut base = snake(&key, "field");
+        if base.starts_with("has_") || base.starts_with("clear_") {
+            base = format!("key_{base}");
+        }
+        let mut name = fresh(base, taken, "_");
         if optional {
             while !taken.insert(format!("has_{name}")) {
                 taken.remove(&name);

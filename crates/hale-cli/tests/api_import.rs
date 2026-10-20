@@ -309,9 +309,12 @@ const TOOLS_PAGE_2: &str = r#"[
 ]"#;
 
 /// An MCP endpoint over the Streamable HTTP transport: `initialize` hands
-/// out a session, `tools/list` refuses a request without it and answers in
-/// two pages, the first as an event stream.
+/// out a session and settles an earlier protocol version than the one asked
+/// for; the notification and `tools/list` refuse a request that does not
+/// name both, and `tools/list` answers in two pages, the first as an event
+/// stream.
 fn mcp_stub(pages: Arc<Mutex<(String, String)>>) -> String {
+    let noted = Arc::new(Mutex::new(false));
     stub(Arc::new(move |method, path, head, body| {
         if method != "POST" || path != "/mcp" {
             return (405, vec![], String::new());
@@ -319,6 +322,10 @@ fn mcp_stub(pages: Arc<Mutex<(String, String)>>) -> String {
         let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
         let id = req.get("id").cloned().unwrap_or_default();
         let session = head.lines().any(|l| l.to_ascii_lowercase() == "mcp-session-id: s-1");
+        // every request after `initialize` names the version it settled
+        let versioned = head
+            .lines()
+            .any(|l| l.to_ascii_lowercase() == "mcp-protocol-version: 2025-03-26");
         let json =
             |result: serde_json::Value| serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
         match req.get("method").and_then(|m| m.as_str()) {
@@ -329,11 +336,15 @@ fn mcp_stub(pages: Arc<Mutex<(String, String)>>) -> String {
                     ("Mcp-Session-Id".into(), "s-1".into()),
                 ],
                 json(
-                    serde_json::json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "stub", "version": "0.1"}}),
+                    serde_json::json!({"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "stub", "version": "0.1"}}),
                 ),
             ),
-            Some("notifications/initialized") => (202, vec![], String::new()),
-            Some("tools/list") if !session => (400, vec![], String::new()),
+            Some("notifications/initialized") if !versioned => (400, vec![], String::new()),
+            Some("notifications/initialized") => {
+                *noted.lock().unwrap() = true;
+                (202, vec![], String::new())
+            }
+            Some("tools/list") if !session || !versioned || !*noted.lock().unwrap() => (400, vec![], String::new()),
             Some("tools/list") => {
                 let p = pages.lock().unwrap();
                 let cursor = req.pointer("/params/cursor").and_then(|c| c.as_str());
@@ -421,5 +432,70 @@ fn an_imported_surface_is_consumed_never_served() {
     ] {
         assert!(err.contains(want), "missing `{want}` in:\n{err}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_property_spelled_like_a_presence_flag_stays_a_property() {
+    let dir = unique_dir("flags");
+    std::fs::write(
+        dir.join("probe.json"),
+        r#"{"openapi": "3.0.3", "info": {"title": "Probe", "version": "1"},
+            "paths": {"/count": {"get": {"operationId": "count",
+              "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+                "type": "object", "required": ["count", "has_count", "clear_count"],
+                "properties": {"count": {"type": "integer"}, "has_count": {"type": "boolean"},
+                               "clear_count": {"type": "boolean"}}}}}}}}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.hl"), MAIN).unwrap();
+    let out = run(&dir, &["api", "import", "probe.json", "--as", "Probe"]);
+    assert!(out.status.success(), "import: {}", text(&out.stderr));
+    let src = std::fs::read_to_string(dir.join("probe.hl")).unwrap();
+    assert!(src.contains("key_has_count: Bool `json:\"has_count\"`;"), "{src}");
+    assert!(src.contains("key_clear_count: Bool `json:\"clear_count\"`;"), "{src}");
+    // the description keeps all three keys, each required
+    let schema = run(&dir, &["check", "--api", "--surface", "Probe", "--json-schema", "."]);
+    assert!(schema.status.success(), "{}", text(&schema.stderr));
+    let doc = text(&schema.stdout);
+    let at = doc
+        .find("\"ProbeCountResponse\"")
+        .unwrap_or_else(|| panic!("no ProbeCountResponse in {doc}"));
+    let record = &doc[at..];
+    let required = &record[record.find("\"required\"").expect("required")..];
+    let required = &required[..required.find(']').unwrap()];
+    for key in ["\"count\"", "\"has_count\"", "\"clear_count\""] {
+        assert!(required.contains(key), "{key} not required in {record}");
+    }
+    assert_eq!(run(&dir, &["api", "drift", "."]).status.code(), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_api_holds_a_dependency_seeds_imported_surface_to_its_source() {
+    let dir = unique_dir("dep");
+    std::fs::write(dir.join("shelf.json"), SHELF).unwrap();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    let out = run(
+        &dir,
+        &["api", "import", "shelf.json", "--as", "Shelf", "--out", "lib/api.hl"],
+    );
+    assert!(out.status.success(), "import: {}", text(&out.stderr));
+    std::fs::write(dir.join("app/main.hl"), format!("import \"../lib\" as lib;\n\n{MAIN}")).unwrap();
+    let in_step = run(&dir, &["check", "--api", "app"]);
+    assert!(in_step.status.success(), "{}", text(&in_step.stderr));
+    assert!(
+        text(&in_step.stderr).contains("Shelf: in step with ../shelf.json (4 rows)"),
+        "{}",
+        text(&in_step.stderr)
+    );
+    std::fs::write(dir.join("shelf.json"), SHELF.replace("\"listItems\"", "\"listAll\"")).unwrap();
+    let moved = run(&dir, &["check", "--api", "app"]);
+    assert_eq!(moved.status.code(), Some(1), "{}", text(&moved.stderr));
+    assert!(
+        text(&moved.stderr).contains("drift Shelf added list_all\ndrift Shelf removed list_items\n"),
+        "{}",
+        text(&moved.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

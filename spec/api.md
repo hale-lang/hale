@@ -2770,13 +2770,18 @@ as one when it serves one by `GET`, and as an MCP endpoint otherwise
   lowest-numbered `2xx` response, none when that response has no JSON
   content.
 - **An MCP tool** (every page of `tools/list`, after `initialize`, over
-  the Streamable HTTP transport, a JSON or an event-stream answer alike)
+  the Streamable HTTP transport, a JSON or an event-stream answer alike;
+  the notification and every page name the session and the protocol
+  version the server chose, `MCP-Protocol-Version`, and a version the
+  import does not speak, 2025-06-18, 2025-03-26 or 2024-11-05, is refused)
   is a row named by the tool's name in snake case, `wire:` its name; its
   request is a record of its `inputSchema` (none when the schema declares
   no property), its response a record of its `outputSchema`, or a
   `std::json::Value` when it declares none.
 - **A schema**: an object with properties is a record, its fields named
-  by the key in snake case with a `json:"key"` tag when the two differ; a
+  by the key in snake case with a `json:"key"` tag when the two differ (a
+  key that would name a field `has_…` or `clear_…`, which reads as another
+  field's presence flag, is `key_has_…`, its key in the tag); a
   property the object does not require, or that admits `null`, is a
   presence pair (§ Codecs); a string enum whose values are all names is an
   enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
@@ -2811,8 +2816,10 @@ drift Shelf changed get_items_item_id response
 line each. A surface in step prints `Shelf: in step with ../shelf.json (4
 rows)`. Exit 0 in step, 1 on drift, 2 when a source cannot be read or the
 usage is wrong; a block with no `from` is not checked. `hale check --api`
-runs the same check over the files of the program it describes, after
-its document: the lines go to stderr, and drift exits 1.
+runs the same check over every file the program loads, the seeds it
+imports included, each seed's blocks against its own records and their
+sources relative to their own files, after its document: the lines go to
+stderr, and drift exits 1.
 
 ## Driving a served program
 

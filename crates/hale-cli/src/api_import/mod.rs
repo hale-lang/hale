@@ -450,6 +450,26 @@ pub fn drift(files: &[PathBuf], only: Option<&str>) -> Result<Vec<Report>, Strin
     Ok(reports)
 }
 
+/// [`drift`] over files of several seeds: the `.hl` files among `files`
+/// that exist, once each, grouped by directory, a seed's own types the
+/// scope of its blocks.
+pub fn drift_by_seed(files: &[PathBuf]) -> Result<Vec<Report>, String> {
+    let mut seeds: BTreeMap<PathBuf, std::collections::BTreeSet<PathBuf>> = BTreeMap::new();
+    for f in files {
+        if !f.is_file() || f.extension().is_none_or(|x| x != "hl") {
+            continue;
+        }
+        let f = std::fs::canonicalize(f).unwrap_or_else(|_| f.clone());
+        let dir = f.parent().map(Path::to_path_buf).unwrap_or_default();
+        seeds.entry(dir).or_default().insert(f);
+    }
+    let mut out = Vec::new();
+    for files in seeds.values() {
+        out.extend(drift(&files.iter().cloned().collect::<Vec<_>>(), None)?);
+    }
+    Ok(out)
+}
+
 /// The `.hl` files of a target: the file, or a directory's own.
 fn hl_files(target: &Path) -> Result<Vec<PathBuf>, String> {
     if target.is_file() {

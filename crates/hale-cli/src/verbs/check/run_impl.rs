@@ -680,8 +680,16 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
         // An imported surface is held to its source (spec/api.md § Imported
         // surfaces): each row the source has since added, removed or changed
         // is a line on stderr, the document staying stdout's alone.
-        let files: Vec<std::path::PathBuf> = snap.own_files().iter().filter(|f| f.is_file()).cloned().collect();
-        match crate::api_import::drift(&files, None) {
+        // Every file the load read, the seeds it imports among them, each
+        // seed's files judged together: a block's source is relative to
+        // its own file and its records are its seed's.
+        let files: Vec<std::path::PathBuf> = snap
+            .own_files()
+            .iter()
+            .cloned()
+            .chain(snap.file_bases().iter().map(|(_, p, _)| p.clone()))
+            .collect();
+        match crate::api_import::drift_by_seed(&files) {
             Ok(reports) => {
                 if crate::api_import::print_reports(&reports, &mut std::io::stderr()) != 0 {
                     return 1;

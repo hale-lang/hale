@@ -339,12 +339,35 @@ fn rpc_messages(r: &Response) -> Vec<Value> {
 
 /// One JSON-RPC call to an MCP endpoint over its Streamable HTTP transport,
 /// and its result.
-fn mcp_call(url: &str, session: &mut Option<String>, id: u64, method: &str, params: Value) -> Result<Value, String> {
-    let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
-    let mut headers = vec![("Accept", "application/json, text/event-stream".to_string())];
-    if let Some(s) = session {
-        headers.push(("Mcp-Session-Id", s.clone()));
+/// The protocol versions the import speaks, newest first: the one it asks
+/// for, and the earlier ones a server may answer with instead.
+const MCP_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// What `initialize` settled: the session the server handed out, if any,
+/// and the protocol version it chose, which every later request names
+/// (`MCP-Protocol-Version`, the 2025-06-18 lifecycle's version negotiation).
+#[derive(Default)]
+struct McpSession {
+    id: Option<String>,
+    version: Option<String>,
+}
+
+impl McpSession {
+    fn headers(&self) -> Vec<(&'static str, String)> {
+        let mut headers = vec![("Accept", "application/json, text/event-stream".to_string())];
+        if let Some(s) = &self.id {
+            headers.push(("Mcp-Session-Id", s.clone()));
+        }
+        if let Some(v) = &self.version {
+            headers.push(("MCP-Protocol-Version", v.clone()));
+        }
+        headers
     }
+}
+
+fn mcp_call(url: &str, session: &mut McpSession, id: u64, method: &str, params: Value) -> Result<Value, String> {
+    let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
+    let headers = session.headers();
     let answered = move |b: &[u8]| {
         let text = String::from_utf8_lossy(b);
         text.lines().filter_map(|l| l.strip_prefix("data:")).any(|d| {
@@ -356,7 +379,7 @@ fn mcp_call(url: &str, session: &mut Option<String>, id: u64, method: &str, para
         return Err(format!("{url} answered `{method}` with {}", r.status));
     }
     if let Some(s) = r.header("mcp-session-id") {
-        *session = Some(s.to_string());
+        session.id = Some(s.to_string());
     }
     let reply = rpc_messages(&r)
         .into_iter()
@@ -376,14 +399,14 @@ fn mcp_call(url: &str, session: &mut Option<String>, id: u64, method: &str, para
 /// `initialize` handshake; and the server's name and version as it gives
 /// them.
 pub fn mcp_tools(url: &str) -> Result<(Vec<Value>, String), String> {
-    let mut session = None;
+    let mut session = McpSession::default();
     let init = mcp_call(
         url,
         &mut session,
         1,
         "initialize",
         json!({
-            "protocolVersion": "2025-06-18",
+            "protocolVersion": MCP_VERSIONS[0],
             "capabilities": {},
             "clientInfo": {"name": "hale-api-import", "version": env!("CARGO_PKG_VERSION")},
         }),
@@ -396,13 +419,21 @@ pub fn mcp_tools(url: &str) -> Result<(Vec<Value>, String), String> {
             format!("{name} {version}").trim().to_string()
         })
         .unwrap_or_default();
+    // the version the server chose, which must be one the import speaks
+    let version = init
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{url} answered `initialize` with no `protocolVersion`"))?;
+    if !MCP_VERSIONS.contains(&version) {
+        return Err(format!(
+            "{url} chose MCP protocol version {version}, and the import speaks {}",
+            MCP_VERSIONS.join(", ")
+        ));
+    }
+    session.version = Some(version.to_string());
     // the notification has no answer to wait for
     let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
-    let mut headers = vec![("Accept", "application/json, text/event-stream".to_string())];
-    if let Some(s) = &session {
-        headers.push(("Mcp-Session-Id", s.clone()));
-    }
-    let _ = request("POST", url, &headers, Some(&note), &|_| true);
+    let _ = request("POST", url, &session.headers(), Some(&note), &|_| true);
     let mut tools = Vec::new();
     let mut cursor: Option<String> = None;
     for page in 0..1000u64 {
