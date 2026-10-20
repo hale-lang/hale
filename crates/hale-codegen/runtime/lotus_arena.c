@@ -22466,11 +22466,20 @@ uint64_t lotus_obs_identity(int64_t which) __attribute__((weak));
  * first take): what it does to send — a builder, a connection — is not
  * the program's, and recording it would feed every send back as the
  * next batch's events. */
-static __thread int t_events_drainer = 0;
+static __thread int t_events_drainer = 0;   /* a drainer with no coroutine: its thread */
+static void *_Atomic g_events_drainer_coro;  /* a drainer on a coroutine: that coroutine */
+
+/* Whether the running code is the exporter's own: its coroutine, not the
+ * whole worker thread a cooperative pool shares among other loci. */
+static int lotus_events_in_drainer(void) {
+    lotus_coro_t *c = g_current_coro_tls;
+    if (c) return (void *)c == atomic_load_explicit(&g_events_drainer_coro, memory_order_relaxed);
+    return t_events_drainer;
+}
 
 void lotus_observe_event(int64_t kind, uint32_t inst, uint32_t parent, const char *locus,
                          const char *detail) {
-    if (!lotus_observe_events_on() || t_events_drainer) return;
+    if (!lotus_observe_events_on() || lotus_events_in_drainer()) return;
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     pthread_mutex_lock(&g_events_lock);
@@ -22507,7 +22516,10 @@ static __thread int64_t t_events_batch_n = 0;
 
 /* Move up to `max` events into this thread's batch; how many. */
 int64_t lotus_observe_events_take(int64_t max) {
-    t_events_drainer = 1;
+    if (g_current_coro_tls)
+        atomic_store_explicit(&g_events_drainer_coro, (void *)g_current_coro_tls, memory_order_relaxed);
+    else
+        t_events_drainer = 1;
     if (!t_events_batch) {
         t_events_batch = malloc(sizeof(lotus_event_t) * LOTUS_EVENTS_CAP);
         if (!t_events_batch) return 0;

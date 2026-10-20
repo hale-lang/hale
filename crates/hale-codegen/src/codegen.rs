@@ -10456,18 +10456,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // runtime so before `main` (its counters-only mode is resolved in
         // a constructor, as `lotus_obs_live` is); any other program
         // defines nothing and the runtime's weak reference stays unset.
-        if self.observes_metrics() {
-            let i32_t = self.context.i32_type();
-            let g = self.module.add_global(i32_t, None, "lotus_observe_metrics");
-            g.set_initializer(&i32_t.const_int(1, false));
-        }
-        // GH #1592 S4: and one holding a `std::observe::Otlp` asks for the
-        // event ring the same way, so the probes fill it from the first
-        // birth.
-        if self.observes_events() {
-            let i32_t = self.context.i32_type();
-            let g = self.module.add_global(i32_t, None, "lotus_observe_events");
-            g.set_initializer(&i32_t.const_int(1, false));
+        // The runtime references both flags under `LOTUS_OBSERVE`, and a
+        // weak reference to an absent data symbol does not link on every
+        // target, so a program holding either defines both (0 or 1); one
+        // holding neither defines neither and links the runtime it did.
+        {
+            let (m, e) = (self.observes_metrics(), self.observes_events());
+            if m || e {
+                let i32_t = self.context.i32_type();
+                for (name, on) in [("lotus_observe_metrics", m), ("lotus_observe_events", e)] {
+                    let g = self.module.add_global(i32_t, None, name);
+                    g.set_initializer(&i32_t.const_int(on as u64, false));
+                }
+            }
         }
         // GH #1039: every body has lowered — tell the prelude's drain
         // install whether anything reads `draining`.

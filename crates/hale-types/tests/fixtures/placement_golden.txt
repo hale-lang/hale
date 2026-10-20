@@ -656,7 +656,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/metrics.hl#f4864c90
 
-== crates/hale-stdlib/hl/observe.hl#d1690308
+== crates/hale-stdlib/hl/observe.hl#983366e8
 
 == crates/hale-stdlib/hl/process.hl#e44be954
 
@@ -4415,6 +4415,19 @@ row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	of
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 shared	App@literal1.reg	__StdMetricsRegistry #0ee61f7f
 shared	dynamic	sites in the seed #94b71fa6
+
+== crates/hale-codegen/tests/observe_events.rs#b16a5213
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.pump	Pump	pool:io	entry	off owner
+dynamic	__StdBytesBytesBuilder	on pool:io	in the seed
+-- App@literal1.events	__StdObserveOtlp
+row	~	__StdObserveOtlp	pool:io	entry	off owner
+row	~.client	__StdHttpClient	pool:io	inherited
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on pool:io
+dynamic	__StdHttpConn	on pool:io
 
 == crates/hale-codegen/tests/observe_metrics.rs#952f6e36
 root	App	the entry

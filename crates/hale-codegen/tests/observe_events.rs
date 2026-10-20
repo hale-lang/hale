@@ -253,7 +253,7 @@ fn a_program_without_events_fills_no_ring() {
     let bin = harness::unique_bin("observe_events_none_ir");
     let ir = harness::build_source_ir_text(PLAIN, &bin).expect("builds");
     assert!(calls(&ir).is_empty(), "no event calls without an `Otlp`:\n{:#?}", calls(&ir));
-    assert!(!ir.contains("@lotus_observe_events = "), "the ring is not asked for without an `Otlp`");
+    assert!(ir.contains("@lotus_observe_events = i32 0") || ir.contains("@lotus_observe_events = global i32 0"), "the ring is off without an `Otlp`");
 
     let declared = PLAIN.replace(
         "        metrics: std::observe::Scrape = std::observe::Scrape { port: 0 };\n",
@@ -284,4 +284,95 @@ fn a_program_without_events_fills_no_ring() {
     assert!(!page.contains("hale_otlp_dropped_total"), "{page}");
     Command::new("kill").args(["-TERM", &c.id().to_string()]).status().expect("kill");
     let _ = c.wait();
+}
+
+/// The exporter's own work is not recorded, but only the exporter's: an
+/// ordinary locus on the same cooperative pool worker still has its
+/// births and failures sent.
+const SHARED_POOL: &str = r#"
+locus Pump {
+    params { ticks: Int = 0; failures: Int = 0; }
+    closure delivery { captures: ticks; epoch inline; }
+    @unbounded
+    run() {
+        while !self.draining {
+            self.ticks = self.ticks + 1;
+            if self.ticks == 2 && self.failures == 0 {
+                self.failures = self.failures + 1;
+                violate delivery;
+            }
+            std::time::sleep(5ms);
+        }
+    }
+}
+
+main locus App {
+    params {
+        pump: Pump = Pump { };
+        events: std::observe::Otlp = std::observe::Otlp { service: "shared", interval: 100ms };
+    }
+    placement {
+        pump: cooperative(pool = io) where async_io;
+        events: cooperative(pool = io) where async_io;
+    }
+    on_failure(c: Pump, err: ClosureViolation) {
+        restart(c) for 5;
+    }
+    run() {
+        std::time::sleep(600ms);
+    }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn an_ordinary_locus_on_the_exporters_pool_still_emits_events() {
+    let (url, rx) = collector();
+    let bin = harness::unique_bin("observe_events_shared_pool");
+    build_opts::build_source(SHARED_POOL, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", &url).output().expect("run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut seen = String::new();
+    while let Ok((_, body)) = rx.recv_timeout(Duration::from_millis(500)) {
+        seen.push_str(&body);
+    }
+    for want in ["locus.failure", "locus.restart"] {
+        assert!(seen.contains(want), "{want} from a locus on the exporter's pool: {seen}");
+    }
+    assert!(!seen.contains("__StdHttpConn"), "the backend's sends are not events: {seen}");
+}
+
+/// `max_batch: 0` is one event a batch, not a spin that never drains.
+#[test]
+fn a_zero_max_batch_still_drains() {
+    let (url, rx) = collector();
+    let src = LIFECYCLE.replace("interval: 100ms", "interval: 100ms, max_batch: 0");
+    let bin = harness::unique_bin("observe_events_zero_batch");
+    build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", &url).output().expect("run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut seen = String::new();
+    while let Ok((_, body)) = rx.recv_timeout(Duration::from_millis(500)) {
+        seen.push_str(&body);
+    }
+    assert!(seen.contains("locus.birth") && seen.contains("locus.failure"), "{seen}");
+}
+
+/// Every combination defines both flags the runtime references, or
+/// neither (a program observing nothing links the runtime it did).
+#[test]
+fn each_observe_combination_defines_what_the_runtime_references() {
+    let otlp = "        events: std::observe::Otlp = std::observe::Otlp { };\n";
+    let scrape = "        metrics: std::observe::Scrape = std::observe::Scrape { port: 0 };\n";
+    let base = PLAIN.replace(scrape, "").replace("    placement { metrics: pinned; }\n", "");
+    let with = |extra: &str| base.replace("        reg:", &format!("{extra}        reg:"));
+    let flags = |src: &str, name: &str| -> (bool, bool) {
+        let bin = harness::unique_bin(name);
+        let ir = harness::build_source_ir_text(src, &bin).expect("builds");
+        (ir.contains("@lotus_observe_metrics = "), ir.contains("@lotus_observe_events = "))
+    };
+    assert_eq!(flags(&base, "observe_flags_none"), (false, false));
+    assert_eq!(flags(&with(scrape), "observe_flags_scrape"), (true, true));
+    assert_eq!(flags(&with(otlp), "observe_flags_otlp"), (true, true));
+    assert_eq!(flags(&with(&format!("{scrape}{otlp}")), "observe_flags_both"), (true, true));
 }

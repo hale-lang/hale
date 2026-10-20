@@ -109,6 +109,7 @@ fn __observe_render() -> String {
 /// build's identity. Nothing waits on the collector: events the ring has
 /// no room for, and a batch the collector does not take, are dropped and
 /// counted (`hale_otlp_dropped_total` on a declared `metrics` page).
+/// A `max_batch` below 1 is 1.
 locus __StdObserveOtlp {
     params {
         endpoint: String = "";
@@ -147,9 +148,14 @@ locus __StdObserveOtlp {
     fn flush(start: Bool) {
         let mut opening = start;
         let mut more = true;
+        // a batch holds at least one event: `max_batch` below 1 is 1
+        let mut cap = self.max_batch;
+        if cap < 1 {
+            cap = 1;
+        }
         while more {
-            let n = std::observe::__events_take(self.max_batch);
-            more = n == self.max_batch;
+            let n = std::observe::__events_take(cap);
+            more = n == cap;
             if n > 0 || opening {
                 if len(self.url) == 0 {
                     std::observe::__events_dropped(n);

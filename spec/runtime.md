@@ -4549,15 +4549,15 @@ with its wall time, under one resource (`service.name`,
 `hale.start` record carrying the build's identity. A program holding one
 defines `lotus_observe_events` (codegen emits it), and only then do the
 birth and dissolve probes and the restart and failure notes write to the
-runtime's event ring (`lotus_observe_event`), which runs the probes in
+runtime's event ring (`lotus_observe_event`; a program holding either backend defines both flags, 0 or 1, since the runtime references both), which runs the probes in
 counters-only mode as a scrape does. The ring holds 4096 events and is
 never waited on: an event that finds it full is dropped and counted.
 The backend drains it from wherever `placement` puts it (`pinned` for a
 thread of its own), a batch every `interval`, each send bounded by
 `timeout_ms` in all (a `std::http::Client` with that total deadline and
-no retry); a batch the collector does not take in time is dropped and
+no retry; a `max_batch` below 1 is 1); a batch the collector does not take in time is dropped and
 counted too, and the count is `hale_otlp_dropped_total` on the page of a
-scrape the program also holds. What the backend's own thread does to
+scrape the program also holds. What the backend's own coroutine (not its worker's other loci) does to
 send (a builder, a connection) is not an event. Its `run()` ends with the
 tree's drain or a signal's, after one last flush; events after that, at
 the very end of teardown, are not sent. A program that holds no `Otlp`
