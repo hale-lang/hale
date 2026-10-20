@@ -1,6 +1,6 @@
 {
   "x-hale-surface": "Voice",
-  "x-hale-digest": "fnv1a64:94142dde9438f0f9",
+  "x-hale-digest": "fnv1a64:d5847413a875104f",
   "tools": [
     {
       "name": "Accounts__archive",
@@ -197,11 +197,16 @@
               }
             ]
           },
-          "set_provider": {
-            "type": "boolean"
-          },
           "provider": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "billing": {
             "anyOf": [
@@ -481,14 +486,16 @@
               }
             ]
           },
-          "set_price": {
-            "type": "boolean"
-          },
-          "priced": {
-            "type": "boolean"
-          },
           "price": {
-            "$ref": "#/$defs/ModelPrice"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelPrice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -886,17 +893,35 @@
               }
             ]
           },
-          "set_models": {
-            "type": "boolean"
-          },
           "models": {
-            "$ref": "#/$defs/Restriction"
-          },
-          "set_accounts": {
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "accounts": {
-            "$ref": "#/$defs/Restriction"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "limits": {
             "anyOf": [
@@ -912,16 +937,18 @@
               }
             ]
           },
-          "set_expires": {
-            "type": "boolean"
-          },
-          "expires": {
-            "type": "boolean"
-          },
           "expires_at": {
-            "type": "string",
-            "format": "date-time",
-            "x-hale-type": "Time"
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -995,31 +1022,6 @@
             "required": [
               "scope"
             ]
-          },
-          "Names": {
-            "type": "object",
-            "properties": {
-              "items": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "maxItems": 32
-              }
-            },
-            "required": []
-          },
-          "Restriction": {
-            "type": "object",
-            "properties": {
-              "any": {
-                "type": "boolean"
-              },
-              "names": {
-                "$ref": "#/$defs/Names"
-              }
-            },
-            "required": []
           }
         }
       },
@@ -1084,11 +1086,65 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "json": {
-            "type": "string"
+          "engines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/NodeEngine"
+            },
+            "maxItems": 16
+          },
+          "max_in_flight": {
+            "type": "integer"
           }
         },
-        "required": []
+        "required": [
+          "max_in_flight"
+        ],
+        "$defs": {
+          "NodeEngine": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "models": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "config_schema": {
+                "x-hale-any": true
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "config_schema"
+            ]
+          }
+        }
       },
       "x-hale-requires": [
         "node"
@@ -1300,7 +1356,7 @@
             "type": "string"
           },
           "capabilities": {
-            "type": "string"
+            "$ref": "#/$defs/NodeCapabilities"
           },
           "local": {
             "$ref": "#/$defs/LocalControls"
@@ -1344,6 +1400,67 @@
             },
             "required": [
               "paused"
+            ]
+          },
+          "NodeCapabilities": {
+            "type": "object",
+            "properties": {
+              "engines": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/NodeEngine"
+                },
+                "maxItems": 16
+              },
+              "max_in_flight": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "max_in_flight"
+            ]
+          },
+          "NodeEngine": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "models": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "config_schema": {
+                "x-hale-any": true
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "config_schema"
             ]
           }
         }
@@ -1528,11 +1645,16 @@
               }
             ]
           },
-          "set_max_in_flight": {
-            "type": "boolean"
-          },
           "max_in_flight": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -2025,49 +2147,40 @@
               }
             ]
           },
-          "set_models": {
-            "type": "boolean"
-          },
           "models": {
-            "$ref": "#/$defs/Restriction"
-          },
-          "set_accounts": {
-            "type": "boolean"
-          },
-          "accounts": {
-            "$ref": "#/$defs/Restriction"
-          }
-        },
-        "required": [
-          "project"
-        ],
-        "$defs": {
-          "Names": {
-            "type": "object",
-            "properties": {
-              "items": {
+            "anyOf": [
+              {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
                 "maxItems": 32
-              }
-            },
-            "required": []
-          },
-          "Restriction": {
-            "type": "object",
-            "properties": {
-              "any": {
-                "type": "boolean"
               },
-              "names": {
-                "$ref": "#/$defs/Names"
+              {
+                "type": "null"
               }
-            },
-            "required": []
+            ],
+            "x-hale-null": "clear"
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
-        }
+        },
+        "required": [
+          "project"
+        ]
       },
       "x-hale-requires": [
         "admin"
@@ -2112,7 +2225,7 @@
             "type": "boolean"
           },
           "config": {
-            "type": "string"
+            "x-hale-any": true
           }
         },
         "required": [
@@ -2292,7 +2405,7 @@
           "config": {
             "anyOf": [
               {
-                "type": "string"
+                "x-hale-any": true
               },
               {
                 "type": "null"

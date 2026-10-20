@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:hale:surface:Voice@fnv1a64:94142dde9438f0f9",
+  "$id": "urn:hale:surface:Voice@fnv1a64:d5847413a875104f",
   "title": "Voice surface",
   "x-hale-surface": "Voice",
-  "x-hale-digest": "fnv1a64:94142dde9438f0f9",
+  "x-hale-digest": "fnv1a64:d5847413a875104f",
   "x-hale-members": {
     "Accounts::archive": {
       "name": "Accounts::archive",
@@ -71,7 +71,7 @@
     },
     "Accounts::update": {
       "name": "Accounts::update",
-      "digest": "fnv1a64:b3e38e41f2fc09fb",
+      "digest": "fnv1a64:1c9bca62bcc7ca74",
       "request": {
         "$ref": "#/$defs/AccountUpdate"
       },
@@ -149,7 +149,7 @@
     },
     "Catalog::update": {
       "name": "Catalog::update",
-      "digest": "fnv1a64:518945bba16a044e",
+      "digest": "fnv1a64:2488b339f99a0fee",
       "request": {
         "$ref": "#/$defs/CatalogModelUpdate"
       },
@@ -165,7 +165,7 @@
     },
     "Changes::list": {
       "name": "Changes::list",
-      "digest": "fnv1a64:c891f430ab14d407",
+      "digest": "fnv1a64:08709121f3bb8819",
       "request": {
         "$ref": "#/$defs/ChangeQuery"
       },
@@ -277,7 +277,7 @@
     },
     "Keys::update": {
       "name": "Keys::update",
-      "digest": "fnv1a64:407915eb556fee41",
+      "digest": "fnv1a64:8070fdbfe4e173e6",
       "request": {
         "$ref": "#/$defs/KeyUpdate"
       },
@@ -337,7 +337,7 @@
     },
     "NodePlane::assignment": {
       "name": "NodePlane::assignment",
-      "digest": "fnv1a64:5f998cab9ead3a69",
+      "digest": "fnv1a64:cf3ba276ff6f60e0",
       "request": null,
       "response": {
         "$ref": "#/$defs/Assignment"
@@ -351,9 +351,9 @@
     },
     "NodePlane::capabilities": {
       "name": "NodePlane::capabilities",
-      "digest": "fnv1a64:ece19ed9c57dda28",
+      "digest": "fnv1a64:f2622983ee0c2d3e",
       "request": {
-        "$ref": "#/$defs/NodeReport"
+        "$ref": "#/$defs/NodeCapabilities"
       },
       "response": null,
       "error": {
@@ -421,7 +421,7 @@
     },
     "NodePlane::register": {
       "name": "NodePlane::register",
-      "digest": "fnv1a64:83462d3a7fcc3e49",
+      "digest": "fnv1a64:cbca68d6aafca620",
       "request": {
         "$ref": "#/$defs/Registration"
       },
@@ -451,7 +451,7 @@
     },
     "Nodes::create": {
       "name": "Nodes::create",
-      "digest": "fnv1a64:a1ecf2102e21114f",
+      "digest": "fnv1a64:411ce004008bfb81",
       "request": {
         "$ref": "#/$defs/NodeCreate"
       },
@@ -467,7 +467,7 @@
     },
     "Nodes::get": {
       "name": "Nodes::get",
-      "digest": "fnv1a64:93dbdf03813b3be6",
+      "digest": "fnv1a64:7893a203707f5384",
       "request": {
         "$ref": "#/$defs/NodeRef"
       },
@@ -483,7 +483,7 @@
     },
     "Nodes::list": {
       "name": "Nodes::list",
-      "digest": "fnv1a64:178ea695cf187677",
+      "digest": "fnv1a64:e099da91857a3f70",
       "request": null,
       "response": {
         "$ref": "#/$defs/NodeList"
@@ -497,7 +497,7 @@
     },
     "Nodes::revoke": {
       "name": "Nodes::revoke",
-      "digest": "fnv1a64:e4c9edb775dda8fa",
+      "digest": "fnv1a64:e4ee4367c98a1dd8",
       "request": {
         "$ref": "#/$defs/NodeRef"
       },
@@ -513,7 +513,7 @@
     },
     "Nodes::rotate_token": {
       "name": "Nodes::rotate_token",
-      "digest": "fnv1a64:6e55e9e8414b1e1d",
+      "digest": "fnv1a64:295af103cc5c5067",
       "request": {
         "$ref": "#/$defs/NodeRef"
       },
@@ -529,7 +529,7 @@
     },
     "Nodes::update": {
       "name": "Nodes::update",
-      "digest": "fnv1a64:b6c1da618c0f9c23",
+      "digest": "fnv1a64:21ab6f807b3a70ed",
       "request": {
         "$ref": "#/$defs/NodeUpdate"
       },
@@ -545,7 +545,7 @@
     },
     "Probes::liveness": {
       "name": "Probes::liveness",
-      "digest": "fnv1a64:f58c063e1c051c06",
+      "digest": "fnv1a64:7ae083f346529824",
       "request": null,
       "response": {
         "$ref": "#/$defs/Health"
@@ -555,7 +555,7 @@
     },
     "Probes::readiness": {
       "name": "Probes::readiness",
-      "digest": "fnv1a64:26d9dbf7281b5619",
+      "digest": "fnv1a64:fd315b7e01f18fd3",
       "request": null,
       "response": {
         "$ref": "#/$defs/Health"
@@ -693,7 +693,7 @@
     },
     "Projects::update": {
       "name": "Projects::update",
-      "digest": "fnv1a64:a83c724b38b08f36",
+      "digest": "fnv1a64:aae12b94fc596613",
       "request": {
         "$ref": "#/$defs/ProjectUpdate"
       },
@@ -709,7 +709,7 @@
     },
     "Seats::create": {
       "name": "Seats::create",
-      "digest": "fnv1a64:c750bf7e5276bde7",
+      "digest": "fnv1a64:b7f0307f0deac43c",
       "request": {
         "$ref": "#/$defs/SeatCreate"
       },
@@ -725,7 +725,7 @@
     },
     "Seats::get": {
       "name": "Seats::get",
-      "digest": "fnv1a64:28eaad11794f4bf4",
+      "digest": "fnv1a64:11b7d1113fa7e1b1",
       "request": {
         "$ref": "#/$defs/SeatRef"
       },
@@ -741,7 +741,7 @@
     },
     "Seats::list": {
       "name": "Seats::list",
-      "digest": "fnv1a64:167e240125a65db9",
+      "digest": "fnv1a64:f1d0a7e5d3a2069c",
       "request": {
         "$ref": "#/$defs/NodeRef"
       },
@@ -757,7 +757,7 @@
     },
     "Seats::remove": {
       "name": "Seats::remove",
-      "digest": "fnv1a64:04c5a77af9f1ba2c",
+      "digest": "fnv1a64:6555b0cca7f75759",
       "request": {
         "$ref": "#/$defs/SeatRef"
       },
@@ -773,7 +773,7 @@
     },
     "Seats::update": {
       "name": "Seats::update",
-      "digest": "fnv1a64:b314ddf2b84a8fb8",
+      "digest": "fnv1a64:73f4586564b881be",
       "request": {
         "$ref": "#/$defs/SeatUpdate"
       },
@@ -978,11 +978,16 @@
             }
           ]
         },
-        "set_provider": {
-          "type": "boolean"
-        },
         "provider": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         },
         "billing": {
           "anyOf": [
@@ -1118,7 +1123,7 @@
           "type": "boolean"
         },
         "config": {
-          "type": "string"
+          "x-hale-any": true
         }
       },
       "required": []
@@ -1548,14 +1553,16 @@
             }
           ]
         },
-        "set_price": {
-          "type": "boolean"
-        },
-        "priced": {
-          "type": "boolean"
-        },
         "price": {
-          "$ref": "#/$defs/ModelPrice"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         }
       },
       "required": [
@@ -1601,7 +1608,7 @@
         "before": {
           "anyOf": [
             {
-              "type": "string"
+              "x-hale-any": true
             },
             {
               "type": "null"
@@ -1611,7 +1618,7 @@
         "after": {
           "anyOf": [
             {
-              "type": "string"
+              "x-hale-any": true
             },
             {
               "type": "null"
@@ -1685,6 +1692,25 @@
       },
       "required": []
     },
+    "Check": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "unavailable"
+          ],
+          "x-hale-type": "HealthStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
     "Draining": {
       "type": "object",
       "properties": {
@@ -1744,8 +1770,19 @@
         "version": {
           "type": "string"
         },
-        "store": {
-          "type": "string"
+        "checks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unavailable"
+            ],
+            "x-hale-type": "HealthStatus"
+          },
+          "maxProperties": 8,
+          "x-hale-key": "name",
+          "x-hale-value": "status"
         }
       },
       "required": [
@@ -2042,17 +2079,35 @@
             }
           ]
         },
-        "set_models": {
-          "type": "boolean"
-        },
         "models": {
-          "$ref": "#/$defs/Restriction"
-        },
-        "set_accounts": {
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         },
         "accounts": {
-          "$ref": "#/$defs/Restriction"
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         },
         "limits": {
           "anyOf": [
@@ -2068,16 +2123,18 @@
             }
           ]
         },
-        "set_expires": {
-          "type": "boolean"
-        },
-        "expires": {
-          "type": "boolean"
-        },
         "expires_at": {
-          "type": "string",
-          "format": "date-time",
-          "x-hale-type": "Time"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "x-hale-type": "Time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         }
       },
       "required": [
@@ -2322,19 +2379,6 @@
         "model"
       ]
     },
-    "Names": {
-      "type": "object",
-      "properties": {
-        "items": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 32
-        }
-      },
-      "required": []
-    },
     "Node": {
       "type": "object",
       "properties": {
@@ -2367,7 +2411,7 @@
         "capabilities": {
           "anyOf": [
             {
-              "type": "string"
+              "$ref": "#/$defs/NodeCapabilities"
             },
             {
               "type": "null"
@@ -2476,6 +2520,24 @@
         "status"
       ]
     },
+    "NodeCapabilities": {
+      "type": "object",
+      "properties": {
+        "engines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NodeEngine"
+          },
+          "maxItems": 16
+        },
+        "max_in_flight": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_in_flight"
+      ]
+    },
     "NodeCreate": {
       "type": "object",
       "properties": {
@@ -2498,6 +2560,49 @@
       },
       "required": [
         "id"
+      ]
+    },
+    "NodeEngine": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "models": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_schema": {
+          "x-hale-any": true
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "config_schema"
       ]
     },
     "NodeList": {
@@ -2524,15 +2629,6 @@
         "node"
       ]
     },
-    "NodeReport": {
-      "type": "object",
-      "properties": {
-        "json": {
-          "type": "string"
-        }
-      },
-      "required": []
-    },
     "NodeUpdate": {
       "type": "object",
       "properties": {
@@ -2549,11 +2645,16 @@
             }
           ]
         },
-        "set_max_in_flight": {
-          "type": "boolean"
-        },
         "max_in_flight": {
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         }
       },
       "required": [
@@ -2837,17 +2938,35 @@
             }
           ]
         },
-        "set_models": {
-          "type": "boolean"
-        },
         "models": {
-          "$ref": "#/$defs/Restriction"
-        },
-        "set_accounts": {
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         },
         "accounts": {
-          "$ref": "#/$defs/Restriction"
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-hale-null": "clear"
         }
       },
       "required": [
@@ -2944,22 +3063,10 @@
           "type": "string"
         },
         "capabilities": {
-          "type": "string"
+          "$ref": "#/$defs/NodeCapabilities"
         },
         "local": {
           "$ref": "#/$defs/LocalControls"
-        }
-      },
-      "required": []
-    },
-    "Restriction": {
-      "type": "object",
-      "properties": {
-        "any": {
-          "type": "boolean"
-        },
-        "names": {
-          "$ref": "#/$defs/Names"
         }
       },
       "required": []
@@ -3000,7 +3107,7 @@
           "type": "boolean"
         },
         "config": {
-          "type": "string"
+          "x-hale-any": true
         }
       },
       "required": [
@@ -3189,7 +3296,7 @@
         "config": {
           "anyOf": [
             {
-              "type": "string"
+              "x-hale-any": true
             },
             {
               "type": "null"
@@ -3241,7 +3348,7 @@
           "type": "boolean"
         },
         "config": {
-          "type": "string"
+          "x-hale-any": true
         },
         "status": {
           "type": "string",

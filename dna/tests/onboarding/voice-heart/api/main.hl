@@ -60,6 +60,10 @@ main locus Api {
         nerves_vault: String = "";
         // with no organization its url is "": it queues and dials nothing
         teller: Teller = Teller { url: if len(self.org) > 0 { self.nerves_url } else { "" }, user: self.nerves_user, vault: self.nerves_vault, org: self.org };
+        // the runtime's own health, readiness and capacity, on a port of
+        // their own: what a deployment's healthcheck asks (VOICE_PROBE_PORT)
+        probe_port: Int = 9090;
+        probes: std::observe::Probes = std::observe::Probes { port: self.probe_port };
     }
     placement {
         pulse: pinned;
@@ -213,6 +217,15 @@ fn main() {
             std::process::exit(2);
         }
     }
+    // the runtime probes' port: VOICE_PROBE_PORT
+    let mut probe_port = 9090;
+    if std::env::var_exists("VOICE_PROBE_PORT") {
+        probe_port = std::str::parse_int(std::env::var("VOICE_PROBE_PORT")) or - 1;
+        if probe_port < 1 || probe_port > 65535 {
+            log_error("VOICE_PROBE_PORT takes a port number", std::log::kv("value", std::env::var("VOICE_PROBE_PORT")));
+            std::process::exit(2);
+        }
+    }
     let mut i = if migrating { 2 } else { 1 };
     while i + 1 < std::env::args_count() {
         let flag = std::env::arg(i);
@@ -340,7 +353,7 @@ fn main() {
         log_warn("grafted, but no account for the nodes on the habitat's broker (HALE_DNA_BROKER_NODE_USER, HALE_DNA_BROKER_NODE_VAULT): nodes are handed none", "");
     }
     let id = st::random_id(6);
-    Api { host: host, port: port, canned: canned, nats: b.url, broker: b, node_nats: node_nats, ui: ui, database: database, first_s: first_s, idle_s: idle_s, instance: "api-" + id, head: head, application: application, issuer: issuer, client: client, client_vault: client_vault, limits_every_s: limits_every_s, org: org, nerves_url: nerves_url, nerves_user: nerves_user, nerves_vault: nerves_vault };
+    Api { host: host, port: port, canned: canned, nats: b.url, broker: b, node_nats: node_nats, ui: ui, database: database, first_s: first_s, idle_s: idle_s, instance: "api-" + id, head: head, application: application, issuer: issuer, client: client, client_vault: client_vault, limits_every_s: limits_every_s, org: org, nerves_url: nerves_url, nerves_user: nerves_user, nerves_vault: nerves_vault, probe_port: probe_port };
 }
 
 /// The environment's `name`, or `otherwise` when it is unset.

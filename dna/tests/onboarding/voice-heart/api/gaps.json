@@ -1,12 +1,9 @@
 {
   "note": "Written by spec/validate/bundle.mjs --write; every gap between the exported Voice surface and spec/openapi.yaml, classed by what closes it.",
   "counts": {
-    "required": 235,
+    "required": 238,
     "path": 12,
-    "tri-state": 18,
-    "wire": 128,
-    "map": 15,
-    "json-text": 3
+    "wire": 128
   },
   "gaps": [
     {
@@ -104,20 +101,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "AccountUpdate.provider",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "AccountUpdate.set_provider",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
     },
     {
       "at": "ApiError.kind",
@@ -231,12 +214,6 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "AssignedSeat.config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
-    },
-    {
       "at": "AssignedSeat.engine (required)",
       "found": "required",
       "kind": "required",
@@ -277,12 +254,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "Assignment.seats[].config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "Assignment.seats[].engine (required)",
@@ -625,13 +596,6 @@
       "waits_on": "voice: a path or query parameter carried in the row's request"
     },
     {
-      "at": "CatalogModelUpdate.price",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
       "at": "CatalogModelUpdate.price.currency (required)",
       "found": "required",
       "kind": "required",
@@ -650,36 +614,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "CatalogModelUpdate.priced",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "CatalogModelUpdate.set_price",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "Change.after",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
-    },
-    {
       "at": "Change.at (required)",
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "Change.before",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "Change.id (required)",
@@ -700,22 +638,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "ChangeList.data[].after",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
-    },
-    {
       "at": "ChangeList.data[].at (required)",
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "ChangeList.data[].before",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "ChangeList.data[].id (required)",
@@ -728,20 +654,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "Health.checks",
-      "found": "missing",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records",
-      "why": "`checks` is a map of dependency to state"
-    },
-    {
-      "at": "Health.store",
-      "found": "extra",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records",
-      "why": "`checks` is a map of dependency to state"
     },
     {
       "at": "Heartbeat.in_flight (required)",
@@ -1069,27 +981,6 @@
       "why": "the list shares the type of the create answer; the wire leaves the secret out"
     },
     {
-      "at": "KeyUpdate.accounts",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "KeyUpdate.expires",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "KeyUpdate.expires_at",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
       "at": "KeyUpdate.key",
       "found": "path",
       "kind": "path",
@@ -1102,38 +993,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "KeyUpdate.models",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
       "at": "KeyUpdate.project",
       "found": "path",
       "kind": "path",
       "waits_on": "voice: a path or query parameter carried in the row's request"
-    },
-    {
-      "at": "KeyUpdate.set_accounts",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "KeyUpdate.set_expires",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "KeyUpdate.set_models",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
     },
     {
       "at": "Limit.window_seconds (required)",
@@ -1351,10 +1214,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "Node.capabilities",
-      "found": "json-text",
-      "kind": "json-text",
-      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+      "at": "Node.capabilities.engines (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
       "at": "Node.created_at (required)",
@@ -1391,12 +1254,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "Node.seats[].config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "Node.seats[].engine (required)",
@@ -1453,10 +1310,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "NodeList.data[].capabilities",
-      "found": "json-text",
-      "kind": "json-text",
-      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+      "at": "NodeList.data[].capabilities.engines (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
       "at": "NodeList.data[].created_at (required)",
@@ -1494,12 +1351,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "NodeList.data[].seats[].config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "NodeList.data[].seats[].engine (required)",
@@ -1550,24 +1401,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "NodeUpdate.max_in_flight",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
       "at": "NodeUpdate.node",
       "found": "path",
       "kind": "path",
       "waits_on": "voice: a path or query parameter carried in the row's request"
-    },
-    {
-      "at": "NodeUpdate.set_max_in_flight",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
     },
     {
       "at": "Project.budget.allowance_micros",
@@ -1760,38 +1597,10 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "ProjectUpdate.accounts",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "ProjectUpdate.models",
-      "found": "optional",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
       "at": "ProjectUpdate.project",
       "found": "path",
       "kind": "path",
       "waits_on": "voice: a path or query parameter carried in the row's request"
-    },
-    {
-      "at": "ProjectUpdate.set_accounts",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
-    },
-    {
-      "at": "ProjectUpdate.set_models",
-      "found": "extra",
-      "kind": "tri-state",
-      "waits_on": "hale: a field that may be left out, null or a value; a PATCH leaves it as it is when it is left out and clears it on null, and a presence pair reads null as left out",
-      "why": "a PATCH field that may be left out (kept), null (cleared) or a value"
     },
     {
       "at": "QuotaReport.seat (required)",
@@ -1828,12 +1637,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "Registered.assignment.seats[].config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "Registered.assignment.seats[].engine (required)",
@@ -1899,13 +1702,13 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "Registration.capabilities",
-      "found": "json-text",
-      "kind": "json-text",
-      "waits_on": "hale: a free-form JSON value inside a typed object (an engine's config_schema), so the node's capabilities ride as JSON text"
+      "at": "Registration.capabilities (required)",
+      "found": "required",
+      "kind": "required",
+      "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "Registration.capabilities (required)",
+      "at": "Registration.capabilities.engines (required)",
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
@@ -1933,12 +1736,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "SeatCreate.config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "SeatCreate.node",
@@ -1969,12 +1766,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "SeatList.data[].config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "SeatList.data[].engine (required)",
@@ -2067,12 +1858,6 @@
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
     },
     {
-      "at": "SeatUpdate.config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
-    },
-    {
       "at": "SeatUpdate.node",
       "found": "path",
       "kind": "path",
@@ -2095,12 +1880,6 @@
       "found": "required",
       "kind": "required",
       "waits_on": "voice: the row gives the field a default, so the surface does not require it; the REST reader does (api/wire.hl)"
-    },
-    {
-      "at": "SeatView.config",
-      "found": "map",
-      "kind": "map",
-      "waits_on": "hale: a free-form JSON object (a seat's config, a change's before and after), and a map whose values are scalars (Health.checks): a hale map is bounded[S; N] indexed_by <field>, its values records"
     },
     {
       "at": "SeatView.engine (required)",

@@ -5,7 +5,7 @@
 # the compiler: `hale` statically links LLVM and needs only clang, libc and
 # OpenSSL headers beside it (see hale's own Dockerfile).
 
-ARG HALE_VERSION=v0.26.0
+ARG HALE_VERSION=v0.27.0
 
 # The admin UI, built once and served by the api from its own origin.
 FROM node:22-bookworm-slim AS ui

@@ -242,9 +242,9 @@ fn read_model_update(body: String, model: String) -> CatalogModelUpdate fallible
         context_length: count_or(body, "context_length", 0) or raise,
         has_max_output_tokens: sets(body, "max_output_tokens"),
         max_output_tokens: count_or(body, "max_output_tokens", 0) or raise,
-        set_price: sets(body, "price"),
-        priced: price.priced,
-        price: price.price
+        has_price: price.priced,
+        price: price.price,
+        clear_price: kind_of(body, "price") == "null"
     };
 }
 
@@ -282,19 +282,23 @@ fn read_project_update(body: String, project: String) -> ProjectUpdate fallible(
     refuse_field(body, "limits", "limits have their own endpoint, PUT /admin/v1/projects/{project}/limits") or raise;
     let owners = names_field(body, "owners") or raise;
     let data_classes = names_field(body, "data_classes") or raise;
+    let models = restriction_field(body, "models") or raise;
+    let accounts = accounts_field(body) or raise;
     let mut u = ProjectUpdate {
         project: project,
         has_name: sets(body, "name"),
         name: string_or(body, "name", "") or raise,
         has_owners: sets(body, "owners"),
         has_data_classes: sets(body, "data_classes"),
-        set_models: sets(body, "models"),
-        models: restriction_field(body, "models") or raise,
-        set_accounts: sets(body, "accounts"),
-        accounts: accounts_field(body) or raise
+        has_models: !models.any,
+        clear_models: kind_of(body, "models") == "null",
+        has_accounts: !accounts.any,
+        clear_accounts: kind_of(body, "accounts") == "null"
     };
     u.owners = owners.items;
     u.data_classes = data_classes.items;
+    u.models = models.names.items;
+    u.accounts = accounts.names.items;
     return u;
 }
 
@@ -326,21 +330,25 @@ fn read_key_update(body: String, project: String, key: String) -> KeyUpdate fall
     let expiry = kind_of(body, "expires_at");
     let expires = expiry != "missing" && expiry != "null";
     let limits = limits_field(body, "limits") or raise;
+    let models = restriction_field(body, "models") or raise;
+    let accounts = accounts_field(body) or raise;
     let mut u = KeyUpdate {
         project: project,
         key: key,
         has_name: sets(body, "name"),
         name: string_or(body, "name", "") or raise,
-        set_models: sets(body, "models"),
-        models: restriction_field(body, "models") or raise,
-        set_accounts: sets(body, "accounts"),
-        accounts: accounts_field(body) or raise,
+        has_models: !models.any,
+        clear_models: kind_of(body, "models") == "null",
+        has_accounts: !accounts.any,
+        clear_accounts: kind_of(body, "accounts") == "null",
         has_limits: sets(body, "limits"),
-        set_expires: expiry != "missing",
-        expires: expires,
-        expires_at: if expires { time_field(body, "expires_at") or raise } else { `1970-01-01T00:00:00Z` }
+        has_expires_at: expires,
+        expires_at: if expires { time_field(body, "expires_at") or raise } else { `1970-01-01T00:00:00Z` },
+        clear_expires_at: expiry == "null"
     };
     u.limits = limits.items;
+    u.models = models.names.items;
+    u.accounts = accounts.names.items;
     return u;
 }
 
@@ -391,7 +399,13 @@ fn jdata(entries: String) -> String {
 
 fn health_json(h: Health, checks: Bool) -> String {
     let mut out = "{\"status\": " + jq(health_name(h.status)) + ", \"version\": " + jq(h.version);
-    if checks { out = out + ", \"checks\": {\"store\": " + jq(h.store) + "}"; }
+    if checks {
+        let mut each = "";
+        for c in h.checks {
+            each = each + (if len(each) > 0 { ", " } else { "" }) + jq(c.name) + ": " + jq(health_name(c.status));
+        }
+        out = out + ", \"checks\": {" + each + "}";
+    }
     return out + "}";
 }
 

@@ -211,6 +211,7 @@ fn main() {
     let commands_port = dna::free_port(3);
     let voice_port = dna::free_port(4);
     let node_port = dna::free_port(5);
+    let probe_port = dna::free_port(6);
     let configured = dna::run_tool("sh\n-c\ncd \"$1\" && git config dna.head.url \"http://127.0.0.1:$2\" && git config dna.oidc.issuer \"http://127.0.0.1:$3\" && git add -A && git commit -qm organism\nsh\n" + voice + "\n" + to_string(head_port) + "\n" + to_string(oidc_port));
     std::test::assert_eq_int(configured.code, 0, "the organism committed, and its head's addresses set: " + configured.stderr);
     let handed = in_dir(voice, hale + "\nhabitat\nhandover\n.").stdout;
@@ -231,7 +232,7 @@ fn main() {
 
     // ---- 7. voice on the handover alone: its api, then a node
     let nerves = in_dir(voice, hale + "\ndna\nnerves\nmigrate\n.").stdout;
-    let env = lines_starting(handed, "HALE_DNA_") + lines_starting(nerves, "HALE_DNA_NATS_ORG=") + lines_starting(nerves, "HALE_DNA_NATS_URL_APP=") + lines_starting(nerves, "HALE_DNA_NATS_USER_APP=") + lines_starting(nerves, "HALE_DNA_NATS_VAULT_APP=") + "VOICE_LIMITS_EVERY_S=1\n";
+    let env = lines_starting(handed, "HALE_DNA_") + lines_starting(nerves, "HALE_DNA_NATS_ORG=") + lines_starting(nerves, "HALE_DNA_NATS_URL_APP=") + lines_starting(nerves, "HALE_DNA_NATS_USER_APP=") + lines_starting(nerves, "HALE_DNA_NATS_VAULT_APP=") + "VOICE_LIMITS_EVERY_S=1\nVOICE_PROBE_PORT=" + to_string(probe_port) + "\n";
     let api_log = scratch + "/voice.log";
     let api = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", api_log);
     let base = "http://127.0.0.1:" + to_string(voice_port);
@@ -243,6 +244,10 @@ fn main() {
         tries = tries + 1;
     }
     std::test::assert(len(api) > 0 && healthy && std::str::contains(text_of(api_log), "grafted: the store's database is the one the habitat provisioned") && std::str::contains(text_of(api_log), "grafted: voice's own NATS is the habitat's broker"), "voice's api runs on the habitat's database and broker: " + text_of(api_log));
+    // the runtime's own probes, on their own port: what a deployment's
+    // healthcheck asks (`hale deploy render`)
+    let ready = http(scratch, "GET", "http://127.0.0.1:" + to_string(probe_port) + "/readyz", "");
+    std::test::assert(status_of(ready) == "200", "the runtime's readiness probe answers for voice's api: " + ready);
     // its admin plane: a model, an account, the project the limit names, a
     // key, and a node with a static seat
     let model = post(scratch, base + "/admin/v1/models", "{\"id\": \"echo-1\"}");

@@ -15,7 +15,9 @@ locus Probes {
     /// `getReadiness`: the store answers. Having no seats up is not
     /// unreadiness.
     fn readiness() -> Health {
-        let ok = self.store.ready();
-        return Health { status: if ok { HealthStatus::ok } else { HealthStatus::unavailable }, version: VERSION, store: if ok { "ok" } else { "unavailable" } };
+        let state = if self.store.ready() { HealthStatus::ok } else { HealthStatus::unavailable };
+        let mut h = Health { status: state, version: VERSION };
+        push(h.checks, Check { name: "store", status: state }) or discard;
+        return h;
     }
 }

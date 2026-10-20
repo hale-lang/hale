@@ -1,0 +1,8 @@
+{
+  "name": "voice-tool-redocly",
+  "private": true,
+  "description": "The OpenAPI bundler and linter CI runs, pinned with its lockfile so a registry hiccup on a transitive range cannot fail a job.",
+  "devDependencies": {
+    "@redocly/cli": "1.34.21"
+  }
+}
