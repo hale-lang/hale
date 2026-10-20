@@ -458,6 +458,37 @@ read another param (`std::observe::Probes { port: self.probe_port }`),
 but a construction of the main locus cannot supply the probes. Nothing
 is served, or measured, in a program without the param.
 
+## Rendering the deployment
+
+`hale deploy render` turns what a program already declares into a
+platform description, and stops there: it never builds or deploys.
+
+```sh
+hale deploy render fleet.plan.json --env prod        # backend from hale.toml
+hale deploy render ./svc --backend kubernetes --out deploy/
+```
+
+```toml
+[environments.prod]
+source_only = true
+backend = "compose"
+
+[environments.prod.env]
+LOG_LEVEL = "info"
+```
+
+Given a seed it renders one workload; given a fleet plan, one per
+instance (compose) or one Deployment per program with `replicas` the
+instance count (Kubernetes), with `depends_on` where a route joins two
+instances. The probes above become a compose `healthcheck` and the
+Kubernetes liveness and readiness probes; a `std::observe::Scrape`
+becomes a published port and `prometheus.io/*` annotations. A program
+that holds no `Probes` gets no probe section (a note on stderr says so),
+and no autoscaler is rendered, since nothing declares a scale policy.
+The compose output mounts the built binaries (`hale build` each seed
+first) rather than building an image. Only a program you name is
+rendered: a repository with no `.hl` source of its own is refused.
+
 ## The shape this gives you
 
 A single source tree, decomposed into loci that coordinate over

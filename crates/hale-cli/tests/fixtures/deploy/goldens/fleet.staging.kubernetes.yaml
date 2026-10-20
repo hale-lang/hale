@@ -1,0 +1,81 @@
+# Rendered by `hale deploy render` from fleet.plan.json: a pure function of the checked program.
+# environment: staging
+# Each image <name>:latest holds the built binary under /app (`hale build <seed>`); it is
+# named here and never built or pushed.
+# No HorizontalPodAutoscaler: no scale policy is declared for this environment.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bare-0
+  labels:
+    app: bare-0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bare-0
+  template:
+    metadata:
+      labels:
+        app: bare-0
+    spec:
+      containers:
+        - name: bare-0
+          image: "bare-0:latest"
+          command: ["/app/bare/bare"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svc
+  labels:
+    app: svc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: svc
+  template:
+    metadata:
+      labels:
+        app: svc
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: svc
+          image: "svc:latest"
+          command: ["/app/svc/svc"]
+          ports:
+            - name: probes
+              containerPort: 9090
+            - name: metrics
+              containerPort: 9100
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+  labels:
+    app: svc
+spec:
+  selector:
+    app: svc
+  ports:
+    - name: probes
+      port: 9090
+      targetPort: probes
+    - name: metrics
+      port: 9100
+      targetPort: metrics

@@ -532,6 +532,34 @@ row	Fan@main2	Fan	main	default
 row	Src@main3	Src	main	default
 dynamic	Conn	on main	in the seed
 
+== crates/hale-cli/tests/fixtures/deploy/bare/main.hl#c5ae55e8
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Listener	on main	in the seed
+
+== crates/hale-cli/tests/fixtures/deploy/served/main.hl#800fdda3
+root	App	the entry
+row	App@entry	App	main	default
+-- App@entry.counter	Counter
+row	~	Counter	main	default
+row	~.log	__StdLogLogger	main	inherited
+
+== crates/hale-cli/tests/fixtures/deploy/svc/main.hl#c2f87000
+root	App	the entry
+domain	pinned:App@literal1.metrics
+row	App@literal1	App	main	default
+row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	off owner
+row	App@literal1.probes	__StdObserveProbes	main	default
+-- dynamic	sites in the seed
+dynamic	Worker	on main
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.metrics
+dynamic	__StdHttpResponder	on pinned:App@literal1.metrics
+dynamic	__StdHttpServer	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
+dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
+
 == crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl#ebe49800
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `c::Box`|unresolved declaration `c::Holder`	in the seed
 

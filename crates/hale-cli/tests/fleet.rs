@@ -1,4 +1,4 @@
-//! The `fleet` integration-test binary: 6 test files of this area, kept
+//! The `fleet` integration-test binary: 7 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -9,6 +9,8 @@
 mod fleet_claim_shapes;
 #[path = "fleet_compose.rs"]
 mod fleet_compose;
+#[path = "deploy_render.rs"]
+mod deploy_render;
 #[path = "fleet_cross_tier.rs"]
 mod fleet_cross_tier;
 #[path = "fleet_model_soundness.rs"]
