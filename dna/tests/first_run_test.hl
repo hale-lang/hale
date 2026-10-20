@@ -51,6 +51,13 @@ fn started(dir: String, extra: String, argv: String, log: String) -> String {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
+// The last 150 lines of the head's log and of each log its children keep
+// (its API child among them): what a failing step prints, so a CI run
+// that fails says what the head was doing.
+fn head_tails(scratch: String) -> String {
+    return dna::run_tool("sh\n-c\nfor f in \"$1\"/head.log \"$1\"/head-state/children/*.log \"$1\"/head-state/*/children/*.log; do [ -f \"$f\" ] || continue; echo \"== $f\"; tail -n 150 \"$f\"; done\nsh\n" + scratch).stdout;
+}
+
 // The value of `NAME=` on its own line of `text`.
 fn line_value(text: String, name: String) -> String {
     let mut rest = text;
@@ -275,7 +282,7 @@ fn main() {
         plain = ask(scratch, base, caller, false, headers);
         tries = tries + 1;
     }
-    std::test::assert(status_of(plain) == "200" && std::str::contains(plain, "\"status\":\"completed\"") && std::str::contains(plain, "hello from voice"), "a request answered by the node's seat: " + plain + "\n" + text_of(api_log));
+    std::test::assert(status_of(plain) == "200" && std::str::contains(plain, "\"status\":\"completed\"") && std::str::contains(plain, "hello from voice"), "a request answered by the node's seat: " + plain + "\n" + text_of(api_log) + "\n" + head_tails(scratch));
     let streamed = ask(scratch, base, caller, true, headers);
     std::test::assert(status_of(streamed) == "200" && std::str::contains(streamed, "chat.completion.chunk") && std::str::contains(streamed, "data: [DONE]"), "and one streamed: " + streamed);
     clock.step("requests (plain, streamed)");
@@ -321,7 +328,7 @@ fn main() {
         if !ratified { std::time::sleep(1s); }
         tries = tries + 1;
     }
-    std::test::assert(ratified, "voice reads the ratified limit through the head, as its service client: " + text_of(api_log));
+    std::test::assert(ratified, "voice reads the ratified limit through the head, as its service client: " + text_of(api_log) + "\n" + head_tails(scratch));
     clock.step("the Board's limit, read by voice");
     let first = ask(scratch, base, caller, false, headers);
     let second = ask(scratch, base, caller, false, headers);
