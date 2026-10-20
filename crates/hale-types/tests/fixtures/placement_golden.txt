@@ -656,7 +656,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/metrics.hl#f4864c90
 
-== crates/hale-stdlib/hl/observe.hl#17e645f3
+== crates/hale-stdlib/hl/observe.hl#d1690308
 
 == crates/hale-stdlib/hl/process.hl#e44be954
 
@@ -4378,6 +4378,43 @@ root	App	the entry
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
 row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
+
+== crates/hale-codegen/tests/observe_events.rs#31b5b8cb
+root	App	the entry
+domain	pinned:App@literal1.pump
+domain	pinned:App@literal1.events
+row	App@literal1	App	main	default
+row	App@literal1.pump	Pump	pinned:App@literal1.pump	entry	off owner
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.events	in the seed
+shared	App@literal1.events	__StdObserveOtlp #5f1c6881
+shared	dynamic	sites in the stdlib #67a47165
+
+== crates/hale-codegen/tests/observe_events.rs#b9dc85db
+root	App	the entry
+domain	pinned:App@literal1.metrics
+domain	pinned:App@literal1.events
+row	App@literal1	App	main	default
+row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	off owner
+shared	App@literal1.events	__StdObserveOtlp #5f1c6881
+-- dynamic	sites in the seed
+dynamic	Churn	on main
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.events|pinned:App@literal1.metrics
+dynamic	__StdHttpResponder	on pinned:App@literal1.metrics
+dynamic	__StdHttpServer	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnInline	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
+dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
+dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
+shared	dynamic	sites in the stdlib #67a47165
+
+== crates/hale-codegen/tests/observe_events.rs#955fafc5
+root	App	the entry
+domain	pinned:App@literal1.metrics
+row	App@literal1	App	main	default
+row	App@literal1.metrics	__StdObserveScrape	pinned:App@literal1.metrics	entry	off owner
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
+shared	App@literal1.reg	__StdMetricsRegistry #0ee61f7f
+shared	dynamic	sites in the seed #94b71fa6
 
 == crates/hale-codegen/tests/observe_metrics.rs#952f6e36
 root	App	the entry
@@ -17925,6 +17962,10 @@ row	~	__StdMetricsRegistry	main	default
 row	~.histograms	__StdMetricsHistogramList	main	inherited
 row	~.store	__StdMetricsMap	main	inherited
 
+== shared __StdObserveOtlp #5f1c6881
+row	~	__StdObserveOtlp	pinned:~	entry	off owner
+row	~.client	__StdHttpClient	pinned:~	inherited
+
 == shared __lib____endpoints__Endpoints #8ef1de16
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
@@ -20105,6 +20146,10 @@ dynamic	Beta	on main
 == shared sites in the stdlib #1dcc5550
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdHttpConn	on main
+
+== shared sites in the stdlib #67a47165
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.events
+dynamic	__StdHttpConn	on pinned:App@literal1.events
 
 == shared sites in the stdlib #919aadb4
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
