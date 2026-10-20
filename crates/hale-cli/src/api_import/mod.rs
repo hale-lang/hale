@@ -13,6 +13,7 @@
 
 pub mod fetch;
 pub mod mapping;
+pub mod yaml;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
