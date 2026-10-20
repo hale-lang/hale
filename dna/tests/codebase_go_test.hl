@@ -41,6 +41,7 @@ fn check() {
     std::test::assert(std::str::contains(dna::tools_json("go_vet go_test gofmt_check"), "gofmt_check"), "the go tools have specs");
 
     if !has_go {
+        std::test::assert(!(std::env::var_exists("CI") && std::env::var("CI") == "true"), "CI has no `go` on PATH: the Go fixture must run there, not skip");
         println("codebase_go_test: no `go` on PATH, the Go assertions are skipped");
         let none = legs::GoToolchain { }.vet(root);
         std::test::assert(!none.ok && std::str::contains(none.error, "not installed"), "a missing toolchain is named plainly: " + none.error);
