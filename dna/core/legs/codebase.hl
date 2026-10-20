@@ -29,7 +29,8 @@ fn hat_codebase(hat: String) -> dna::Codebase {
     return dna::Codebase {
         present: true, name: std::json::find_string_field(raw, "name"), repo: std::json::find_string_field(raw, "repo"),
         build: std::json::find_string_field(raw, "build"), test: std::json::find_string_field(raw, "test"),
-        branch: if len(branch) > 0 { branch } else { "main" }, by: std::json::find_string_field(raw, "by")
+        branch: if len(branch) > 0 { branch } else { "main" }, by: std::json::find_string_field(raw, "by"),
+        toolchain: dna::toolchain_of(std::json::find_string_field(raw, "toolchain"))
     };
 }
 
@@ -48,12 +49,27 @@ locus CodebaseWork {
     }
     // The codebase's build, then its test, in the worktree: the first to
     // fail answers its output, else both did.
+    // For a Go codebase the Go hand's three checks stand between: gofmt -l,
+    // go vet, go test, each refused by name.
     fn verify(worktree: String) -> HandResult {
         let built = self.run_in(worktree, self.codebase.build);
         if !built.ok { return HandResult { error: "build failed: " + built.error }; }
+        let go = self.verify_toolchain(worktree);
+        if !go.ok { return go; }
         let tested = self.run_in(worktree, self.codebase.test);
         if !tested.ok { return HandResult { error: "test failed: " + tested.error }; }
         return HandResult { ok: true, output: dna::trim_nl(built.output + tested.output) };
+    }
+    // The declared toolchain's checks (go only); ok when none is declared.
+    fn verify_toolchain(worktree: String) -> HandResult {
+        if self.codebase.toolchain != "go" { return HandResult { ok: true }; }
+        let fmt = self.hands.go.gofmt_check(worktree);
+        if !fmt.ok { return HandResult { error: "gofmt failed: " + fmt.error }; }
+        let vet = self.hands.go.vet(worktree);
+        if !vet.ok { return HandResult { error: "go vet failed: " + vet.error }; }
+        let tested = self.hands.go.test(worktree, "./...");
+        if !tested.ok { return HandResult { error: "go test failed: " + tested.error }; }
+        return HandResult { ok: true, output: tested.output };
     }
     fn run_in(worktree: String, cmd: String) -> HandResult {
         if len(cmd) == 0 { return HandResult { ok: true }; }
@@ -64,6 +80,8 @@ locus CodebaseWork {
     // The change committed, its branch pushed to the codebase's repository,
     // and a review opened there: the review's reference. The forge decides.
     fn propose(worktree: String, title: String, body: String) -> HandResult {
+        let go = self.verify_toolchain(worktree);
+        if !go.ok { return HandResult { error: "not pushed: " + go.error }; }
         let done = self.hands.git.commit(worktree, title);
         if !done.ok { return done; }
         let pushed = self.hands.git.push(worktree, self.branch);

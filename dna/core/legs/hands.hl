@@ -52,6 +52,14 @@ interface ToolchainHand {
     fn test(path: String) -> HandResult;
     fn fmt_check(path: String) -> HandResult;
 }
+// The Go toolchain beside it, for a codebase that declares `go`: each
+// runs in the leg's worktree of the codebase and answers bounded output.
+interface GoHand {
+    fn available() -> HandResult;
+    fn vet(worktree: String) -> HandResult;
+    fn test(worktree: String, pkg: String) -> HandResult;
+    fn gofmt_check(worktree: String) -> HandResult;
+}
 interface DeployHand { fn express(revision: String) -> HandResult; }
 interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 // The lease the brief is held under: a performer that waits — a
@@ -217,6 +225,59 @@ locus Toolchain {
     fn fmt_check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
 }
 
+// A package pattern a Go tool may be handed: `./...`, `./pkg/x`, `example.com/m/p`.
+// No leading `-` (a flag), and only characters a package path holds.
+fn go_pattern_ok(p: String) -> Bool {
+    if len(p) == 0 || len(p) > 200 || std::str::starts_with(p, "-") { return false; }
+    let mut i = 0;
+    while i < len(p) {
+        let c = p[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "." || c == "/" || c == "_" || c == "-" || c == "~" || c == "@" || c == "+";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The Go toolchain on PATH: `go vet`, `go test` and `gofmt -l`. A machine
+// with no `go` says so plainly.
+locus GoToolchain {
+    fn available() -> HandResult {
+        let r = dna::run_tool("sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh");
+        if r.code != 0 { return HandResult { error: "the Go toolchain is not installed here: `go` and `gofmt` are not on PATH, so this codebase's go hands cannot run" }; }
+        return HandResult { ok: true };
+    }
+    fn in_tree(worktree: String, argv: String) -> dna::RunResult {
+        return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\" 2>&1\nsh\n" + worktree + "\n" + argv);
+    }
+    fn vet(worktree: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let r = self.in_tree(worktree, "go\nvet\n./...");
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        return HandResult { ok: true, output: clipped(dna::trim_nl(r.stdout)) };
+    }
+    fn test(worktree: String, pkg: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let target = if len(pkg) == 0 { "./..." } else { pkg };
+        if !go_pattern_ok(target) { return HandResult { error: "`" + target + "` is not a package pattern" }; }
+        let r = self.in_tree(worktree, "go\ntest\n" + target);
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        return HandResult { ok: true, output: clipped(dna::trim_nl(r.stdout)) };
+    }
+    // `gofmt -l .`: the files not formatted, one a line; none is clean.
+    fn gofmt_check(worktree: String) -> HandResult {
+        let up = self.available();
+        if !up.ok { return up; }
+        let r = self.in_tree(worktree, "gofmt\n-l\n.");
+        if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
+        let listed = dna::trim_nl(r.stdout);
+        if len(listed) > 0 { return HandResult { error: "not gofmt-formatted:\n" + clipped(listed) }; }
+        return HandResult { ok: true, output: "" };
+    }
+}
+
 // Deploy is the body's until #987 hands it over: refused, naming it.
 locus NoDeploy {
     fn express(revision: String) -> HandResult { return HandResult { error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)" }; }
@@ -232,6 +293,7 @@ locus Hands {
         git: GitHand = ScratchGit { };
         forge: ForgeHand = GhForge { };
         toolchain: ToolchainHand = Toolchain { };
+        go: GoHand = GoToolchain { };
         deploy: DeployHand = NoDeploy { };
         heart: HeartHand = NoHeart { };
         lease: HeadLease = HeadLease { };

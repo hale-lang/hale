@@ -1,0 +1,155 @@
+// dna/tests/codebase_go_test.hl — the Go toolchain hand (phase 3).
+//
+// A codebase attached with `--toolchain go` gives its leg `go_vet`,
+// `go_test` and `gofmt_check`, each run in the leg's worktree; its verify
+// step runs gofmt -l, go vet and go test and refuses to push naming the one
+// that failed. The foreign repository is a tiny Go module in a local bare
+// repository. A machine with no Go on PATH skips the Go assertions.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn sh(script: String, dir: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && eval \"$2\"\nsh\n" + dir + "\n" + script);
+}
+
+// A hat for a Work in the codebase: the codebase's row and the Go hand granted.
+fn hat_with_codebase(c: dna::Codebase) -> String {
+    let h = dna::hat_json(dna::hat_compose(dna::MemJournal { }, dna::HatInputs {
+        work_id: "t9/wf1/s0/w0", task_id: "t9", attempt_id: "t9/wf1/s0/w0/a0", performer_kind: "edit",
+        objective: "add Wave", target: "gomod", output_contract: "Patch", requires: "edit", head: "abc"
+    }, dna::ContextPackage { }, false));
+    let granted = std::str::replace(h, "\"tool_grant\": \"", "\"tool_grant\": \"go_vet go_test gofmt_check ");
+    return "{\"codebase\": " + dna::codebase_body(c) + ", " + granted[1..len(granted)];
+}
+
+fn check() {
+    let root = dna::scratch_root("codebase-go");
+    let has_go = dna::run_tool("sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh").code == 0;
+
+    // the foreign Go module
+    let bare = root + "/gomod.git";
+    let go_src = "package greet\n\nfunc Hello() string { return \"hello\" }\n";
+    let go_test = "package greet\n\nimport \"testing\"\n\nfunc TestHello(t *testing.T) {\n\tif Hello() != \"hello\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n";
+    let mk = sh("mkdir seed", root);
+    std::test::assert_eq_int(mk.code, 0, "the seed directory is made: " + mk.stderr);
+    std::io::fs::write_file(root + "/seed/go.mod", "module example.test/greet\n\ngo 1.20\n") or discard;
+    std::io::fs::write_file(root + "/seed/greet.go", go_src) or discard;
+    std::io::fs::write_file(root + "/seed/greet_test.go", go_test) or discard;
+    let seeded = sh("cd seed && git init -q -b trunk && git config user.name f && git config user.email f@f && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed gomod.git", root);
+    std::test::assert_eq_int(seeded.code, 0, "the module repository is made: " + seeded.stderr);
+
+    // the codebase as the record states it
+    let j = dna::MemJournal { };
+    let c = dna::Codebase { present: true, name: "gomod", repo: bare, branch: "trunk", by: "ada", toolchain: "go" };
+    std::test::assert(j.append(j.revision(), "codebase.attached", "codebase:gomod", dna::codebase_body(c)).ok, "attached");
+    std::test::assert_eq_str(dna::codebase_of(j, "gomod").toolchain, "go", "the toolchain reads back");
+    let hat = "{\"codebase\": " + dna::codebase_body(c) + "}";
+    std::test::assert_eq_str(legs::hat_codebase(hat).toolchain, "go", "the hat carries the toolchain");
+
+    // the hat gives a Go codebase's leg the Go hand
+    std::test::assert(std::str::contains(dna::tools_json("go_vet go_test gofmt_check"), "gofmt_check"), "the go tools have specs");
+
+    if !has_go {
+        std::test::assert(!(std::env::var_exists("CI") && std::env::var("CI") == "true"), "CI has no `go` on PATH: the Go fixture must run there, not skip");
+        println("codebase_go_test: no `go` on PATH, the Go assertions are skipped");
+        let none = legs::GoToolchain { }.vet(root);
+        std::test::assert(!none.ok && std::str::contains(none.error, "not installed"), "a missing toolchain is named plainly: " + none.error);
+        dna::scratch_done(root);
+        return;
+    }
+
+    let forge = dna::MemForge { };
+    let work = legs::CodebaseWork { codebase: c, hands: legs::Hands { forge: legs::ForgeBridge { forge: forge } } };
+    let wt = work.open("t-2/w0");
+    std::test::assert(wt.ok, "the worktree opens: " + wt.error);
+    let at = wt.output;
+
+    // a clean tree: all three tools and the verify step pass
+    let go = work.hands.go;
+    std::test::assert(go.gofmt_check(at).ok, "gofmt -l is empty on a clean tree");
+    std::test::assert(go.vet(at).ok, "go vet is clean");
+    let t1 = go.test(at, "");
+    std::test::assert(t1.ok && std::str::contains(t1.output, "ok"), "go test passes: " + t1.error + t1.output);
+    std::test::assert(go.test(at, "./...").ok, "an explicit pattern passes");
+    std::test::assert(!go.test(at, "-run=x").ok, "a flag is not a package pattern");
+    std::test::assert(work.verify(at).ok, "verify passes on a clean tree");
+
+    // the tool bench a model-driven leg builds (`ModelPerformer.perform_loop`
+    // passes the hat's codebase): its Go tools run in the codebase's worktree
+    let bench = legs::ToolBench { worktree: at, base: "", grant: "go_vet go_test gofmt_check", codebase: legs::hat_codebase(hat) };
+    std::test::assert(bench.call(work.hands, "go_vet", "{}").ok, "the bench's go_vet runs in the codebase worktree");
+    let bt = bench.call(work.hands, "go_test", "{\"package\": \"./...\"}");
+    std::test::assert(bt.ok && std::str::contains(bt.output, "ok"), "the bench's go_test runs there: " + bt.error + bt.output);
+    std::io::fs::write_file(at + "/ugly.go", "package greet\n\nfunc   Ugly() {}\n") or discard;
+    let bf = bench.call(work.hands, "gofmt_check", "{}");
+    std::test::assert(!bf.ok && std::str::contains(bf.error, "ugly.go"), "the bench's gofmt_check sees the worktree's file: " + bf.error);
+    let rm = sh("rm ugly.go", at);
+    std::test::assert_eq_int(rm.code, 0, "the stray file is removed");
+
+    // a gofmt violation: named, and the push refused
+    std::io::fs::write_file(at + "/greet.go", "package greet\n\nfunc   Hello() string { return \"hello\" }\n") or discard;
+    let fmt = go.gofmt_check(at);
+    std::test::assert(!fmt.ok && std::str::contains(fmt.error, "greet.go"), "gofmt names the file: " + fmt.error);
+    let v1 = work.verify(at);
+    std::test::assert(!v1.ok && std::str::starts_with(v1.error, "gofmt failed"), "verify refuses and says gofmt: " + v1.error);
+    let p1 = work.propose(at, "ugly", "body");
+    std::test::assert(!p1.ok && std::str::starts_with(p1.error, "not pushed: gofmt failed"), "the push is refused: " + p1.error);
+    let nobranch = sh("git --git-dir gomod.git rev-parse --verify leg/gomod/t-2-w0", root);
+    std::test::assert(nobranch.code != 0, "no branch reached the codebase's repository");
+
+    // a failing test: go test named
+    std::io::fs::write_file(at + "/greet.go", "package greet\n\nfunc Hello() string { return \"nope\" }\n") or discard;
+    std::test::assert(go.gofmt_check(at).ok, "formatted again");
+    let ft = go.test(at, "./...");
+    std::test::assert(!ft.ok && std::str::contains(ft.error, "FAIL"), "go test reports the failure: " + ft.error);
+    let v2 = work.verify(at);
+    std::test::assert(!v2.ok && std::str::starts_with(v2.error, "go test failed"), "verify says go test: " + v2.error);
+
+    // a vet finding: go vet named
+    std::io::fs::write_file(at + "/greet.go", "package greet\n\nimport \"fmt\"\n\nfunc Hello() string { fmt.Printf(\"%d\\n\", \"x\"); return \"hello\" }\n") or discard;
+    let fv = go.vet(at);
+    std::test::assert(!fv.ok, "go vet reports the finding: " + fv.error);
+    let v3 = work.verify(at);
+    std::test::assert(!v3.ok && std::str::starts_with(v3.error, "go vet failed"), "verify says go vet: " + v3.error);
+
+    // fixed: proposed, pushed, reviewed
+    std::io::fs::write_file(at + "/greet.go", "package greet\n\nfunc Hello() string { return \"hello\" }\n\nfunc Bye() string { return \"bye\" }\n") or discard;
+    let rev = work.propose(at, "add bye", "a change");
+    std::test::assert(rev.ok, "the review opens once verify passes: " + rev.error);
+    let there = sh("git --git-dir gomod.git show leg/gomod/t-2-w0:greet.go", root);
+    std::test::assert(there.code == 0 && std::str::contains(there.stdout, "Bye"), "the branch is in the codebase's repository: " + there.stderr);
+
+    work.hands.git.clean();
+
+    // a model-driven leg: perform_loop itself, over a canned model, works the
+    // codebase's clone, and finishes through the codebase's review path
+    let hat = hat_with_codebase(c);
+    let turns = root + "/turns";
+    let mk2 = sh("mkdir turns", root);
+    std::io::fs::write_file(turns + "/1.json", "{\"tool_calls\": [{\"name\": \"gofmt_check\", \"arguments\": {}}]}") or discard;
+    std::io::fs::write_file(turns + "/2.json", "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"greet.go\", \"text\": \"package greet\\n\\nfunc Hello() string { return \\\"hello\\\" }\\n\\nfunc Wave() string { return \\\"wave\\\" }\\n\"}}]}") or discard;
+    std::io::fs::write_file(turns + "/3.json", "{\"tool_calls\": [{\"name\": \"go_test\", \"arguments\": {\"package\": \"./...\"}}]}") or discard;
+    std::io::fs::write_file(turns + "/4.json", "{\"content\": \"add Wave\"}") or discard;
+    let mforge = dna::MemForge { };
+    let mhands = legs::Hands { forge: legs::ForgeBridge { forge: mforge } };
+    let perf = legs::ModelPerformer {
+        router: dna::ModelRouter { quick: dna::FakeModel { name: "quick", turns_dir: turns }, deep: dna::FakeModel { name: "deep", turns_dir: turns }, private: dna::FakeModel { name: "private", turns_dir: turns } },
+        effect: "idempotent", repo: root + "/org", max_turns: 8
+    };
+    let brief = legs::Brief { work_id: "t9/wf1/s0/w0", attempt_id: "t9/wf1/s0/w0/a0", task_id: "t9", performer_kind: "edit", position: "position:editor", hat: hat, rendered: "make a Wave", holder: "riley" };
+    let req = dna::ModelRequest { attempt_id: brief.attempt_id, role: "edit", prompt: brief.rendered, prompt_digest: legs::prompt_digest(brief.rendered), data_class: "internal" };
+    let done = perf.perform_loop(brief, mhands, req, -1, "do");
+    std::test::assert_eq_str(done.disposition, "done", "the model loop finishes: " + done.narrative);
+    std::test::assert(std::str::starts_with(done.result_ref, "review:"), "it finishes through the codebase's review, not a genome commit: " + done.result_ref);
+    std::test::assert(std::str::contains(done.receipts, "gofmt_check") && std::str::contains(done.receipts, "go_test"), "the Go tools ran as the model's calls: " + done.receipts);
+    std::test::assert(!std::str::contains(done.receipts, "is a hand of a Go codebase"), "none took the absent-codebase refusal");
+    let mrev = mforge.reviews.get(done.result_ref[7..len(done.result_ref)]) or dna::MemReview { };
+    std::test::assert_eq_str(mrev.candidate, "leg/gomod/t9", "the review is of the leg's branch at the codebase's forge");
+    let landed = sh("git --git-dir gomod.git show leg/gomod/t9:greet.go", root);
+    std::test::assert(landed.code == 0 && std::str::contains(landed.stdout, "Wave"), "the branch landed in the codebase's bare repository: " + landed.stderr);
+    mhands.git.clean();
+    dna::scratch_done(root);
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

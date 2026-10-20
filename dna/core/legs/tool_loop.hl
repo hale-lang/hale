@@ -149,7 +149,11 @@ locus ToolBench {
             if name == "check" { return verify.run_in(self.worktree, self.codebase.build); }
             if name == "test" { return verify.run_in(self.worktree, self.codebase.test); }
             if name == "fmt" { return HandResult { ok: true, output: "the codebase has no formatter hand" }; }
+            if name == "go_vet" { return hands.go.vet(self.worktree); }
+            if name == "go_test" { return hands.go.test(self.worktree, std::json::find_string_field(args, "package")); }
+            if name == "gofmt_check" { return hands.go.gofmt_check(self.worktree); }
         }
+        if name == "go_vet" || name == "go_test" || name == "gofmt_check" { return HandResult { error: "`" + name + "` is a hand of a Go codebase's leg" }; }
         if name == "check" { return hands.toolchain.check(at); }
         if name == "test" { return hands.toolchain.test(at); }
         if name == "fmt" { return hands.toolchain.fmt_check(at); }

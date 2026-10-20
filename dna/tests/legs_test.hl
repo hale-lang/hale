@@ -802,6 +802,8 @@ locus App {
         let hale = toolchain();
         let none = in_dir(self.app, hale + "\ndna\ncodebase\nlist");
         std::test::assert(none.code == 0 && std::str::contains(none.stdout, "none attached"), "no codebase is attached at first: " + none.stdout + none.stderr);
+        let rusty = in_dir(self.app, hale + "\ndna\ncodebase\nattach\nsvc\n--repo\n" + bare + "\n--toolchain\nrust");
+        std::test::assert(rusty.code != 0 && std::str::contains(rusty.stdout + rusty.stderr, "--toolchain is go, hale or none"), "an unknown toolchain is refused: " + rusty.stdout + rusty.stderr);
         let attached = in_dir(self.app, hale + "\ndna\ncodebase\nattach\nsvc\n--repo\n" + bare + "\n--build\nsh build.sh\n--test\nsh test.sh\n--branch\ntrunk\n--as\nriley");
         std::test::assert_eq_int(attached.code, 0, "codebase attach: " + attached.stdout + attached.stderr);
         let listed = in_dir(self.app, hale + "\ndna\ncodebase\nlist");

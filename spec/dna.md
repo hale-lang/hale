@@ -1483,7 +1483,7 @@ record's.
 |---|---|---|
 | `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain, and its `name`, which its broker account carries |
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
-| `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given) and who; a later attach of the name states it anew |
+| `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given), `toolchain` (`go`, `hale` or `none`, the default) and who; a later attach of the name states it anew |
 | `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
 | `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
@@ -1589,14 +1589,33 @@ record's.
 
 ### A codebase attached with no application
 
-`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--branch <name>] [--as <who>]`
+`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--branch <name>] [--as <who>]`
 writes `codebase.attached` (above); `detach <name>` writes
 `codebase.detached`; `list` (the default) reads the record's attached
 codebases. No application row is written and no broker account exists: a
 codebase is a repository the organism works on, not a heart it senses.
 The name is lowercase letters, digits, `-` and `_`. `build` and `test`
 are opaque strings, run with `sh` in a worktree and nowhere else; empty
-means no step. A path `--repo` is stored absolute.
+means no step. A path `--repo` is stored absolute. `--toolchain` declares
+the toolchain hand a leg works the codebase with (anything but `go`,
+`hale` or `none` is refused); `none` leaves build and test as the opaque
+commands, and `hale` is recorded for the hale hand to select by.
+
+A `go` codebase's leg holds a Go hand (`legs::GoToolchain`, beside
+`Toolchain` in `dna/core/legs/hands.hl`, behind the `GoHand` interface and
+`Hands.go`) with three tools added to the hat's `tool_grant`: `go_vet`
+(`go vet ./...`), `go_test` (`go test` over a `package` pattern, default
+`./...`; a pattern that starts with `-` or holds other than path
+characters is refused) and `gofmt_check` (`gofmt -l .`; any listed file is
+the failure, empty is clean). Each runs in the leg's worktree of the
+codebase; its output is bounded and returned as the tool's result, and the
+call is a row of the `tool-calls` receipt like any other. A machine with no
+`go` or `gofmt` on PATH answers that the Go toolchain is not installed
+there, rather than failing obscurely. For a `go` codebase `verify` runs,
+after `build`, `gofmt -l`, `go vet` and `go test ./...`, the first to fail
+refusing as `gofmt failed`, `go vet failed` or `go test failed`; `propose`
+runs the same three first and pushes nothing when one fails
+(`not pushed: …`).
 
 A leg working a codebase (`legs::CodebaseWork`, `dna/core/legs/codebase.hl`)
 takes its worktree from the codebase's repository, never the organism's
@@ -1615,7 +1634,7 @@ A task names a codebase with `hale dna task create --to position:<name>
 routed to a position): the intent row, the `IntentOffer` and the `Intent`
 carry `codebase`, and `ask-position`'s admission inputs record it. The
 Work's hat then carries `codebase`, the attached row as a JSON object
-(`name`, `repo`, `build`, `test`, `branch`; absent for a task naming none,
+(`name`, `repo`, `build`, `test`, `branch`, `toolchain`; absent for a task naming none,
 so such a hat's digest is unchanged). A leg's `hand` and `submit
 --from-worktree` on a hat that names one work a clone of the codebase's
 repository on `leg/<codebase>/<task>`, not the project's checkout: the

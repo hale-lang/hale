@@ -406,7 +406,7 @@ locus Leg {
         let reply = self.head.context(work_of_attempt(attempt));
         if !reply.ok { return self.fail("hand", reply.error); }
         let hat = std::json::find_field_raw(reply.body, "data");
-        let files = dna::word_in(name, "read edit check test fmt patch");
+        let files = dna::word_in(name, "read edit check test fmt patch go_vet go_test gofmt_check");
         let repo = if files { dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout) } else { "" };
         let cb = hat_codebase(hat);
         let tree = if files { session_tree(repo, attempt, true, cb, std::json::find_string_field(hat, "task_id")) } else { SessionTree { ok: true } };

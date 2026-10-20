@@ -510,7 +510,7 @@ repository and the two commands that say whether a change is good:
 
 ```sh
 hale dna codebase attach ledger-svc --repo https://forge.example/acme/ledger-svc.git \
-    --build "make build" --test "make test" [--branch main]
+    --build "make build" --test "make test" [--toolchain go] [--branch main]
 hale dna codebase list
 hale dna codebase detach ledger-svc
 ```
@@ -519,6 +519,14 @@ This writes `codebase.attached` (or `codebase.detached`) to the record. No
 application row is written and no broker account is made: the codebase has
 no readings and no deploy path of its own. The commands are opaque
 strings, run in a leg's worktree.
+
+`--toolchain go` says the codebase is a Go module: its leg is also given
+`go_vet`, `go_test` (a `package` pattern, default `./...`) and
+`gofmt_check` (`gofmt -l`, empty is clean), each run in its worktree, and
+the verify step runs `gofmt -l`, `go vet` and `go test ./...` after the
+build, refusing to push when one fails and saying which. Without Go on the
+machine's PATH the tools say so. The default, `none`, keeps `build` and
+`test` as the only opaque steps.
 
 A leg working the codebase clones its repository (never the organism's),
 branches `leg/<codebase>/<task>` from the default branch, and verifies
