@@ -251,7 +251,7 @@ const CALL_LINES_ONLY: [(&str, usize); 25] = [
     // (F.40 E5's verdict moves were pinned here while it was the copy's).
     ("crates/hale-codegen/tests/fixtures/examples/docs-server", 1),
     ("crates/hale-codegen/tests/fixtures/examples/http-hello", 1),
-    ("dna/core", 1637),
+    ("dna/core", 1638),
     ("dna/oidc", 34),
     ("dna/organism", 1704),
     ("dna/organization_source", 1677),
@@ -364,7 +364,7 @@ fn verdict_changes() {
     );
     pinned(
         "dna/api",
-        3527,
+        3528,
         &[
             "__lib_dna__core___batch__batch_diff",
             "__lib_dna__core___batch__batch_filing",
