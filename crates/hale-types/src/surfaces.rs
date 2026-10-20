@@ -1627,6 +1627,8 @@ pub fn serve_laws(
 ) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let mut diags = Vec::new();
+    // a client the client expansion did not build (spec/api.md § Calling a surface)
+    diags.extend(crate::client_expand::client_laws(&programs, &bundle.import_renames, &seed_name(bundle)));
     let mut first_named: BTreeMap<String, Span> = BTreeMap::new();
     let surface_names: Vec<&str> = rows.surfaces.iter().map(|s| s.name.as_str()).collect();
     let loci = crate::rpc_expand::loci_by_name(&programs);

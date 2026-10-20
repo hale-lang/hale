@@ -1129,44 +1129,11 @@ pub fn tool_name(member: &str) -> String {
 /// The MCP form of a surface: every row a tool, its input schema the
 /// request's, self-contained (the types it reaches under `$defs`).
 pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J, String> {
-    const REFS: &str = "#/$defs/";
     let (digest, members) = surface_members(rows, surface)?;
     let mut tools = Vec::new();
     for row in members {
         let Handled::Fn(h) = &row.handler else { continue };
-        let mut book = Book::new(schemas);
-        let input = match &h.request {
-            Some(req) => match book.type_ref(&req.te) {
-                FieldSchema::Ref(name) => {
-                    let mut root = match book.types.get(&name).map(|t| type_schema(t, REFS)) {
-                        Some(J::Obj(p)) => p,
-                        _ => Vec::new(),
-                    };
-                    let defs: Vec<(String, J)> = book
-                        .types
-                        .iter()
-                        .filter(|(k, _)| **k != name)
-                        .map(|(k, t)| (k.clone(), type_schema(t, REFS)))
-                        .collect();
-                    if !defs.is_empty() {
-                        root.push(("$defs".to_string(), J::Obj(defs)));
-                    }
-                    J::Obj(root)
-                }
-                // An MCP tool's input is an object: a request that is not
-                // one is wrapped under its parameter's name, and the
-                // transport unwraps it before decoding by shape.
-                other => {
-                    let param = h.params.first().map_or("request", |p| p.0.as_str());
-                    o(vec![
-                        ("type", s("object")),
-                        ("properties", o(vec![(param, field_schema(&other, REFS))])),
-                        ("required", strs([param])),
-                    ])
-                }
-            },
-            None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
-        };
+        let input = tool_input(schemas, h);
         let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
         let fails = match (&h.error, h.server_error) {
             (_, true) => "; a violation is the server error".to_string(),
@@ -1192,6 +1159,86 @@ pub fn mcp(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Result<J
         ("x-hale-digest", s(&digest_text(digest))),
         ("tools", J::Arr(tools)),
         ("notes", o(vec![("authorization", s(NOTE_AUTHORIZATION)), ("lifecycle", s(NOTE_LIFECYCLE))])),
+    ]))
+}
+
+/// A tool's input schema: the request's, self-contained (a type it reaches
+/// under `$defs`), an empty object for none.
+fn tool_input(schemas: &Schemas<'_>, h: &crate::surfaces::Handler) -> J {
+    const REFS: &str = "#/$defs/";
+    let mut book = Book::new(schemas);
+    match &h.request {
+        Some(req) => match book.type_ref(&req.te) {
+            FieldSchema::Ref(name) => {
+                let mut root = match book.types.get(&name).map(|t| type_schema(t, REFS)) {
+                    Some(J::Obj(p)) => p,
+                    _ => Vec::new(),
+                };
+                let defs: Vec<(String, J)> = book
+                    .types
+                    .iter()
+                    .filter(|(k, _)| **k != name)
+                    .map(|(k, t)| (k.clone(), type_schema(t, REFS)))
+                    .collect();
+                if !defs.is_empty() {
+                    root.push(("$defs".to_string(), J::Obj(defs)));
+                }
+                J::Obj(root)
+            }
+            // An MCP tool's input is an object: a request that is not
+            // one is wrapped under its parameter's name, and the
+            // transport unwraps it before decoding by shape.
+            other => {
+                let param = h.params.first().map_or("request", |p| p.0.as_str());
+                o(vec![
+                    ("type", s("object")),
+                    ("properties", o(vec![(param, field_schema(&other, REFS))])),
+                    ("required", strs([param])),
+                ])
+            }
+        },
+        None => o(vec![("type", s("object")), ("properties", J::Obj(Vec::new()))]),
+    }
+}
+
+/// The tools a leg acting as `held` is given of `surface` (spec/api.md §
+/// Calling a surface): one per row those roles admit (a row that requires
+/// none, or whose every required role one of them holds, a role holding
+/// each role it `includes`), named `<Surface>.<row>`, the row as the
+/// surface's client names its method (`Shelf.create_item`,
+/// `Shop.orders_place`), so two surfaces' tools never share a name. Each
+/// has the MCP form's input schema. `confer` is each role's conferring
+/// roles (`rpc_expand::conferring`).
+pub fn leg_tools(
+    rows: &SurfaceRows,
+    schemas: &Schemas<'_>,
+    surface: &str,
+    held: &[String],
+    confer: &BTreeMap<String, Vec<String>>,
+) -> Result<J, String> {
+    let (digest, members) = surface_members(rows, surface)?;
+    let holds = |role: &str| confer.get(role).is_some_and(|c| c.iter().any(|h| held.contains(h)));
+    let mut tools = Vec::new();
+    for row in members {
+        let Handled::Fn(h) = &row.handler else { continue };
+        if !row.requires.iter().all(|(r, _)| holds(r)) {
+            continue;
+        }
+        let method = if row.signature { row.member.clone() } else { crate::api_names::snake(&row.member) };
+        let returns = h.response.as_ref().map_or("nothing".to_string(), |t| schemas.show(t));
+        tools.push(o(vec![
+            ("name", s(&format!("{surface}.{method}"))),
+            ("description", s(&format!("rpc {} of {surface}: returns {returns}. {}.", row.member, requires_text(row)))),
+            ("inputSchema", tool_input(schemas, h)),
+            ("x-hale-member", s(&row.member)),
+            ("x-hale-requires", strs(row.requires.iter().map(|(r, _)| r.as_str()))),
+        ]));
+    }
+    Ok(o(vec![
+        ("x-hale-surface", s(surface)),
+        ("x-hale-digest", s(&digest_text(digest))),
+        ("x-hale-roles", strs(held.iter().map(String::as_str))),
+        ("tools", J::Arr(tools)),
     ]))
 }
 

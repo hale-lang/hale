@@ -11,7 +11,8 @@
 //!
 //! 1. JSON parsers: `json_gen` synthesizes `__json_parse_<T>` and
 //!    rewrites `T::from_json` (per program).
-//! 2. serve sites: `rpc_expand` turns an `api::serve` into an exposure,
+//! 2. serve sites: `client_expand` turns an `api::client` param into a
+//!    client of its surface, then `rpc_expand` turns an `api::serve` into an exposure,
 //!    its surface's rows into an adapter and its receivers' plumbing
 //!    (bundle-wide).
 //!    2b. seams: `seam_expand` turns a `seam` into the methods it means,
@@ -77,6 +78,10 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // an adapter and its receivers' plumbing (`rpc_expand`).
     // GH #1592 S3: the main locus's observe backends as hidden params.
     crate::observe_expand::expand(programs);
+    // A client param (`api::client(…)`) becomes a locus with a method per
+    // row (`client_expand`), before the serve expansion, whose codec pass
+    // gives the rows' types the api codecs those methods call.
+    crate::client_expand::expand(programs, seq.import_renames, seq.default_surface);
     crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does

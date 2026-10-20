@@ -79,6 +79,14 @@ pub const OBSERVE_SOURCE: &str = include_str!("../hl/observe.hl");
 /// to a program that names `grpc::Rpc`.
 pub const API_GRPC_SOURCE: &str = include_str!("../hl/api_grpc.hl");
 
+/// The client binding's runtime (`api_client.hl`, spec/api.md § Calling a
+/// surface): the transports an `api::client(…)` param holds
+/// (`std::api::http::Client`, `std::api::mcp::Client`), the principals it
+/// presents, and the outcome types its methods answer. Appended only to a
+/// program that holds a client (`hale_types::client_expand`), for the
+/// reason the api runtime is.
+pub const API_CLIENT_SOURCE: &str = include_str!("../hl/api_client.hl");
+
 /// Bundled Hale source for the stdlib. m73a established the
 /// concat-with-user-source mechanism: the parsed stdlib `Program`
 /// has its `items` appended to the user's `Program.items` before
@@ -511,6 +519,15 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "h2", "Event"], "__StdIoH2Event"),
     (&["std", "io", "h2", "Cmd"], "__StdIoH2Cmd"),
     (&["std", "api", "grpc", "Rpc"], "__StdApiGrpcRpc"),
+    // the client binding (api_client.hl)
+    (&["std", "api", "Refusal"], "__StdApiRefusal"),
+    (&["std", "api", "Failure"], "__StdApiFailure"),
+    (&["std", "api", "ClientPrincipals"], "__StdApiClientPrincipals"),
+    (&["std", "api", "NoPrincipals"], "__StdApiNoPrincipals"),
+    (&["std", "api", "VaultPrincipals"], "__StdApiVaultPrincipals"),
+    (&["std", "api", "Client"], "__StdApiClientTransport"),
+    (&["std", "api", "http", "Client"], "__StdApiHttpClient"),
+    (&["std", "api", "mcp", "Client"], "__StdApiMcpClient"),
     (&["std", "api", "test", "Record"], "__StdApiTestRecord"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),

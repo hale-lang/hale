@@ -26,6 +26,13 @@ Claim [509..517] claim `wired`: topic reference `t::Tasks` does not resolve — 
 Claim [559..567] claim `single`: topic reference `t::Tasks` does not resolve — no imported topic matches this path. Unknown names are errors, never empty sets
 Claim [615..616] claim `no_orphans`: `seed(t)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
 Claim [686..711] claim `data_iso` names effect class `knowledge(delta)`, which is never declared. Add `effect knowledge(delta);` at the top level.
+--- crates/hale-cli/tests/api_client_binding.rs#1 ---
+Claim [908..920] claim `desk_offline` violated: `desks` reaches `effects(client(Shelf))` — witness: `Desk::look` -> `__ApiClient_Shelf::get_item`
+Claim [383..438] claim `desk_offline`: the boundary into `effects(client(Shelf))` is crossed by this call
+Claim [2113929443..2113929460] claim `desk_offline`: the forbidden destination `__ApiClient_Shelf` is declared here
+Claim [1047..1056] claim `no_client` violated: `desks` reaches `effects(client(*))` — witness: `Desk::look` -> `__ApiClient_Shelf::get_item`
+Claim [383..438] claim `no_client`: the boundary into `effects(client(*))` is crossed by this call
+Claim [2113929443..2113929460] claim `no_client`: the forbidden destination `__ApiClient_Shelf` is declared here
 --- crates/hale-cli/tests/claims_artifact_unknowns.rs#0 ---
 Claim [360..363] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `Bridge::hop` -> `B::work`
 Claim [133..147] claim `iso`: the boundary into `b_side` is crossed by this call

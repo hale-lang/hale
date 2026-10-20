@@ -205,12 +205,12 @@ fn drift_names_each_row_the_document_has_changed() {
 
 /// What the stub answers: a request's method, path, headers and body, to
 /// the response's status, headers and body.
-type Handler = dyn Fn(&str, &str, &str, &str) -> (u16, Vec<(String, String)>, String) + Send + Sync;
+pub(crate) type Handler = dyn Fn(&str, &str, &str, &str) -> (u16, Vec<(String, String)>, String) + Send + Sync;
 
 /// An HTTP server on the loopback answering `handler`, one request per
 /// connection; its base URL. The listener is held by the serving thread
-/// for the life of the process.
-fn stub(handler: Arc<Handler>) -> String {
+/// for the life of the process. (`api_client_binding` calls through one too.)
+pub(crate) fn stub(handler: Arc<Handler>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     std::thread::spawn(move || {

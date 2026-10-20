@@ -1,3 +1,6 @@
+crates/hale-cli/tests/api_client_binding.rs#1	desk_offline	forbid reaches(desks, effects(client(Shelf)))	Violated	None
+crates/hale-cli/tests/api_client_binding.rs#1	no_client	forbid reaches(desks, effects(client(*)))	Violated	None
+crates/hale-cli/tests/api_client_binding.rs#1	quiet_offline	forbid reaches(quiet, effects(client(Shelf)))	Holds	None
 crates/hale-cli/tests/check_tcp_substrate.rs#0	handed_over	require no_silent_loss(topic __TcpAcceptedT)	Holds	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None

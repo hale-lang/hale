@@ -21924,6 +21924,11 @@ impl<'a> Checker<'a> {
                 if hale_syntax::ast::ServeSite::of(expr).is_some() {
                     return Ty::Unknown;
                 }
+                // a client site the client expansion did not build: its
+                // law says why (`client_expand::client_laws`)
+                if crate::client_expand::client_call(expr).is_some() {
+                    return Ty::Unknown;
+                }
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 // A bare callee the shadowing desugar left as written names
                 // the program's fn or the builtin (`crate::shadowed_callees`).

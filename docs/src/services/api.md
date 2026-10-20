@@ -1186,9 +1186,77 @@ a `std::json::Value`, with a comment saying why. An MCP tool with no
 
 The checker admits the block like any surface, and `hale check --api`
 describes it, but nothing serves it: a serve site of `Shelf` is refused, and
-so is a block that mixes handler rows with shape rows. Commit the file; to
+so is a block that mixes handler rows with shape rows. It is called (see
+Calling it, below). Commit the file; to
 change it, run the import again (the same document always writes the same
 bytes) rather than editing it.
+
+### Calling it
+
+A surface you consume is called through a **client**: a param, like an
+exposure, whose literal says which surface and over what:
+
+```hale,fragment
+locus Desk {
+    params {
+        creds: std::api::VaultPrincipals = std::api::VaultPrincipals { slots: "editor=shelf-editor, *=shelf-reader" };
+        shelf: api::Client = api::client(Shelf, http::Client { base: "https://shelf.example", principals: self.creds });
+    }
+    fn label(id: Int) -> String {
+        return match self.shelf.get_item(ShelfGetItemRequest { item_id: id }) {
+            ShelfGetItemOutcome::Result(item) -> item.name,
+            ShelfGetItemOutcome::HandlerError(f) -> "failed: " + f.class,
+            ShelfGetItemOutcome::Refusal(r) -> "refused: " + r.kind,
+            ShelfGetItemOutcome::ServerError -> "server error",
+            ShelfGetItemOutcome::Lost(why) -> "lost: " + why,
+        };
+    }
+}
+```
+
+Every row is a method of the client, named as the row, taking the row's
+request and answering one enum of the five outcomes, `<Surface><Row>Outcome`.
+The compiler fills the operation's path and query from the request
+(`GET /items/7`), and reads the answer the way a Hale server would write
+it: a `404` from the shelf is a `HandlerError` whose `class` is
+`not_found`, a `401` a refusal, a `5xx` the server error. There is no
+JSON to build and none to pick apart.
+
+The other transport is `mcp::Client { url, principals }`, for a surface
+imported from an MCP server: each row is a `tools/call`, and the client
+opens the session itself. A surface written in Hale and served by another
+program binds too, over either transport: declare its rows (or import the
+library that declares them) and call `api::client(Shop, http::Client { …
+})`; then `HandlerError` carries the handler's own error enum, so a caller
+matches `OrderError::Missing` exactly as the server failed with it.
+
+`principals:` is who you are to the other side, as an exposure's
+`principals:` is who is calling you. `std::api::VaultPrincipals` names a
+vault slot per role: a row that requires `editor` presents the bearer in
+`shelf-editor`, any other the one in `shelf-reader`. The token is read from
+the vault at each call and never appears in the program.
+
+Because each call is a method the compiler writes, it carries an effect,
+`client(Shelf)`, and the claims see it with nothing new to learn:
+
+```hale,fragment
+claims {
+    desks_stay_local: forbid reaches(desks, effects(client(Shelf)));
+}
+```
+
+fails naming the path, `Desk::label -> __ApiClient_Shelf::get_item`, and
+`effects(client(*))` covers every surface the program calls.
+
+The client is placed like any param. Its methods run where its holder
+runs, so hold it in a locus placed `where async_io` and a slow service
+parks a coroutine instead of a thread.
+
+An agent acting for the program is given the same rows as tools. `hale
+api export --surface Shelf --tools-for editor` prints one tool per row the
+`editor` role admits, named `Shelf.create_item`, `Shelf.get_item`, … with
+each row's input schema, so tools from two surfaces never collide and a
+role that may not call a row is never offered it.
 
 ### Noticing when the service moves
 

@@ -1,0 +1,554 @@
+// Hale stdlib — the client binding (spec/api.md § Calling a surface).
+//
+// A program calls another system's surface through a param of the locus
+// that holds it:
+//
+//   shelf: api::Client = api::client(Shelf, http::Client { base: "http://127.0.0.1:9000", principals: self.creds });
+//
+// The compiler recognizes the param by its call, as it does an exposure
+// (`client_expand`): it writes a locus per surface with a method per row,
+// each typing its outcome, and builds the param as that locus holding the
+// transport below. This file is what those methods call. It joins only a
+// program that holds a client.
+//
+// A transport speaks one of two wires: HTTP (`http::Client`), where a row
+// of a Hale surface is `POST /call/<member>` under the surface's member
+// digest and a row of an imported OpenAPI surface is its operation
+// (`wire: "GET /items/{id}"`), and MCP (`mcp::Client`), where every row is
+// a `tools/call` over the Streamable HTTP transport. No call is retried and
+// no row streams.
+
+/// A refusal: the kind (`malformed`, `digest_mismatch`, `unauthenticated`,
+/// `unauthorized`, `full`, `shutting_down`, `unavailable`), its reason, the
+/// roles a refused row requires joined by `,`, and the digest the server
+/// holds on a `digest_mismatch`.
+type __StdApiRefusal {
+    kind: String = "";
+    reason: String = "";
+    requires: String = "";
+    served: String = "";
+}
+
+/// The failure of a row of an imported surface, whose source declares no
+/// error type: the error class its HTTP status reads as (`not_found`,
+/// `conflict`, `invalid`, `forbidden`, `unavailable`, "" for none), the
+/// status (0 over MCP) and the body as it came.
+type __StdApiFailure {
+    class: String = "";
+    status: Int = 0;
+    body: String = "";
+}
+
+/// What came back before the row types it: `outcome` is 0 a result, 1 the
+/// handler's error, 2 a refusal, 3 the server error, 4 lost.
+type __StdApiClientRaw {
+    outcome: Int = 4;
+    body: String = "";
+    class: String = "";
+    status: Int = 0;
+    kind: String = "";
+    reason: String = "";
+    requires: String = "";
+    served: String = "";
+    why: String = "";
+}
+
+/// What an OpenAPI operation's wire makes of a request: the path with its
+/// parameters filled and its query, and the body.
+type __StdApiClientTarget {
+    path: String = "";
+    body: String = "";
+}
+
+/// Who the client is to the system it calls: the bearer it presents for a
+/// row that requires `role`, and for a row that requires none (`role` "").
+/// "" presents none. The client's `principals:`, as an exposure's
+/// `principals:` is its bearer source.
+interface __StdApiClientPrincipals {
+    fn bearer(role: String) -> String;
+}
+
+/// The principals a client has when the program names none: it presents
+/// no bearer.
+locus __StdApiNoPrincipals {
+    fn bearer(role: String) -> String { return ""; }
+}
+
+/// Principals from the vault: `slots` is `ROLE=SLOT`, comma-separated, the
+/// vault slot (`std::secret`'s `vault:` name) holding the bearer for a row
+/// that requires the role; `*=SLOT` is the slot for a row that requires
+/// none and for a role with no slot of its own. A slot is read at each
+/// call, as a vault credential is, and a slot that holds nothing presents
+/// no bearer.
+locus __StdApiVaultPrincipals {
+    params {
+        slots: String = "";
+    }
+    @effects(is: { secret_use })
+    fn bearer(role: String) -> String {
+        let slot = __api_client_slot(self.slots, role);
+        if len(slot) == 0 {
+            return "";
+        }
+        return std::str::from_bytes(__std_secret_vault_get(slot));
+    }
+}
+
+/// The slot `table` names for `role`: its own, else `*`'s, else "".
+@bounded_by(table)
+fn __api_client_slot(table: String, role: String) -> String {
+    let mut fallback = "";
+    let mut rest = table;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let entry = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+        rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 {
+            let r = std::str::trim(entry[0..eq]);
+            let s = std::str::trim(entry[(eq + 1)..len(entry)]);
+            if len(role) > 0 && r == role {
+                return s;
+            }
+            if r == "*" {
+                fallback = s;
+            }
+        }
+    }
+    return fallback;
+}
+
+/// A transport a client calls through: one call of a row, its request as
+/// JSON in, its outcome out. `member` is the row's member, `wire` an
+/// imported row's HTTP operation ("" for a Hale row), `tool` its MCP tool,
+/// `digest` a Hale row's member digest ("" for an imported row) and `roles`
+/// the roles the row requires, joined by `,`.
+interface __StdApiClientTransport {
+    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw;
+}
+
+/// The transport a client has before it is built.
+locus __StdApiNoClient {
+    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+        return __api_client_lost("the client has no transport");
+    }
+}
+
+/// HTTP: `base` is `http://host:port` (a path prefix allowed).
+locus __StdApiHttpClient {
+    params {
+        base: String;
+        principals: __StdApiClientPrincipals = __StdApiNoPrincipals { };
+    }
+    /// The bearer for a row that requires `roles`: the first role's the
+    /// principals hold one for, else the one for no role.
+    @bounded_by(roles)
+    fn bearer_for(roles: String) -> String {
+        let mut rest = roles;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let role = if comma < 0 { rest } else { rest[0..comma] };
+            rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+            let b = self.principals.bearer(role);
+            if len(b) > 0 {
+                return b;
+            }
+        }
+        return self.principals.bearer("");
+    }
+    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+        let bearer = self.bearer_for(roles);
+        if len(wire) == 0 {
+            return __api_client_hale_http(self.base, bearer, member, digest, payload);
+        }
+        return __api_client_operation(self.base, bearer, wire, payload);
+    }
+}
+
+/// MCP over the Streamable HTTP transport: `url` is the endpoint
+/// (`http://host:port/mcp`). The session is opened at the first call
+/// (`initialize`, then `notifications/initialized`) and named on every
+/// call after it; an endpoint that ends it (404) loses that call, and the
+/// next opens another.
+locus __StdApiMcpClient {
+    params {
+        url: String;
+        principals: __StdApiClientPrincipals = __StdApiNoPrincipals { };
+        session: String = "";
+        version: String = "";
+        next_id: Int = 1;
+    }
+    @bounded_by(roles)
+    fn bearer_for(roles: String) -> String {
+        let mut rest = roles;
+        while len(rest) > 0 {
+            let comma = std::str::index_of(rest, ",");
+            let role = if comma < 0 { rest } else { rest[0..comma] };
+            rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+            let b = self.principals.bearer(role);
+            if len(b) > 0 {
+                return b;
+            }
+        }
+        return self.principals.bearer("");
+    }
+    fn post(bearer: String, digest: String, message: String) -> std::http::ClientResponse {
+        let mut headers = __api_client_auth(bearer) + "Content-Type: application/json\r\nAccept: application/json, text/event-stream";
+        if len(self.session) > 0 {
+            headers = headers + "\r\nMcp-Session-Id: " + self.session;
+        }
+        if len(self.version) > 0 {
+            headers = headers + "\r\nMCP-Protocol-Version: " + self.version;
+        }
+        if len(digest) > 0 {
+            headers = headers + "\r\nHale-Surface-Digest: " + digest;
+        }
+        return __api_client_send("POST", self.url, headers, message) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    }
+    /// Open the session: a result with outcome 0, or what the call is.
+    fn open(bearer: String) -> __StdApiClientRaw {
+        let init = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"hale\",\"version\":\"1\"}}}";
+        let r = self.post(bearer, "", init);
+        let text = std::str::from_bytes(r.body);
+        if r.status == 0 {
+            return __api_client_lost("the endpoint " + self.url + " cannot be reached: " + text);
+        }
+        let reply = __api_client_mcp_message(text);
+        let result = std::json::find_field_raw(reply, "result");
+        if len(result) == 0 {
+            if len(reply) > 0 {
+                return __api_client_mcp_outcome(reply);
+            }
+            if r.status == 401 {
+                return __StdApiClientRaw { outcome: 2, kind: "unauthenticated", reason: text, status: 401 };
+            }
+            return __api_client_lost("the endpoint answered initialize with " + to_string(r.status) + " and no JSON-RPC message: " + text);
+        }
+        let v = std::json::find_string_field(result, "protocolVersion");
+        if v != "2025-06-18" && v != "2025-03-26" && v != "2024-11-05" {
+            return __api_client_lost("the endpoint speaks MCP " + v + ", which this client does not (2025-06-18, 2025-03-26, 2024-11-05)");
+        }
+        self.session = __http_client_header(r.headers, "Mcp-Session-Id");
+        self.version = v;
+        self.post(bearer, "", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+        return __StdApiClientRaw { outcome: 0 };
+    }
+    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+        let bearer = self.bearer_for(roles);
+        if len(self.version) == 0 {
+            let opened = self.open(bearer);
+            if opened.outcome != 0 {
+                return opened;
+            }
+        }
+        let args = if len(payload) > 0 { payload } else { "{}" };
+        let meta = if len(digest) > 0 { ",\"_meta\":{\"hale/digest\":" + __api_client_str(digest) + "}" } else { "" };
+        let id = self.next_id;
+        self.next_id = id + 1;
+        let message = "{\"jsonrpc\":\"2.0\",\"id\":" + to_string(id) + ",\"method\":\"tools/call\",\"params\":{\"name\":" + __api_client_str(tool) + ",\"arguments\":" + args + meta + "}}";
+        let r = self.post(bearer, digest, message);
+        let text = std::str::from_bytes(r.body);
+        if r.status == 0 {
+            return __api_client_lost("the endpoint " + self.url + " cannot be reached: " + text);
+        }
+        if r.status == 404 && len(self.session) > 0 {
+            self.session = "";
+            self.version = "";
+            return __api_client_lost("the endpoint ended the MCP session; the next call opens another");
+        }
+        let reply = __api_client_mcp_message(text);
+        if len(reply) == 0 {
+            if r.status == 401 {
+                return __StdApiClientRaw { outcome: 2, kind: "unauthenticated", reason: text, status: 401 };
+            }
+            return __api_client_lost("the endpoint answered " + to_string(r.status) + " with no JSON-RPC message: " + text);
+        }
+        return __api_client_mcp_outcome(reply);
+    }
+}
+
+fn __api_client_lost(why: String) -> __StdApiClientRaw {
+    return __StdApiClientRaw { outcome: 4, why: why };
+}
+
+/// The refusal a raw outcome carries.
+fn __api_client_refusal(raw: __StdApiClientRaw) -> __StdApiRefusal {
+    return __StdApiRefusal { kind: raw.kind, reason: raw.reason, requires: raw.requires, served: raw.served };
+}
+
+/// The failure a raw outcome of an imported row carries.
+fn __api_client_failure(raw: __StdApiClientRaw) -> __StdApiFailure {
+    return __StdApiFailure { class: raw.class, status: raw.status, body: raw.body };
+}
+
+/// A JSON string token.
+fn __api_client_str(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+fn __api_client_auth(bearer: String) -> String {
+    return if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
+}
+
+fn __api_client_send(method: String, url: String, headers: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let u = std::http::parse_url(url) or raise;
+    let req = std::http::ClientRequest { method: method, url: u, headers: headers, body: std::bytes::from_string(body) };
+    return std::http::request(req) or raise;
+}
+
+/// `base` and `path` joined by one `/`.
+fn __api_client_join(base: String, path: String) -> String {
+    if std::str::ends_with(base, "/") {
+        return base[0..(len(base) - 1)] + path;
+    }
+    return base + path;
+}
+
+/// The roles of a refusal's `requires` array, joined by `,`.
+@bounded_by(array)
+fn __api_client_roles(array: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first_span(array);
+    while !it.done {
+        let role = std::json::find_string_field("{\"v\":" + array[it.cur_start..it.cur_end] + "}", "v");
+        out = if len(out) == 0 { role } else { out + "," + role };
+        it = std::json::array_next_span(it, array);
+    }
+    return out;
+}
+
+/// The refusal object `{"kind": …, "reason": …, "requires": […], "served": …}`.
+fn __api_client_refused(refusal: String, status: Int) -> __StdApiClientRaw {
+    let kind = std::json::find_string_field(refusal, "kind");
+    if kind == "server" {
+        return __StdApiClientRaw { outcome: 3, status: status };
+    }
+    return __StdApiClientRaw {
+        outcome: 2,
+        status: status,
+        kind: if len(kind) > 0 { kind } else { "malformed" },
+        reason: std::json::find_string_field(refusal, "reason"),
+        requires: __api_client_roles(std::json::find_field_raw(refusal, "requires")),
+        served: std::json::find_string_field(refusal, "served"),
+    };
+}
+
+// ---- HTTP, a Hale surface: POST <base>/call/<member> ----
+
+fn __api_client_hale_http(base: String, bearer: String, member: String, digest: String, payload: String) -> __StdApiClientRaw {
+    let headers = __api_client_auth(bearer) + "Content-Type: application/json\r\nAccept: application/json\r\nHale-Surface-Digest: " + digest;
+    let r = __api_client_send("POST", __api_client_join(base, "/call/" + member), headers, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let text = std::str::from_bytes(r.body);
+    if r.status == 0 {
+        return __api_client_lost("the endpoint " + base + " cannot be reached: " + text);
+    }
+    if r.status == 200 {
+        return __StdApiClientRaw { outcome: 0, body: text, status: 200 };
+    }
+    // a classed handler error names its class (spec/api.md § Error classes)
+    let class = __http_client_header(r.headers, "Hale-Error-Class");
+    if len(class) > 0 {
+        return __StdApiClientRaw { outcome: 1, body: text, class: class, status: r.status };
+    }
+    if r.status == 422 {
+        return __StdApiClientRaw { outcome: 1, body: text, status: 422 };
+    }
+    let refusal = std::json::find_field_raw(text, "refusal");
+    if len(refusal) == 0 {
+        return __api_client_lost("the endpoint answered " + to_string(r.status) + " with no refusal: " + text);
+    }
+    return __api_client_refused(refusal, r.status);
+}
+
+// ---- HTTP, an imported OpenAPI operation: wire "METHOD /path/{param}" ----
+
+/// A JSON value as a path segment or query value: a string's text, any
+/// other value's JSON.
+fn __api_client_param_text(raw: String) -> String {
+    let n = len(raw);
+    if n >= 2 && raw[0..1] == "\"" {
+        return std::json::unescape_string(raw[1..(n - 1)]);
+    }
+    return raw;
+}
+
+/// What `METHOD template` makes of the request `payload` (spec/api.md §
+/// Calling a surface): each field the template names (`{itemId}`) fills
+/// it; for `GET`, `HEAD` and `DELETE` every other field is the query; for
+/// another method, when the template names a field, the field `body` is
+/// the body and every other field the query, and when it names none the
+/// request is the body. A `null` field is left out.
+@bounded_by(payload)
+fn __api_client_target(method: String, template: String, payload: String) -> __StdApiClientTarget {
+    let queried = method == "GET" || method == "HEAD" || method == "DELETE";
+    let named = std::str::contains(template, "{");
+    if !queried && !named {
+        return __StdApiClientTarget { path: template, body: payload };
+    }
+    let mut path = template;
+    let mut query = "";
+    let mut body = "";
+    let mut it = std::json::object_first(payload);
+    while !it.done {
+        let key = std::json::obj_key_string(it, payload);
+        let raw = std::json::obj_value_raw(it, payload);
+        let hole = "{" + key + "}";
+        if std::str::contains(path, hole) {
+            path = std::str::replace(path, hole, std::url::encode(__api_client_param_text(raw)));
+        } else if !queried && key == "body" {
+            body = raw;
+        } else if raw != "null" {
+            let pair = std::url::encode(key) + "=" + std::url::encode(__api_client_param_text(raw));
+            query = if len(query) == 0 { pair } else { query + "&" + pair };
+        }
+        it = std::json::object_next(it, payload);
+    }
+    if len(query) > 0 {
+        path = path + "?" + query;
+    }
+    return __StdApiClientTarget { path: path, body: body };
+}
+
+/// The error class an HTTP status reads as (spec/api.md § Error classes,
+/// read back), "" for none.
+fn __api_client_status_class(status: Int) -> String {
+    if status == 404 { return "not_found"; }
+    if status == 409 { return "conflict"; }
+    if status == 422 { return "invalid"; }
+    if status == 403 { return "forbidden"; }
+    if status == 503 { return "unavailable"; }
+    return "";
+}
+
+fn __api_client_operation(base: String, bearer: String, wire: String, payload: String) -> __StdApiClientRaw {
+    let sp = std::str::index_of(wire, " ");
+    if sp <= 0 {
+        return __api_client_lost("the row names no HTTP operation: " + wire);
+    }
+    let method = wire[0..sp];
+    let t = __api_client_target(method, wire[(sp + 1)..len(wire)], payload);
+    let typed = if len(t.body) > 0 { "Content-Type: application/json\r\n" } else { "" };
+    let headers = __api_client_auth(bearer) + typed + "Accept: application/json";
+    let r = __api_client_send(method, __api_client_join(base, t.path), headers, t.body) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let text = std::str::from_bytes(r.body);
+    if r.status == 0 {
+        return __api_client_lost("the endpoint " + base + " cannot be reached: " + text);
+    }
+    if r.status >= 200 && r.status < 300 {
+        return __StdApiClientRaw { outcome: 0, body: text, status: r.status };
+    }
+    if r.status == 400 {
+        return __StdApiClientRaw { outcome: 2, kind: "malformed", reason: text, status: 400 };
+    }
+    if r.status == 401 {
+        return __StdApiClientRaw { outcome: 2, kind: "unauthenticated", reason: text, status: 401 };
+    }
+    if r.status == 429 {
+        return __StdApiClientRaw { outcome: 2, kind: "full", reason: text, status: 429 };
+    }
+    let class = __api_client_status_class(r.status);
+    if len(class) > 0 || (r.status >= 400 && r.status < 500) {
+        return __StdApiClientRaw { outcome: 1, body: text, class: class, status: r.status };
+    }
+    if r.status >= 500 {
+        return __StdApiClientRaw { outcome: 3, body: text, status: r.status };
+    }
+    return __api_client_lost("the endpoint answered " + to_string(r.status) + ": " + text);
+}
+
+// ---- MCP ----
+
+/// The JSON-RPC message an answer carries: the body itself, or in an event
+/// stream the first `data:` line that answers a request.
+@bounded_by(text)
+fn __api_client_mcp_message(text: String) -> String {
+    let t = std::str::trim(text);
+    if std::str::starts_with(t, "{") {
+        return t;
+    }
+    let mut rest = t;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, "data:") {
+            let data = std::str::trim(line[5..len(line)]);
+            if std::json::valid(data) && (len(std::json::find_field_raw(data, "result")) > 0 || len(std::json::find_field_raw(data, "error")) > 0) {
+                return data;
+            }
+        }
+    }
+    return "";
+}
+
+/// A tool result's value: its `structuredContent`, else its first content
+/// item's text when that is JSON, else that text as a JSON string, else the
+/// result itself.
+fn __api_client_mcp_value(result: String) -> String {
+    let structured = std::json::find_field_raw(result, "structuredContent");
+    if len(structured) > 0 {
+        return structured;
+    }
+    let content = std::json::find_field_raw(result, "content");
+    let it = std::json::array_first_span(content);
+    if !it.done {
+        let text = std::json::find_string_field(content[it.cur_start..it.cur_end], "text");
+        if std::json::valid(text) {
+            return text;
+        }
+        if len(text) > 0 {
+            return __api_client_str(text);
+        }
+    }
+    return result;
+}
+
+/// The refusal kind an error code of § The MCP transport names.
+fn __api_client_mcp_kind(code: Int) -> String {
+    if code == -32003 { return "digest_mismatch"; }
+    if code == -32004 { return "unauthenticated"; }
+    if code == -32005 { return "unauthorized"; }
+    if code == -32006 { return "full"; }
+    if code == -32007 { return "shutting_down"; }
+    if code == -32008 { return "unavailable"; }
+    return "malformed";
+}
+
+/// A JSON-RPC answer to `tools/call` as an outcome: a result (a tool's
+/// `isError` result is its handler error, its first text the body),
+/// `-32001` the handler error,
+/// `-32603` the server error, any other error a refusal.
+fn __api_client_mcp_outcome(reply: String) -> __StdApiClientRaw {
+    let error = std::json::find_field_raw(reply, "error");
+    if len(error) > 0 {
+        let code = std::json::find_int_field(error, "code");
+        let data = std::json::find_field_raw(error, "data");
+        if code == -32001 {
+            return __StdApiClientRaw { outcome: 1, body: data };
+        }
+        if code == -32603 {
+            return __StdApiClientRaw { outcome: 3, body: data };
+        }
+        let kind = std::json::find_string_field(data, "kind");
+        let reason = std::json::find_string_field(data, "reason");
+        return __StdApiClientRaw {
+            outcome: 2,
+            kind: if len(kind) > 0 { kind } else { __api_client_mcp_kind(code) },
+            reason: if len(reason) > 0 { reason } else { std::json::find_string_field(error, "message") },
+            requires: __api_client_roles(std::json::find_field_raw(data, "requires")),
+            served: std::json::find_string_field(data, "served"),
+        };
+    }
+    let result = std::json::find_field_raw(reply, "result");
+    if len(result) == 0 {
+        return __api_client_lost("the answer is no JSON-RPC result or error: " + reply);
+    }
+    if std::json::find_bool_field(result, "isError") {
+        // a tool's error is its text, as the tool wrote it
+        let content = std::json::find_field_raw(result, "content");
+        let it = std::json::array_first_span(content);
+        let text = if it.done { "" } else { std::json::find_string_field(content[it.cur_start..it.cur_end], "text") };
+        return __StdApiClientRaw { outcome: 1, body: if len(text) > 0 { text } else { result } };
+    }
+    return __StdApiClientRaw { outcome: 0, body: __api_client_mcp_value(result) };
+}

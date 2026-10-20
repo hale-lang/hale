@@ -33,6 +33,11 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 - *Instead of:* hand-written HTTP routes that build JSON field by field, and hand-written clients that read it back.
 - *Today:* the head's commands are a surface (`HeadCommands`, served over a socket and HTTP) with a generated client for the legs, checked by its digest. The head's **reads are a goal**: every read route, the project head's operations and the face's client are written by hand.
 
+**Every call to another system is a consumed surface.** The other system's operations are an `api NAME from openapi|mcp` block that `hale api import` writes (or the rows of a Hale surface another program serves), and the program calls them through a client param, `api::client(NAME, http::Client { … } | mcp::Client { … })`, with its principals in the vault.
+- *Why:* a call is then typed by the rows, its outcomes are the five a served surface answers, `hale api drift` names the day the other side moves, and each call is an effect (`client(NAME)`) the law can forbid or bound; an agent's tools are rendered from the same rows (`hale api export --tools-for`).
+- *Instead of:* `std::http` requests built and read by hand, and tokens passed around as strings.
+- *Today:* followed: the client binding is the compiler's (`spec/api.md` § Calling a surface).
+
 **Every event between parts is a declared topic, bound through an adapter.** A topic names its payload type and subject; a main locus binds it (`bindings { T: Adapter }`), and keyed subscriptions say whose events a locus hears.
 - *Instead of:* raw broker connections and subject strings.
 - *Today:* followed inside the organism (about fifty topics in `dna/core/topics.hl`). **Goal:** the heart. An application's events reach the organism untyped, and the todo application publishes to the broker over a raw connection, because its public library lacks a credentialed publisher.

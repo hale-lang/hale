@@ -22,7 +22,9 @@ structural path is retired (R4: § What this replaced), the clients reading
 descriptions (§ The clients). Each section names the step that ships it.
 Since GH #1565 an exposure is a param of the locus that holds it, its
 literal the serve call, placed by `placement { }` (§ Serving); the serve
-expression in a body, the earlier form, is refused.
+expression in a body, the earlier form, is refused. A program calls
+another system's surface through a client, a param built by
+`api::client`, typed by the surface's rows (§ Calling a surface).
 The fixtures under `tests/api-contract/` are what a consumer builds
 against: the consumer program of § The witness, its descriptions per
 exposure and caller, the program-wide inventory, one recorded request and
@@ -2712,7 +2714,8 @@ the same compiled scenarios to the same outcomes)
 ## Imported surfaces
 
 A surface the program **consumes** is declared like one it serves, with
-rows that name each operation's shape instead of a handler. `hale api
+rows that name each operation's shape instead of a handler, and called
+through a client (§ Calling a surface). `hale api
 import` writes one from an OpenAPI 3 document or an MCP endpoint's tool
 list, and `hale api drift` holds it to that source afterwards. The block is
 an ordinary `api` declaration: the checker admits it, the description and
@@ -2820,6 +2823,154 @@ runs the same check over every file the program loads, the seeds it
 imports included, each seed's blocks against its own records and their
 sources relative to their own files, after its document: the lines go to
 stderr, and drift exits 1.
+
+## Calling a surface
+
+A program calls another system through a **client**: a param of the locus
+that holds it, recognized by its literal as an exposure is (§ Serving), and
+typed by the rows of the surface it calls.
+
+```hale,fragment
+locus Desk {
+    params {
+        creds: std::api::VaultPrincipals = std::api::VaultPrincipals { slots: "editor=shelf-editor, *=shelf-reader" };
+        shelf: api::Client = api::client(Shelf, http::Client { base: "http://127.0.0.1:9000", principals: self.creds });
+    }
+    fn label(id: Int) -> String {
+        return match self.shelf.get_item(ShelfGetItemRequest { item_id: id }) {
+            ShelfGetItemOutcome::Result(item) -> item.name,
+            ShelfGetItemOutcome::HandlerError(f) -> "failed: " + f.class,
+            ShelfGetItemOutcome::Refusal(r) -> "refused: " + r.kind,
+            ShelfGetItemOutcome::ServerError -> "server error",
+            ShelfGetItemOutcome::Lost(why) -> "lost: " + why,
+        };
+    }
+}
+```
+
+**The site.** `NAME: api::Client = api::client(SURFACE, TRANSPORT);` in
+the params of its holder. The **surface** is one the program consumes
+(§ Imported surfaces) or a Hale surface whose rows the program declares
+and another program serves; a surface an imported seed declares is named
+by its path under the alias (`lib::Svc`), as at a serve site. The
+**transport** is a literal of one of two loci of `std::api`:
+
+- `http::Client { base, principals }`: `base` is `http://host:port` (a
+  path prefix allowed; `https://` as `std::http` speaks it). A row of a
+  Hale surface is `POST <base>/call/<member>` under the row's member
+  digest in `Hale-Surface-Digest`, as the generated clients call it (§ The
+  clients). A row of an imported OpenAPI surface is its operation, `wire:
+  "METHOD /path/{param}"`: each field of the request the path names
+  (by its JSON key) fills it; for `GET`, `HEAD` and `DELETE` every other
+  field is the query; for another method the request is the body when the
+  path names no field, and otherwise the field `body` is the body and
+  every other field the query; a `null` field, and an optional field left
+  out, is no query parameter.
+- `mcp::Client { url, principals }`: `url` is the MCP endpoint
+  (`http://host:port/mcp`), spoken over the Streamable HTTP transport as
+  `hale api import` speaks it. The client opens the session at its first
+  call (`initialize` with the protocol version `2025-06-18`, a version the
+  endpoint answers outside 2025-06-18, 2025-03-26 and 2024-11-05 losing
+  the call, then `notifications/initialized`) and names the session id and
+  the version on every call after it; a JSON answer and an event-stream
+  answer are both read. Each row is a `tools/call`: a Hale row's tool is
+  its member's (`Orders__place`, § The MCP transport) with its member
+  digest in `params._meta["hale/digest"]` and the header; an imported
+  row's is its `wire:`. An endpoint that ends the session (`404`) loses
+  that call, and the next opens another.
+
+A surface imported from MCP is not called over `http::Client`, nor one
+imported from OpenAPI over `mcp::Client`. No call is retried, a row that
+streams is not called, and the client holds no connection past a call.
+
+**Principals.** `principals:` is who the client is to the system it calls,
+as an exposure's `principals:` is who calls it: a locus implementing
+`std::api::ClientPrincipals`, `fn bearer(role: String) -> String`, the
+bearer presented as `Authorization: Bearer` for a row that requires
+`role`. A row's bearer is the first of its `requires` the principals hold
+one for, else the one for no role (`bearer("")`); "" presents none, and a
+client that names no principals presents none. The standard library's
+is `std::api::VaultPrincipals { slots }`: `ROLE=SLOT` pairs, comma
+separated, each the vault slot (`std::secret`'s `vault:` name) holding the
+bearer for that role, `*=SLOT` the slot for a row that requires none and
+for a role with no slot of its own. A slot is read at each call, as a
+vault credential is, and one that holds nothing presents no bearer.
+
+**What the compiler writes** (`client_expand`, before the check): a
+locus per surface the program calls, `__ApiClient_<Surface>`, which the
+param is built as, holding the transport. It has a method per row:
+
+| | an imported row | a Hale row |
+|---|---|---|
+| name | the row's (`create_item`) | its member in snake case (`Orders::place` is `orders_place`) |
+| parameter | the request, `request: T`; none for `()` | the request; none for a handler that takes none |
+| answer | `<Surface><Row>Outcome`, the row in camel case (`ShelfCreateItemOutcome`) | the same (`ShopOrdersPlaceOutcome`) |
+| `HandlerError` | `HandlerError(std::api::Failure)` | `HandlerError(E)`, the handler's own error type; none for a handler that declares none or `ClosureViolation` |
+
+The answer is § Outcomes as one enum: `Result(T)` (or `Result` for a row
+with no response), the `HandlerError` above, `Refusal(std::api::Refusal)`
+(`kind`, `reason`, `requires` joined by `,`, `served`), `ServerError`,
+and `Lost(String)`, a call that got no outcome (the endpoint could not be
+reached, the answer was no outcome, or a value did not decode, which names
+the codec's kind and field). A whole request or response is a record or
+an enum, carried by its api codec (§ Codecs), or, for an imported row, a
+`std::json::Value`; a row that carries anything else is refused, as are
+two rows that would be one method and a row whose method would be a
+lifecycle name (`run`, `birth`, …).
+
+**Outcomes read back as the served side maps them.** A Hale row's
+answer is read by § Outcomes' table: over HTTP a `200` is the result, a
+response naming `Hale-Error-Class` or a `422` the handler error, decoded as
+`E` (so a caller matches the variants of the handler's own enum, `@not_found
+Missing` answered `404` read back as `Missing`), a `{"refusal": …}` body
+the refusal, `{"refusal": {"kind": "server"}}` the server error; over MCP
+a result is the response (its `structuredContent`, else its text), `-32001`
+the handler error (its `data`), `-32603` the server error, and any other
+error the refusal its `data` and code name. An imported OpenAPI row's
+`2xx` is the result; `400`, `401` and `429` are the refusals `malformed`,
+`unauthenticated` and `full`; a status an error class answers with (`404`,
+`409`, `422`, `403`, `503`, § Error classes) is the handler error, a
+`std::api::Failure` whose `class` is that class's word (`not_found`), and
+any other `4xx` the handler error with no class; any other `5xx` is the
+server error. An imported MCP tool's result is the result, and a result
+with `isError` the handler error, the tool's text as the failure's body.
+
+**A call is an effect.** Each method carries the class `client(<Surface>)`
+(`@effects(is: { client(Shelf) })`), an instantiation of an effect family
+the compiler declares over the surfaces the program calls, so the claims
+name the calls with nothing of their own: `forbid reaches(desks,
+effects(client(Shelf)))` is violated by a path from a desk to a call of
+`Shelf`, its witness ending at the method (`Desk::look ->
+__ApiClient_Shelf::get_item`), and `effects(client(*))` names every
+surface's calls. The family is the existing indexed one (`effect
+NAME(domain)`, docs/src/claims.md), its domain the surface names, so a
+claim, an `@effects(none: { client(Shelf) })` and a `@budget` read it as
+any declared class.
+
+**Placement.** A client is a param like any other. It runs on its holder's
+pool unless a `placement` row names it, and its methods are called from
+its own pool (F.31: a call from another pool is refused); a holder placed
+`where async_io` parks each wait of a call there, as `std::http` does.
+
+**The site's law.** A site the compiler cannot build is refused at the
+call, naming why ("client of \`Shelff\`: no surface \`Shelff\` is
+declared", "client of \`Shelf\` over \`mcp::Client\`: row \`get_item\` is the
+HTTP operation \`GET /items/{itemId}\`; a surface imported from OpenAPI is
+called over \`http::Client\`", "the transport is a literal of
+\`http::Client { base, principals }\` or \`mcp::Client { url, principals }\`",
+"\`api::client(…)\` builds an \`api::Client\`; declare \`NAME:
+api::Client\`").
+
+**A leg's tools.** **`hale api export --surface NAME --tools-for ROLES
+[target]`** prints the tools a caller acting as `ROLES` (comma separated,
+`''` for none) is given of the surface: one per row those roles admit (a
+row that requires none, or whose every required role one of them holds, a
+role holding each role it includes), named `<Surface>.<row>`, the row as
+the client names its method (`Shelf.create_item`, `Shop.orders_place`),
+each with the MCP form's input schema, `x-hale-member` and
+`x-hale-requires`, under `x-hale-surface`, `x-hale-digest` and
+`x-hale-roles`. The namespace keeps two surfaces' rows apart in one tool
+list; it writes no bundle, so it is given without `--out` and `--check`.
 
 ## Driving a served program
 

@@ -694,6 +694,32 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
+== crates/hale-cli/tests/api_client_binding.rs#292b6815
+root	App	the entry
+hole	App@literal1.shop.__transport.principals	reuse `self.creds`
+hole	App@literal1.shop.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
+hole	App@literal1.shop_mcp.__transport.principals	reuse `self.creds`
+hole	App@literal1.shop_mcp.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
+hole	App@literal1.shelf.__transport.principals	reuse `self.creds`
+hole	App@literal1.shelf.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
+row	App@literal1	App	main	default
+-- App@literal1.shelf	__ApiClient_Shelf
+row	~	__ApiClient_Shelf	main	default
+row	~.__transport	__StdApiHttpClient	main	inherited
+row	~.__transport.principals	<hole>	main	inherited
+-- App@literal1.shop	__ApiClient_Shop
+row	~	__ApiClient_Shop	main	default
+row	~.__transport	__StdApiHttpClient	main	inherited
+row	~.__transport.principals	<hole>	main	inherited
+-- App@literal1.shop_mcp	__ApiClient_Shop
+row	~	__ApiClient_Shop	main	default
+row	~.__transport	__StdApiMcpClient	main	inherited
+row	~.__transport.principals	<hole>	main	inherited
+-- App@literal1.tools	__ApiClient_Tools
+row	~	__ApiClient_Tools	main	default
+row	~.__transport	__StdApiMcpClient	main	inherited
+row	~.__transport.principals	__StdApiNoPrincipals	main	inherited
+
 == crates/hale-cli/tests/api_drain_asan.rs#2ab9cc3f
 root	App	the entry
 domain	pool:io	async_io

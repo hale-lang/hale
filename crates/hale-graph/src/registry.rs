@@ -378,7 +378,7 @@ pub const FAMILIES: &[Family] = &[
         // the parse it stands for); the imported library's parse through
         // tokens it already lexed is the uncached path's own.
         seams: &[
-            Seam { symbol: "parse_source_at_in(", allowed: &[("crates/hale-syntax/src/lib.rs", 2), ("crates/hale-syntax/src/shift.rs", 2), ("crates/hale-frontend/src/parse_cache.rs", 2), ("crates/hale-types/src/effect_classes.rs", 2)] },
+            Seam { symbol: "parse_source_at_in(", allowed: &[("crates/hale-syntax/src/lib.rs", 2), ("crates/hale-syntax/src/shift.rs", 2), ("crates/hale-frontend/src/parse_cache.rs", 2), ("crates/hale-types/src/effect_classes.rs", 3)] },
             Seam { symbol: "parse_in(", allowed: &[("crates/hale-syntax/src/parser.rs", 2), ("crates/hale-syntax/src/lib.rs", 1), (IMPORTS, 2)] },
         ],
     },
@@ -511,13 +511,14 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-cli/tests/cross_seed_effects.rs", "crates/hale-cli/tests/xseed_user_effects.rs", "crates/hale-types/src/effect_classes.rs (one_table_one_expansion)", "crates/hale-frontend/src/snapshot.rs (a_seed_is_numbered_after_the_seeds_it_imports)"],
         spec: &["spec/verification.md § Default-on & opt-in analyses"],
         seams: &[
-            Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 1), (EFFECTS, 3), (EFFECT_ROWS, 1), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1),("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 2), (EFFECTS, 3), (EFFECT_ROWS, 1), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1),("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
             // a program's class definitions are read by the parser that
-            // writes them, the load that carries them, and the table
-            // (`resolved.rs` only builds an empty stdlib program; the
+            // writes them, the load that carries them, and the table, which
+            // also hands a generated source's parse back to the load
+            // (`parse_generated`; `resolved.rs` only builds an empty stdlib program; the
             // shifter names the field in its exhaustive pattern and moves
             // nothing in it)
-            Seam { symbol: "effect_defs", allowed: &[("crates/hale-syntax/src/ast.rs", 1), (PARSER, 9), (FRONTEND, 3), ("crates/hale-types/src/effect_classes.rs", 2), (TY_RESOLVED, 1), ("crates/hale-syntax/src/shift.rs", 1)] },
+            Seam { symbol: "effect_defs", allowed: &[("crates/hale-syntax/src/ast.rs", 1), (PARSER, 9), (FRONTEND, 3), ("crates/hale-types/src/effect_classes.rs", 3), (TY_RESOLVED, 1), ("crates/hale-syntax/src/shift.rs", 1)] },
         ],
     },
     // ---------------------------------------------------- Declarations
@@ -1292,6 +1293,7 @@ pub const FAMILIES: &[Family] = &[
             "the rows have one producer (`surfaces::surface_rows`), demanded once per snapshot (`Snapshot::demand_surface_rows`, the `surface` count), not gated on the typing; a bundle no snapshot holds builds its own in the check's entry. Its columns: each row's surface, member (the locus in the row author's spelling), the locus and fn it resolves to, the roles as written with their spans, and what the handler resolves to (a member fn with its key, its value parameters past a trailing `ctx: std::api::Context`, the request, response and error types, whether the error is `ClosureViolation`, the pools; or no locus, no fn, a lifecycle method, mode or failure handler, a free fn); an `@rpc` row feeds the seed's default surface, named after the seed (an imported seed's by its import alias); which member belongs to which surface is selected once (`surfaces::select_members`, by names alone), and `surface_rows` (which types and hashes the selection) and the `@rpc` adapter (`rpc_expand`, which expands it) both call it",
             "the admission law is a law over the rows (`surfaces::surface_laws`), in spec/api.md's wordings: a row names a handler (1), takes one request (2), is its surface's member once (3), requires declared roles (4), names types the JSON codec carries (5: an identity, a range, a quantity and the four scalars; a point is refused), and a handler that may violate is `fallible(ClosureViolation)` whatever it returns (7, F.42's may-violate judgment over the summary); law 6 is a statement of the row (`server_error_notes`), not a refusal",
             "the serve-site laws are a law over the same rows and the holder's params (`surfaces::serve_laws`), in spec/api.md's wordings, and the exposure a site builds is the desugar sequence's (`rpc_expand::expand`, before the check): a serve site is an exposure param (GH #1565, `web: api::Exposure = api::serve(…);`); the pass reads the surface's rows and digest, the site's named arguments, the transport's `principals:` and `roles:`, and the holder's params, and writes the exposure into the param's init (the call as written kept beside it, `ParamDecl::serve`, which the laws and the description read and nothing lowers), a socket transport's listener as a param of the main locus (placed by the exposure's row, or by the row of the param its holder sits under, or on the transport's shared pool), the rows adapter, the receivers' plumbing (a number per exposure, written into the literals that build the instance; an incarnation stamp; the keyed call and hello subscriptions; the thunk that runs a call through the fallible ABI) and the five `__api.rpc.*` topics; a serve site in a body is refused",
+            "a client is the desugar sequence's too (`client_expand::expand`, before the serve expansion, whose codec pass gives the rows' types their api codecs): a client param (`shelf: api::Client = api::client(Shelf, http::Client { … });`) reads the surface's rows as the serve expansion does (`rpc_expand::rows_of_surface` and its member digests) or, for a surface the program consumes, its signature rows, and becomes a locus per surface with a method per row whose effect is `client(<Surface>)`, an instantiation of a family over the surfaces the program calls, parsed through the load's one class table (`effect_classes::parse_generated`); a site it cannot build is left as written and refused by `client_expand::client_laws`, which `surfaces::serve_laws` runs",
             "the model holds the surfaces and their rows under one law: each surface's digest is the fold of its own rows; neither table enters `shape_hash`, so a program with no surface hashes as it did",
             "a type's contract shape is `topic_identity::Shapes`' contract form, which agrees with the payload contract's observation form on every flat struct (spec/model.md § The shape of a type)",
         ],
