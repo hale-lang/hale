@@ -256,6 +256,12 @@ locus Queries {
     // items, and a read per item was a pass over the record per item).
     fn firsts() -> String {
         if self.firsts_built { return self.firsts_text; }
+        let out = self.collect_firsts();
+        self.firsts_text = out;
+        self.firsts_built = true;
+        return out;
+    }
+    fn collect_firsts() -> String {
         let mut out = "";
         let mut seen = "\n";
         let mut i = 0;
@@ -267,8 +273,6 @@ locus Queries {
             }
             i = i + 1;
         }
-        self.firsts_text = out;
-        self.firsts_built = true;
         return out;
     }
     fn practice_count() -> Int {
