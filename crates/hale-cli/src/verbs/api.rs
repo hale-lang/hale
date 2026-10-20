@@ -19,6 +19,7 @@ use crate::verbs::check::run_impl::load_for_check;
 pub(crate) fn api_usage() -> &'static str {
     "\
 usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
+       hale api export --surface NAME --tools-for ROLES [file.hl | dir]
        hale api client --surface NAME --lang hale|ts|js [--out FILE | --check FILE] [file.hl | dir]
        hale api describe <endpoint> [--json] [--bearer T]
        hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
@@ -60,6 +61,10 @@ is 4, usage 5. `--raw` prints the whole outcome on stdout whatever its kind.
 The files are rendered from the surface's rows alone, so two runs and two
 checkouts of one program write the same bytes. `--check DIR` writes nothing:
 it compares a committed bundle to the surface and exits 1 naming the drift.
+`--tools-for ROLES` (comma-separated, `''` for none) writes nothing either: it
+prints the tools a caller acting as those roles is given of the surface, one
+per row they admit, each named `NAME.<row>` (the method the surface's client
+calls it by) with the row's input schema.
 
 `client` generates a client of the surface from its rows: one function per
 member, typed by the row's request and response, returning the five outcomes
@@ -89,7 +94,7 @@ fn value(rest: &[String], flag: &str) -> Result<Option<String>, ExitCode> {
 }
 
 /// The flags of `export` that take a value, and the ones that do not.
-const EXPORT_VALUED: [&str; 3] = ["--surface", "--out", "--check"];
+const EXPORT_VALUED: [&str; 4] = ["--surface", "--out", "--check", "--tools-for"];
 const CLIENT_VALUED: [&str; 4] = ["--surface", "--lang", "--out", "--check"];
 
 /// The positional arguments of `rest`: everything that is neither a
@@ -217,6 +222,14 @@ fn run_export(rest: &[String]) -> ExitCode {
         eprintln!("hale api export: --check writes nothing; give --out or --check, not both");
         return ExitCode::from(2);
     }
+    let tools_for = match value(rest, "--tools-for") {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
+    if tools_for.is_some() && (out.is_some() || check.is_some()) {
+        eprintln!("hale api export: --tools-for prints the tools and writes no bundle; give it without --out or --check");
+        return ExitCode::from(2);
+    }
     let pos = match positionals(rest, &EXPORT_VALUED) {
         Ok(p) => p,
         Err(code) => return code,
@@ -230,6 +243,19 @@ fn run_export(rest: &[String]) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
+    if let Some(roles) = tools_for {
+        let held: Vec<String> =
+            roles.split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
+        let programs: Vec<&hale_syntax::ast::Program> = snap.programs().values().collect();
+        let confer = hale_types::rpc_expand::conferring(&programs);
+        return match with_rows(&snap, |rows, schemas| surface_doc::leg_tools(rows, schemas, &surface, &held, &confer)) {
+            Ok(doc) => {
+                println!("{}", doc.pretty());
+                ExitCode::SUCCESS
+            }
+            Err(code) => code,
+        };
+    }
     let files = match with_rows(&snap, |rows, schemas| bundle(rows, schemas, &surface)) {
         Ok(f) => f,
         Err(code) => return code,

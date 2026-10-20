@@ -783,6 +783,14 @@ fn main() {
   `hale check --api`) where the service's changes should stop you, so a
   row it removed or reshaped is a named line, not a decode failure at run
   time. Records written by hand for the same JSON drift silently.
+- **Call it through a client; don't hand-roll the request.** A call to
+  another system is a method of an `api::client(NAME, http::Client { … })`
+  (or `mcp::Client { … }`) param, its bearer from `principals:`
+  (`std::api::VaultPrincipals`), never a `std::http` request with JSON
+  built and parsed by hand. Match the row's outcome enum whole: `Lost` and
+  `Refusal` are answers, not exceptions. The call is then an effect
+  (`client(NAME)`), so a claim can keep it out of the loci that must not
+  reach the network.
 
 ### Naming conventions
 

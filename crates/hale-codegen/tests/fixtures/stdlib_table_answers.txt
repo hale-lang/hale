@@ -547,16 +547,21 @@ print | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | h
 println | lookup=- | locus=false | effects=syscall|stdio | sig=- | parks=false | holds=false | unknown=-
 std | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::api::BearerSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::BearerSource` | suggest=-
+std::api::Client | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Client` | suggest=-
+std::api::ClientPrincipals | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ClientPrincipals` | suggest=-
 std::api::Context | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Context` | suggest=-
 std::api::ErrorClass | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ErrorClass` | suggest=-
 std::api::ExpiringBearerSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ExpiringBearerSource` | suggest=-
 std::api::Exposure | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Exposure` | suggest=-
+std::api::Failure | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Failure` | suggest=-
 std::api::Grants | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Grants` | suggest=-
 std::api::Handle | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Handle` | suggest=-
 std::api::HubRows | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::HubRows` | suggest=-
 std::api::NoBearer | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::NoBearer` | suggest=-
+std::api::NoPrincipals | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::NoPrincipals` | suggest=-
 std::api::Outcome | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Outcome` | suggest=-
 std::api::Principal | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Principal` | suggest=-
+std::api::Refusal | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Refusal` | suggest=-
 std::api::Request | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Request` | suggest=-
 std::api::RevisedRoleSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RevisedRoleSource` | suggest=-
 std::api::RevisedStaticRoles | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::RevisedStaticRoles` | suggest=-
@@ -571,10 +576,13 @@ std::api::RpcLost | lookup=api@2 | locus=false | effects=- | sig=- | parks=false
 std::api::ServedContext | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ServedContext` | suggest=-
 std::api::StaticRoles | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::StaticRoles` | suggest=-
 std::api::Surface | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Surface` | suggest=-
+std::api::VaultPrincipals | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::VaultPrincipals` | suggest=-
 std::api::grpc::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::grpc`
+std::api::http::Client | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::http::Listener | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::http::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::http`
 std::api::local_context | lookup=api@2 | locus=false | effects=alloc | sig=() -> Named(__StdApiContext) | ret_ty=__StdApiContext | or=- | parks=false | holds=false | unknown=- | suggest=local_context
+std::api::mcp::Client | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::mcp` — did you mean `std::io::tcp`?
 std::api::mcp::Rpc | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::mcp` — did you mean `std::io::tcp`?
 std::api::run_until_stopped | lookup=api@2 | locus=false | effects=syscall|block|time | sig=(Named(__StdApiHandle)) -> Unit | ret_ty=() | or=- | parks=true | holds=false | unknown=- | suggest=run_until_stopped
 std::api::test::Record | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std::api::test`

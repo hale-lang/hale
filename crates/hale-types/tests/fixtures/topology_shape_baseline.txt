@@ -1,3 +1,5 @@
+crates/hale-cli/tests/api_client_binding.rs#0 e3358e48ec7af196
+crates/hale-cli/tests/api_client_binding.rs#3 20b82656e55ea3e5
 crates/hale-cli/tests/api_contract_fixtures.rs#2 fae132f30cf626ac
 crates/hale-cli/tests/api_contract_fixtures.rs#3 49649a8a55d7c971
 crates/hale-cli/tests/api_contract_fixtures.rs#4 12b424787237e947
@@ -1686,6 +1688,7 @@ crates/hale-codegen/tests/ws3_nested_if_tail.rs#3 f21fbc665a9c2254
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#4 f21fbc665a9c2254
 crates/hale-codegen/tests/ws3_nested_if_tail.rs#5 f21fbc665a9c2254
 crates/hale-stdlib/hl/api.hl e416474db56b5494
+crates/hale-stdlib/hl/api_client.hl 36ae064bec55aa33
 crates/hale-stdlib/hl/api_rpc.hl 76786fb979b19329
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6

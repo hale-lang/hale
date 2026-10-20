@@ -66,20 +66,21 @@ pub struct Expansion {
     pub param: String,
 }
 
-/// One row of a surface, as the pass reads it.
+/// One row of a surface, as the pass reads it (and the client binding,
+/// `client_expand`, which calls a row as this pass serves it).
 #[derive(Debug, Clone)]
-struct Row {
-    member: String,
-    locus: String,
-    method: String,
-    requires: Vec<String>,
+pub(crate) struct Row {
+    pub(crate) member: String,
+    pub(crate) locus: String,
+    pub(crate) method: String,
+    pub(crate) requires: Vec<String>,
     written_at: usize,
     takes_ctx: bool,
     served_ctx: bool,
-    request: Option<TypeExpr>,
-    response: Option<TypeExpr>,
-    error: Option<TypeExpr>,
-    server_error: bool,
+    pub(crate) request: Option<TypeExpr>,
+    pub(crate) response: Option<TypeExpr>,
+    pub(crate) error: Option<TypeExpr>,
+    pub(crate) server_error: bool,
 }
 
 /// A serve site, owned.
@@ -122,7 +123,7 @@ fn q(s: &str) -> String {
 /// left out; an `api` row it cannot read leaves the whole surface
 /// unexpanded (the admission law reports it). In canonical order: member
 /// as bytes, then as written.
-fn rows_of_surface(
+pub(crate) fn rows_of_surface(
     programs: &[&Program],
     surface: &str,
     renames: &[(Vec<String>, String)],
@@ -206,7 +207,7 @@ pub fn selection(
 
 /// Each row's member digest (spec/api.md § The contract digest), as
 /// `fnv1a64:…`: what a client built against that member alone names.
-fn member_digests(shapes: &Shapes<'_>, rows: &[Row]) -> Vec<String> {
+pub(crate) fn member_digests(shapes: &Shapes<'_>, rows: &[Row]) -> Vec<String> {
     let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
     rows.iter()
         .map(|r| {
@@ -240,7 +241,7 @@ fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
 
 /// The roles that confer `role`: itself and every role that includes it,
 /// transitively (`role owner includes support;`).
-pub(crate) fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
+pub fn conferring(programs: &[&Program]) -> BTreeMap<String, Vec<String>> {
     let mut includes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs {
         for d in flat_decls(&p.items) {
@@ -633,13 +634,15 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 
 /// The stdlib file an offset of the appended runtime lies in: the file's
 /// name as `crates/hale-stdlib/hl/` spells it, its text, and the offset
-/// within it. Each of the runtime's six files parses in a window of its
+/// within it. Each of the runtime's files parses in a window of its
 /// own ([`inject_runtime`], [`inject_hub`], [`inject_h2`],
-/// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`]);
+/// [`inject_grpc`], [`inject_tcp_serve`], [`inject_tcp_listener`], the
+/// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 7] = [
+    let windows: [(u32, &'static str, &'static str); 8] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
+        (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
         (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
@@ -893,11 +896,11 @@ pub fn is_observe_pos(pos: u32) -> bool {
 }
 
 /// Whether an offset is in stdlib source appended to the program because
-/// it names it, and not in the stdlib copy: the TCP substrate's, or the
-/// observe backends'. A `std::` path to one of its loci names the
+/// it names it, and not in the stdlib copy: the TCP substrate's, the
+/// observe backends', or the client binding's (`client_expand`). A `std::` path to one of its loci names the
 /// program's declaration.
 pub fn is_appended_stdlib_pos(pos: u32) -> bool {
-    is_tcp_serve_pos(pos) || is_observe_pos(pos)
+    is_tcp_serve_pos(pos) || is_observe_pos(pos) || crate::client_expand::is_client_runtime_pos(pos)
 }
 
 /// The backends of `std::observe`, once, for a program whose main locus
@@ -1044,7 +1047,7 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
 /// (`ApiDecl::origin`, `mangle::api_origin`). The row is the provenance: a
 /// block of another seed, the importer's own among them, has another
 /// origin or none, so the alias never reaches it.
-fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
+pub(crate) fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
     let key = format!("{}{name}", crate::mangle::API_KEY);
     let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == key)?;
     programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {

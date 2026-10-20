@@ -66,6 +66,13 @@ pub fn render_located(
                 d.message
             );
         }
+        if hale_types::client_expand::is_client_pos(off) {
+            return format!(
+                "{}: {} (in the client generated for an `api::client` param; spec/api.md § Calling a surface)",
+                d.kind_str(),
+                d.message
+            );
+        }
         if let Some(note) = appended_source_note(off) {
             return format!("{}: {} ({note})", d.kind_str(), d.message);
         }
