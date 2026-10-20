@@ -533,7 +533,7 @@ jobs:
 // The result is the chain's last step.
 fn voice_repo(source: String, dir: String, who: String, gates: Bool) -> RunResult {
     let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
-    let copied = run_tool("sh\n-c\nmkdir -p \"$2/.github/workflows\" && cp -r \"$1/dna/tests/onboarding/voice-heart/.\" \"$2/\" && cd \"$2\" && sed -i 's/^needs = .*/needs = [\"memory\", \"nerves\", \"database\"]/' hale.toml && grep -qF 'needs = [\"memory\", \"nerves\", \"database\"]' hale.toml\nsh\n" + source + "\n" + dir);
+    let copied = run_tool("sh\n-c\nmkdir -p \"$2/.github/workflows\" && cp -r \"$1/dna/tests/onboarding/voice-heart/.\" \"$2/\" && cd \"$2\" && sed 's/^needs = .*/needs = [\"memory\", \"nerves\", \"database\"]/' hale.toml > hale.toml.next && mv hale.toml.next hale.toml && grep -qF 'needs = [\"memory\", \"nerves\", \"database\"]' hale.toml\nsh\n" + source + "\n" + dir);
     if copied.code != 0 { return copied; }
     if gates { std::io::fs::write_file(dir + "/.github/workflows/ci.yml", VOICE_GATES) or discard; }
     else { let bare = run_tool("rmdir\n-p\n" + dir + "/.github/workflows"); }
