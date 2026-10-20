@@ -56,11 +56,6 @@ const EXEMPT: &[(&str, &str)] = &[
     ),
 ];
 
-/// `.gitignore` files that stand for a user's own project repository
-/// (a fixture copy of one), which builds with a plain `hale build` and
-/// ignores its own binary — the rule this repository dropped for itself.
-const USER_PROJECT_GITIGNORES: &[&str] = &["dna/tests/onboarding/voice/"];
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -130,7 +125,6 @@ fn gitignore_has_no_binary_rules() {
     for f in files
         .iter()
         .filter(|f| *f == ".gitignore" || f.ends_with("/.gitignore"))
-        .filter(|f| !USER_PROJECT_GITIGNORES.iter().any(|p| f.starts_with(p)))
     {
         let base = Path::new(f).parent().unwrap_or(Path::new(""));
         for rule in rules(&read(f)) {

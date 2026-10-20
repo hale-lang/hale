@@ -1,7 +1,7 @@
 // dna/tests/graph_route_test.hl — a change set to the positions that must
 // sign it, from the graph's `meets` and `gates` (GH #1087).
 //
-// On voice (a32b295f, hale-lang/voice#6) with its holes ratified: a change
+// On voice (aaa3d39d, onboarding/voice-heart) with its holes ratified: a change
 // to spec/openapi.yaml is signed by api's reviewer, which signs the
 // contract, and node's and ui's, which consume it, against the runs of
 // ci/api and ci/contracts; a change under api/ by api's reviewer alone,
@@ -99,7 +99,7 @@ locus App {
         if len(self.owner) == 0 { eprintln("graph_route_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
         let scratch = dna::scratch_root("graph-route");
         self.repo = scratch + "/voice";
-        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        let made = dna::voice_repo(source(), self.repo, "t", true);
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.init();
         std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);

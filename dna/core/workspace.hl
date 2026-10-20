@@ -485,6 +485,61 @@ fn grafted(dir: String, args: String) -> RunResult {
     return run_tool_timeout(900, "sh\n-c\ncd \"$1\" && export HALE_DNA_HABITAT=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && exec \"$@\"\nsh\n" + dir + "\n" + habitat + "\n" + hale + "\nhabitat\ngraft\n" + args);
 }
 
+// The CI jobs of the voice repository, as the gates a fixture about routing
+// needs: the vendored tree carries no .github of its own, so a copy that
+// wants gates is given this one, a job per gate, each naming what it guards.
+const VOICE_GATES: String = "name: ci
+on: [push]
+jobs:
+  api:
+    name: api
+    steps:
+      - run: hale test api && hale build api && spec/openapi.yaml && spec/validate
+  brain:
+    name: brain
+    steps:
+      - run: hale test brain && hale build brain
+  node:
+    name: node
+    steps:
+      - run: hale test node && hale build node && spec/node.yaml && spec/validate
+  ui:
+    name: ui
+    steps:
+      - run: ui
+  contracts:
+    name: contracts
+    steps:
+      - run: spec/openapi.yaml spec/node.yaml spec/protocol.yaml spec/internal.yaml spec/validate
+  store:
+    name: store
+    steps:
+      - run: spec/store.md
+  image:
+    name: image
+    steps:
+      - run: docker compose build
+";
+
+// The vendored voice (onboarding/voice-heart.source) as a repository of its
+// own at `dir`, for a fixture about the repository's graph, holes, holds or
+// routes: a copy (the vendored tree is never touched) with the `broker` role
+// left out of the needs its manifest declares (a habitat on the operator's
+// backends configures no NATS of its own, and these fixtures are not about
+// the broker; first_run_test grafts the whole heart on a habitat of its own),
+// with `VOICE_GATES` as its CI when `gates`, committed under `who` (the built
+// binary kept out of the commits by the clone's own exclude file), and its
+// api built, which the migration the heart hands the habitat at graft runs.
+// The result is the chain's last step.
+fn voice_repo(source: String, dir: String, who: String, gates: Bool) -> RunResult {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let copied = run_tool("sh\n-c\nmkdir -p \"$2/.github/workflows\" && cp -r \"$1/dna/tests/onboarding/voice-heart/.\" \"$2/\" && cd \"$2\" && sed -i 's/^needs = .*/needs = [\"memory\", \"nerves\", \"database\"]/' hale.toml && grep -qF 'needs = [\"memory\", \"nerves\", \"database\"]' hale.toml\nsh\n" + source + "\n" + dir);
+    if copied.code != 0 { return copied; }
+    if gates { std::io::fs::write_file(dir + "/.github/workflows/ci.yml", VOICE_GATES) or discard; }
+    else { let bare = run_tool("rmdir\n-p\n" + dir + "/.github/workflows"); }
+    return run_tool_timeout(900, "sh\n-c\ncd \"$1\" && git init -q -b main && printf '/api/api\\n' >> .git/info/exclude && git config user.name \"$2\" && git config user.email \"$2@dna\" && git add -A && git commit -q -m voice && \"$3\" build api\nsh\n" + dir + "\n" + who + "\n" + hale);
+}
+
 // The fixture is done with `dir` and passed: the root goes, and its
 // registry entry with it. `HALE_DNA_KEEP_SCRATCH` keeps both and says
 // where the root is, which is the knob for looking at what a fixture
