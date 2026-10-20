@@ -526,3 +526,17 @@ with `build` then `test` in that worktree. It proposes by committing,
 pushing the branch to the codebase's repository and opening a review
 there; the forge decides, and a leg never merges. Readings and an
 application row come later, if the codebase is also a heart.
+
+Ask for a change in it by naming the codebase and the position whose leg
+makes it:
+
+```sh
+hale dna task create --to position:api/dev --codebase ledger-svc "make the greeting mention the leg"
+```
+
+The leg's hat carries the codebase. In its person session (`hale dna work
+hand`, `submit --from-worktree`) the worktree is a clone of the codebase's
+repository on `leg/<codebase>/<task>`, the `check` and `test` hands run the
+codebase's build and test commands, and `submit` pushes the branch to the
+codebase, opens the review there and hands back `review:<ref>`. The
+organism's own repository is not touched.

@@ -70,7 +70,7 @@ fn main() {
     } else if verb == "task" {
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
         // the outcome is every word after the subverb (asking is one kind of task)
-        if host::word(a, 0) == "create" { ans = host::task_create_verb(root, host::join_words(host::drop_first_word(a.words)), host::flag(a, "--to"), host::has_flag(a, "--no-wait"), host::flag(a, "--as"), host::has_flag(a, "--judgment"), host::flag(a, "--size"), memory); }
+        if host::word(a, 0) == "create" { ans = host::task_create_verb(root, host::join_words(host::drop_first_word(a.words)), host::flag(a, "--to"), host::has_flag(a, "--no-wait"), host::flag(a, "--as"), host::has_flag(a, "--judgment"), host::flag(a, "--size"), host::flag(a, "--codebase"), memory); }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         else if host::word(a, 0) == "done" { ans = host::task_done_verb(root, seed, host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--note"), host::flag(a, "--evidence"), host::flag(a, "--exception"), host::flag(a, "--authorized-by"), memory); }
         else if host::word(a, 0) == "reassign" { ans = host::task_reassign_verb(root, seed, host::word(a, 1), host::flag(a, "--to"), host::flag(a, "--as"), memory); }

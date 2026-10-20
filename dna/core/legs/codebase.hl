@@ -21,6 +21,18 @@ fn codebase_branch(c: dna::Codebase, task: String) -> String {
     return "leg/" + c.name + "/" + t;
 }
 
+// The attached codebase a hat names (`codebase` in the hat), else none.
+fn hat_codebase(hat: String) -> dna::Codebase {
+    let raw = std::json::find_field_raw(hat, "codebase");
+    if len(raw) == 0 || raw == "null" { return dna::Codebase { }; }
+    let branch = std::json::find_string_field(raw, "branch");
+    return dna::Codebase {
+        present: true, name: std::json::find_string_field(raw, "name"), repo: std::json::find_string_field(raw, "repo"),
+        build: std::json::find_string_field(raw, "build"), test: std::json::find_string_field(raw, "test"),
+        branch: if len(branch) > 0 { branch } else { "main" }, by: std::json::find_string_field(raw, "by")
+    };
+}
+
 locus CodebaseWork {
     params { codebase: dna::Codebase = dna::Codebase { }; hands: Hands = Hands { }; branch: String = ""; }
     // The worktree: a clone of the codebase's repository at its default

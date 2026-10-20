@@ -1608,9 +1608,23 @@ repository (`origin`) and opening a review through its `ForgeHand`:
 `GhForge { repo, base }` names the codebase's repository and default
 branch (`gh pr create --repo --base --head`), and `ForgeBridge` puts the
 core's `Forge` behind the hand, so a fixture runs it over `MemForge`.
-The forge decides; a leg never merges. Binding a task to a codebase at
-the head, and the language hands (Go) that make the commands typed, are
-later items.
+The forge decides; a leg never merges.
+
+A task names a codebase with `hale dna task create --to position:<name>
+--codebase <name> <outcome…>` (the codebase must be attached, and the ask
+routed to a position): the intent row, the `IntentOffer` and the `Intent`
+carry `codebase`, and `ask-position`'s admission inputs record it. The
+Work's hat then carries `codebase`, the attached row as a JSON object
+(`name`, `repo`, `build`, `test`, `branch`; absent for a task naming none,
+so such a hat's digest is unchanged). A leg's `hand` and `submit
+--from-worktree` on a hat that names one work a clone of the codebase's
+repository on `leg/<codebase>/<task>`, not the project's checkout: the
+`check` and `test` hands run the codebase's `build` and `test`, the
+validators are the two commands, and `submit` pushes the branch there,
+opens the review through the leg's forge hand and files the outcome as
+`result_ref: review:<ref>`. The owner settles such an outcome done on that
+reference and makes no Mutation of its own genome. The language hands (Go)
+that make the commands typed are a later item.
 
 
 Their bodies are documented in the guide's reference chapter; the set

@@ -58,6 +58,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "batch",
     "budget",
     "cases",
+    "codebases",
     "completion",
     "concerns",
     "contracts",
@@ -303,6 +304,7 @@ pub const POND_FILES: &[EmbeddedFile] = at![
 /// beside the core it imports as `..`.
 pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/client.hl",
+    "dna/core/legs/codebase.hl",
     "dna/core/legs/hands.hl",
     "dna/core/legs/head_commands/client.hl",
     "dna/core/legs/model.hl",

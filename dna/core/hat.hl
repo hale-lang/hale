@@ -52,6 +52,7 @@ type Hat {
     practices: String = "[]"; // a JSON array of {id, name, text, kind, author}
     practices_n: Int = 0;
     practices_status: String = ""; // resolved | no memory | unavailable
+    codebase: String = ""; // the attached codebase the Work is made in, as a JSON object (`hat_codebase_json`); "" = the organism's own
     history: String = "[]"; // a JSON array of {kind, id, order}
     head: String = "";
     watermark: Int = -1; // memory's projection watermark the practices were read at; -1 without memory
@@ -233,6 +234,29 @@ type HatInputs {
     head: String = "";
 }
 
+// The attached codebase a Task names: the `codebase` of its recorded
+// admission (an ask routed with `--codebase`), as the record states it now.
+// An empty Codebase when the Task names none or it has been detached.
+fn task_codebase(j: Journal, task_id: String) -> Codebase {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "workflow.admitted" && e.entity == task_id {
+            let adm = decode_admission(e.body);
+            if !adm.ok { return Codebase { }; }
+            let name = std::json::find_string_field(adm.value.inputs, "codebase");
+            return if len(name) > 0 { codebase_of(j, name) } else { Codebase { } };
+        }
+        i = i + 1;
+    }
+    return Codebase { };
+}
+
+fn hat_codebase_json(j: Journal, task_id: String) -> String {
+    let c = task_codebase(j, task_id);
+    return if c.present { codebase_body(c) } else { "" };
+}
+
 // The hat for a Work, composed, digested: the position the performer kind
 // names and its charter, the effect classes the requirement admits, the
 // hands and validators the output contract gives, and the practices of
@@ -253,7 +277,8 @@ fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Ha
         effects: hat_effects_of(w.requires), cost_ceiling: w.cost_ceiling,
         tool_grant: owed.hands, hands: hands, validators: owed.validators,
         model: model_choice_json(model_resolve(j, position, w.output_contract, w.task_id, hands)),
-        knowledge_bindings: w.knowledge_bindings, history: w.history, head: w.head
+        knowledge_bindings: w.knowledge_bindings, history: w.history, head: w.head,
+        codebase: hat_codebase_json(j, w.task_id)
     };
     return hat_sealed(hat_with_package(h, pkg, ready));
 }
@@ -301,6 +326,7 @@ fn hat_body(h: Hat) -> String {
     b.field("practices", h.practices);
     b.string_field("practices_status", h.practices_status);
     b.field("history", h.history);
+    if len(h.codebase) > 0 { b.field("codebase", h.codebase); }
     b.string_field("head", h.head);
     b.string_field("watermark", to_string(h.watermark));
     b.end_object();

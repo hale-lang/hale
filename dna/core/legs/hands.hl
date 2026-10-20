@@ -195,7 +195,8 @@ locus ForgeBridge {
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         let br = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\n--abbrev-ref\nHEAD");
         if br.code != 0 { return hand_result(br, ""); }
-        let r = self.forge.open_review(dna::trim_nl(br.stdout), title, body);
+        let origin = dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin");
+        let r = self.forge.open_review(dna::trim_nl(br.stdout), title, "repository: " + dna::trim_nl(origin.stdout) + "\n\n" + body);
         if !r.present { return HandResult { error: r.why }; }
         return HandResult { ok: true, output: r.ref };
     }
