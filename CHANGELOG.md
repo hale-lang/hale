@@ -8,6 +8,95 @@ behavior.
 
 ## Unreleased
 
+## v0.27.0 — a program observed and placed, every organism grafted (2026-10-20)
+
+A program now says how it is watched and where it runs as params of its main locus, and the toolchain turns that into probes, a scrape, an event export and deployment manifests. A program that declares none of it pays nothing. On the DNA side, every organism is born by a graft from the habitat, the first run is a fixture, and the logging law the standard pack proposes is enforced on a Hale heart.
+
+**Observing a program.** Three params of main, each known to the compiler by its type: `std::observe::Scrape { port }` serves the Prometheus exposition of every live registry and of the runtime's own `hale_*` series (#1667); `std::observe::Probes { port }` serves `/healthz`, `/readyz` and `/capacity` from a runtime thread of its own (#1673); and `std::observe::Otlp { endpoint }` sends locus birth, dissolve, restart and failure to an OpenTelemetry collector as OTLP/HTTP logs (#1689). `fn main() { }` keeps its binary to the instruction. A new book chapter, "Observing a program", ties these together with structured logs (#1690).
+
+**Deploying a program.** `hale deploy render <seed|plan> --backend compose|kubernetes` writes a program's own placement as a compose file or Kubernetes Deployments and Services, and never deploys. Probes become a healthcheck or liveness and readiness probes, a scrape becomes a published port and `prometheus.io/*` annotations, and a fleet's instances and routes become services, replicas and `depends_on` (#1692).
+
+**Laws a program is held to.** `std::law::Standard` is the stdlib's standard constitution; its first clause, `logs_structured`, says a program writes to the terminal only through `std::log`. `hale check|build|run --adopt <constitution>` adopts one for a command (#1682). Claims gain the `stdio` effect class, the `program` group and stdlib modules as group members, and a claim's walk now follows a publish into the stdlib subscribers a program builds (#1672). When a Board ratifies `standard/logs-are-structured`, the verification of a Hale heart runs under that law and refuses a bare `println` on a served path (#1686).
+
+**Every organism is grafted.** `hale habitat graft` takes `--with <pack>` to propose a nursery pack after the birth (#1680), `--profile local|remote-body` for a new application (#1681) and `--no-pack` (#1679). The DNA suite births a habitat per slice and its fixtures graft into it, so a test never touches the developer's habitat (#1676, #1679, #1683). `first_run_test` runs the whole first run: `hale habitat up`, a real Hale heart grafted, migrated, handed its secrets, serving, held to a ratified limit, and a restart that does nothing again (#1685). `spec/habitat.md` specifies the habitat as shipped (#1687). The practices read is linear in the record, so a 100-item page over 461 practices went from 497 ms to 139 ms (#1688).
+
+**Writing code.** Block strings (`"""` … `"""`) hold multi-line text, such as a test's program, a SQL query or a JSON body, unescaped and uninterpolated (#1677). `hale fmt --wrap` breaks a line wider than 100 columns according to its shape; it is opt-in until the tree is reflowed (#1678).
+
+**Breaking changes, measured against v0.26.0:** `hale dna new` and `hale dna init` exit 2 and name the `hale habitat graft` that replaces them (#1684). A claim over `syscall` such as `forbid reaches(app, effects(syscall))` no longer holds for a program that logs, since its `StdoutSink` prints (#1672). `std::metrics` writes one `# TYPE` line per family, not one per series (#1667).
+
+The item-level notes follow, one entry per change with every PR reference.
+
+
+- **A program holds its metrics scrape as a param.** `metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };` among the main locus's params, placed by `placement { }` like any other, serves the Prometheus text exposition of every live `std::metrics::Registry` and of the runtime's own series (`hale_*`: resident memory, the drain, live loci, restarts, failures, each pool's queue depth and parked coroutines, each topic's traffic). The compiler knows it by its type: one per program, and a construction cannot supply it. A program that holds none carries none of it: `fn main() { }` keeps its binary to the instruction. The topology artifact (schema 1.21) records the endpoint.
+- **`std::metrics` writes one `# TYPE` line per family.** `Registry.render()` and `Endpoint` wrote one per series, which Prometheus refuses for a family with several labelled series; a family is now written whole under one line.
+
+- Claims gain what a "logs are structured" law needs: `stdio`, a built-in effect class carried by every write to standard output or standard error (a kind of `syscall`, so contracts over `syscall` are unchanged); `program`, a built-in group of the entrypoint's own declarations that a policy seed's constitution can name; and a stdlib module as a group member (`std::log::*`), written inline after `avoiding`. `forbid reaches(program, effects(stdio)) avoiding std::log::*;` holds for a program that writes to the terminal only through `std::log`.
+- A claim's walk follows a publish into the stdlib subscribers a program builds, from a stdlib body or from the program's own code: `forbid reaches(app, effects(syscall))` used to hold for a program that only logged, although its `StdoutSink` prints. A publish through a local binding (`subj <- v`) is a computed subject, and the "published but has no subscriber" warning counts the stdlib subscribers a program builds.
+
+- A main-locus param of type `std::observe::Probes` (`probes: std::observe::Probes = std::observe::Probes { port: 9090 };`) serves the process's health over HTTP from a runtime thread of its own: `/healthz` (503 naming any queue that holds work its worker has not touched for 10 s, `LOTUS_PROBES_STALL_MS`), `/readyz` (`starting` until the main locus's births are done, then ready, 503 while draining) and `/capacity` (each queue's waiting cells, capacity and stall time, as JSON). A program without the param serves and samples nothing.
+
+### DNA: test habitats
+
+- `HALE_DNA_HABITAT` names a habitat's directory outright. The DNA suite births a habitat once per slice whose fixtures graft, with no body, swept with the slice, on the operator's backends when the slice has an owner's DSN and NATS (`HALE_DNA_TEST_HABITAT`, `HALE_DNA_TEST_HABITAT_VAULT`); a fixture grafts into it with `dna::grafted`, and a CLI test through `tests/support/habitat.rs`, so a test's organisms are never the developer's habitat's tenants. (GH #1653)
+
+- A block string writes multi-line text that has its own syntax as it reads. Use it for a Hale program a test writes to disk, a SQL query or a JSON body. Open it with `"""` at the end of a line, write the text, and close it with `"""` on a line of its own. The whitespace before the closing quotes is stripped from every line. Nothing is escaped and nothing is interpolated. Use a longer fence (`""""`) when a line of the text starts with `"""`. `hale fmt` re-indents a block string with its code and never changes its value. See `spec/tokens.md` § Block strings.
+
+- `hale fmt --wrap` breaks every line wider than 100 columns according to its shape. An `&&`/`||` chain gets one term per line with the operator leading, and the block's `{` goes on its own line. A `+` chain breaks at the operator. A call or a record literal gets one argument or field per line with a trailing comma. A block written on one line gets one statement per line. A line that fits is left as written, and running fmt on its own output changes nothing. Until the tree is reflowed, wrapping is opt-in. The style guide now says that a condition of more than three terms becomes a named predicate.
+
+### DNA: fixtures graft their organisms
+
+- The DNA fixtures birth their organisms by grafting them into the test's habitat (`dna::in_habitat`), and `hale habitat graft --no-pack` leaves the `standard` pack for `hale dna pack apply`, as `--no-library` leaves the library. (GH #1653)
+
+### DNA: repositories are grafted, and graft takes a pack
+
+- `hale habitat graft <dir> --attach --with <pack> [--set <param>=<value>]… [--as <who>]` proposes a nursery pack after the birth, planned on the holes it proposed, so one `review all approve` ratifies the starting organization whole. (GH #1653)
+
+### DNA: graft shapes a new application's profile
+
+- `hale habitat graft <name>` takes `--profile local|remote-body [--remote <url>] [--body <user@host>]` for a new application: the record shared over that remote, the body on that server; an attached application keeps its own. (GH #1653)
+
+- `std::law::Standard`, the stdlib's standard constitution: `logs_structured`, a program writes to standard output or standard error only through `std::log` (#1591). It is adopted by path with no import, and loaded only when adopted.
+- `hale check`, `hale build` and `hale run` take `--adopt <constitution>` (repeatable; `BuildOptions::adopt`). It adopts a constitution into the entry's `main locus` for that command, as an environment's `constitution = …` does. An unknown `std::law` name is refused by name, and so is a program with no `main locus` to adopt into. The same constitution from the flag and from `hale.toml` or the source is one adoption.
+- The stdlib's own terminal lines go through `std::log`, so a served program is judged by its own writes. These are a listener that cannot bind, a role naming nobody, and `std::http::Server`'s `ready_signal`. The bytes written are unchanged.
+
+### DNA: the allocation fixtures graft from a habitat of their own
+
+- The DNA fixtures about the allocations (compose projects, the nerves' and the senses' servers) birth their test file's own habitat and graft into it; a nerves allocation's memory is allocated with it, so the nerves fixture needs no owner's database. (GH #1653)
+
+### DNA: `hale dna new` and `hale dna init` are retired
+
+- `hale dna new` and `hale dna init` exit 2 and name the `hale habitat graft` that replaces them, with the flags they were given. Every organism is born by a graft from the habitat; the tests, scripts and chapters that birthed one by hand graft instead. (GH #1653)
+
+### DNA: the first run is a fixture
+
+- `first_run_test` runs the whole first run: a machine with no habitat, `hale habitat up`, a real Hale heart grafted into it, its database migrated and its secrets handed over by the habitat, requests answered over the broker and told to the organization, a limit the Board ratified enforced, and a restart of the habitat that births and migrates nothing again. (GH #1653)
+
+### DNA: the logging law is checked
+
+- When the Board has ratified `standard/logs-are-structured` as law, the verification of a Hale heart runs its check with `--adopt std::law::Standard`: a heart with a bare `println` on a served path is refused, naming the clause, and nothing is written into the heart. (GH #1591)
+
+### Docs: the habitat's specification
+
+- `spec/habitat.md` specifies the local habitat as shipped: its verbs, backends, `[dna] needs` roles, allocation rows, opt-in heart migrations and the handover. (GH #1653)
+
+### DNA: the practices read is linear in the record
+
+- A page of the API's practices read no longer rescans the record for every item: the catalog's members are read in one pass, and a proposal's body is parsed only for the digest asked for. Over a 461-practice record one 100-item page went from 497 ms to 139 ms. (GH #1653)
+
+### Observe
+
+- `std::observe::Otlp { endpoint }` as a param of main sends the runtime's lifecycle and topology events (locus birth, dissolve, restart, failure) to an OpenTelemetry collector as OTLP/HTTP JSON log records. A program that holds none links and runs as before; shared memory stays the local default (GH #1592 S4).
+
+### Documentation
+
+- A new book chapter, "Observing a program", ties together structured logs, the runtime's diagnostics as records, the metrics scrape, the health probes and the OTLP event export, and states that a program observing nothing pays nothing. The notes that the scrape's port would become optional with the probes are corrected: the scrape is a listener of its own.
+
+- The DNA graph fixtures graft the vendored voice-heart instead of an older vendored voice copy, which is deleted; they build it through one shared helper (`dna::voice_repo`) that leaves the `broker` role out of the copy.
+
+### Deploy
+
+- `hale deploy render <seed|plan> --backend compose|kubernetes [--env <name>] [--out <dir>]` writes a program's own placement as a compose file or Kubernetes Deployments and Services, never deploying. Probes become a healthcheck or liveness and readiness probes, a Scrape becomes a published port and `prometheus.io/*` annotations, a fleet plan's instances and routes become services, replicas and `depends_on`, and `[environments.<name>]` gains `backend` and an `env` table. A program that declares no probes gets none, and no autoscaler is rendered.
+
 ## v0.26.0 — the habitat, graft, and the last shapes a contract needs (2026-10-19)
 
 The habitat arrives: an organism is now grafted into a local habitat that owns its infrastructure, and the record lives in memory. Surfaces gain the last shapes a real contract needs, a Float's text reads back exactly, and logs are records by default.
