@@ -1483,6 +1483,8 @@ record's.
 |---|---|---|
 | `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain, and its `name`, which its broker account carries |
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
+| `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given) and who; a later attach of the name states it anew |
+| `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
 | `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
@@ -1584,6 +1586,46 @@ record's.
 | `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
 | `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
 | `gate.observed` | record | a gate's check run at the candidate as the forge reported it: `gate`, `sha`, `conclusion`, `url`, `forge`, `run`; written only by the host's forge sync, once per run (GH #1161) |
+
+### A codebase attached with no application
+
+`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--branch <name>] [--as <who>]`
+writes `codebase.attached` (above); `detach <name>` writes
+`codebase.detached`; `list` (the default) reads the record's attached
+codebases. No application row is written and no broker account exists: a
+codebase is a repository the organism works on, not a heart it senses.
+The name is lowercase letters, digits, `-` and `_`. `build` and `test`
+are opaque strings, run with `sh` in a worktree and nowhere else; empty
+means no step. A path `--repo` is stored absolute.
+
+A leg working a codebase (`legs::CodebaseWork`, `dna/core/legs/codebase.hl`)
+takes its worktree from the codebase's repository, never the organism's
+own: a scratch clone at `branch`, on a new branch
+`leg/<codebase>/<task>`. Its verify step is the codebase's `build` and
+then its `test` in that worktree (the first to fail refuses, with its
+output). It proposes by committing, pushing the branch to the codebase's
+repository (`origin`) and opening a review through its `ForgeHand`:
+`GhForge { repo, base }` names the codebase's repository and default
+branch (`gh pr create --repo --base --head`), and `ForgeBridge` puts the
+core's `Forge` behind the hand, so a fixture runs it over `MemForge`.
+The forge decides; a leg never merges.
+
+A task names a codebase with `hale dna task create --to position:<name>
+--codebase <name> <outcome…>` (the codebase must be attached, and the ask
+routed to a position): the intent row, the `IntentOffer` and the `Intent`
+carry `codebase`, and `ask-position`'s admission inputs record it. The
+Work's hat then carries `codebase`, the attached row as a JSON object
+(`name`, `repo`, `build`, `test`, `branch`; absent for a task naming none,
+so such a hat's digest is unchanged). A leg's `hand` and `submit
+--from-worktree` on a hat that names one work a clone of the codebase's
+repository on `leg/<codebase>/<task>`, not the project's checkout: the
+`check` and `test` hands run the codebase's `build` and `test`, the
+validators are the two commands, and `submit` pushes the branch there,
+opens the review through the leg's forge hand and files the outcome as
+`result_ref: review:<ref>`. The owner settles such an outcome done on that
+reference and makes no Mutation of its own genome. The language hands (Go)
+that make the commands typed are a later item.
+
 
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must

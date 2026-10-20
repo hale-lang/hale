@@ -1479,7 +1479,11 @@ locus Dna {
             r.result_ref = "";
             r.narrative = overrun + " (the leg: " + s.narrative + ")";
         }
-        if len(overrun) == 0 && adm.value.request.output_contract == "Patch" && s.disposition == "done" {
+        // a leg's change in an attached codebase is reviewed at that codebase's
+        // forge by the leg's hand; the outcome names the review, and the
+        // organism's own genome is not touched
+        let in_codebase = std::str::starts_with(s.result_ref, "review:") && task_codebase(self.journal, adm.value.request.task_id).present;
+        if len(overrun) == 0 && !in_codebase && adm.value.request.output_contract == "Patch" && s.disposition == "done" {
             let mut m = self.mutation_of_attempt(s.attempt_id);
             let mut interrupted = "interrupted before its candidate was prepared (the owner restarted)";
             if len(m) == 0 {
@@ -1692,7 +1696,7 @@ locus Dna {
         // Intent through the Board asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind, position: o.position });
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind, position: o.position, codebase: o.codebase });
     }
     // An uncertain exact append may have landed. Only its exact slot and
     // bytes establish that outcome; absence never becomes success.
@@ -2403,6 +2407,7 @@ locus Dna {
         b.string_field("from", i.from);
         b.string_field("kind", if i.kind == "judgment" { "judgment" } else if len(i.position) > 0 { "position" } else if planned { p.kind } else { "app" });
         if len(i.position) > 0 { b.string_field("position", i.position); }
+        if len(i.codebase) > 0 { b.string_field("codebase", i.codebase); }
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);

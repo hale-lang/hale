@@ -97,6 +97,7 @@ locus ToolBench {
         api: String = ""; // the head's origin, for the infrastructure reads
         head: Head = Head { };
         attached: Bool = false;
+        codebase: dna::Codebase = dna::Codebase { }; // set for a Work made in an attached codebase: its build and test are the check and test hands
     }
     // A read of the record through the head's API (the infrastructure
     // family): the head answers what the leg's person may read.
@@ -142,6 +143,13 @@ locus ToolBench {
             if !std::io::fs::file_exists(at) || len(std::io::fs::read_file(at) or "") != len(text) { return HandResult { error: "`" + target + "` could not be written" }; }
             return HandResult { ok: true, output: "wrote " + target };
         }
+        if self.codebase.present {
+            // the codebase's own commands, whatever the path
+            let verify = CodebaseWork { codebase: self.codebase, hands: hands };
+            if name == "check" { return verify.run_in(self.worktree, self.codebase.build); }
+            if name == "test" { return verify.run_in(self.worktree, self.codebase.test); }
+            if name == "fmt" { return HandResult { ok: true, output: "the codebase has no formatter hand" }; }
+        }
         if name == "check" { return hands.toolchain.check(at); }
         if name == "test" { return hands.toolchain.test(at); }
         if name == "fmt" { return hands.toolchain.fmt_check(at); }
@@ -150,6 +158,10 @@ locus ToolBench {
     // The validators' refusals over every seed the change touched, "" when
     // all pass (or nothing was touched: the answer is then judged as it is).
     fn validate(hands: Hands, validators: String) -> String {
+        if self.codebase.present {
+            let verified = CodebaseWork { codebase: self.codebase, hands: hands }.verify(self.worktree);
+            return if verified.ok { "" } else { verified.error + "\n" };
+        }
         let seeds = self.touched_seeds();
         let mut out = "";
         let mut rest = seeds;
@@ -232,15 +244,22 @@ fn session_dir(repo: String, attempt: String) -> String {
     return repo + "/.hale/dna/work/" + std::str::replace(attempt, "/", "_");
 }
 
-fn session_tree(repo: String, attempt: String, make: Bool) -> SessionTree {
+// A Work that names an attached codebase is made in a clone of the
+// codebase's repository, on the leg's branch of its default branch; any
+// other in a clone of `repo`, the project's own.
+fn session_tree(repo: String, attempt: String, make: Bool, cb: dna::Codebase, task: String) -> SessionTree {
     let dir = session_dir(repo, attempt);
     if std::io::fs::file_exists(dir + ".base") {
         return SessionTree { ok: true, path: dir, base: dna::trim_nl(std::io::fs::read_file(dir + ".base") or "") };
     }
     if !make { return SessionTree { error: "no worktree is kept for `" + attempt + "`: a hand that works on files makes it" }; }
     let up = dna::run_tool("mkdir\n-p\n" + repo + "/.hale/dna/work");
-    let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n" + repo + "\n" + dir);
+    let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n" + (if cb.present { "--branch\n" + cb.branch + "\n" + cb.repo } else { repo }) + "\n" + dir);
     if cloned.code != 0 { return SessionTree { error: "the worktree could not be made: " + dna::trim_nl(cloned.stderr) }; }
+    if cb.present {
+        let on = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n-b\n" + codebase_branch(cb, task));
+        if on.code != 0 { return SessionTree { error: "the codebase's branch could not be made: " + dna::trim_nl(on.stderr) }; }
+    }
     let base = dna::trim_nl(dna::run_tool("git\n-C\n" + dir + "\nrev-parse\nHEAD").stdout);
     std::io::fs::write_file(dir + ".base", base) or discard;
     return SessionTree { ok: true, path: dir, base: base };

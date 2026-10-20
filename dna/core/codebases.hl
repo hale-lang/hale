@@ -1,0 +1,110 @@
+// dna/core/codebases.hl — a foreign codebase the organism works on
+// (phase 3, heart-protocol item 4: a codebase comes first).
+//
+// A codebase is attached with a repository, a build command and a test
+// command, and no application: the record states it with
+// `codebase.attached {name, repo, build, test, branch, by}` and revokes it
+// with `codebase.detached {name, by}`. The commands are opaque strings,
+// run in a leg's worktree; the repository is where a leg's work is
+// branched from and where its reviews open. A later attach of a name
+// states it anew (the last row wins); a detach removes it.
+
+// The name is a token: a leg's branch and the verb's argument carry it.
+fn codebase_name_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 64 { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+type Codebase {
+    present: Bool = false;
+    name: String = "";
+    repo: String = "";
+    build: String = "";
+    test: String = "";
+    branch: String = "main"; // the default branch a leg branches from and proposes against
+    by: String = "";
+}
+
+// The `codebase.attached` row's body.
+fn codebase_body(c: Codebase) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", c.name);
+    b.string_field("repo", c.repo);
+    b.string_field("build", c.build);
+    b.string_field("test", c.test);
+    b.string_field("branch", c.branch);
+    b.string_field("by", c.by);
+    b.end_object();
+    return b.result();
+}
+
+// The record's codebase named `name`: its last attach, unless a detach
+// followed it.
+@bounded_by(j)
+fn codebase_of(j: Journal, name: String) -> Codebase {
+    let mut out = Codebase { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "codebase.attached" && std::json::find_string_field(e.body, "name") == name {
+            let branch = std::json::find_string_field(e.body, "branch");
+            out = Codebase {
+                present: true, name: name,
+                repo: std::json::find_string_field(e.body, "repo"),
+                build: std::json::find_string_field(e.body, "build"),
+                test: std::json::find_string_field(e.body, "test"),
+                branch: if len(branch) > 0 { branch } else { "main" },
+                by: std::json::find_string_field(e.body, "by")
+            };
+        }
+        if e.kind == "codebase.detached" && std::json::find_string_field(e.body, "name") == name { out = Codebase { }; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Every attached codebase's name, one per line, in the order first attached.
+@bounded_by(j)
+fn codebase_names(j: Journal) -> String {
+    let mut seen = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "codebase.attached" {
+            let n = std::json::find_string_field(e.body, "name");
+            if !std::str::contains(seen, "\n" + n + "\n") { seen = seen + n + "\n"; }
+        }
+        i = i + 1;
+    }
+    let mut out = "";
+    let mut rest = seen[1..len(seen)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let n = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if codebase_of(j, n).present { out = out + n + "\n"; }
+    }
+    return out;
+}
+
+// The attached codebases as `hale dna codebase list` prints them, one line each.
+@bounded_by(j)
+fn codebase_listing(j: Journal) -> String {
+    let mut out = "";
+    let mut rest = codebase_names(j);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let c = codebase_of(j, rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: " + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: " + (if len(c.test) > 0 { c.test } else { "-" }) + "\n";
+    }
+    return out;
+}

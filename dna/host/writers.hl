@@ -598,12 +598,17 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
 // `workflow.admitted`) and the fact `intent` keep their names. The verb
 // writes the row and never publishes (GH #986): the host beside the
 // organism relays it onto the nerves.
-fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, judgment: Bool, size: String, memory: dna::Memory) -> Answer {
+fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String, judgment: Bool, size: String, codebase: String, memory: dna::Memory) -> Answer {
     if len(outcome) == 0 { return fail("task create: say what should happen — `hale dna task create \"<outcome>\"`"); }
     if len(size) > 0 && !dna::model_size_known(size) { return fail("task create: --size is one of " + dna::MODEL_SIZES); }
     let s0 = sync_record(root, memory);
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
+    // a change made in an attached codebase is routed to a position's leg
+    if len(codebase) > 0 {
+        if !std::str::starts_with(to, "position:") || judgment { return fail("task create: --codebase names the codebase a change is made in, and needs --to position:<name>"); }
+        if !dna::codebase_of(dna::RecordJournal { repo: root, author: "host" }, codebase).present { return fail("task create: no codebase `" + codebase + "` is attached (`hale dna codebase list`)"); }
+    }
     let p = open_projection(root, ".", "", memory);
     let before = p.rows();
     let intent_id = "i" + hex(millis());
@@ -633,6 +638,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     b.string_field("from", who);
     b.string_field("to", owner);
     if len(routed) > 0 { b.string_field("position", routed); }
+    if len(codebase) > 0 { b.string_field("codebase", codebase); }
     // GH #946: an assessment, not a change — admitted as a judgment a leg performs
     if judgment { b.string_field("kind", "judgment"); }
     b.end_object();

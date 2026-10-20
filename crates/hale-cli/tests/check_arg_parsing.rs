@@ -251,7 +251,7 @@ fn every_subcommand_answers_help() {
 const DNA_VERBS: &[&str] = &[
     "init", "new", "upgrade", "memory", "nerves", "senses", "run", "dev",
     "plan-of", "status", "task", "retire", "effect", "show", "route", "fill",
-    "history", "body", "secret", "secrets", "application", "schedule",
+    "history", "body", "secret", "secrets", "application", "codebase", "schedule",
     "receipt", "connect", "practice", "disconnect", "handoff", "profile",
     "sync", "candidates", "ledger", "board", "report", "pressure", "concern",
     "github", "fleet", "ui", "models", "work", "definitions", "deploy",

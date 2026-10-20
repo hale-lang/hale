@@ -224,6 +224,7 @@ locus Leg {
         catalog: PerformerCatalog = PerformerCatalog { };
         hands: Hands = Hands { };
         made_sha: String = ""; // `submit --from-worktree`: the commit it made
+        made_review: String = ""; // and, for a Work in an attached codebase, the review it opened there
         made_patch: String = ""; // and its patch
         head: Head = Head { };
         a: Args = Args { };
@@ -407,9 +408,10 @@ locus Leg {
         let hat = std::json::find_field_raw(reply.body, "data");
         let files = dna::word_in(name, "read edit check test fmt patch");
         let repo = if files { dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout) } else { "" };
-        let tree = if files { session_tree(repo, attempt, true) } else { SessionTree { ok: true } };
+        let cb = hat_codebase(hat);
+        let tree = if files { session_tree(repo, attempt, true, cb, std::json::find_string_field(hat, "task_id")) } else { SessionTree { ok: true } };
         if !tree.ok { return self.fail("hand", tree.error); }
-        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api };
+        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api, codebase: cb };
         let done = bench.call(self.hands, name, args);
         let b = std::json::Builder { };
         b.begin_object();
@@ -429,12 +431,13 @@ locus Leg {
     // "" and the commit and patch in `sha` / `patch`, or why not.
     fn from_worktree(attempt: String) -> String {
         let repo = dna::trim_nl(dna::run_tool("git\nrev-parse\n--show-toplevel").stdout);
-        let tree = session_tree(repo, attempt, false);
+        let tree = session_tree(repo, attempt, false, dna::Codebase { }, "");
         if !tree.ok { return tree.error; }
         let reply = self.head.context(work_of_attempt(attempt));
         if !reply.ok { return reply.error; }
         let hat = std::json::find_field_raw(reply.body, "data");
-        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api };
+        let cb = hat_codebase(hat);
+        let bench = ToolBench { worktree: tree.path, base: tree.base, grant: std::json::find_string_field(hat, "tool_grant"), api: self.head.api, codebase: cb };
         let refused = bench.validate(self.hands, std::json::find_string_field(hat, "validators"));
         if len(refused) > 0 { return "the validators refused the change:\n" + refused; }
         let soft = dna::run_tool("git\n-C\n" + tree.path + "\nreset\n-q\n--soft\n" + tree.base);
@@ -446,6 +449,16 @@ locus Leg {
         if !patch.ok { return "the commit's patch could not be read: " + patch.error; }
         self.made_sha = sha.output;
         self.made_patch = patch.output;
+        if cb.present {
+            // the leg's branch goes to the codebase's repository and the
+            // review opens there, through the forge hand; the outcome names it
+            let branch = codebase_branch(cb, std::json::find_string_field(hat, "task_id"));
+            let pushed = self.hands.git.push(tree.path, branch);
+            if !pushed.ok { return "the branch could not be pushed to the codebase: " + pushed.error; }
+            let opened = self.hands.forge.open_review(tree.path, first_line(flag_or(self.a, "--result", "the change")), std::json::find_string_field(hat, "objective"));
+            if !opened.ok { return "the review could not be opened at the codebase's forge: " + opened.error; }
+            self.made_review = opened.output;
+        }
         return "";
     }
     fn submit() -> Int {
@@ -462,7 +475,7 @@ locus Leg {
         let calls = if len(evidence_file) > 0 { std::io::fs::read_file(evidence_file) or "[]" } else { "[]" };
         let request = flag_or(self.a, "--request-id", "work-submit:" + attempt + ":" + to_string(token));
         let receipts = if worked { patch_and_tools(self.made_patch, "") } else { self.receipts_json() };
-        let result_ref = if worked { "commit:" + self.made_sha } else { flag(self.a, "--result-ref") };
+        let result_ref = if worked && len(self.made_review) > 0 { "review:" + self.made_review } else if worked { "commit:" + self.made_sha } else { flag(self.a, "--result-ref") };
         let code = self.done("submit", request, self.head.outcome(request, attempt, self.holder, token, flag_or(self.a, "--effect", self.catalog.person.effect_class()), flag_or(self.a, "--disposition", "done"), result, result_ref, flag(self.a, "--narrative"), calls, receipts,
             flag(self.a, "--hat-digest"), flag(self.a, "--hat-head"), int_flag(self.a, "--hat-watermark", -1), flag(self.a, "--prompt-digest"), flag_or(self.a, "--renderer", RENDERER_VERSION)));
         // the change is in the receipt now: the kept worktree goes

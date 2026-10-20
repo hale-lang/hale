@@ -70,7 +70,7 @@ fn main() {
     } else if verb == "task" {
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
         // the outcome is every word after the subverb (asking is one kind of task)
-        if host::word(a, 0) == "create" { ans = host::task_create_verb(root, host::join_words(host::drop_first_word(a.words)), host::flag(a, "--to"), host::has_flag(a, "--no-wait"), host::flag(a, "--as"), host::has_flag(a, "--judgment"), host::flag(a, "--size"), memory); }
+        if host::word(a, 0) == "create" { ans = host::task_create_verb(root, host::join_words(host::drop_first_word(a.words)), host::flag(a, "--to"), host::has_flag(a, "--no-wait"), host::flag(a, "--as"), host::has_flag(a, "--judgment"), host::flag(a, "--size"), host::flag(a, "--codebase"), memory); }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         else if host::word(a, 0) == "done" { ans = host::task_done_verb(root, seed, host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--note"), host::flag(a, "--evidence"), host::flag(a, "--exception"), host::flag(a, "--authorized-by"), memory); }
         else if host::word(a, 0) == "reassign" { ans = host::task_reassign_verb(root, seed, host::word(a, 1), host::flag(a, "--to"), host::flag(a, "--as"), memory); }
@@ -125,6 +125,9 @@ fn main() {
     } else if verb == "senses-up" {
         // GH #988: the senses' store, compose's `senses` service brought up
         ans = host::senses_up_verb(root, host::has_flag(a, "--derive"));
+    } else if verb == "codebase" {
+        // phase 3: a foreign codebase attached, no application row
+        ans = host::codebase_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--repo"), host::flag(a, "--build"), host::flag(a, "--test"), host::flag(a, "--branch"), host::flag(a, "--as"));
     } else if verb == "signers" {
         // GH #1590: the people the record admits signed rows from
         ans = host::signers_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--key"), host::flag(a, "--as"));

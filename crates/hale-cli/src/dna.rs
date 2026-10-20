@@ -1077,6 +1077,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
         Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
         // GH #1590: the people the record admits signed rows from
+        // phase 3: a foreign codebase attached with a build and a test command
+        Some("codebase") => host_exec("codebase", Path::new("."), &args[1..]),
         Some("signers") => host_exec("signers", Path::new("."), &args[1..]),
         // #652: requests kept while the service cannot be reached
         Some("board") => {
@@ -1342,9 +1344,12 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
+    eprintln!("       hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--branch <name>] | detach <name>]");
+    eprintln!("                                    a foreign codebase attached with no application (`codebase.attached` in the record): a");
+    eprintln!("                                    leg works a branch of its repository, verifies with the two commands, and its review opens there");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--codebase <name>] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes, in the attached --codebase when one is named): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");

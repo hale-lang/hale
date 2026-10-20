@@ -88,6 +88,11 @@ const SLOW_UNCERTAIN_WORK: String = "// an uncertain backend that answers after 
 const SLOW_FREE_WORK: String = "// an effect-free program that answers after its lease, for the fixture\nimport \"vendor/dna/legs\" as legs;\nlocus Slow {\n    fn kind() -> String { return \"deterministic\"; }\n    fn effect_class() -> String { return \"effect_free\"; }\n    fn takes(performer_kind: String) -> Bool { return performer_kind == \"agent\"; }\n    @unbounded\n    fn perform(brief: legs::Brief, hands: legs::Hands) -> legs::Performance {\n        let until = std::time::monotonic_ns() + 2500000000;\n        while std::time::monotonic_ns() < until { std::time::sleep(100ms); }\n        return legs::Performance { disposition: \"done\", result: \"assessment: slowly\", prompt_digest: legs::prompt_digest(brief.rendered), renderer: legs::RENDERER_VERSION };\n    }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: Slow { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 const UNSEATED_WORK: String = "// a person with no effect class, for the fixture\nimport \"vendor/dna/legs\" as legs;\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { }, deterministic: legs::NoDeterministic { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { }; }\n";
 
+// The leg's hands over a forge that writes the review it was asked to open
+// to a file, for a Work made in an attached codebase: the leg is its own
+// process, so the fixture reads what the forge was asked from there.
+const CODEBASE_WORK: String = "// a leg whose forge records the review it opens, for the fixture\nimport \"vendor/dna\" as dna;\nimport \"vendor/dna/legs\" as legs;\nlocus RecordingForge {\n    fn kind() -> String { return \"recording\"; }\n    fn present() -> Bool { return true; }\n    fn name() -> String { return \"recording forge\"; }\n    fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {\n        std::io::fs::write_file(\".hale/forge-review.txt\", candidate + \"\\n\" + title + \"\\n\" + body) or discard;\n        return dna::ReviewRef { present: true, ref: \"#1\" };\n    }\n    fn verdicts(review: String) -> String { return \"\"; }\n    fn checks(review: String, sha: String) -> String { return \"\"; }\n    fn comment(review: String, text: String) -> Bool { return false; }\n    fn close_review(review: String, why: String) -> Bool { return false; }\n}\nfn performers() -> legs::PerformerCatalog {\n    return legs::PerformerCatalog { person: legs::Person { effect: \"idempotent\" }, deterministic: legs::NoDeterministic { }, model: legs::NoModel { } };\n}\nfn hands() -> legs::Hands { return legs::Hands { forge: legs::ForgeBridge { forge: RecordingForge { } } }; }\n";
+
 locus App {
     params {
         app: String = "";
@@ -783,6 +788,84 @@ locus App {
         let asked = heart.ask("/x", "");
         std::test::assert(!asked.ok && std::str::contains(asked.error, "#987"), "the heart refuses, naming #987");
     }
+    // A change made in an attached codebase (phase 3): the real verbs
+    // attach it and file the task naming it; a person's session works the
+    // codebase's repository, not the project's, verifies with the codebase's
+    // own commands, and the branch lands in its repository with the review
+    // opened there; the organism's genome is never asked for a Mutation.
+    fn codebase() {
+        let root = dna::scratch_root("legs-codebase");
+        let bare = root + "/foreign.git";
+        let made = in_dir(root, "sh\n-c\nmkdir seed && cd seed && git init -q -b trunk && git config user.name f && git config user.email f@f && printf 'echo built > built.txt\\n' > build.sh && printf 'test -f built.txt && grep -q leg greeting.txt\\n' > test.sh && printf 'hello\\n' > greeting.txt && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed foreign.git");
+        std::test::assert_eq_int(made.code, 0, "the foreign repository is made: " + made.stderr);
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", CODEBASE_WORK) or discard;
+        let hale = toolchain();
+        let none = in_dir(self.app, hale + "\ndna\ncodebase\nlist");
+        std::test::assert(none.code == 0 && std::str::contains(none.stdout, "none attached"), "no codebase is attached at first: " + none.stdout + none.stderr);
+        let attached = in_dir(self.app, hale + "\ndna\ncodebase\nattach\nsvc\n--repo\n" + bare + "\n--build\nsh build.sh\n--test\nsh test.sh\n--branch\ntrunk\n--as\nriley");
+        std::test::assert_eq_int(attached.code, 0, "codebase attach: " + attached.stdout + attached.stderr);
+        let listed = in_dir(self.app, hale + "\ndna\ncodebase\nlist");
+        std::test::assert(listed.code == 0 && std::str::contains(listed.stdout, "svc  " + bare + " (trunk)  build: sh build.sh  test: sh test.sh"), "and lists it: " + listed.stdout + listed.stderr);
+        std::test::assert(self.has_row("codebase.attached", "codebase:svc") && !self.has_row("application.attached", "codebase:svc"), "a codebase row, and no application row");
+        // an ask naming a codebase that is not attached, or no position, is refused
+        let unknown = in_dir(self.app, hale + "\ndna\ntask\ncreate\n--no-wait\n--to\nposition:api/codebase\n--codebase\nnope\nmake it so");
+        std::test::assert(unknown.code != 0 && std::str::contains(unknown.stdout + unknown.stderr, "no codebase `nope` is attached"), "an unattached codebase is refused: " + unknown.stdout + unknown.stderr);
+        if !self.has_row("graph.node", "position:api/codebase") {
+            std::test::assert(self.journal.append(self.journal.revision(), "graph.node", "position:api/codebase", "{}").ok, "the graph states a position");
+        }
+        let asked = in_dir(self.app, hale + "\ndna\ntask\ncreate\n--no-wait\n--to\nposition:api/codebase\n--codebase\nsvc\nmake the greeting mention the leg");
+        std::test::assert_eq_int(asked.code, 0, "task create --codebase: " + asked.stdout + asked.stderr);
+        let moved = self.journal.refresh();
+        let mut intent = dna::Event { };
+        let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == "intent.requested" && std::json::find_string_field(e.body, "codebase") == "svc" { intent = e; } i = i + 1; }
+        std::test::assert(len(intent.entity) > 0, "the ask is a row naming the codebase");
+        // the organism admits it as the host relays it
+        self.core.on_intent(dna::IntentOffer { intent_id: intent.entity, outcome: std::json::find_string_field(intent.body, "outcome"), from: "riley", position: std::json::find_string_field(intent.body, "position"), codebase: std::json::find_string_field(intent.body, "codebase") });
+        let mut task = "";
+        let mut tries = 0;
+        while tries < 400 * dna::wait_scale() && len(task) == 0 {
+            let mut k = 0;
+            while k < self.journal.revision() { let e = self.journal.read(k); if e.kind == "workflow.admitted" && dna::native_json_string(e.body, "request") == intent.entity { task = e.entity; } k = k + 1; }
+            if len(task) == 0 { std::time::sleep(25ms); tries = tries + 1; }
+        }
+        std::test::assert(len(task) > 0, "the ask is admitted");
+        let attempt = dna::attempt_id_of(task + "/wf1/s0/w", 0);
+        self.wait_row("attempt.admitted", attempt, "the engine admits the Work's attempt");
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and asks the leg relay for it");
+        let claimed = self.work("next\n--as\nposition:api/codebase");
+        std::test::assert(self.state_of(claimed) == "claimed" && std::json::find_string_field(self.attempt_of(claimed), "attempt_id") == attempt, "the position's holder claims it (expected " + attempt + "): " + claimed);
+        let hat = std::json::find_field_raw(self.work("brief\n--attempt\n" + attempt), "hat");
+        let named = std::json::find_field_raw(hat, "codebase");
+        std::test::assert(std::json::find_string_field(named, "name") == "svc" && std::json::find_string_field(named, "repo") == bare && std::json::find_string_field(named, "test") == "sh test.sh", "the hat names the codebase: " + hat);
+        // the session works the codebase's checkout, not the project's
+        let read = self.work("hand\n--attempt\n" + attempt + "\n--name\nread\n--args\n{\"path\": \"greeting.txt\"}");
+        std::test::assert_eq_str(std::json::find_string_field(read, "output"), "hello\n", "the codebase's file is read: " + read);
+        let red = self.work_rc("hand\n--attempt\n" + attempt + "\n--name\ntest\n--args\n{\"path\": \".\"}", 1);
+        std::test::assert(std::str::contains(red, "exited"), "its test command refuses the unchanged tree: " + red);
+        let wrote = self.work("hand\n--attempt\n" + attempt + "\n--name\nedit\n--args\n{\"path\": \"greeting.txt\", \"text\": \"hello, leg\\n\"}");
+        std::test::assert_eq_str(std::json::find_string_field(wrote, "state"), "ok", "and the edit is made: " + wrote);
+        let handed = self.work("submit\n--as\nposition:api/codebase\n--attempt\n" + attempt + "\n--token\n" + self.token_of(claimed) + "\n--from-worktree\n--result\ngreet the leg");
+        std::test::assert_eq_str(self.state_of(handed), "requested", "the session hands the change back: " + handed);
+        let branch = "leg/svc/" + task;
+        let there = in_dir(root, "sh\n-c\ngit --git-dir foreign.git show " + branch + ":greeting.txt && git --git-dir foreign.git show trunk:greeting.txt");
+        std::test::assert(there.code == 0 && there.stdout == "hello, leg\nhello\n", "the branch is in the codebase's repository, its default branch untouched: " + there.stdout + there.stderr);
+        let review = std::io::fs::read_file(self.app + "/.hale/forge-review.txt") or "";
+        std::test::assert(std::str::starts_with(review, branch + "\ngreet the leg\nrepository: " + bare + "\n"), "the review is opened for that branch on that repository: " + review);
+        std::test::assert_eq_int(relay_once(self.app), 1, "relayed");
+        self.wait_row("attempt.outcome", attempt, "the owner settles the attempt");
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_requested", attempt), "review:#1"), "the outcome names the review: " + self.row_body("attempt.outcome_requested", attempt));
+        let mut mutated = false;
+        let mut m = 0;
+        while m < self.journal.revision() { let e = self.journal.read(m); if e.kind == "mutation.requested" && std::json::find_string_field(e.body, "task_id") == task { mutated = true; } m = m + 1; }
+        std::test::assert(!mutated && std::str::contains(self.row_body("attempt.outcome", attempt), "done"), "settled done, with no Mutation of the organism's own genome: " + self.row_body("attempt.outcome", attempt));
+        let gone = in_dir(self.app, hale + "\ndna\ncodebase\ndetach\nsvc\n--as\nriley");
+        std::test::assert_eq_int(gone.code, 0, "codebase detach: " + gone.stdout + gone.stderr);
+        let after = in_dir(self.app, hale + "\ndna\ncodebase\nlist");
+        std::test::assert(after.code == 0 && std::str::contains(after.stdout, "none attached"), "and nothing is attached: " + after.stdout);
+        std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
+        dna::scratch_done(root);
+    }
     // GH #1590: a record is born in memory with its Ledger, so there is no
     // adoption to ask for: the second
     // pass runs on the same record, the organism started again
@@ -807,6 +890,7 @@ locus App {
         self.worker();
         self.effects();
         self.hands();
+        self.codebase();
         if self.with_memory {
             self.adopt();
             self.pass("adopted", "2");

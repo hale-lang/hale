@@ -11190,6 +11190,16 @@ dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/codebase_attach_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___forge__MemForge	on main
+dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core__legs___codebase__CodebaseWork	on main
+dynamic	__lib_dna__core__legs___hands__ForgeBridge	on main
+dynamic	__lib_dna__core__legs___hands__Hands	on main
+
 == dna/tests/command_relay_trust_test.hl
 row	App@main1	App	main	default
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main	in dna/organization_runtime
@@ -12071,7 +12081,7 @@ row	App@literal1	App	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
-shared	dynamic	sites in core/legs #4c4f9d62
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
@@ -14054,7 +14064,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
-shared	dynamic	sites in core/legs #4c4f9d62
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
@@ -19541,9 +19551,10 @@ dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
-== shared sites in core/legs #4c4f9d62
+== shared sites in core/legs #df5504df
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
+dynamic	__lib_dna__core__legs___codebase__CodebaseWork	on main
 dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on main|unknown (no instance)
 
 == shared sites in core/pond/pq #28427cdd
