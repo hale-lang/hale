@@ -373,19 +373,22 @@ fn __api_client_param_text(raw: String) -> String {
 }
 
 /// What `METHOD template` makes of the request `payload` (spec/api.md §
-/// Calling a surface): each field the template names (`{itemId}`) fills
-/// it; for `GET`, `HEAD` and `DELETE` every other field is the query; for
-/// another method, when the template names a field, the field `body` is
-/// the body and every other field the query, and when it names none the
-/// request is the body. A `null` field is left out.
+/// Calling a surface). The template is the path, its parameters in braces
+/// (`{itemId}`), then `?` and the query parameters' names joined by `&`
+/// when the operation has any (`/search?limit&offset`). Each field the
+/// path names fills it; for `GET`, `HEAD` and `DELETE` every other field is
+/// the query; for another method, when the template names a parameter,
+/// the field `body` is the body and every other field the query, and when
+/// it names none the request is the body. A `null` field is left out.
 @bounded_by(payload)
 fn __api_client_target(method: String, template: String, payload: String) -> __StdApiClientTarget {
     let queried = method == "GET" || method == "HEAD" || method == "DELETE";
-    let named = std::str::contains(template, "{");
+    let mark = std::str::index_of(template, "?");
+    let named = std::str::contains(template, "{") || mark >= 0;
+    let mut path = if mark >= 0 { template[0..mark] } else { template };
     if !queried && !named {
-        return __StdApiClientTarget { path: template, body: payload };
+        return __StdApiClientTarget { path: path, body: payload };
     }
-    let mut path = template;
     let mut query = "";
     let mut body = "";
     let mut it = std::json::object_first(payload);

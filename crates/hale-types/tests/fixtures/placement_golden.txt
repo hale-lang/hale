@@ -694,7 +694,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
-== crates/hale-cli/tests/api_client_binding.rs#292b6815
+== crates/hale-cli/tests/api_client_binding.rs#da1c8079
 root	App	the entry
 row	App@literal1	App	main	default
 -- App@literal1.shelf	__ApiClient_Shelf

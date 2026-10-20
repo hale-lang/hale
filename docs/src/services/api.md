@@ -1177,7 +1177,8 @@ type ShelfNewItem {
 `from openapi "…"` says where the surface came from. Each row is named
 after the operation's `operationId` (or its method and path when it has
 none, or the MCP tool's name), in snake case, and `wire:` keeps the name
-the service itself uses. The records are the document's schemas: a
+the service itself uses, with an operation's query parameters named after a
+`?` (`"GET /items?limit"`) so a client knows which fields are the query. The records are the document's schemas: a
 property the schema does not require is a presence pair, a JSON key that is
 not a Hale name keeps its key in a `json:"…"` tag, and anything the codec
 cannot carry (a `oneOf`, an array with no `maxItems`, a free-form object) is

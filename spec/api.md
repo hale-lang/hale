@@ -2725,7 +2725,7 @@ the generated forms list it like any surface, and nothing serves it.
 api Shelf from openapi "../shelf.json" {
     rpc create_item(ShelfNewItem) -> ShelfItem wire: "POST /items";
     // response: std::json::Value, an array with no `maxItems`, and a record holds a bounded list only
-    rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: "GET /items";
+    rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: "GET /items?limit";
 }
 
 type ShelfNewItem {
@@ -2742,7 +2742,8 @@ type ShelfNewItem {
 [ROLE, …]];`, names its member (`name`, no locus), its request (the
 parentheses may be empty) and its response (none without the arrow), and
 `wire:` is the operation as its endpoint names it: an OpenAPI operation's
-method and path (`"GET /items/{itemId}"`), an MCP tool's name
+method and path (`"GET /items/{itemId}"`, its query parameters' names
+after a `?`), an MCP tool's name
 (`"get-weather"`). A signature row has no error column. Its types are
 checked where they are written (an unknown name is refused there), and
 law 5 holds them to the JSON codec, with one allowance: a signature row's
@@ -2765,7 +2766,9 @@ as one when it serves one by `GET`, and as an MCP endpoint otherwise
 - **An OpenAPI operation** (OpenAPI 3; Swagger 2.0 and a YAML document are
   refused naming why) is a row named by its `operationId` in snake case
   (`listItems` is `list_items`), else by its method and path
-  (`get_items_item_id`); `wire:` is `"METHOD /path"`. Its request is the
+  (`get_items_item_id`); `wire:` is `"METHOD /path"`, followed by `?` and
+  its query parameters' names joined by `&` when it has any (`"GET
+  /items?limit"`), so a client tells the query from the body. Its request is the
   JSON body's schema when the operation has no path or query parameter, a
   record of its parameters when it has no body, and a record of both,
   the body as the field `body`, when it has both; a header or cookie
@@ -2860,12 +2863,13 @@ by its path under the alias (`lib::Svc`), as at a serve site. The
   Hale surface is `POST <base>/call/<member>` under the row's member
   digest in `Hale-Surface-Digest`, as the generated clients call it (§ The
   clients). A row of an imported OpenAPI surface is its operation, `wire:
-  "METHOD /path/{param}"`: each field of the request the path names
-  (by its JSON key) fills it; for `GET`, `HEAD` and `DELETE` every other
-  field is the query; for another method the request is the body when the
-  path names no field, and otherwise the field `body` is the body and
-  every other field the query; a `null` field, and an optional field left
-  out, is no query parameter.
+  "METHOD /path/{param}?query&names"`: each field of the request the path
+  names (by its JSON key) fills it; for `GET`, `HEAD` and `DELETE` every
+  other field is the query; for another method the request is the body
+  when the wire names no parameter (neither in the path nor after `?`),
+  and otherwise the field `body` is the body and every other field the
+  query, the layout `hale api import` gives such a request; a `null`
+  field, and an optional field left out, is no query parameter.
 - `mcp::Client { url, principals }`: `url` is the MCP endpoint
   (`http://host:port/mcp`), spoken over the Streamable HTTP transport as
   `hale api import` speaks it. The client opens the session at its first
@@ -2880,7 +2884,9 @@ by its path under the alias (`lib::Svc`), as at a serve site. The
   that call, and the next opens another.
 
 A surface imported from MCP is not called over `http::Client`, nor one
-imported from OpenAPI over `mcp::Client`. No call is retried, a row that
+imported from OpenAPI over `mcp::Client`, nor, over `mcp::Client`, a Hale
+surface with a row whose request is no JSON object (an enum): an MCP tool's
+input is an object, and `mcp::Rpc` serves such a row as no tool. No call is retried, a row that
 streams is not called, and the client holds no connection past a call.
 
 **Principals.** `principals:` is who the client is to the system it calls,
@@ -2959,7 +2965,10 @@ HTTP operation \`GET /items/{itemId}\`; a surface imported from OpenAPI is
 called over \`http::Client\`", "the transport is a literal of
 \`http::Client { base, principals }\` or \`mcp::Client { url, principals }\`",
 "\`api::client(…)\` builds an \`api::Client\`; declare \`NAME:
-api::Client\`").
+api::Client\`"). A client is a param's literal and nothing else: an
+`api::client(…)` anywhere else (a `let`, an argument, a body) is refused
+("\`api::client(…)\` builds a client, which is a param of the locus that
+calls it: …").
 
 **A leg's tools.** **`hale api export --surface NAME --tools-for ROLES
 [target]`** prints the tools a caller acting as `ROLES` (comma separated,

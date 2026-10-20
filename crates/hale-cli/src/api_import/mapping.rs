@@ -482,7 +482,7 @@ pub fn from_openapi(doc: &Value, name: &str, location: &str) -> Result<Surface, 
             let Some(op) = item.get(method).filter(|o| o.is_object()) else {
                 continue;
             };
-            let wire = format!("{} {path}", method.to_ascii_uppercase());
+            let mut wire = format!("{} {path}", method.to_ascii_uppercase());
             let derived = format!("{method} {path}");
             let base = match op.get("operationId").and_then(Value::as_str) {
                 Some(id) if !id.is_empty() => snake(id, "op"),
@@ -498,6 +498,7 @@ pub fn from_openapi(doc: &Value, name: &str, location: &str) -> Result<Surface, 
                 .map(|a| a.iter().collect())
                 .unwrap_or_default();
             let mut seen = BTreeSet::new();
+            let mut query: Vec<String> = Vec::new();
             for p in own.iter().chain(shared.iter()) {
                 let p = m.resolved(p);
                 let (Some(pname), Some(place)) = (
@@ -509,11 +510,21 @@ pub fn from_openapi(doc: &Value, name: &str, location: &str) -> Result<Surface, 
                 if !matches!(place, "path" | "query") || !seen.insert((pname.to_string(), place.to_string())) {
                     continue;
                 }
+                if place == "query" {
+                    query.push(pname.to_string());
+                }
                 let required = place == "path" || p.get("required").and_then(Value::as_bool) == Some(true);
                 let schema = p.get("schema").unwrap_or(&Value::Null);
                 params.push((pname.to_string(), schema, required));
             }
             params.sort_by(|a, b| a.0.cmp(&b.0));
+            // the query parameters' names follow the path in `wire:`, so a
+            // client knows which of the request's fields are the query and
+            // which is the body (spec/api.md § Calling a surface)
+            if !query.is_empty() {
+                query.sort();
+                wire = format!("{wire}?{}", query.join("&"));
+            }
             let body = op.get("requestBody").map(|b| json_content(m.resolved(b)));
             let hint = format!("{row} request");
             let request = match (params.is_empty(), body) {

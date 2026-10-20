@@ -115,7 +115,7 @@ fn an_openapi_document_becomes_a_surface_the_checker_accepts() {
         "rpc get_items_item_id(ShelfGetItemsItemIdRequest) -> ShelfItem wire: \"GET /items/{itemId}\";",
         // an unbounded array is no record's list
         "// response: std::json::Value, an array with no `maxItems`, and a record holds a bounded list only",
-        "rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: \"GET /items\";",
+        "rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: \"GET /items?limit\";",
         "item_id: Int `json:\"itemId\"`;",
         // an optional parameter and an optional, nullable field are presence pairs
         "has_limit: Bool = false;\n    limit: Int = 0;",

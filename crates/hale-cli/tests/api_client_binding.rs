@@ -76,6 +76,12 @@ api Shelf from openapi "./shelf.json" {
     rpc get_item(ShelfGetItemRequest) -> ShelfItem wire: "GET /items/{itemId}";
     rpc create_item(ShelfNewItem) -> ShelfItem wire: "POST /items" requires: [editor];
     rpc list_items() -> std::json::Value wire: "GET /items";
+    rpc search(ShelfSearchRequest) -> ShelfItem wire: "POST /search?limit";
+}
+
+type ShelfSearchRequest {
+    limit: Int;
+    body: ShelfNewItem;
 }
 
 type ShelfGetItemRequest {
@@ -155,6 +161,16 @@ fn list_line(o: ShelfListItemsOutcome) -> String {
     };
 }
 
+fn search_line(o: ShelfSearchOutcome) -> String {
+    return match o {
+        ShelfSearchOutcome::Result(v) -> "result " + to_string(v.id) + " " + v.name,
+        ShelfSearchOutcome::HandlerError(f) -> "failure " + f.class,
+        ShelfSearchOutcome::Refusal(r) -> "refusal " + r.kind,
+        ShelfSearchOutcome::ServerError -> "server_error",
+        ShelfSearchOutcome::Lost(why) -> "lost " + why,
+    };
+}
+
 fn echo_line(o: ToolsEchoOutcome) -> String {
     return match o {
         ToolsEchoOutcome::Result(v) -> "result " + v.text,
@@ -197,6 +213,7 @@ main locus App {
         println("item 8: " + item_line(self.shelf.get_item(ShelfGetItemRequest { item_id: 8 })));
         println("made: " + made_line(self.shelf.create_item(ShelfNewItem { name: "pen" })));
         println("list: " + list_line(self.shelf.list_items()));
+        println("search: " + search_line(self.shelf.search(ShelfSearchRequest { limit: 5, body: ShelfNewItem { name: "pen" } })));
         println("echo: " + echo_line(self.tools.echo(ToolsEchoRequest { said: "hi" })));
         println("fail: " + fail_line(self.tools.fail_hard(ToolsEchoRequest { said: "x" })));
     }
@@ -244,6 +261,7 @@ fn answer(method: &str, path: &str, body: &str) -> (u16, Vec<(String, String)>, 
         ("GET", p) if p.starts_with("/items/7") => (200, vec![], "{\"id\":7,\"name\":\"lamp\"}".into()),
         ("GET", "/items") => (200, vec![], "[1,2]".into()),
         ("POST", "/items") => (201, vec![], "{\"id\":9,\"name\":\"pen\"}".into()),
+        ("POST", "/search?limit=5") => (200, vec![], "{\"id\":5,\"name\":\"found\"}".into()),
         ("POST", "/mcp") => {
             let m = json(body);
             let id = m["id"].clone();
@@ -345,6 +363,8 @@ fn a_client_calls_each_row_and_reads_each_outcome_as_the_served_side_maps_it() {
             "item 8: failure not_found 404 gone",
             "made: result 9 pen",
             "list: result [1,2]",
+            // a POST with a query: the query from its field, the body from `body`
+            "search: result 5 found",
             // an imported MCP surface: a tool's text result, and its error
             "echo: result {\"said\":\"hi\"}",
             "fail: failure it broke",
@@ -372,6 +392,9 @@ fn a_client_calls_each_row_and_reads_each_outcome_as_the_served_side_maps_it() {
         made.contains("auth=Bearer tok-ed") && made.ends_with("body={\"name\":\"pen\"}"),
         "{made}"
     );
+    // the query parameter the wire names is the query; `body` is the body
+    let search = first("POST /search?limit=5 ");
+    assert!(search.ends_with("body={\"name\":\"pen\"}"), "{search}");
     // MCP: the session opened once, then named with the version on every call;
     // a Hale row's digest rides in `_meta` and the header
     let opened: Vec<&String> = sent
@@ -469,13 +492,18 @@ api Shelf from openapi "./shelf.json" {
 type ShelfGetItemRequest { item_id: Int `json:"itemId"`; }
 type ShelfItem { id: Int; name: String; }
 
+type Mode = enum { On, Off };
+api Switch { rpc Lamp::set; }
+locus Lamp { fn set(mode: Mode) -> Mode { return mode; } }
+
 main locus App {
     params {
+        e: api::Client = api::client(Switch, mcp::Client { url: "http://127.0.0.1:1/mcp" });
         a: api::Client = api::client(Shelff, http::Client { base: "http://127.0.0.1:1" });
         b: api::Client = api::client(Shelf, mcp::Client { url: "http://127.0.0.1:1/mcp" });
         c: api::Client = api::client(Shelf, std::http::Client { });
     }
-    run() { }
+    run() { let d = api::client(Shelf, 42); }
 }
 fn main() { App { }; }
 "#;
@@ -487,12 +515,16 @@ fn main() { App { }; }
         "client of `Shelff`: no surface `Shelff` is declared (spec/api.md § Calling a surface)",
         "client of `Shelf` over `mcp::Client`: row `get_item` is the HTTP operation `GET /items/{itemId}`; a surface imported from OpenAPI is called over `http::Client`",
         "client of `Shelf`: the transport is a literal of `http::Client { base, principals }` or `mcp::Client { url, principals }`",
+        // an MCP tool's input is an object, which an enum request is not
+        "client of `Switch` over `mcp::Client`: `Lamp::set` takes a request that is no JSON object, and an MCP tool's input is one, so `mcp::Rpc` serves it as no tool; call it over `http::Client`",
+        // a call anywhere but a param's literal is never a client
+        "`api::client(…)` builds a client, which is a param of the locus that calls it",
     ] {
         assert!(err.contains(want), "missing `{want}` in:\n{err}");
     }
     assert_eq!(
         err.matches("type error").count(),
-        3,
+        5,
         "one refusal per site and nothing else:\n{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -535,16 +567,16 @@ fn a_legs_tools_are_the_rows_its_roles_admit_namespaced_by_surface() {
     std::fs::write(dir.join("main.hl"), PROGRAM).unwrap();
     assert_eq!(
         tools_for(&dir, "Shelf", ""),
-        ["Shelf.get_item", "Shelf.list_items"]
+        ["Shelf.get_item", "Shelf.list_items", "Shelf.search"]
     );
     assert_eq!(
         tools_for(&dir, "Shelf", "editor"),
-        ["Shelf.create_item", "Shelf.get_item", "Shelf.list_items"]
+        ["Shelf.create_item", "Shelf.get_item", "Shelf.list_items", "Shelf.search"]
     );
     // a role holds every role it includes
     assert_eq!(
         tools_for(&dir, "Shelf", "lead"),
-        ["Shelf.create_item", "Shelf.get_item", "Shelf.list_items"]
+        ["Shelf.create_item", "Shelf.get_item", "Shelf.list_items", "Shelf.search"]
     );
     assert_eq!(tools_for(&dir, "Shop", ""), ["Shop.orders_get"]);
     assert_eq!(
@@ -580,8 +612,15 @@ const ROUND_TRIP_SURFACE: &str = r#"
 type OrderError = enum { @not_found Missing, @conflict Taken(String), @invalid Bad, @forbidden Nope, @unavailable Busy, Closed };
 type Ask { id: Int; }
 type Order { id: Int; name: String; }
+type Mode = enum { On, Off };
 
 api Shop {
+    rpc Orders::get;
+    rpc Orders::set;
+}
+
+// the rows an MCP tool can take: an object request each
+api ShopTools {
     rpc Orders::get;
 }
 
@@ -594,6 +633,12 @@ locus Orders {
         if a.id == 5 { fail OrderError::Busy; }
         if a.id == 6 { fail OrderError::Closed; }
         return Order { id: a.id, name: "ok" };
+    }
+    fn set(mode: Mode) -> Order {
+        return match mode {
+            Mode::On -> Order { id: 1, name: "on" },
+            Mode::Off -> Order { id: 0, name: "off" },
+        };
     }
 }
 "#;
@@ -609,10 +654,12 @@ main locus Server {
         bearer: Tokens = Tokens { };
         orders: Orders = Orders { };
         web: api::Exposure = api::serve(Shop, http::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "web", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
+        tools: api::Exposure = api::serve(ShopTools, mcp::Rpc { bind: "127.0.0.2:0", principals: self.bearer }, as: "tools", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
     }
     run() {
         while !self.draining { std::time::sleep(10ms); }
         self.web.stop();
+        self.tools.stop();
     }
 }
 
@@ -645,6 +692,7 @@ main locus Caller {
     params {
         me: Me = Me { };
         shop: api::Client = api::client(Shop, http::Client { base: std::env::var("SHOP"), principals: self.me });
+        shop_mcp: api::Client = api::client(ShopTools, mcp::Client { url: std::env::var("SHOP_MCP"), principals: self.me });
     }
     run() {
         let mut id = 1;
@@ -652,7 +700,37 @@ main locus Caller {
             println(to_string(id) + ": " + line(self.shop.orders_get(Ask { id: id })));
             id = id + 1;
         }
+        // an enum request, over HTTP (an MCP tool's input is an object)
+        println("http set: " + set_line(self.shop.orders_set(Mode::Off)));
+        println("mcp get 1: " + tools_line(self.shop_mcp.orders_get(Ask { id: 1 })));
+        println("mcp get 7: " + tools_line(self.shop_mcp.orders_get(Ask { id: 7 })));
     }
+}
+
+fn tools_line(o: ShopToolsOrdersGetOutcome) -> String {
+    return match o {
+        ShopToolsOrdersGetOutcome::Result(v) -> "result " + to_string(v.id) + " " + v.name,
+        ShopToolsOrdersGetOutcome::HandlerError(e) -> match e {
+            OrderError::Missing -> "Missing",
+            OrderError::Taken(who) -> "Taken " + who,
+            OrderError::Bad -> "Bad",
+            OrderError::Nope -> "Nope",
+            OrderError::Busy -> "Busy",
+            OrderError::Closed -> "Closed",
+        },
+        ShopToolsOrdersGetOutcome::Refusal(r) -> "refusal " + r.kind + " " + r.reason,
+        ShopToolsOrdersGetOutcome::ServerError -> "server_error",
+        ShopToolsOrdersGetOutcome::Lost(why) -> "lost " + why,
+    };
+}
+
+fn set_line(o: ShopOrdersSetOutcome) -> String {
+    return match o {
+        ShopOrdersSetOutcome::Result(v) -> "result " + to_string(v.id) + " " + v.name,
+        ShopOrdersSetOutcome::Refusal(r) -> "refusal " + r.kind + " " + r.reason,
+        ShopOrdersSetOutcome::ServerError -> "server_error",
+        ShopOrdersSetOutcome::Lost(why) -> "lost " + why,
+    };
 }
 
 fn main() { Caller { }; }
@@ -688,9 +766,11 @@ fn a_client_reads_a_served_surfaces_outcomes_as_the_server_wrote_them() {
         .spawn()
         .expect("start the server");
     // the server binds port 0; its port is read back from the kernel
-    let port = child::tcp_port(&mut server);
+    let port = child::tcp_port_on(&mut server, std::net::Ipv4Addr::new(127, 0, 0, 1));
+    let mcp_port = child::tcp_port_on(&mut server, std::net::Ipv4Addr::new(127, 0, 0, 2));
     let out = Command::new(dir.join("caller"))
         .env("SHOP", format!("http://127.0.0.1:{port}"))
+        .env("SHOP_MCP", format!("http://127.0.0.2:{mcp_port}/mcp"))
         .output()
         .expect("run the caller");
     let _ = server.kill();
@@ -711,7 +791,10 @@ fn a_client_reads_a_served_surfaces_outcomes_as_the_server_wrote_them() {
             "4: Nope",
             "5: Busy",
             "6: Closed",
-            "7: result 7 ok"
+            "7: result 7 ok",
+            "http set: result 0 off",
+            "mcp get 1: Missing",
+            "mcp get 7: result 7 ok",
         ],
         "each class's status, read back as the handler's own variant"
     );

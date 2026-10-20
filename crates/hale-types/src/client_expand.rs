@@ -77,6 +77,9 @@ struct ClientRow {
     wire: String,
     /// The MCP tool.
     tool: String,
+    /// The request is no JSON object (a Hale row's enum), which no MCP
+    /// tool's input can be.
+    not_object: bool,
     /// A Hale row's member digest, "" for an imported row.
     digest: String,
     /// The roles the row requires, joined by `,`.
@@ -268,6 +271,7 @@ fn client_rows(
                     member: name,
                     wire: http,
                     tool,
+                    not_object: false,
                     digest: String::new(),
                     roles: r
                         .requires
@@ -302,12 +306,19 @@ fn client_rows(
                 None => Failure::None,
             };
             let method = crate::api_names::snake(&r.member);
+            let not_object = r.request.as_ref().is_some_and(|t| {
+                !matches!(
+                    shapes.classify(&shapes.dealias(t)),
+                    TypeClass::Struct { .. }
+                )
+            });
             out.push(ClientRow {
                 outcome: outcome(&r.member),
                 method,
                 member: r.member.clone(),
                 wire: String::new(),
                 tool: crate::surface_doc::tool_name(&r.member),
+                not_object,
                 digest,
                 roles: r.requires.join(","),
                 request,
@@ -402,6 +413,12 @@ fn plan(
                     r.member
                 ));
             }
+            Kind::Mcp if r.not_object => {
+                return Err(format!(
+                    "client of `{written}` over `mcp::Client`: `{}` takes a request that is no JSON object, and an MCP tool's input is one, so `mcp::Rpc` serves it as no tool; call it over `http::Client`",
+                    r.member
+                ));
+            }
             Kind::Mcp if r.signature && !r.wire.is_empty() => {
                 return Err(format!(
                     "client of `{written}` over `mcp::Client`: row `{}` is the HTTP operation `{}`; a surface imported from OpenAPI is called over `http::Client`",
@@ -445,13 +462,15 @@ fn method_src(surface: &str, r: &ClientRow) -> String {
         q(&r.digest),
         q(&r.roles)
     );
-    let decode = |c: &Carry, var: &str, part: &str| match c {
+    let decode = |c: &Carry, var: &str, part: &str| {
+        match c {
         Carry::Codec(t) => format!(
             "            let {var} = {t}::api_decode(raw.body) or {{ return {o}::Lost(\"the {part} did not decode: \" + err.kind + \": \" + err.field); }};\n"
         ),
         Carry::Json => format!(
             "            let {var} = std::json::Value::parse(raw.body) or {{ return {o}::Lost(\"the {part} did not decode: \" + err.kind); }};\n"
         ),
+    }
     };
     match &r.response {
         Some(c) => {
@@ -703,8 +722,9 @@ fn inject_runtime(programs: &mut [&mut Program]) {
     }
 }
 
-/// The client sites the pass left as written, each refused with why
-/// (spec/api.md § Calling a surface).
+/// The client sites the pass left as written, each refused with why, and
+/// every `api::client` call anywhere else: a client is a param's literal
+/// and nothing else (spec/api.md § Calling a surface).
 pub fn client_laws(
     programs: &[&Program],
     renames: &[(Vec<String>, String)],
@@ -713,6 +733,8 @@ pub fn client_laws(
     let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
     let shapes = Shapes::of_all(&slices);
     let mut diags = Vec::new();
+    // the callee of each call a param's literal is, by where it starts
+    let mut sites: BTreeSet<u32> = BTreeSet::new();
     for p in programs {
         for d in flat_decls(&p.items) {
             let TopDecl::Locus(l) = d else { continue };
@@ -723,6 +745,13 @@ pub fn client_laws(
                         continue;
                     };
                     let Some(args) = client_call(e) else { continue };
+                    if let Expr::Call { callee, .. } = e {
+                        if let Expr::Path(qn) = callee.as_ref() {
+                            if let Some(first) = qn.segments.first() {
+                                sites.insert(first.span.start.0);
+                            }
+                        }
+                    }
                     let why = match plan(programs, &shapes, renames, default_surface, param, args) {
                         Err(why) => why,
                         Ok(plan) => {
@@ -736,6 +765,28 @@ pub fn client_laws(
                 }
             }
         }
+    }
+    for p in programs {
+        hale_syntax::names::for_each_spelled(&p.items, &mut |s| {
+            let hale_syntax::names::Spelled::Path(segs) = s else {
+                return;
+            };
+            let [a, c] = segs else { return };
+            if a.name != "api" || c.name != "client" || sites.contains(&a.span.start.0) {
+                return;
+            }
+            let span = Span {
+                start: a.span.start,
+                end: c.span.end,
+            };
+            diags.push(Diag::ty(
+                span,
+                "`api::client(…)` builds a client, which is a param of the locus that calls it: write \
+                 `NAME: api::Client = api::client(Surface, http::Client { … });` in its params and call \
+                 `self.NAME`'s methods (spec/api.md § Calling a surface)"
+                    .to_string(),
+            ));
+        });
     }
     diags
 }
