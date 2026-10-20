@@ -194,16 +194,6 @@ components together. Everything you just saw — emit, subscribe to
 a subtree, no direct references — is exactly how it works at
 scale.
 
----
-
-That's the everyday tier. With loci, collections, files, JSON,
-HTTP, config, and logging, you can build real applications —
-CLIs, web services, data tools. The next tier is for programs
-that *run over time and coordinate*: long-lived services, a typed
-bus you design, concurrency, and supervision.
-
-Next: [The lifecycle](../services/lifecycle.md).
-
 ## The runtime's events, to a collector
 
 Your logs say what your code did. The runtime can also tell a
@@ -237,3 +227,14 @@ in time is dropped and counted, and when you also hold a
 scrape, that count is `hale_otlp_dropped_total` on the scrape page. A
 program that holds no `Otlp` keeps no event ring at all.
 
+For all the backends in one place, see [Observing a program](./observing.md).
+
+---
+
+That's the everyday tier. With loci, collections, files, JSON,
+HTTP, config, and logging, you can build real applications —
+CLIs, web services, data tools. The next tier is for programs
+that *run over time and coordinate*: long-lived services, a typed
+bus you design, concurrency, and supervision.
+
+Next: [The lifecycle](../services/lifecycle.md).

@@ -4155,8 +4155,9 @@ restarts and delivered failures are counted; and the runtime counts in
 counters-only mode (`spec/runtime.md` § "Observe backends").
 
 **One port.** `Scrape`'s `port` is required, and it is a listener of
-its own. GH #1477's probes will make the port optional and serve
-`/metrics` on the probes listener, so a deployment annotates one port.
+its own. `std::observe::Probes` (§ Probes) is a second listener on its
+own port and does not serve `/metrics`, so a deployment that holds both
+annotates two ports.
 
 **In the topology artifact.** Schema 1.21's `observe` section lists
 each backend param with its endpoint (`param`, `kind`, `backend`, and a

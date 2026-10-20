@@ -27,6 +27,7 @@
 - [CLI & config](./everyday/cli-config.md)
 - [Logging](./everyday/logging.md)
 - [Metrics](./everyday/metrics.md)
+- [Observing a program](./everyday/observing.md)
 - [Testing](./everyday/testing.md)
 
 # The locus model

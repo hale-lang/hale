@@ -163,9 +163,9 @@ supplies its own. A program that holds none pays nothing for any of
 this: its registries never register anywhere, and its binary is the
 one it would be without the feature.
 
-The port is required for now. When the runtime grows health and
-readiness probes (GH #1477), `/metrics` will be served on their port,
-and `port` becomes optional.
+The port is required, and the scrape is a listener of its own. The
+health probes ([Observing a program](./observing.md#health-and-capacity-probes))
+are another, on their own port; they do not serve `/metrics`.
 
 ## The /metrics endpoint
 
