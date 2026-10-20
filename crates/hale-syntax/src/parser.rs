@@ -1352,13 +1352,17 @@ impl Parser {
             }
             // GH #1417: `api NAME [requires: [..]] { rpc Locus::fn ...; }`,
             // told from an identifier named `api` by a name and then `{`
-            // or the surface's `requires:`.
+            // or the surface's `requires:`, or an imported surface's `from
+            // openapi "…"` / `from mcp "…"`.
             TokenKind::Ident(s)
                 if s == "api"
                     && matches!(self.peek_at(1), TokenKind::Ident(_))
                     && (matches!(self.peek_at(2), TokenKind::LBrace)
                         || (matches!(self.peek_at(2), TokenKind::Ident(r) if r == "requires")
-                            && matches!(self.peek_at(3), TokenKind::Colon))) =>
+                            && matches!(self.peek_at(3), TokenKind::Colon))
+                        || (matches!(self.peek_at(2), TokenKind::Ident(r) if r == "from")
+                            && matches!(self.peek_at(3), TokenKind::Ident(_))
+                            && matches!(self.peek_at(4), TokenKind::StringLit(_)))) =>
             {
                 self.parse_api_decl().map(TopDecl::Api)
             }
@@ -1517,9 +1521,32 @@ impl Parser {
     /// row that writes none holds it, and one that writes its own
     /// (`requires: []` included) holds that instead. The row is what every
     /// later pass reads, so the default is resolved here.
+    ///
+    /// An imported surface (spec/api.md § Imported surfaces) names where it
+    /// came from, `api NAME from openapi "…" { … }` or `from mcp "…"`, and
+    /// its rows name their shape and no handler: `rpc name(Request) ->
+    /// Response wire: "…";`, the request and the response each optional.
     fn parse_api_decl(&mut self) -> Result<ApiDecl, Diag> {
         let kw = self.bump(); // `api`
         let name = self.expect_ident("surface name")?;
+        let source = if matches!(self.peek(), TokenKind::Ident(s) if s == "from") {
+            let from = self.bump();
+            let kind = self.expect_ident("`openapi` or `mcp`")?;
+            if kind.name != "openapi" && kind.name != "mcp" {
+                return Err(Diag::parse(
+                    kind.span,
+                    format!(
+                        "an imported surface is `from openapi \"…\"` or `from mcp \"…\"`, got `from {}`",
+                        kind.name
+                    ),
+                ));
+            }
+            let at = self.peek_token().span;
+            let location = self.expect_string_literal("the document an imported surface was read from")?;
+            Some(ApiSource { kind, location, span: from.span.merge(at) })
+        } else {
+            None
+        };
         let default_requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
             Some(self.parse_requires_list()?)
         } else {
@@ -1536,7 +1563,13 @@ impl Parser {
                 ));
             }
             self.bump(); // `rpc`
-            let mut segs = vec![self.expect_ident("the handler's locus")?];
+            let first = self.expect_ident("the handler's locus")?;
+            if self.at(&TokenKind::LParen) {
+                let row = self.parse_signature_row(tok.span, first, default_requires.as_ref())?;
+                rows.push(row);
+                continue;
+            }
+            let mut segs = vec![first];
             while self.eat(&TokenKind::ColonColon) {
                 segs.push(self.expect_member_name("a name after `::`")?);
             }
@@ -1558,10 +1591,48 @@ impl Parser {
                 default_requires.clone().unwrap_or_default()
             };
             let semi = self.expect(TokenKind::Semi, ";")?;
-            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span) });
+            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span), signature: None });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
-        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None })
+        Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None, source })
+    }
+
+    /// The rest of a signature row after its name: `(Request) [->
+    /// Response] [wire: "…"] [requires: [ROLE, …]];`.
+    fn parse_signature_row(
+        &mut self,
+        start: Span,
+        name: Ident,
+        default_requires: Option<&Vec<Ident>>,
+    ) -> Result<RpcRow, Diag> {
+        self.expect(TokenKind::LParen, "(")?;
+        let request = if self.at(&TokenKind::RParen) { None } else { Some(self.parse_type_expr()?) };
+        self.expect(TokenKind::RParen, ")")?;
+        let response = if self.eat(&TokenKind::Arrow) { Some(self.parse_type_expr()?) } else { None };
+        let mut wire = None;
+        let mut requires = None;
+        loop {
+            match self.peek() {
+                TokenKind::Ident(s) if s == "wire" && wire.is_none() => {
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    wire = Some(self.expect_string_literal("the operation's name at its endpoint")?);
+                }
+                TokenKind::Ident(s) if s == "requires" && requires.is_none() => {
+                    requires = Some(self.parse_requires_list()?);
+                }
+                _ => break,
+            }
+        }
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(RpcRow {
+            locus: Ident::new(String::new(), name.span),
+            written: String::new(),
+            method: name,
+            requires: requires.unwrap_or_else(|| default_requires.cloned().unwrap_or_default()),
+            span: start.merge(semi.span),
+            signature: Some(RpcSignature { request, response, wire }),
+        })
     }
 
     /// GH #1417: `requires: [ROLE, …]`, the roles a caller of a row (or a

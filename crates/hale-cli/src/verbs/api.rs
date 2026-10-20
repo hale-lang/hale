@@ -23,6 +23,8 @@ usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
        hale api describe <endpoint> [--json] [--bearer T]
        hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
                      [--bearer T] [--request-id ID] [--digest D] [--raw]
+       hale api import <openapi-url-or-file | mcp-url> --as NAME [--out FILE] [--openapi | --mcp]
+       hale api drift [file.hl | dir] [--surface NAME]
 
 `describe` asks a running program for the description it serves the caller and
 prints it: the exposure's identity (surface, digest, name), the caller and its
@@ -69,6 +71,12 @@ ES module typed in JSDoc, which needs no compile step. The module names the surf
 constant; `--check FILE` writes nothing and exits 1 when the committed client
 is not what the surface now generates, naming the digest it was made against.
 The output is on stdout unless `--out FILE` names a file.
+
+`import` writes the surface a program consumes, read from an OpenAPI 3 document
+or an MCP endpoint's tool list: an `api NAME from openapi|mcp \"...\"` block of
+rows that name shapes and no handler, and the records they name. `drift` reads
+that source again and prints a line per row it has added, removed or changed;
+`hale api import --help` and `hale api drift --help` say more.
 "
 }
 
@@ -109,7 +117,11 @@ fn positionals(rest: &[String], valued: &[&str]) -> Result<Vec<String>, ExitCode
 
 pub(crate) fn run_api(rest: &[String]) -> ExitCode {
     if rest.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{}", api_usage());
+        match rest.first().map(String::as_str) {
+            Some("import") => print!("{}", crate::api_import::import_usage()),
+            Some("drift") => print!("{}", crate::api_import::drift_usage()),
+            _ => print!("{}", api_usage()),
+        }
         return ExitCode::SUCCESS;
     }
     match rest.first().map(String::as_str) {
@@ -117,6 +129,8 @@ pub(crate) fn run_api(rest: &[String]) -> ExitCode {
         Some("client") => run_client(&rest[1..]),
         Some("describe") => crate::api_drive::run_describe(&rest[1..]),
         Some("call") => crate::api_drive::run_call(&rest[1..]),
+        Some("import") => crate::api_import::run_import(&rest[1..]),
+        Some("drift") => crate::api_import::run_drift(&rest[1..]),
         _ => {
             eprint!("{}", api_usage());
             ExitCode::from(2)

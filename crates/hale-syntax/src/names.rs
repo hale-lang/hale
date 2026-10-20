@@ -189,13 +189,25 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Api(a) => {
-            let ApiDecl { name: n, rows, span: _, origin: _ } = a;
+            let ApiDecl { name: n, rows, span: _, origin: _, source } = a;
             name(n, f);
+            if let Some(ApiSource { kind, location, span: _ }) = source {
+                name(kind, f);
+                text(location, f);
+            }
             for r in rows {
-                let RpcRow { locus, written: _, method, requires, span: _ } = r;
-                name(locus, f);
+                let RpcRow { locus, written: _, method, requires, span: _, signature } = r;
+                // a signature row's locus is empty: it names no handler
+                if signature.is_none() {
+                    name(locus, f);
+                }
                 name(method, f);
                 names(requires, f);
+                if let Some(RpcSignature { request, response, wire }) = signature {
+                    opt_ty(request, f);
+                    opt_ty(response, f);
+                    opt_text(wire, f);
+                }
             }
         }
     }

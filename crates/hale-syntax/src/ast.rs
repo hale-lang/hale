@@ -284,6 +284,34 @@ pub struct ApiDecl {
     /// so `alias::Name` names this block and no other seed's.
     /// `None` for a block of the entry seed, which no alias reaches.
     pub origin: Option<String>,
+    /// `from openapi "…"` / `from mcp "…"`: the document or endpoint an
+    /// imported surface was read from, which the drift check reads again
+    /// (spec/api.md § Imported surfaces). `None` for a surface the program
+    /// declares itself.
+    pub source: Option<ApiSource>,
+}
+
+/// Where an imported surface came from: the kind of document and its
+/// location as `hale api import` wrote it (a URL, or a path relative to
+/// the file that holds the block).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiSource {
+    /// `openapi` or `mcp`.
+    pub kind: Ident,
+    pub location: String,
+    pub span: Span,
+}
+
+/// A row that names its operation's shape and no handler: `rpc
+/// name(Request) -> Response wire: "…";`, a row of a surface the program
+/// consumes (spec/api.md § Imported surfaces).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcSignature {
+    pub request: Option<TypeExpr>,
+    pub response: Option<TypeExpr>,
+    /// The operation as its endpoint names it: an OpenAPI operation's
+    /// `METHOD /path`, an MCP tool's name.
+    pub wire: Option<String>,
 }
 
 /// One `rpc` line of an `api` block.
@@ -301,6 +329,9 @@ pub struct RpcRow {
     /// The roles a caller must hold, as written.
     pub requires: Vec<Ident>,
     pub span: Span,
+    /// A signature row's shape: `locus` is then empty and `method` is the
+    /// row's name.
+    pub signature: Option<RpcSignature>,
 }
 
 /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn: the

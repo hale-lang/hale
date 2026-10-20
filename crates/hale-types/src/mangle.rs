@@ -999,6 +999,12 @@ impl<'a> QualifiedRenameApplier<'a> {
                     for role in &mut r.requires {
                         self.rewrite_role_ident(role);
                     }
+                    // a signature row's shapes may name another seed's types
+                    if let Some(sig) = &mut r.signature {
+                        for t in sig.request.iter_mut().chain(sig.response.iter_mut()) {
+                            self.rewrite_type_expr(t);
+                        }
+                    }
                 }
             }
             TopDecl::Group(g) => {
@@ -1653,6 +1659,13 @@ impl<'a> Mangler<'a> {
                 // declaration was just mangled; follow it, as a
                 // binding's topic does. The surface's name stays.
                 for r in &mut a.rows {
+                    // a signature row names its shapes, the seed's own types
+                    if let Some(sig) = &mut r.signature {
+                        for t in sig.request.iter_mut().chain(sig.response.iter_mut()) {
+                            self.walk_type_expr(t);
+                        }
+                        continue;
+                    }
                     self.rewrite_alias_head_joined(&mut r.locus);
                     self.rewrite_ident(&mut r.locus.name);
                 }

@@ -188,8 +188,10 @@ impl Shift for TopDecl {
 // Claims vocabulary.
 
 shift_struct!(RoleDecl { name, includes, span });
-shift_struct!(ApiDecl { name, rows, span, origin });
-shift_struct!(RpcRow { locus, written, method, requires, span });
+shift_struct!(ApiDecl { name, rows, span, origin, source });
+shift_struct!(ApiSource { kind, location, span });
+shift_struct!(RpcRow { locus, written, method, requires, span, signature });
+shift_struct!(RpcSignature { request, response, wire });
 shift_struct!(UnitDecl { name, equation, span, id });
 shift_struct!(UnitEquation { num, den, target, span, id });
 shift_struct!(GroupDecl { name, members, may_be_empty, span, id });

@@ -110,6 +110,9 @@ pub struct Row {
     pub span: Span,
     /// From `@rpc` rather than an `api` block.
     pub from_attr: bool,
+    /// A signature row: it names its shape and no handler (spec/api.md §
+    /// Imported surfaces).
+    pub signature: bool,
     /// The row's position among the bundle's rows as written: a
     /// surface's rows in the order its author wrote them.
     pub written_at: usize,
@@ -137,7 +140,8 @@ pub enum Handled {
 #[derive(Debug, Clone)]
 pub struct Handler {
     /// The summary's key for the fn: the may-violate judgment's join.
-    pub key: FnKey,
+    /// `None` for a signature row, which names no fn.
+    pub key: Option<FnKey>,
     pub name_span: Span,
     /// The value parameters, a trailing `ctx: std::api::Context`
     /// excluded: each its name, type and span.
@@ -569,6 +573,9 @@ pub enum MemberOrigin {
     Block,
     /// An `@rpc` handler.
     Rpc,
+    /// A signature row of an imported surface: it names a shape and no
+    /// handler (spec/api.md § Imported surfaces).
+    Signature,
 }
 
 /// One member a surface holds, by names alone: no typed snapshot.
@@ -621,15 +628,20 @@ pub fn select_members(
             match d {
                 TopDecl::Api(a) => {
                     for r in &a.rows {
+                        let signature = r.signature.is_some();
                         push(SelectedMember {
                             surface: a.name.name.clone(),
-                            member: format!("{}::{}", r.written, r.method.name),
+                            member: if signature {
+                                r.method.name.clone()
+                            } else {
+                                format!("{}::{}", r.written, r.method.name)
+                            },
                             locus: r.locus.name.clone(),
                             method: r.method.name.clone(),
                             requires: r.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
                             span: r.span,
                             surface_span: a.span,
-                            origin: MemberOrigin::Block,
+                            origin: if signature { MemberOrigin::Signature } else { MemberOrigin::Block },
                             alias: None,
                             written_at: 0,
                         });
@@ -710,6 +722,10 @@ pub fn role_handlers(programs: &[&Program], renames: &[(Vec<String>, String)], r
     let mut handlers: BTreeSet<(String, String)> = BTreeSet::new();
     for m in select_members(programs, None, renames, "") {
         out.required |= m.requires.iter().any(|(r, _)| r == role);
+        // a signature row names no handler for a group to hold
+        if m.origin == MemberOrigin::Signature {
+            continue;
+        }
         let callable = m.requires.iter().all(|(r, _)| confer.get(r).is_some_and(|c| c.iter().any(|h| h == role)));
         if callable {
             handlers.insert((m.locus, m.method));
@@ -772,7 +788,7 @@ pub fn surface_rows(
                     let server_error = matches!(&f.fallible, Some(TypeExpr::Named { path, .. })
                         if path.segments.last().is_some_and(|s| s.name == "ClosureViolation"));
                     return Handled::Fn(Handler {
-                        key: FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone()),
+                        key: Some(FnKey::method(DeclId::user(f.id), l.name.name.clone(), f.name.name.clone())),
                         name_span: f.name.span,
                         request: params.first().map(|(_, t, _)| row_ty(t)),
                         params,
@@ -805,6 +821,41 @@ pub fn surface_rows(
         Handled::NoFn { fns }
     };
 
+    // A signature row's shape, by surface and name: its request and
+    // response as the row writes them (spec/api.md § Imported surfaces).
+    let mut signatures: BTreeMap<(String, String), (Span, &hale_syntax::ast::RpcSignature)> = BTreeMap::new();
+    for p in &programs {
+        for d in flat_decls(&p.items) {
+            if let TopDecl::Api(a) = d {
+                for r in &a.rows {
+                    if let Some(sig) = &r.signature {
+                        signatures.entry((a.name.name.clone(), r.method.name.clone())).or_insert((r.method.span, sig));
+                    }
+                }
+            }
+        }
+    }
+    let signature = |surface: &str, name: &str| -> Handled {
+        let Some((span, sig)) = signatures.get(&(surface.to_string(), name.to_string())) else {
+            return Handled::FreeFn;
+        };
+        let response = match &sig.response {
+            None => None,
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            Some(t) => Some(row_ty(t)),
+        };
+        Handled::Fn(Handler {
+            key: None,
+            name_span: *span,
+            params: sig.request.iter().map(|t| ("request".to_string(), t.clone(), *span)).collect(),
+            request: sig.request.as_ref().map(row_ty),
+            response,
+            error: None,
+            server_error: false,
+            pools: Vec::new(),
+        })
+    };
+
     // ---- the rows, as written ----
     let default_surface = seed_name(bundle);
     let mut surface_spans: BTreeMap<String, Span> = BTreeMap::new();
@@ -812,7 +863,13 @@ pub fn surface_rows(
     for m in select_members(&programs, None, &bundle.import_renames, &default_surface) {
         surface_spans.entry(m.surface.clone()).or_insert(m.surface_span);
         rows.push(Row {
-            handler: if m.locus.is_empty() { Handled::FreeFn } else { resolve(&m.locus, &m.method) },
+            handler: if m.origin == MemberOrigin::Signature {
+                signature(&m.surface, &m.method)
+            } else if m.locus.is_empty() {
+                Handled::FreeFn
+            } else {
+                resolve(&m.locus, &m.method)
+            },
             surface: m.surface,
             member: m.member,
             locus: m.locus,
@@ -820,6 +877,7 @@ pub fn surface_rows(
             requires: m.requires,
             span: m.span,
             from_attr: m.origin == MemberOrigin::Rpc,
+            signature: m.origin == MemberOrigin::Signature,
             written_at: m.written_at,
         });
     }
@@ -1328,6 +1386,49 @@ pub fn surface_laws(
     written.sort_by_key(|r| r.written_at);
     let mut first_of: BTreeMap<(&str, &str), Span> = BTreeMap::new();
     let mut diags = Vec::new();
+    // Law 8: a surface is served or imported, never both: its rows all
+    // name handlers, or all name shapes; an imported surface's (`from`)
+    // all name shapes.
+    let mut imported: BTreeMap<&str, Span> = BTreeMap::new();
+    for p in &programs {
+        for d in flat_decls(&p.items) {
+            if let TopDecl::Api(a) = d {
+                if let Some(src) = &a.source {
+                    imported.entry(a.name.name.as_str()).or_insert(src.span);
+                }
+            }
+        }
+    }
+    let mut first_kind: BTreeMap<&str, &Row> = BTreeMap::new();
+    for r in &written {
+        let first = *first_kind.entry(r.surface.as_str()).or_insert(r);
+        if let Some(from) = imported.get(r.surface.as_str()).filter(|_| !r.signature) {
+            diags.push(
+                Diag::ty(
+                    r.span,
+                    format!(
+                        "rpc `{}`: `{}` is an imported surface, and its rows name the operations' shapes, not \
+                         handlers: `rpc name(Request) -> Response;`",
+                        r.member, r.surface
+                    ),
+                )
+                .with_related(*from, "where the surface says it is imported"),
+            );
+        } else if first.signature != r.signature {
+            let (shape, handler): (&Row, &Row) = if r.signature { (r, first) } else { (first, r) };
+            diags.push(
+                Diag::ty(
+                    r.span,
+                    format!(
+                        "`{}` holds `{}`, a row that names a shape, and `{}`, a row that names a handler: a surface \
+                         is served (its rows name handlers) or consumed (its rows name shapes); declare two surfaces",
+                        r.surface, shape.member, handler.member
+                    ),
+                )
+                .with_related(first.span, "the surface's first row"),
+            );
+        }
+    }
     for r in written {
         let m = &r.member;
         // Law 3: a member is one row of its surface.
@@ -1421,6 +1522,11 @@ pub fn surface_laws(
             .chain((!h.server_error).then_some(("error", h.error.as_ref())));
         for (slot, ty) in slots {
             let Some(ty) = ty else { continue };
+            // a consumed row's whole value may be free-form: the shape of a
+            // document that declares none (spec/api.md § Imported surfaces)
+            if r.signature && hale_syntax::json_gen::is_json_value(&shapes.dealias(&ty.te)) {
+                continue;
+            }
             if let Some((path, at)) = json_refusal(&shapes, &ty.te, &mut Vec::new(), &mut BTreeSet::new()) {
                 let message = if path.is_empty() && hale_syntax::json_gen::wire_list(&shapes.dealias(&ty.te)).is_some() {
                     format!(
@@ -1441,8 +1547,9 @@ pub fn surface_laws(
         }
         // Law 7: a handler that may violate is `fallible(ClosureViolation)`,
         // whatever it returns.
-        if h.response.is_none() && h.error.is_none() && may.contains_key(&h.key) {
-            let how = crate::violate_fallible::how(&h.key, &may, &decls);
+        let Some(key) = &h.key else { continue };
+        if h.response.is_none() && h.error.is_none() && may.contains_key(key) {
+            let how = crate::violate_fallible::how(key, &may, &decls);
             diags.push(
                 Diag::ty(
                     r.span,
@@ -1859,6 +1966,16 @@ fn serve_laws_of(
                 format!(
                     "serve of `{surface}`: no surface `{surface}` is declared{}",
                     did_you_mean(&surface, surface_names.iter().copied())
+                ),
+            ));
+            continue;
+        }
+        if rows.rows_of(&surface).any(|r| r.signature) {
+            diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}`: `{surface}` is a surface the program consumes, whose rows name shapes and \
+                     no handler, so nothing here answers them (spec/api.md § Imported surfaces)"
                 ),
             ));
             continue;

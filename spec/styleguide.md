@@ -776,6 +776,13 @@ fn main() {
   `T::api_encode(v)` and `T::api_decode(text)` are the surface's own
   codec, as strict as a served row. JSON built with `+` is a second
   encoder, and it drifts.
+- **Import a surface you call; don't transcribe it.** Another
+  service's operations are an `api NAME from openapi "…"` (or `from mcp
+  "…"`) block that `hale api import` writes from its document, committed
+  and never edited: re-import to change it. Run `hale api drift` (or
+  `hale check --api`) where the service's changes should stop you, so a
+  row it removed or reshaped is a named line, not a decode failure at run
+  time. Records written by hand for the same JSON drift silently.
 
 ### Naming conventions
 

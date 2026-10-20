@@ -72,13 +72,14 @@ row that writes none holds the surface's roles, and a row that writes its
 own (`requires: []` for none) holds those instead. The default is resolved
 into the rows where the block is read, so a surface written with it and
 the same surface written row by row are one table and one digest, and the
-admission law judges each row's roles (law 4 names the row). A row's
-columns:
+admission law judges each row's roles (law 4 names the row). A surface
+the program consumes rather than serves names each row's shape instead of
+a handler (§ Imported surfaces). A row's columns:
 
 | column | what it is |
 |---|---|
 | surface | the block's name |
-| member | the handler as a caller names it: `Locus::fn`, the locus in its author spelling (`lib::Orders::cancel` for a locus another seed declares) |
+| member | the handler as a caller names it: `Locus::fn`, the locus in its author spelling (`lib::Orders::cancel` for a locus another seed declares); a signature row's name (§ Imported surfaces) |
 | request | the type of the handler's one value parameter, or none |
 | response | the handler's return type, or none for `()` |
 | error | `E` when the handler is `fallible(E)`, `ClosureViolation` among them, or none |
@@ -207,6 +208,16 @@ before anything is served:
    nothing: an rpc handler that may violate is \`fallible(ClosureViolation)\`,
    so its caller receives the server error instead of a result". The
    may-violate judgment is F.42's.
+8. **A surface is served or consumed, never both.** Its rows all name
+   handlers, or all name shapes (the signature rows of § Imported
+   surfaces): "\`Mixed\` holds \`shape\`, a row that names a shape, and
+   \`Desk::post\`, a row that names a handler: a surface is served (its
+   rows name handlers) or consumed (its rows name shapes); declare two
+   surfaces". A block that says where it was imported from (`from
+   openapi "…"`) holds signature rows only: "rpc \`Desk::post\`:
+   \`Notes\` is an imported surface, and its rows name the operations'
+   shapes, not handlers: \`rpc name(Request) -> Response;\`".
+
 ## The contract digest
 
 A surface's **digest** is its type-level contract: the hash of its rows
@@ -2698,6 +2709,118 @@ the recorded replies what they read (the TypeScript and JavaScript clients run
 the same compiled scenarios to the same outcomes)
 (`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
 
+## Imported surfaces
+
+A surface the program **consumes** is declared like one it serves, with
+rows that name each operation's shape instead of a handler. `hale api
+import` writes one from an OpenAPI 3 document or an MCP endpoint's tool
+list, and `hale api drift` holds it to that source afterwards. The block is
+an ordinary `api` declaration: the checker admits it, the description and
+the generated forms list it like any surface, and nothing serves it.
+
+```hale,fragment
+api Shelf from openapi "../shelf.json" {
+    rpc create_item(ShelfNewItem) -> ShelfItem wire: "POST /items";
+    // response: std::json::Value, an array with no `maxItems`, and a record holds a bounded list only
+    rpc list_items(ShelfListItemsRequest) -> std::json::Value wire: "GET /items";
+}
+
+type ShelfNewItem {
+    name: String;
+    has_note: Bool = false;
+    note: String = "";
+}
+```
+
+**The block.** `api NAME from openapi "LOCATION"` or `from mcp
+"LOCATION"` names where the surface was read from: an `http://` or
+`https://` URL, or a file path relative to the file holding the block. A
+**signature row**, `rpc name(Request) -> Response [wire: "…"] [requires:
+[ROLE, …]];`, names its member (`name`, no locus), its request (the
+parentheses may be empty) and its response (none without the arrow), and
+`wire:` is the operation as its endpoint names it: an OpenAPI operation's
+method and path (`"GET /items/{itemId}"`), an MCP tool's name
+(`"get-weather"`). A signature row has no error column. Its types are
+checked where they are written (an unknown name is refused there), and
+law 5 holds them to the JSON codec, with one allowance: a signature row's
+whole request or response may be a `std::json::Value`, the shape of a
+source that declares none. A signature row's member digest is a handler
+row's, over the same slots. Law 8 keeps the two kinds of row apart, and a
+serve site of a consumed surface is refused: "serve of \`Shelf\`:
+\`Shelf\` is a surface the program consumes, whose rows name shapes and
+no handler, so nothing here answers them". A signature row is no
+handler of a `role R` group (docs/src/claims.md).
+
+**`hale api import SOURCE --as NAME [--out FILE] [--openapi | --mcp]`**
+reads the source and writes the block, then the records and enums it
+names, each prefixed with the surface's name (`ShelfItem`), into `FILE`
+(`-` for stdout; by default the surface's name in snake case with `.hl`,
+in the current directory). A file is read as an OpenAPI document; a URL
+as one when it serves one by `GET`, and as an MCP endpoint otherwise
+(`--openapi` and `--mcp` say which). The mapping:
+
+- **An OpenAPI operation** (OpenAPI 3; Swagger 2.0 and a YAML document are
+  refused naming why) is a row named by its `operationId` in snake case
+  (`listItems` is `list_items`), else by its method and path
+  (`get_items_item_id`); `wire:` is `"METHOD /path"`. Its request is the
+  JSON body's schema when the operation has no path or query parameter, a
+  record of its parameters when it has no body, and a record of both,
+  the body as the field `body`, when it has both; a header or cookie
+  parameter is not carried. Its response is the JSON schema of its
+  lowest-numbered `2xx` response, none when that response has no JSON
+  content.
+- **An MCP tool** (every page of `tools/list`, after `initialize`, over
+  the Streamable HTTP transport, a JSON or an event-stream answer alike;
+  the notification and every page name the session and the protocol
+  version the server chose, `MCP-Protocol-Version`, and a version the
+  import does not speak, 2025-06-18, 2025-03-26 or 2024-11-05, is refused)
+  is a row named by the tool's name in snake case, `wire:` its name; its
+  request is a record of its `inputSchema` (none when the schema declares
+  no property), its response a record of its `outputSchema`, or a
+  `std::json::Value` when it declares none.
+- **A schema**: an object with properties is a record, its fields named
+  by the key in snake case with a `json:"key"` tag when the two differ (a
+  key that would name a field `has_…` or `clear_…`, which reads as another
+  field's presence flag, is `key_has_…`, its key in the tag); a
+  property the object does not require, or that admits `null`, is a
+  presence pair (§ Codecs); a string enum whose values are all names is an
+  enum; `integer`, `number`, `boolean` and `string` are `Int`, `Float`,
+  `Bool` and `String`; an array with a `maxItems` of at most 1024 is a
+  `bounded` list; a `$ref` inside the document is the type it names,
+  declared once. What the codec cannot carry is a `std::json::Value`,
+  with a comment saying why: a union (`oneOf`, `anyOf`, an `allOf` of
+  several), an object with no properties or a map, an array with no
+  bound, a list of lists, a whole list as a request or response, a
+  recursive shape, a reference outside the document, a schema with no
+  type.
+
+The file is a function of the source: two imports of one document write
+the same bytes, so it is committed with the program and re-imported to
+change it, never edited by hand.
+
+**`hale api drift [file.hl | dir] [--surface NAME]`** reads each imported
+surface's source again, maps it as the import does, and compares the two
+row by row by **shape**: a row's request, response and `wire:`, every
+record they name written out as its fields' JSON keys and types (an
+optional field marked as such) and every enum as its variants, so a record
+renamed in the program is no drift. Each difference is one line on
+stdout, in the order of the rows' names, in a form a watcher parses:
+
+```text
+drift Shelf added add_item
+drift Shelf removed create_item
+drift Shelf changed get_items_item_id response
+```
+
+`changed` names the slot that moved, `request`, `response` or `wire`, a
+line each. A surface in step prints `Shelf: in step with ../shelf.json (4
+rows)`. Exit 0 in step, 1 on drift, 2 when a source cannot be read or the
+usage is wrong; a block with no `from` is not checked. `hale check --api`
+runs the same check over every file the program loads, the seeds it
+imports included, each seed's blocks against its own records and their
+sources relative to their own files, after its document: the lines go to
+stderr, and drift exits 1.
+
 ## Driving a served program
 
 `hale api describe` and `hale api call` are the operator's verbs: they drive any
@@ -2902,6 +3025,14 @@ shedding, `stop()`, and the served descriptions held to the fixtures as
 values).
 
 ## Open points
+
+- **Binding an imported surface** to a client (`api::client(Surface,
+  mcp::Client | http::Client)`), which reads the signature rows' `wire:`;
+  until then an imported surface is declared, checked and described, and
+  called by nothing the compiler generates.
+- **The import's reach**: a YAML document, Swagger 2.0, a header or cookie
+  parameter, an operation's error responses, authentication beyond what a
+  public document needs, and a `$ref` to another document are not read.
 
 - **`grpc://` endpoints for `hale describe` and `hale call`**: the
   clients are Rust and have no HTTP/2 stack (the runtime's nghttp2 is

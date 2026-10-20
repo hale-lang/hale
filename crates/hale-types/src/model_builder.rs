@@ -3691,7 +3691,7 @@ pub fn derive_application_model_over(
         e.surface_rows.push(hale_model::SurfaceRow {
             surface: hale_model::SurfaceId(sid as u32),
             member: row.member.clone(),
-            handler: h.and_then(|h| fid_of(&h.key)),
+            handler: h.and_then(|h| h.key.as_ref()).and_then(fid_of),
             request: h.and_then(|h| h.request.as_ref()).map(ty),
             response: h.and_then(|h| h.response.as_ref()).map(ty),
             error: h.and_then(|h| h.error.as_ref()).map(ty),
