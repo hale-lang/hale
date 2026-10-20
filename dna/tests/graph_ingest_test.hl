@@ -122,7 +122,7 @@ locus App {
         // ---- init on the repository: no application at its root
         let init = dna::grafted(repo, ".\n--attach");
         std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "graph   176 node(s)"), "and says what it read: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "graph   178 node(s)"), "and says what it read: " + init.stdout);
         std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 6 process, 6 seed, 6 contract, 98 noun, 3 deployment, 0 gate, 8 document, 31 witness, 0 position, 0 work"), "by kind: " + init.stdout);
 
         // ---- the record, read back
