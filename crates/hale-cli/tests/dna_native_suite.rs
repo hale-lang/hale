@@ -1122,6 +1122,7 @@ fn dna_fixture_set_is_complete() {
             "practice_command_recovery_test.hl",
             "practice_lifecycle_test.hl",
             "practice_test.hl",
+            "practices_read_test.hl",
             "principal_test.hl",
             "projection_fence_test.hl",
             "projectors_test.hl",
