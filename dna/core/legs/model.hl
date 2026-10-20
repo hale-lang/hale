@@ -267,11 +267,11 @@ locus ModelPerformer {
         let validators = std::json::find_string_field(hat, "validators");
         let mut worktree = "";
         let mut base = "";
+        let cw = CodebaseWork { codebase: hat_codebase(hat), hands: hands };
         if mode == "do" {
             // a Work in an attached codebase is made in a clone of the codebase's repository
-            let cb = hat_codebase(hat);
-            if cb.present {
-                let wt = CodebaseWork { codebase: cb, hands: hands }.open(std::json::find_string_field(hat, "task_id"));
+            if cw.codebase.present {
+                let wt = cw.open(std::json::find_string_field(hat, "task_id"));
                 if !wt.ok { return Performance { disposition: "declined", narrative: "the codebase's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
                 worktree = wt.output;
             } else {
@@ -283,7 +283,7 @@ locus ModelPerformer {
             }
             base = dna::trim_nl(dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD").stdout);
         }
-        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api, codebase: hat_codebase(hat) };
+        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api, codebase: cw.codebase };
         let mut req = first;
         req.tools = tools_for_model(std::json::find_field_raw(hat, "hands"));
         let mut messages = "";
@@ -335,6 +335,18 @@ locus ModelPerformer {
             let soft = dna::run_tool("git\n-C\n" + bench.worktree + "\nreset\n-q\n--soft\n" + bench.base);
             let changed = dna::run_tool("git\n-C\n" + bench.worktree + "\nstatus\n--porcelain");
             if soft.code != 0 || len(std::str::trim(changed.stdout)) == 0 { return Performance { disposition: "failed", narrative: "the answer changed no file", calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+            if cw.codebase.present {
+                // a codebase's change is not a Mutation of the genome: verified, its branch
+                // pushed to the codebase's repository and the review opened at its forge
+                let rev = cw.propose(bench.worktree, first_line(answer), std::json::find_string_field(hat, "objective"));
+                if !rev.ok { return Performance { disposition: "failed", narrative: "the change could not be proposed at the codebase: " + rev.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+                let shown = hands.git.patch(bench.worktree);
+                return Performance {
+                    disposition: "done", result: answer, result_ref: "review:" + rev.output,
+                    narrative: "the model drove the hands for " + to_string(turn) + " turn(s), the validators passed and the review opened at the codebase" + self.waits_said(),
+                    calls: calls, receipts: if shown.ok { patch_and_tools(shown.output, rows) } else { tool_receipt(rows) }, prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
+                };
+            }
             let sha = hands.git.commit(bench.worktree, first_line(answer));
             if !sha.ok { return Performance { disposition: "failed", narrative: "the change could not be committed: " + sha.error, calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
             let patch = hands.git.patch(bench.worktree);

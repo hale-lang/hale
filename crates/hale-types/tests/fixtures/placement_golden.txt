@@ -11203,17 +11203,20 @@ dynamic	__lib_dna__core__legs___hands__Hands	on main
 == dna/tests/codebase_go_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core/legs
-dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
-dynamic	__lib_dna__core__legs___codebase__CodebaseWork	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___forge__MemForge	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
 dynamic	__lib_dna__core__legs___codebase__CodebaseWork	on main
 dynamic	__lib_dna__core__legs___hands__ForgeBridge	on main
 dynamic	__lib_dna__core__legs___hands__GoToolchain	on main
 dynamic	__lib_dna__core__legs___hands__Hands	on main
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on main
 dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/command_relay_trust_test.hl
 row	App@main1	App	main	default
