@@ -215,6 +215,9 @@ hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
 hale dna application remove [project] [--as <who>]
                              the attached application removed (`application.detached` in the record) and its
                              broker account revoked: its user, its password and its vault entry (GH #989)
+hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--branch <name>] | detach <name>]
+                             a foreign codebase attached with no application (`codebase.attached` in the record): a leg
+                             works a branch of its repository, verifies with the two commands, and its review opens there
 hale dna body                who runs this record (the body lease); `body claim --force` takes it from a body that is gone;
                              `body release [--force]` gives it up — both are rows in your name (--as <who>)
 hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--dry-run]
@@ -514,6 +517,7 @@ kind it does not know keeps walking.
 | kind | memory | what it is |
 |---|---|---|
 | `application.attached` / `application.detached` | record | the application the organism oversees, and its removal |
+| `codebase.attached` / `codebase.detached` | record | a foreign codebase attached with no application: repository, build and test commands, default branch; and its removal |
 | `expression.restart_requested` | record | the organization asks for a change to be expressed |
 | `expression.restarted` / `expression.deployed` | record | what the new expression reports, or what a deployment gateway expressed |
 | `expression.observed` / `expression.crashed` | record | the observation window's outcome |

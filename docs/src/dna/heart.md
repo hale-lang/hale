@@ -502,3 +502,27 @@ row touching the same instances. An instance that never came up is
 | `body provision: … nothing was written` | no reachable remote, no pinned toolchain, or a missing tool on the host | what the line names |
 
 [Troubleshooting](./troubleshooting.md) has the rest, part by part.
+
+## A codebase with no application
+
+A codebase the organism works on need not be a heart. Attach one with its
+repository and the two commands that say whether a change is good:
+
+```sh
+hale dna codebase attach ledger-svc --repo https://forge.example/acme/ledger-svc.git \
+    --build "make build" --test "make test" [--branch main]
+hale dna codebase list
+hale dna codebase detach ledger-svc
+```
+
+This writes `codebase.attached` (or `codebase.detached`) to the record. No
+application row is written and no broker account is made: the codebase has
+no readings and no deploy path of its own. The commands are opaque
+strings, run in a leg's worktree.
+
+A leg working the codebase clones its repository (never the organism's),
+branches `leg/<codebase>/<task>` from the default branch, and verifies
+with `build` then `test` in that worktree. It proposes by committing,
+pushing the branch to the codebase's repository and opening a review
+there; the forge decides, and a leg never merges. Readings and an
+application row come later, if the codebase is also a heart.

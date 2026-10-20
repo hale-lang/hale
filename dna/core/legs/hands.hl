@@ -36,6 +36,10 @@ interface GitHand {
     // the candidate a Mutation and its Review (GH #1156). The worktree
     // itself goes with `clean`.
     fn patch(worktree: String) -> HandResult;
+    // The worktree on a new branch `name` of its HEAD, and that branch
+    // pushed to the repository it was cloned from (`origin`).
+    fn branch(worktree: String, name: String) -> HandResult;
+    fn push(worktree: String, name: String) -> HandResult;
 }
 interface ForgeHand {
     // A review opened from the worktree's branch: its url.
@@ -149,14 +153,28 @@ locus ScratchGit {
         if out.code == 0 && len(out.stdout) == 0 { return HandResult { error: "the worktree's last commit has no patch" }; }
         return hand_result(out, out.stdout);
     }
+    fn branch(worktree: String, name: String) -> HandResult {
+        let out = dna::run_tool("git\n-C\n" + worktree + "\ncheckout\n--quiet\n-b\n" + name);
+        return hand_result(out, name);
+    }
+    fn push(worktree: String, name: String) -> HandResult {
+        let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+        return hand_result(out, name);
+    }
 }
 
 // The forge through `gh`: a pull request from the worktree's branch, and
 // its review decision as a verdict. The forge decides; nothing here merges.
 locus GhForge {
-    params { opened: Int = 0; }
+    // `repo` (owner/name) and `base` name a codebase's own repository and
+    // default branch; empty, `gh` reads them from the worktree's remote.
+    params { opened: Int = 0; repo: String = ""; base: String = ""; }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         self.opened = self.opened + 1;
+        if len(self.repo) > 0 {
+            let at = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --repo \"$2\" --base \"$3\" --head \"$(git rev-parse --abbrev-ref HEAD)\" --title \"$4\" --body \"$5\"\nsh\n" + worktree + "\n" + self.repo + "\n" + self.base + "\n" + title + "\n" + body);
+            return hand_result(at, dna::trim_nl(at.stdout));
+        }
         let out = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n" + title + "\n" + body);
         return hand_result(out, dna::trim_nl(out.stdout));
     }
@@ -165,6 +183,27 @@ locus GhForge {
         if out.code != 0 { return hand_result(out, ""); }
         let decision = dna::trim_nl(out.stdout);
         return HandResult { ok: true, output: if decision == "APPROVED" { "approve" } else if decision == "CHANGES_REQUESTED" { "revise" } else { "pending" } };
+    }
+}
+
+// The forge hand over the core's `Forge` (a code-review host behind an
+// interface, `forge.hl`): a review is opened for the worktree's current
+// branch. The forge is the repository's own, so a codebase's reviews open
+// where its code is; the memory forge stands in for it in fixtures.
+locus ForgeBridge {
+    params { forge: dna::Forge = dna::NoForge { }; }
+    fn open_review(worktree: String, title: String, body: String) -> HandResult {
+        let br = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\n--abbrev-ref\nHEAD");
+        if br.code != 0 { return hand_result(br, ""); }
+        let r = self.forge.open_review(dna::trim_nl(br.stdout), title, body);
+        if !r.present { return HandResult { error: r.why }; }
+        return HandResult { ok: true, output: r.ref };
+    }
+    fn verdict(review: String) -> HandResult {
+        let lines = self.forge.verdicts(review);
+        if std::str::contains(lines, "\tapprove\t") { return HandResult { ok: true, output: "approve" }; }
+        if std::str::contains(lines, "\trevise\t") { return HandResult { ok: true, output: "revise" }; }
+        return HandResult { ok: true, output: "pending" };
     }
 }
 
