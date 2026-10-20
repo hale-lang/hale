@@ -913,11 +913,11 @@ fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_f
 //
 // A foreign codebase attached with a repository, a build command and a test
 // command, and no application (phase 3): `codebase.attached {name, repo,
-// build, test, branch, by}` in the record, `codebase.detached {name, by}` to
+// build, test, branch, toolchain, by}` in the record, `codebase.detached {name, by}` to
 // revoke it. A leg working it clones the repository, branches from `branch`,
 // verifies with the two commands and has its review opened there.
 
-fn codebase_verb(root: String, sub: String, name: String, repo_in: String, build: String, test: String, branch_in: String, who_flag: String) -> Answer {
+fn codebase_verb(root: String, sub: String, name: String, repo_in: String, build: String, test: String, branch_in: String, who_flag: String, toolchain_in: String) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let j = dna::RecordJournal { repo: root, author: "host" };
@@ -927,12 +927,14 @@ fn codebase_verb(root: String, sub: String, name: String, repo_in: String, build
     }
     let by = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "attach" {
-        if !dna::codebase_name_ok(name) { return fail("codebase attach: `hale dna codebase attach <name> --repo <url or path> --build <cmd> --test <cmd> [--branch <name>] [--as <who>]`; the name is lowercase letters, digits, - and _"); }
+        if !dna::codebase_name_ok(name) { return fail("codebase attach: `hale dna codebase attach <name> --repo <url or path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--branch <name>] [--as <who>]`; the name is lowercase letters, digits, - and _"); }
         if len(repo_in) == 0 { return fail("codebase attach: --repo names the codebase's repository (a url, or a path to one)"); }
+        let toolchain = if len(toolchain_in) > 0 { toolchain_in } else { "none" };
+        if !dna::toolchain_known(toolchain) { return fail("codebase attach: --toolchain is go, hale or none (none leaves build and test as the opaque commands)"); }
         // a repository on this machine is named by its absolute path
         let local = dna::run_tool("sh\n-c\ncd \"$1\" 2>/dev/null && pwd -P\nsh\n" + repo_in);
         let repo = if local.code == 0 && len(dna::trim_nl(local.stdout)) > 0 { dna::trim_nl(local.stdout) } else { repo_in };
-        let c = dna::Codebase { present: true, name: name, repo: repo, build: build, test: test, branch: if len(branch_in) > 0 { branch_in } else { "main" }, by: by };
+        let c = dna::Codebase { present: true, name: name, repo: repo, build: build, test: test, branch: if len(branch_in) > 0 { branch_in } else { "main" }, by: by, toolchain: toolchain };
         let w = dna::RecordJournal { repo: root, author: by };
         let r = w.append_as(w.revision(), "codebase.attached", "codebase:" + name, dna::codebase_body(c), by, false);
         if !r.ok { return fail("codebase attach: the record refused the row (" + r.error + "): " + w.last_error()); }

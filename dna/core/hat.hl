@@ -269,16 +269,19 @@ fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Ha
     let routed = position_in(w.requires);
     let position = if len(routed) > 0 { routed } else { hat_position_of(w.performer_kind) };
     let owed = output_contract(w.output_contract);
-    let hands = tools_json(owed.hands);
+    // a Go codebase's leg also holds the Go hand
+    let cb = task_codebase(j, w.task_id);
+    let grant = owed.hands + (if cb.present && cb.toolchain == "go" && len(owed.hands) > 0 { " go_vet go_test gofmt_check" } else { "" });
+    let hands = tools_json(grant);
     let h = Hat {
         ok: true, work_id: w.work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: w.performer_kind,
         position_id: position, charter: hat_node_text(j, position),
         objective: w.objective, target: w.target, targets: w.targets, output_contract: w.output_contract, data_class: w.data_class, requires: w.requires,
         effects: hat_effects_of(w.requires), cost_ceiling: w.cost_ceiling,
-        tool_grant: owed.hands, hands: hands, validators: owed.validators,
+        tool_grant: grant, hands: hands, validators: owed.validators,
         model: model_choice_json(model_resolve(j, position, w.output_contract, w.task_id, hands)),
         knowledge_bindings: w.knowledge_bindings, history: w.history, head: w.head,
-        codebase: hat_codebase_json(j, w.task_id)
+        codebase: if cb.present { codebase_body(cb) } else { "" }
     };
     return hat_sealed(hat_with_package(h, pkg, ready));
 }

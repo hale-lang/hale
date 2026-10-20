@@ -22,6 +22,10 @@ fn codebase_name_ok(name: String) -> Bool {
     return true;
 }
 
+// The toolchains a codebase may declare; anything else reads as none.
+fn toolchain_known(t: String) -> Bool { return t == "go" || t == "hale" || t == "none"; }
+fn toolchain_of(t: String) -> String { return if toolchain_known(t) { t } else { "none" }; }
+
 type Codebase {
     present: Bool = false;
     name: String = "";
@@ -30,6 +34,7 @@ type Codebase {
     test: String = "";
     branch: String = "main"; // the default branch a leg branches from and proposes against
     by: String = "";
+    toolchain: String = "none"; // go | hale | none: the toolchain hand a leg works it with; none leaves build and test opaque
 }
 
 // The `codebase.attached` row's body.
@@ -42,6 +47,7 @@ fn codebase_body(c: Codebase) -> String {
     b.string_field("test", c.test);
     b.string_field("branch", c.branch);
     b.string_field("by", c.by);
+    b.string_field("toolchain", c.toolchain);
     b.end_object();
     return b.result();
 }
@@ -62,7 +68,8 @@ fn codebase_of(j: Journal, name: String) -> Codebase {
                 build: std::json::find_string_field(e.body, "build"),
                 test: std::json::find_string_field(e.body, "test"),
                 branch: if len(branch) > 0 { branch } else { "main" },
-                by: std::json::find_string_field(e.body, "by")
+                by: std::json::find_string_field(e.body, "by"),
+                toolchain: toolchain_of(std::json::find_string_field(e.body, "toolchain"))
             };
         }
         if e.kind == "codebase.detached" && std::json::find_string_field(e.body, "name") == name { out = Codebase { }; }
@@ -104,7 +111,7 @@ fn codebase_listing(j: Journal) -> String {
         let nl = std::str::index_of(rest, "\n");
         let c = codebase_of(j, rest[0..nl]);
         rest = rest[(nl + 1)..len(rest)];
-        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: " + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: " + (if len(c.test) > 0 { c.test } else { "-" }) + "\n";
+        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: " + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: " + (if len(c.test) > 0 { c.test } else { "-" }) + "  toolchain: " + c.toolchain + "\n";
     }
     return out;
 }
