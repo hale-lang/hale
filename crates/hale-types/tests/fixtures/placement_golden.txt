@@ -4429,6 +4429,21 @@ row	~.client	__StdHttpClient	pool:io	inherited
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpConn	on pool:io
 
+== crates/hale-codegen/tests/observe_events.rs#f9e2a420
+root	App	the entry
+domain	pool:jobs
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:jobs	entry	off owner
+-- App@literal1.events	__StdObserveOtlp
+row	~	__StdObserveOtlp	pool:jobs	entry	off owner
+row	~.client	__StdHttpClient	pool:jobs	inherited
+-- dynamic	sites in the seed
+dynamic	Spawned	on pool:jobs
+dynamic	__StdBytesBytesBuilder	on pool:jobs
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on pool:jobs
+dynamic	__StdHttpConn	on pool:jobs
+
 == crates/hale-codegen/tests/observe_metrics.rs#952f6e36
 root	App	the entry
 domain	pool:jobs

@@ -11918,6 +11918,14 @@ static void lotus_pool_start_job(void *self_ptr, void *payload);
  * does not re-enter main's drain. */
 static __thread int t_pool_in_run = 0;
 static __thread int t_pool_park_draining = 0;
+#if LOTUS_OBSERVE
+/* GH #1592 S4: set on the thread of the `Otlp` exporter's own run (see
+ * `lotus_observe_events_take`). A cell this thread dispatches is some
+ * other locus's handler, so the flag is cleared across it and restored
+ * after: the exporter's sleep drains other subscribers' cells, and their
+ * events are the program's. */
+static __thread int t_events_drainer = 0;
+#endif
 
 static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
                                           lotus_bus_cell_t *cell) {
@@ -11959,7 +11967,14 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     int outer_in_run = t_pool_in_run;
     t_pool_in_run = cell->run_ticket != NULL;
     lotus_handler_hold_started(hold);
+#if LOTUS_OBSERVE
+    int outer_drainer = t_events_drainer;
+    t_events_drainer = 0;
+#endif
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+#if LOTUS_OBSERVE
+    t_events_drainer = outer_drainer;
+#endif
     t_pool_in_run = outer_in_run;
     /* The run's or the handler's hold, or the one a failure posted from
      * the cell took (`lotus_failure_hold_cell`). */
@@ -22466,14 +22481,17 @@ uint64_t lotus_obs_identity(int64_t which) __attribute__((weak));
  * first take): what it does to send — a builder, a connection — is not
  * the program's, and recording it would feed every send back as the
  * next batch's events. */
-static __thread int t_events_drainer = 0;   /* a drainer with no coroutine: its thread */
+/* (t_events_drainer, declared with the pool dispatch above: a drainer
+ * with no coroutine, its thread while it runs its own cell) */
 static void *_Atomic g_events_drainer_coro;  /* a drainer on a coroutine: that coroutine */
 
 /* Whether the running code is the exporter's own: its coroutine, not the
  * whole worker thread a cooperative pool shares among other loci. */
 static int lotus_events_in_drainer(void) {
+#if LOTUS_HAVE_ASYNC_IO
     lotus_coro_t *c = g_current_coro_tls;
     if (c) return (void *)c == atomic_load_explicit(&g_events_drainer_coro, memory_order_relaxed);
+#endif
     return t_events_drainer;
 }
 
@@ -22516,9 +22534,11 @@ static __thread int64_t t_events_batch_n = 0;
 
 /* Move up to `max` events into this thread's batch; how many. */
 int64_t lotus_observe_events_take(int64_t max) {
+#if LOTUS_HAVE_ASYNC_IO
     if (g_current_coro_tls)
         atomic_store_explicit(&g_events_drainer_coro, (void *)g_current_coro_tls, memory_order_relaxed);
     else
+#endif
         t_events_drainer = 1;
     if (!t_events_batch) {
         t_events_batch = malloc(sizeof(lotus_event_t) * LOTUS_EVENTS_CAP);

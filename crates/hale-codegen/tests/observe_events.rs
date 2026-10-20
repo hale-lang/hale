@@ -376,3 +376,57 @@ fn each_observe_combination_defines_what_the_runtime_references() {
     assert_eq!(flags(&with(otlp), "observe_flags_otlp"), (true, true));
     assert_eq!(flags(&with(&format!("{scrape}{otlp}")), "observe_flags_both"), (true, true));
 }
+
+/// On a classic cooperative pool the exporter's sleep drains the pool's
+/// other subscribers' cells; what their handlers birth is the program's,
+/// not the exporter's, and reaches the collector.
+const CLASSIC_POOL: &str = r#"
+type Ping { n: Int = 0; }
+topic Pings { payload: Ping; subject: "otlp.classic.ping"; }
+
+locus Spawned { params { n: Int = 0; } }
+
+locus Worker {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) {
+        Spawned { n: p.n };
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        events: std::observe::Otlp = std::observe::Otlp { service: "classic", interval: 50ms };
+    }
+    placement {
+        w: cooperative(pool = jobs);
+        events: cooperative(pool = jobs);
+    }
+    bus { publish Pings; }
+    run() {
+        let mut i = 0;
+        while i < 20 {
+            Pings <- Ping { n: i };
+            i = i + 1;
+            std::time::sleep(25ms);
+        }
+        std::time::sleep(200ms);
+    }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_subscriber_on_the_exporters_classic_pool_still_emits_events() {
+    let (url, rx) = collector();
+    let bin = harness::unique_bin("observe_events_classic_pool");
+    build_opts::build_source(CLASSIC_POOL, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", &url).output().expect("run");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut seen = String::new();
+    while let Ok((_, body)) = rx.recv_timeout(Duration::from_millis(500)) {
+        seen.push_str(&body);
+    }
+    assert!(seen.contains("Spawned"), "a handler's birth on the exporter's pool: {seen}");
+    assert!(!seen.contains("__StdHttpConn"), "the backend's sends are not events: {seen}");
+}
