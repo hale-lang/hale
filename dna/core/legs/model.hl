@@ -268,14 +268,22 @@ locus ModelPerformer {
         let mut worktree = "";
         let mut base = "";
         if mode == "do" {
-            let top = if len(self.repo) > 0 { dna::RunResult { code: 0, stdout: self.repo } } else { dna::run_tool("git\nrev-parse\n--show-toplevel") };
-            if top.code != 0 { return Performance { disposition: "declined", narrative: "a `do` Work needs its repository, and the leg runs outside one: " + dna::trim_nl(top.stderr), calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            let wt = hands.git.worktree(dna::trim_nl(top.stdout), "HEAD");
-            if !wt.ok { return Performance { disposition: "declined", narrative: "the Work's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
-            worktree = wt.output;
+            // a Work in an attached codebase is made in a clone of the codebase's repository
+            let cb = hat_codebase(hat);
+            if cb.present {
+                let wt = CodebaseWork { codebase: cb, hands: hands }.open(std::json::find_string_field(hat, "task_id"));
+                if !wt.ok { return Performance { disposition: "declined", narrative: "the codebase's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+                worktree = wt.output;
+            } else {
+                let top = if len(self.repo) > 0 { dna::RunResult { code: 0, stdout: self.repo } } else { dna::run_tool("git\nrev-parse\n--show-toplevel") };
+                if top.code != 0 { return Performance { disposition: "declined", narrative: "a `do` Work needs its repository, and the leg runs outside one: " + dna::trim_nl(top.stderr), calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+                let wt = hands.git.worktree(dna::trim_nl(top.stdout), "HEAD");
+                if !wt.ok { return Performance { disposition: "declined", narrative: "the Work's worktree could not be made: " + wt.error, calls: "[]", prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+                worktree = wt.output;
+            }
             base = dna::trim_nl(dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD").stdout);
         }
-        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api };
+        let bench = ToolBench { worktree: worktree, base: base, grant: std::json::find_string_field(hat, "tool_grant"), api: hands.lease.api, codebase: hat_codebase(hat) };
         let mut req = first;
         req.tools = tools_for_model(std::json::find_field_raw(hat, "hands"));
         let mut messages = "";

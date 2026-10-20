@@ -65,6 +65,18 @@ fn check() {
     std::test::assert(!go.test(at, "-run=x").ok, "a flag is not a package pattern");
     std::test::assert(work.verify(at).ok, "verify passes on a clean tree");
 
+    // the tool bench a model-driven leg builds (`ModelPerformer.perform_loop`
+    // passes the hat's codebase): its Go tools run in the codebase's worktree
+    let bench = legs::ToolBench { worktree: at, base: "", grant: "go_vet go_test gofmt_check", codebase: legs::hat_codebase(hat) };
+    std::test::assert(bench.call(work.hands, "go_vet", "{}").ok, "the bench's go_vet runs in the codebase worktree");
+    let bt = bench.call(work.hands, "go_test", "{\"package\": \"./...\"}");
+    std::test::assert(bt.ok && std::str::contains(bt.output, "ok"), "the bench's go_test runs there: " + bt.error + bt.output);
+    std::io::fs::write_file(at + "/ugly.go", "package greet\n\nfunc   Ugly() {}\n") or discard;
+    let bf = bench.call(work.hands, "gofmt_check", "{}");
+    std::test::assert(!bf.ok && std::str::contains(bf.error, "ugly.go"), "the bench's gofmt_check sees the worktree's file: " + bf.error);
+    let rm = sh("rm ugly.go", at);
+    std::test::assert_eq_int(rm.code, 0, "the stray file is removed");
+
     // a gofmt violation: named, and the push refused
     std::io::fs::write_file(at + "/greet.go", "package greet\n\nfunc   Hello() string { return \"hello\" }\n") or discard;
     let fmt = go.gofmt_check(at);
