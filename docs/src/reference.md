@@ -23,6 +23,7 @@ diagnostic's meaning, go there.
 | The FFI contract — C (`@ffi("c")`) and the WASM host interface (`@ffi("js")` / `@export`) | [`spec/ffi.md`](https://github.com/hale-lang/hale/blob/main/spec/ffi.md) |
 | Dependencies & vendoring | [`spec/packages.md`](https://github.com/hale-lang/hale/blob/main/spec/packages.md) |
 | Project layout & imports | [`spec/projects.md`](https://github.com/hale-lang/hale/blob/main/spec/projects.md) |
+| The local habitat: `hale habitat` verbs, allocations, the handover | [`spec/habitat.md`](https://github.com/hale-lang/hale/blob/main/spec/habitat.md) |
 | How tests are written and run | [`spec/testing.md`](https://github.com/hale-lang/hale/blob/main/spec/testing.md) |
 | Why the current surface is shaped this way | [`spec/design-rationale.md`](https://github.com/hale-lang/hale/blob/main/spec/design-rationale.md) |
 | The design-decision log (the F-series: commitments, rejects, sketches) | [`spec/decisions.md`](https://github.com/hale-lang/hale/blob/main/spec/decisions.md) |
