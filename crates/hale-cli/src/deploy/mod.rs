@@ -63,11 +63,11 @@ pub(crate) struct Model {
 const USAGE: &str = "\
 hale deploy render <path> --backend compose|kubernetes [--env <name>] [--out <dir>]
 
-  <path>       a seed (a directory or .hl file), or a fleet plan (.json)
-  --backend    compose | kubernetes; else `backend` of [environments.<name>]
-  --env        the [environments.<name>] of the nearest hale.toml: its
-               `backend` and its `[environments.<name>.env]` values
-  --out        write compose.yaml / kubernetes.yaml into <dir>; else stdout
+  <path>: a seed (a directory or .hl file), or a fleet plan (.json)
+  --backend: compose | kubernetes; else `backend` of [environments.<name>]
+  --env: the [environments.<name>] of the nearest hale.toml: its
+    `backend` and its `[environments.<name>.env]` values
+  --out: write compose.yaml / kubernetes.yaml into <dir>; else stdout
 
 A pure function of the checked program: it never builds or deploys, and it
 renders no probe, scrape or scale section the program does not declare.
@@ -209,7 +209,7 @@ pub(crate) fn relative(from: &Path, p: &Path) -> String {
 }
 
 pub(crate) fn q(s: &str) -> String {
-    format!("{:?}", s)
+    serde_json::to_string(s).unwrap_or_default()
 }
 
 /// A DNS-1123-ish name: lowercase alphanumerics and `-`.
