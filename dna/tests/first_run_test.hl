@@ -226,7 +226,7 @@ fn main() {
     let nerves = in_dir(voice, hale + "\ndna\nnerves\nmigrate\n.").stdout;
     let env = lines_starting(handed, "HALE_DNA_") + lines_starting(nerves, "HALE_DNA_NATS_ORG=") + lines_starting(nerves, "HALE_DNA_NATS_URL_APP=") + lines_starting(nerves, "HALE_DNA_NATS_USER_APP=") + lines_starting(nerves, "HALE_DNA_NATS_VAULT_APP=") + "VOICE_LIMITS_EVERY_S=1\n";
     let api_log = scratch + "/voice.log";
-    let mut api = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", api_log);
+    let api = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", api_log);
     let base = "http://127.0.0.1:" + to_string(voice_port);
     let mut healthy = false;
     let mut tries = 0;
@@ -270,27 +270,10 @@ fn main() {
     let headers = scratch + "/answer.headers";
     let mut plain = ask(scratch, base, caller, false, headers);
     tries = 0;
-    // A first read that the head did not answer in time leaves voice
-    // refusing keyed requests, so a slow runner's api is started again,
-    // twice at most, each time after a wait of its own: its read begins
-    // anew against a head that is warm by then.
-    let mut restarts = 0;
-    while status_of(plain) == "503" && tries < dna::wait_secs(300) {
+    while status_of(plain) == "503" && tries < dna::wait_secs(180) {
         std::time::sleep(1s);
         plain = ask(scratch, base, caller, false, headers);
         tries = tries + 1;
-        if status_of(plain) == "503" && restarts < 2 && tries % dna::wait_secs(90) == 0 {
-            stop(api + "\n" + listeners(voice_port));
-            api = started(voice, env, voice + "/api/api\n--port\n" + to_string(voice_port) + "\n--canned\n" + voice + "/api/canned", api_log);
-            restarts = restarts + 1;
-            let mut up = false;
-            let mut waited = 0;
-            while !up && waited < dna::wait_secs(30) * 2 {
-                up = status_of(http(scratch, "GET", base + "/healthz", "")) == "200";
-                if !up { std::time::sleep(500ms); }
-                waited = waited + 1;
-            }
-        }
     }
     std::test::assert(status_of(plain) == "200" && std::str::contains(plain, "\"status\":\"completed\"") && std::str::contains(plain, "hello from voice"), "a request answered by the node's seat: " + plain + "\n" + text_of(api_log));
     let streamed = ask(scratch, base, caller, true, headers);
