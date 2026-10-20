@@ -2718,6 +2718,20 @@ list, and `hale api drift` holds it to that source afterwards. The block is
 an ordinary `api` declaration: the checker admits it, the description and
 the generated forms list it like any surface, and nothing serves it.
 
+The OpenAPI document is JSON or YAML: it is JSON when it opens with `{`,
+and YAML otherwise, or when its name ends `.yaml` or `.yml` or a URL
+answers `application/yaml` or `text/yaml`; `hale api drift` reads it the
+same way. The YAML reader gives the value the JSON reader gives for the same
+document, and reads the subset an OpenAPI document is written in: block
+mappings and sequences by indentation, plain, single- and double-quoted
+scalars (with escapes), `|` and `>` block scalars with `-` and `+`
+chomping, flow collections, comments, and one document with its `---` and
+`...` markers. Scalars resolve by the YAML 1.2 core schema (`~` and `null`
+are null; `on` and `yes` are strings; a mapping key is the text it is
+written as). It refuses, naming the line, anchors and aliases (`&`, `*`),
+merge keys (`<<`), tags (`!`), complex keys (`?`), directives, duplicate
+keys, tab indentation and more than one document.
+
 ```hale,fragment
 api Shelf from openapi "../shelf.json" {
     rpc create_item(ShelfNewItem) -> ShelfItem wire: "POST /items";

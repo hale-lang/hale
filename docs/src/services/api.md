@@ -1141,6 +1141,7 @@ document or, for an MCP server, from its tool list:
 ```sh
 hale api import https://shelf.example/openapi.json --as Shelf --out shelf.hl
 hale api import ./vendor/shelf.json --as Shelf          # a local file
+hale api import ./vendor/shelf.yaml --as Shelf          # YAML is read too
 hale api import http://127.0.0.1:8931/mcp --as Tools    # an MCP endpoint
 ```
 
@@ -1173,6 +1174,17 @@ type ShelfNewItem {
     name: String;
 }
 ```
+
+The document may be JSON or YAML, told by its content (JSON opens with
+`{`), its `.yaml` or `.yml` name, or the `application/yaml` or `text/yaml`
+type a URL answers with; `hale api drift` reads it the same way. The YAML
+reader covers what an OpenAPI document is written in: block and flow
+mappings and sequences, plain and quoted scalars, `|` and `>` block
+scalars, comments, and one document with its `---` marker. Scalars follow
+the YAML 1.2 core schema, so `on` and `yes` are strings. It refuses, naming
+the line, anchors and aliases (`&`, `*`), merge keys (`<<`), tags (`!`),
+complex keys (`?`), duplicate keys and more than one document; write such a
+value out where it is used.
 
 `from openapi "…"` says where the surface came from. Each row is named
 after the operation's `operationId` (or its method and path when it has

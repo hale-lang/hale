@@ -499,3 +499,176 @@ fn check_api_holds_a_dependency_seeds_imported_surface_to_its_source() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const NOTES_YAML: &str = r##"# a document as a service publishes it
+openapi: 3.0.3
+info:
+  title: Notes
+  version: 2.1.0
+  description: |
+    Notes for a desk.
+
+    Each note has a title and a body.
+paths:
+  /notes:
+    get:
+      operationId: listNotes
+      summary: >-
+        List the notes,
+        newest first.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer}
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 50
+                items:
+                  $ref: '#/components/schemas/Note'
+    post:
+      operationId: createNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewNote"
+      responses:
+        201:
+          description: made
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+components:
+  schemas:
+    Note:
+      type: object
+      required: [id, title]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        pinned:
+          type: boolean
+          default: false
+        tags:
+          type: array
+          maxItems: 4
+          items: {type: string}
+    NewNote:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string}
+        body: {type: string, nullable: true}
+"##;
+
+const NOTES_JSON: &str = r##"{
+  "openapi": "3.0.3",
+  "info": {"title": "Notes", "version": "2.1.0", "description": "Notes for a desk.\n\nEach note has a title and a body.\n"},
+  "paths": {
+    "/notes": {
+      "get": {
+        "operationId": "listNotes",
+        "summary": "List the notes, newest first.",
+        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer"}}],
+        "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"type": "array", "maxItems": 50, "items": {"$ref": "#/components/schemas/Note"}}}}}}
+      },
+      "post": {
+        "operationId": "createNote",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NewNote"}}}},
+        "responses": {"201": {"description": "made", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}}}
+      }
+    }
+  },
+  "components": {"schemas": {
+    "Note": {"type": "object", "required": ["id", "title"], "properties": {
+      "id": {"type": "integer"}, "title": {"type": "string"}, "pinned": {"type": "boolean", "default": false},
+      "tags": {"type": "array", "maxItems": 4, "items": {"type": "string"}}}},
+    "NewNote": {"type": "object", "required": ["title"], "properties": {
+      "title": {"type": "string"}, "body": {"type": "string", "nullable": true}}}
+  }}
+}"##;
+
+#[test]
+fn a_yaml_document_imports_as_its_json_does() {
+    let dir = unique_dir("yaml");
+    std::fs::write(dir.join("notes.json"), NOTES_JSON).unwrap();
+    std::fs::write(dir.join("notes.yaml"), NOTES_YAML).unwrap();
+    // a YAML document under a name that says nothing of it is told by content
+    std::fs::write(dir.join("notes.doc"), NOTES_YAML).unwrap();
+    let import = |file: &str| {
+        let to = format!("{file}.hl");
+        let out = run(
+            &dir,
+            &["api", "import", file, "--as", "Notes", "--out", &to],
+        );
+        assert!(out.status.success(), "import {file}: {}", text(&out.stderr));
+        std::fs::read_to_string(dir.join(&to))
+            .unwrap()
+            .replace(file, "DOC")
+    };
+    let from_json = import("notes.json");
+    assert!(
+        from_json.contains("rpc create_note(NotesNewNote) -> NotesNote wire: \"POST /notes\";"),
+        "{from_json}"
+    );
+    assert_eq!(import("notes.yaml"), from_json);
+    assert_eq!(import("notes.doc"), from_json);
+}
+
+#[test]
+fn a_yaml_document_is_held_to_its_import_by_drift() {
+    let dir = unique_dir("yaml_drift");
+    std::fs::write(dir.join("notes.yaml"), NOTES_YAML).unwrap();
+    let out = run(
+        &dir,
+        &[
+            "api",
+            "import",
+            "notes.yaml",
+            "--as",
+            "Notes",
+            "--out",
+            "notes.hl",
+        ],
+    );
+    assert!(out.status.success(), "import: {}", text(&out.stderr));
+    let clean = run(&dir, &["api", "drift", "notes.hl"]);
+    assert!(
+        clean.status.success(),
+        "drift: {}{}",
+        text(&clean.stdout),
+        text(&clean.stderr)
+    );
+    std::fs::write(
+        dir.join("notes.yaml"),
+        NOTES_YAML.replace("operationId: createNote", "operationId: addNote"),
+    )
+    .unwrap();
+    let drifted = run(&dir, &["api", "drift", "notes.hl"]);
+    assert!(!drifted.status.success());
+    assert!(
+        text(&drifted.stdout).contains("add_note"),
+        "{}",
+        text(&drifted.stdout)
+    );
+}
+
+#[test]
+fn a_yaml_construct_the_reader_refuses_names_its_line() {
+    let dir = unique_dir("yaml_refuse");
+    std::fs::write(dir.join("a.yaml"), "openapi: 3.0.3\ninfo: &i\n  title: A\n").unwrap();
+    let out = run(&dir, &["api", "import", "a.yaml", "--as", "A"]);
+    assert!(!out.status.success());
+    let err = text(&out.stderr);
+    assert!(err.contains("line 2: anchors"), "{err}");
+}

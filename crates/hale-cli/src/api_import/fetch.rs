@@ -286,27 +286,42 @@ pub fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
-/// A JSON document at `url`, by GET.
+/// A document (JSON or YAML) at `url`, by GET.
 pub fn get_json(url: &str) -> Result<Value, String> {
-    let r = request("GET", url, &[("Accept", "application/json".to_string())], None, &|_| {
+    let accept = "application/json, application/yaml, text/yaml;q=0.9";
+    let r = request("GET", url, &[("Accept", accept.to_string())], None, &|_| {
         false
     })?;
     if !(200..300).contains(&r.status) {
         return Err(format!("{url} answered {}", r.status));
     }
-    parse_document(&String::from_utf8_lossy(&r.body), url)
+    let yaml = r.header("content-type").is_some_and(|c| {
+        let c = c.to_ascii_lowercase();
+        c.contains("yaml")
+    });
+    parse_document_as(&String::from_utf8_lossy(&r.body), url, yaml)
 }
 
-/// A document's text as JSON, or why not.
+/// A document's text as JSON, or why not: JSON when it opens with `{`,
+/// YAML (the OpenAPI subset of `yaml.rs`) when it does not or when its name
+/// ends `.yaml` or `.yml`.
 pub fn parse_document(text: &str, from: &str) -> Result<Value, String> {
-    serde_json::from_str(text).map_err(|e| {
-        let head = text.trim_start();
-        if head.starts_with("openapi:") || head.starts_with("swagger:") || head.starts_with("---") {
-            format!("{from} is YAML, and the import reads a JSON document: convert it first (`yq -o json`)")
-        } else {
-            format!("{from} is not JSON: {e}")
-        }
-    })
+    parse_document_as(text, from, false)
+}
+
+/// `parse_document`, with `yaml` set when the source has said it serves YAML.
+pub fn parse_document_as(text: &str, from: &str, yaml: bool) -> Result<Value, String> {
+    let name = from
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(from)
+        .to_ascii_lowercase();
+    let yaml = yaml || name.ends_with(".yaml") || name.ends_with(".yml");
+    let head = text.trim_start_matches('\u{feff}').trim_start();
+    if !yaml && head.starts_with('{') {
+        return serde_json::from_str(text).map_err(|e| format!("{from} is not JSON: {e}"));
+    }
+    super::yaml::parse(text).map_err(|e| format!("{from} is YAML that the import cannot read: {e}"))
 }
 
 /// The JSON-RPC messages of an MCP response: its body as JSON, or each
