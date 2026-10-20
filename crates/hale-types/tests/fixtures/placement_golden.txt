@@ -12492,6 +12492,47 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/onboarding/voice-heart/api/tests/events_test.hl
 row	__lib____events__UsageJson@main1	__lib____events__UsageJson	main	default
 
+== dna/tests/onboarding/voice-heart/api/tests/free_json_test.hl
+hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
+hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
+hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
+hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
+hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
+hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	dynamic	sites in api #446d82b3
+shared	dynamic	sites in lib/pond/realtime/nats #164fddea
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/onboarding/voice-heart/api/tests/governance_test.hl
 row	__lib____governance__HeldLimits@main8	__lib____governance__HeldLimits	main	default
 row	__lib____governance__PracticeLimits@main1	__lib____governance__PracticeLimits	main	default
@@ -12867,6 +12908,8 @@ shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/onboarding/voice-heart/api/tests/patch_test.hl
+
 == dna/tests/onboarding/voice-heart/api/tests/projects_test.hl
 hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
 hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
@@ -13067,6 +13110,8 @@ dynamic	__lib____governance__PracticeLimits	on main
 dynamic	__lib____stream__EventStream	on main
 
 == dna/tests/onboarding/voice-heart/api/tests/store_errors_test.hl
+
+== dna/tests/onboarding/voice-heart/api/tests/twins_test.hl
 
 == dna/tests/onboarding/voice-heart/brain/tests/routes_test.hl
 
@@ -16632,6 +16677,7 @@ domain	pinned:Api@literal1.teller
 hole	Api@literal1.governance.held	reuse `self.held`
 row	Api@literal1	Api	main	default
 row	Api@literal1.held	HeldLimits	main	default
+row	Api@literal1.probes	__StdObserveProbes	main	default
 row	__StdSecretCredential@main2	__StdSecretCredential	main	default
 row	__StdSecretCredential@main3	__StdSecretCredential	main	default
 row	__StdSecretCredential@main4	__StdSecretCredential	main	default

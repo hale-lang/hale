@@ -494,9 +494,11 @@ fn topology_facts(artifact: &Path, _plan: bool) -> Result<Option<Scrape>, String
     }))
 }
 
-/// The probes' port from the seed's main locus: the literal `port`, or the
-/// declared default (9090) when the construction names none. A port the
-/// source computes is not known here, and renders nothing.
+/// The probes' port from the seed's main locus: the literal `port`, a
+/// `self.<param>` whose declared default is a literal (the port the program
+/// runs on when nothing overrides that param), or the declared default
+/// (9090) when the construction names none. A port the source computes is
+/// not known here, and renders nothing.
 fn probes_of(seed: &Path, name: &str, notes: &mut Vec<String>) -> Option<i64> {
     let files: Vec<PathBuf> = if seed.is_dir() {
         let mut f: Vec<PathBuf> = std::fs::read_dir(seed)
@@ -526,6 +528,15 @@ fn probes_of(seed: &Path, name: &str, notes: &mut Vec<String>) -> Option<i64> {
             }
             for m in &l.members {
                 let LocusMember::Params(pb) = m else { continue };
+                let literal_default = |param: &str| {
+                    pb.params
+                        .iter()
+                        .find(|q| q.name.name == param)
+                        .and_then(|q| match &q.init {
+                            ParamInit::Value(Expr::Literal(Literal::Int(n), _)) => Some(*n as i64),
+                            _ => None,
+                        })
+                };
                 for p in &pb.params {
                     if !hale_types::probes::is_probes_param(p) {
                         continue;
@@ -536,6 +547,11 @@ fn probes_of(seed: &Path, name: &str, notes: &mut Vec<String>) -> Option<i64> {
                                 None => Some(9090),
                                 Some(i) => match &i.value {
                                     Expr::Literal(Literal::Int(n), _) => Some(*n as i64),
+                                    Expr::Field { receiver, name, .. }
+                                        if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+                                    {
+                                        literal_default(&name.name)
+                                    }
                                     _ => None,
                                 },
                             }

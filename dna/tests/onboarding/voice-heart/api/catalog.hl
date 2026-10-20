@@ -66,8 +66,8 @@ locus Catalog {
         if u.has_kind { row.kind = model_kind_name(u.kind); }
         if u.has_context_length { row.context_length = u.context_length; }
         if u.has_max_output_tokens { row.max_output_tokens = u.max_output_tokens; }
-        if u.set_price {
-            row.priced = u.priced;
+        if u.has_price || u.clear_price {
+            row.priced = u.has_price;
             row.price = u.price;
         }
         check_model_fields(row.context_length, row.max_output_tokens) or raise;

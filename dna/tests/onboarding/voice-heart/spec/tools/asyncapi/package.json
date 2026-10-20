@@ -1,0 +1,8 @@
+{
+  "name": "voice-tool-asyncapi",
+  "private": true,
+  "description": "The AsyncAPI validator CI runs, pinned with its lockfile so a registry hiccup on a transitive range (its @aws-sdk dependencies) cannot fail a job.",
+  "devDependencies": {
+    "@asyncapi/cli": "2.17.0"
+  }
+}

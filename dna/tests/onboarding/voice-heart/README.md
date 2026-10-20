@@ -30,7 +30,7 @@ body into the row's request and writes the contract's JSON
 
 | Served for real | Endpoints |
 |---|---|
-| health | `GET /healthz`, `GET /readyz` |
+| health | `GET /healthz`, `GET /readyz`; the runtime's own `/healthz`, `/readyz` and `/capacity` on port 9090 (`VOICE_PROBE_PORT`), which a deployment's healthcheck asks |
 | the caller plane | `GET /v1/models`, `GET /v1/models/{model}`, `GET /v1/capabilities` (a project key required) |
 | inference | `POST /v1/responses`, `POST /v1/chat/completions`, served by a node's seat over NATS, streamed or not (as SSE with `"stream": true`) |
 | the catalog | `GET`, `POST /admin/v1/models`; `GET`, `PATCH`, `DELETE /admin/v1/models/{model}` |
@@ -143,8 +143,12 @@ A node is `pending` until it registers, then `up` while it heartbeats and
 `down` after three missed intervals; each seat shows the state its node
 reported, and the problems the coordinator sees (an engine the node does
 not offer, a config its engine requires, an archived account, a model not
-in the catalog). A change to a node or its seats is a new assignment,
-published to the node on NATS. An inference request is admitted (its key,
+in the catalog). A seat's `config`, a change's `before` and `after` and an
+engine's `config_schema` are free-form JSON, kept as written: a new one is
+at most 64 KiB (65536 bytes) and 64 levels deep, or it is refused `400`.
+JSON the store already holds is answered and assigned exactly as stored,
+whatever its size, and never re-parsed on the way out. A change to a node
+or its seats is a new assignment, published to the node on NATS. An inference request is admitted (its key,
 model, account and data class), then offered to each seat that could take
 it in turn: a seat that refuses, does not answer, or fails before output is
 an attempt in `voice.attempts`, and the next is offered the request. Each
@@ -229,12 +233,12 @@ refuse:
 
 | Kind | Closed by |
 |---|---|
-| `tri-state` | hale: a PATCH field that may be left out (kept), `null` (cleared) or a value; a presence pair (`has_x` beside `x`) says two of the three, so the row keeps `set_<field>` |
-| `map` | hale: a free-form JSON object (a seat's `config`, a change's `before` and `after`) and a map whose values are scalars (`Health.checks`); a hale map's values are records |
-| `json-text` | hale: a free-form JSON value inside a typed object (an engine's `config_schema`), so a node's `capabilities` ride as JSON text |
+| `map` | voice: a free-form JSON object the row carries as text, where `std::json::Value` carries it; none today |
+| `json-text` | voice: a typed object the row carries as free-form JSON (`std::json::Value`); none today |
 | `path` | voice: a path or query parameter carried in the row's request |
 | `required` | voice: a row field with a default is not required on the surface |
 | `wire` | voice: the REST wire's shape differs from the row (`api/wire.hl` writes it) |
+| `map-values` | voice: a map whose values one side says and the other does not, so they are not compared; none today (a map's values are compared as `<field>{}` when both say them) |
 | `open` | voice: the contract admits several shapes there (`oneOf`/`anyOf`); the row carries one, as the reader does |
 
 After a change, `npm run bundle -- --write` writes the gaps again; the diff

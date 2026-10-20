@@ -78,8 +78,8 @@ locus Projects {
         }
         if u.has_owners { row.owners.items = u.owners; }
         if u.has_data_classes { row.data_classes.items = u.data_classes; }
-        if u.set_models { row.models = u.models; }
-        if u.set_accounts { row.accounts = u.accounts; }
+        if u.has_models || u.clear_models { row.models = restriction_of(u.has_models, u.models); }
+        if u.has_accounts || u.clear_accounts { row.accounts = restriction_of(u.has_accounts, u.accounts); }
         self.keys_within(row) or raise;
         let after = self.view(row) or raise;
         self.store.update_project(row, change("update", "projects/" + row.id, project_json(before), project_json(after))) or fail store_failed(err);
@@ -329,20 +329,22 @@ locus Keys {
             check_name(u.name) or raise;
             k.name = u.name;
         }
-        if u.set_models {
-            within(p.models, u.models, "models") or raise;
-            k.models = u.models;
+        if u.has_models || u.clear_models {
+            let models = restriction_of(u.has_models, u.models);
+            within(p.models, models, "models") or raise;
+            k.models = models;
         }
-        if u.set_accounts {
-            within(p.accounts, u.accounts, "accounts") or raise;
-            k.accounts = u.accounts;
+        if u.has_accounts || u.clear_accounts {
+            let accounts = restriction_of(u.has_accounts, u.accounts);
+            within(p.accounts, accounts, "accounts") or raise;
+            k.accounts = accounts;
         }
         if u.has_limits {
             check_limits(u.limits, "key", "limits") or raise;
             k.limits.items = u.limits;
         }
-        if u.set_expires {
-            k.expires = u.expires;
+        if u.has_expires_at || u.clear_expires_at {
+            k.expires = u.has_expires_at;
             k.expires_at = u.expires_at;
         }
         let after = key_view(k, now);

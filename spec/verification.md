@@ -1423,7 +1423,8 @@ anything:
 - the seed's checked topology (`hale check --dump-topology`): the
   `std::observe::Scrape` endpoint (host, port, path) and the bindings;
 - the main locus's `std::observe::Probes` param, when its port is
-  literal or defaulted;
+  literal, defaulted, or `self.<param>` of a param whose default is a
+  literal (the port the program runs on when nothing overrides it);
 - a plan's instances and routes: one compose service per instance, one
   Kubernetes Deployment per program with `replicas` the number of
   instances that run it, and a compose `depends_on` from a route's

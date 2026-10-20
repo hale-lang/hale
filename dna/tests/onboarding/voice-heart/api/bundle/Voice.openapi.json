@@ -2,10 +2,10 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Voice surface",
-    "version": "fnv1a64:94142dde9438f0f9",
+    "version": "fnv1a64:d5847413a875104f",
     "description": "The surface Voice over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by the JSON codec. requires is checked against this exposure's role source at the serve site, before a request is queued: a boundary check, never a proof over the program's internal call paths; a request accepted runs to completion: a timeout or a lost connection does not mean it did not run, and ending the wait never rolls it back.",
     "x-hale-surface": "Voice",
-    "x-hale-digest": "fnv1a64:94142dde9438f0f9"
+    "x-hale-digest": "fnv1a64:d5847413a875104f"
   },
   "paths": {
     "/call/Accounts::archive": {
@@ -20,7 +20,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -138,7 +138,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -256,7 +256,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -374,7 +374,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -492,7 +492,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -610,7 +610,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -728,7 +728,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -846,7 +846,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -954,7 +954,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1072,7 +1072,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1190,7 +1190,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1308,7 +1308,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1426,7 +1426,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1544,7 +1544,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1662,7 +1662,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1780,7 +1780,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -1898,7 +1898,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2016,7 +2016,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2134,7 +2134,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2242,7 +2242,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2360,7 +2360,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2468,7 +2468,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2576,7 +2576,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2585,7 +2585,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NodeReport"
+                "$ref": "#/components/schemas/NodeCapabilities"
               }
             }
           }
@@ -2687,7 +2687,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2798,7 +2798,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -2909,7 +2909,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3020,7 +3020,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3131,7 +3131,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3249,7 +3249,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3360,7 +3360,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3478,7 +3478,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3596,7 +3596,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3704,7 +3704,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3822,7 +3822,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -3940,7 +3940,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4058,7 +4058,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4154,7 +4154,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4250,7 +4250,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4368,7 +4368,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4486,7 +4486,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4604,7 +4604,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4722,7 +4722,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4840,7 +4840,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -4958,7 +4958,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5076,7 +5076,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5194,7 +5194,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5312,7 +5312,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5430,7 +5430,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5548,7 +5548,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5666,7 +5666,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -5784,7 +5784,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "const": "fnv1a64:94142dde9438f0f9"
+              "const": "fnv1a64:d5847413a875104f"
             }
           }
         ],
@@ -6082,11 +6082,16 @@
               }
             ]
           },
-          "set_provider": {
-            "type": "boolean"
-          },
           "provider": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "billing": {
             "anyOf": [
@@ -6222,7 +6227,7 @@
             "type": "boolean"
           },
           "config": {
-            "type": "string"
+            "x-hale-any": true
           }
         },
         "required": []
@@ -6652,14 +6657,16 @@
               }
             ]
           },
-          "set_price": {
-            "type": "boolean"
-          },
-          "priced": {
-            "type": "boolean"
-          },
           "price": {
-            "$ref": "#/components/schemas/ModelPrice"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelPrice"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -6705,7 +6712,7 @@
           "before": {
             "anyOf": [
               {
-                "type": "string"
+                "x-hale-any": true
               },
               {
                 "type": "null"
@@ -6715,7 +6722,7 @@
           "after": {
             "anyOf": [
               {
-                "type": "string"
+                "x-hale-any": true
               },
               {
                 "type": "null"
@@ -6789,6 +6796,25 @@
         },
         "required": []
       },
+      "Check": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unavailable"
+            ],
+            "x-hale-type": "HealthStatus"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
       "Draining": {
         "type": "object",
         "properties": {
@@ -6848,8 +6874,19 @@
           "version": {
             "type": "string"
           },
-          "store": {
-            "type": "string"
+          "checks": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "unavailable"
+              ],
+              "x-hale-type": "HealthStatus"
+            },
+            "maxProperties": 8,
+            "x-hale-key": "name",
+            "x-hale-value": "status"
           }
         },
         "required": [
@@ -7146,17 +7183,35 @@
               }
             ]
           },
-          "set_models": {
-            "type": "boolean"
-          },
           "models": {
-            "$ref": "#/components/schemas/Restriction"
-          },
-          "set_accounts": {
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "accounts": {
-            "$ref": "#/components/schemas/Restriction"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "limits": {
             "anyOf": [
@@ -7172,16 +7227,18 @@
               }
             ]
           },
-          "set_expires": {
-            "type": "boolean"
-          },
-          "expires": {
-            "type": "boolean"
-          },
           "expires_at": {
-            "type": "string",
-            "format": "date-time",
-            "x-hale-type": "Time"
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "x-hale-type": "Time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -7426,19 +7483,6 @@
           "model"
         ]
       },
-      "Names": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 32
-          }
-        },
-        "required": []
-      },
       "Node": {
         "type": "object",
         "properties": {
@@ -7471,7 +7515,7 @@
           "capabilities": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/NodeCapabilities"
               },
               {
                 "type": "null"
@@ -7580,6 +7624,24 @@
           "status"
         ]
       },
+      "NodeCapabilities": {
+        "type": "object",
+        "properties": {
+          "engines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeEngine"
+            },
+            "maxItems": 16
+          },
+          "max_in_flight": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_in_flight"
+        ]
+      },
       "NodeCreate": {
         "type": "object",
         "properties": {
@@ -7602,6 +7664,49 @@
         },
         "required": [
           "id"
+        ]
+      },
+      "NodeEngine": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config_schema": {
+            "x-hale-any": true
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "config_schema"
         ]
       },
       "NodeList": {
@@ -7628,15 +7733,6 @@
           "node"
         ]
       },
-      "NodeReport": {
-        "type": "object",
-        "properties": {
-          "json": {
-            "type": "string"
-          }
-        },
-        "required": []
-      },
       "NodeUpdate": {
         "type": "object",
         "properties": {
@@ -7653,11 +7749,16 @@
               }
             ]
           },
-          "set_max_in_flight": {
-            "type": "boolean"
-          },
           "max_in_flight": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -7941,17 +8042,35 @@
               }
             ]
           },
-          "set_models": {
-            "type": "boolean"
-          },
           "models": {
-            "$ref": "#/components/schemas/Restriction"
-          },
-          "set_accounts": {
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           },
           "accounts": {
-            "$ref": "#/components/schemas/Restriction"
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-hale-null": "clear"
           }
         },
         "required": [
@@ -8048,22 +8167,10 @@
             "type": "string"
           },
           "capabilities": {
-            "type": "string"
+            "$ref": "#/components/schemas/NodeCapabilities"
           },
           "local": {
             "$ref": "#/components/schemas/LocalControls"
-          }
-        },
-        "required": []
-      },
-      "Restriction": {
-        "type": "object",
-        "properties": {
-          "any": {
-            "type": "boolean"
-          },
-          "names": {
-            "$ref": "#/components/schemas/Names"
           }
         },
         "required": []
@@ -8104,7 +8211,7 @@
             "type": "boolean"
           },
           "config": {
-            "type": "string"
+            "x-hale-any": true
           }
         },
         "required": [
@@ -8293,7 +8400,7 @@
           "config": {
             "anyOf": [
               {
-                "type": "string"
+                "x-hale-any": true
               },
               {
                 "type": "null"
@@ -8345,7 +8452,7 @@
             "type": "boolean"
           },
           "config": {
-            "type": "string"
+            "x-hale-any": true
           },
           "status": {
             "type": "string",

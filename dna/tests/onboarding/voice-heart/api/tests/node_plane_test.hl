@@ -109,15 +109,19 @@ fn main() {
     expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 99999999999999999999}"), 400, "and in range");
     expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [1]}"), 400, "paused seats are seat ids");
     std::test::assert(std::str::contains(admin(e, "GET", "/admin/v1/accounts/static", "").body, "five_hour"), "the account shows its windows");
-    // a use is written back as it was reported, not to six digits: 99.999995
-    // as 100 would read as an exhausted account
+    // a use is written back as it was reported (to_string(Float) reads
+    // back as itself since hale v0.26.0): 99.999995 as 100 would read as an
+    // exhausted account
     expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"five_hour\", \"used_percent\": 99.999995, \"observed_at\": \"2026-10-17T00:00:00Z\"}, {\"name\": \"seven_day\", \"used_percent\": 33.333333333333336, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}"), 204, "quota near the top");
     let shown = admin(e, "GET", "/admin/v1/accounts/static", "").body;
     std::test::assert(std::str::contains(shown, "\"used_percent\": 99.999995,") && std::str::contains(shown, "\"used_percent\": 33.333333333333336,"), "each use survives the write-back: " + shown);
     for t in ["0", "12.5", "100", "0.30000000000000004", "99.99999999999997", "0.000001234567891234567"] {
         let x = std::str::parse_float(t) or - 1.0;
-        let back = std::str::parse_float(api::float_text(x)) or - 2.0;
-        std::test::assert(back == x, t + " reads back from " + api::float_text(x));
+        let back = std::str::parse_float(to_string(x)) or - 2.0;
+        std::test::assert(back == x, t + " reads back from " + to_string(x));
+        // and through the api codec
+        let w = api::QuotaWindow::api_decode(api::QuotaWindow::api_encode(api::QuotaWindow { name: "w", used_percent: x, observed_at: `2026-10-17T00:00:00Z` })) or api::QuotaWindow { name: "refused", used_percent: -3.0, observed_at: `2026-10-17T00:00:00Z` };
+        std::test::assert(w.used_percent == x, t + " crosses the codec: " + api::QuotaWindow::api_encode(api::QuotaWindow { name: "w", used_percent: x, observed_at: `2026-10-17T00:00:00Z` }));
     }
     expect(plane(e, "POST", "/node/v1/draining", token, ""), 204, "draining");
 

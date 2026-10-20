@@ -1,0 +1,16 @@
+{
+  "why": "A map's values are compared: integer values where the contract's are an enum must fail.",
+  "side": "bundle",
+  "set": [
+    "components",
+    "schemas",
+    "Health",
+    "properties",
+    "checks",
+    "additionalProperties"
+  ],
+  "value": {
+    "type": "integer"
+  },
+  "expect": "Health.checks{}"
+}

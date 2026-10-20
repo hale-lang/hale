@@ -46,7 +46,7 @@ locus Endpoints {
     /// revealed into that write alone (spec/semantics.md, "@sealed"), never
     /// into a value the server writes later, escaped as a JSON string in
     /// that same write.
-    fn registered_with_account(req: std::http::Request, a: Registered) -> std::http::Response {
+    fn registered_with_account(req: std::http::Request, a: RegisteredRead) -> std::http::Response {
         let head = registered_head(a) + ", \"user\": " + jq(self.node_user) + ", \"password\": \"";
         let tail = "\"}, \"assignment\": " + assignment_json(a.assignment) + "}";
         std::io::tcp::send_fd(req.conn_fd, std::bytes::from_string("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(head) + len(std::json::escape_string(self.node_secret.reveal_text())) + len(tail)) + "\r\nConnection: close\r\n\r\n" + head + std::json::escape_string(self.node_secret.reveal_text()) + tail)) or discard;
@@ -215,51 +215,51 @@ locus Endpoints {
 
         // nodes
         if std::http::is_route(c, "GET", "/admin/v1/nodes") {
-            let l = self.nodes.list() or raise;
+            let l = self.nodes.list_read() or raise;
             return json_answer(200, node_list_json(l));
         }
         if std::http::is_route(c, "POST", "/admin/v1/nodes") {
             let r = read_node_create(req.body) or raise;
-            let n = self.nodes.create(r) or raise;
+            let n = self.nodes.create_read(r) or raise;
             return json_answer(201, node_json(n));
         }
         if std::http::is_route(c, "GET", "/admin/v1/nodes/:node") {
-            let n = self.nodes.get(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            let n = self.nodes.get_read(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
             return json_answer(200, node_json(n));
         }
         if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node") {
             let r = read_node_update(req.body, std::http::path_param(c.params, "node")) or raise;
-            let n = self.nodes.update(r) or raise;
+            let n = self.nodes.update_read(r) or raise;
             return json_answer(200, node_json(n));
         }
         if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node") {
-            let n = self.nodes.revoke(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            let n = self.nodes.revoke_read(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
             return json_answer(200, node_json(n));
         }
         if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats") {
-            let l = self.seats.list(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            let l = self.seats.list_read(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
             return json_answer(200, seat_list_json(l));
         }
         if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/seats") {
             let r = read_seat_create(req.body, std::http::path_param(c.params, "node")) or raise;
-            let v = self.seats.create(r) or raise;
+            let v = self.seats.create_read(r) or raise;
             return json_answer(201, seat_json(v));
         }
         if std::http::is_route(c, "GET", "/admin/v1/nodes/:node/seats/:seat") {
-            let v = self.seats.get(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
+            let v = self.seats.get_read(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
             return json_answer(200, seat_json(v));
         }
         if std::http::is_route(c, "PATCH", "/admin/v1/nodes/:node/seats/:seat") {
             let r = read_seat_update(req.body, std::http::path_param(c.params, "node"), std::http::path_param(c.params, "seat")) or raise;
-            let v = self.seats.update(r) or raise;
+            let v = self.seats.update_read(r) or raise;
             return json_answer(200, seat_json(v));
         }
         if std::http::is_route(c, "DELETE", "/admin/v1/nodes/:node/seats/:seat") {
-            let v = self.seats.remove(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
+            let v = self.seats.remove_read(SeatRef { node: std::http::path_param(c.params, "node"), seat: std::http::path_param(c.params, "seat") }) or raise;
             return json_answer(200, seat_json(v));
         }
         if std::http::is_route(c, "POST", "/admin/v1/nodes/:node/token") {
-            let n = self.nodes.rotate_token(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
+            let n = self.nodes.rotate_token_read(NodeRef { node: std::http::path_param(c.params, "node") }) or raise;
             return json_answer(200, node_json(n));
         }
 
@@ -275,13 +275,13 @@ locus Endpoints {
         if std::http::is_route(c, "POST", "/node/v1/register") {
             let ctx = self.node_ctx(req) or raise;
             let r = read_registration(req.body) or raise;
-            let answer = self.node_plane.register(r, ctx) or raise;
+            let answer = self.node_plane.register_read(r, ctx) or raise;
             if len(self.node_user) > 0 { return self.registered_with_account(req, answer); }
             return json_answer(200, registered_json(answer));
         }
         if std::http::is_route(c, "GET", "/node/v1/assignment") {
             let ctx = self.node_ctx(req) or raise;
-            let a = self.node_plane.assignment(ctx) or raise;
+            let a = self.node_plane.assignment_read(ctx) or raise;
             return json_answer(200, assignment_json(a));
         }
         if std::http::is_route(c, "POST", "/node/v1/heartbeat") {
@@ -298,7 +298,7 @@ locus Endpoints {
         }
         if std::http::is_route(c, "PUT", "/node/v1/capabilities") {
             let ctx = self.node_ctx(req) or raise;
-            let r = read_node_report(req.body) or raise;
+            let r = read_node_capabilities(req.body) or raise;
             self.node_plane.capabilities(r, ctx) or raise;
             return no_content();
         }
@@ -328,7 +328,7 @@ locus Endpoints {
         // changes
         if std::http::is_route(c, "GET", "/admin/v1/changes") {
             let q = read_change_query(c.params) or raise;
-            let l = self.changes.list(q) or raise;
+            let l = self.changes.list_read(q) or raise;
             return json_answer(200, change_list_json(l));
         }
 

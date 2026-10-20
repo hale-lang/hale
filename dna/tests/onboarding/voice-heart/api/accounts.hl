@@ -21,8 +21,10 @@ type AccountUpdate {
     account: String;
     has_name: Bool = false;
     name: String = "";
-    set_provider: Bool = false;
+    // a three-way field: left out (kept), null (cleared) or a value
+    has_provider: Bool = false;
     provider: String = "";
+    clear_provider: Bool = false;
     has_billing: Bool = false;
     billing: Billing = Billing::none;
     has_limits: Bool = false;
@@ -112,7 +114,7 @@ locus Accounts {
             check_name(u.name) or raise;
             row.name = u.name;
         }
-        if u.set_provider { row.provider = u.provider; }
+        if u.has_provider { row.provider = u.provider; } else if u.clear_provider { row.provider = ""; }
         if u.has_billing { row.billing = billing_name(u.billing); }
         if u.has_limits {
             let limits = own_account_limits(u.limits, row.id) or raise;
@@ -221,8 +223,9 @@ fn read_account_update(body: String, account: String) -> AccountUpdate fallible(
         account: account,
         has_name: sets(body, "name"),
         name: string_or(body, "name", "") or raise,
-        set_provider: sets(body, "provider"),
+        has_provider: kind_of(body, "provider") == "string",
         provider: nullable_string(body, "provider") or raise,
+        clear_provider: kind_of(body, "provider") == "null",
         has_billing: sets(body, "billing"),
         billing: billing_field(body) or raise,
         has_limits: sets(body, "limits")

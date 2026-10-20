@@ -290,11 +290,11 @@ each gap classed in `api/gaps.json`.
 
 **hale 0.25.1.** The contract has three shapes no Hale type says:
 
-- a free-form JSON object: a seat's `config` (valid against its engine's `config_schema`, itself free-form), a change's `before` and `after`;
-- a map whose values are scalars: `Health.checks`, dependency to `"ok"` or `"unavailable"` (a hale map, `bounded[S; N] indexed_by <field>`, has records as its values);
-- a PATCH field that may be left out (kept), `null` (cleared) or a value: an account's `provider`, a model's `price`, a key's `models`, `accounts` and `expires_at`, a node's `max_in_flight`, a project's `models` and `accounts` (a presence pair reads `null` as left out).
+- a free-form JSON object: a seat's `config` (valid against its engine's `config_schema`, itself free-form), a change's `before` and `after`. Closed by hale's `std::json::Value` (v0.26.0): each is one now, carried byte for byte, and a node's capabilities are a typed record around it;
+- a map whose values are scalars: `Health.checks`, dependency to `"ok"` or `"unavailable"` (a hale map, `bounded[S; N] indexed_by <field>`, has records as its values). Closed by hale's map of values (`indexed_by name -> status`, hale-lang/hale#1656): `Health.checks` is one now;
+- a PATCH field that may be left out (kept), `null` (cleared) or a value: an account's `provider`, a model's `price`, a key's `models`, `accounts` and `expires_at`, a node's `max_in_flight`, a project's `models` and `accounts` (a presence pair reads `null` as left out). Closed by hale's presence triple (`clear_x` beside `has_x` and `x`, hale-lang/hale#1664): each is one now;
 
-**Working shape:** the row carries the object as JSON text (`config`, `before`, `after`, a node's `capabilities`), the check as a field of its own (`Health.store`), and the PATCH field as `set_<field>` beside a value that says `null` its own way. The REST reader and writer speak the contract's form; `api/gaps.json` lists each place, classed `map`, `json-text` and `tri-state`.
+**Working shape (until hale v0.26.0):** the row carried the object as JSON text (`config`, `before`, `after`, a node's `capabilities`), the check as a field of its own (`Health.store`), and the PATCH field as `set_<field>` beside a value that said `null` its own way. All three shapes are closed now; `api/gaps.json` lists no `map`, `json-text` or `tri-state` gap.
 
 ## A bounded list is never required
 
@@ -306,7 +306,7 @@ each gap classed in `api/gaps.json`.
 
 **hale 0.25.1.** `to_string(Float)` keeps six significant digits: `99.999995` is written `100` and `33.333333333333336` is written `33.3333`, so `parse_float(to_string(x)) == x` fails for most values. `T::api_encode` writes a Float field the same way (`{"used_percent":100}` for 99.999995), so a Float that crosses the api codec comes back as a different number.
 
-**Working shape:** a quota window's `used_percent` is written by `float_text` (api/fleet.hl), which writes the fewest fraction digits that read back as the same Float. The codec's own encoding is hale's to fix.
+**Working shape (until hale v0.26.0):** a quota window's `used_percent` was written by `float_text`, which wrote the fewest fraction digits that read back as the same Float. **Closed in hale v0.26.0:** `to_string(Float)` and the api codec both write a Float that reads back as itself; `float_text` is gone, and node_plane_test keeps the write-back and codec checks.
 
 ## The runtime writes to stderr outside any logger
 

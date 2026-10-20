@@ -16,7 +16,7 @@ fn main() {
     let api_side = std::io::tcp::__accept_one(listener);
     std::test::assert(listener >= 0 && node_side >= 0 && api_side >= 0, "a connection, as the node's");
     let e = api::Endpoints { node_user: "heart-abc-node", node_secret: std::secret::Credential { vault: ENTRY } };
-    let a = api::Registered { nats_url: "nats://broker:4222", nats_subject: "heart.abc.node.laptop" };
+    let a = api::RegisteredRead { nats_url: "nats://broker:4222", nats_subject: "heart.abc.node.laptop" };
     let r = e.registered_with_account(std::http::Request { method: "POST", path: "/node/v1/register", headers: "", body: "", conn_fd: api_side }, a);
     std::test::assert(r.takeover_raw, "the api wrote the answer itself");
     std::io::tcp::set_recv_timeout(node_side, 2s) or discard;

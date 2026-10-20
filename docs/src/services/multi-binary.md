@@ -482,7 +482,9 @@ instance (compose) or one Deployment per program with `replicas` the
 instance count (Kubernetes), with `depends_on` where a route joins two
 instances. The probes above become a compose `healthcheck` and the
 Kubernetes liveness and readiness probes; a `std::observe::Scrape`
-becomes a published port and `prometheus.io/*` annotations. A program
+becomes a published port and `prometheus.io/*` annotations. A port read
+from another param (`port: self.probe_port`) renders as that param's
+default, the port the program runs on when nothing overrides it. A program
 that holds no `Probes` gets no probe section (a note on stderr says so),
 and no autoscaler is rendered, since nothing declares a scale policy.
 The compose output mounts the built binaries (`hale build` each seed

@@ -18,5 +18,18 @@ fn main() {
 
     // the handlers, called as their rows are
     let p = api::Probes { store: st::MemoryStore { } };
-    std::test::assert_eq_str(p.readiness().store, "ok", "a memory store is always ready");
+    let r = p.readiness();
+    let store = at(r.checks, 0) or api::Check { status: api::HealthStatus::unavailable };
+    std::test::assert(count(r.checks) == 1 && store.name == "store" && store.status == api::HealthStatus::ok, "a memory store is always ready");
+
+    // `checks` is a map of values: each check its state alone, keyed by
+    // its name, on the codec's wire as on the router's
+    let wire = api::Health::api_encode(r);
+    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(wire, "checks"), "store"), "ok", "the codec writes the check's state under its name: " + wire);
+    let back = api::Health::api_decode("{\"status\": \"unavailable\", \"checks\": {\"store\": \"unavailable\", \"nats\": \"ok\"}}") or api::Health { status: api::HealthStatus::ok };
+    let first = at(back.checks, 0) or api::Check { status: api::HealthStatus::ok };
+    let second = at(back.checks, 1) or api::Check { status: api::HealthStatus::unavailable };
+    std::test::assert(count(back.checks) == 2 && first.name == "store" && first.status == api::HealthStatus::unavailable && second.name == "nats" && second.status == api::HealthStatus::ok, "and reads each back, in order");
+    let twice = api::Health::api_decode("{\"status\": \"ok\", \"checks\": {\"store\": \"ok\", \"store\": \"ok\"}}") or api::Health { status: api::HealthStatus::unavailable, version: "refused" };
+    std::test::assert_eq_str(twice.version, "refused", "a check named twice is refused");
 }

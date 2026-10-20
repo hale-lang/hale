@@ -1,9 +1,9 @@
 // The change log: every applied admin write, who made it (nobody yet:
 // admin authentication is off), when, and the resource before and after.
 
-/// `Change`. `before` and `after` are the resource's JSON: the codec carries
-/// no free-form object, so the text crosses as a string.
-type Change {
+/// A change as the router answers it: `Change`, its `before` and `after`
+/// the text the store holds, written as it is.
+type ChangeRead {
     id: String = "";
     at: Time = `1970-01-01T00:00:00Z`;
     // who made it: nobody yet, admin authentication is off
@@ -18,19 +18,42 @@ type Change {
 }
 
 /// A page of changes; `next_cursor` is `null` on the last.
+type ChangeReadList { data: bounded[ChangeRead; 1000]; has_next_cursor: Bool = false; next_cursor: String = ""; }
+
+/// `Change`, as the surface describes it: `before` and `after` the
+/// resource's JSON, free-form, or `null`.
+type Change {
+    id: String = "";
+    at: Time = `1970-01-01T00:00:00Z`;
+    has_principal: Bool = false;
+    principal: String = "";
+    action: ChangeAction;
+    target: String = "";
+    has_before: Bool = false;
+    before: std::json::Value = std::json::Value::null();
+    has_after: Bool = false;
+    after: std::json::Value = std::json::Value::null();
+}
+
 type ChangeList { data: bounded[Change; 1000]; has_next_cursor: Bool = false; next_cursor: String = ""; }
 
 locus Changes {
     params { store: st::Store; }
 
     /// `listChanges`: newest first.
+    /// `listChanges`, as the surface's typed rows answer it; the REST
+    /// router answers `list_read`, before and after as stored.
     fn list(q: st::ChangeQuery) -> ChangeList fallible(ApiError) {
+        return change_list_of_read(self.list_read(q) or raise) or raise;
+    }
+
+    fn list_read(q: st::ChangeQuery) -> ChangeReadList fallible(ApiError) {
         let rows = self.store.changes(q) or fail store_failed(err);
         if !rows.cursor_known { fail invalid("`cursor` names no change; pass a page's `next_cursor`", "cursor"); }
-        let mut out = ChangeList { };
+        let mut out = ChangeReadList { };
         let mut last = "";
         for c in rows.rows {
-            push(out.data, Change { id: c.id, at: c.at, action: action_of(c.action), target: c.target, has_before: len(c.before) > 0, before: c.before, has_after: len(c.after) > 0, after: c.after }) or discard;
+            push(out.data, ChangeRead { id: c.id, at: c.at, action: action_of(c.action), target: c.target, has_before: len(c.before) > 0, before: c.before, has_after: len(c.after) > 0, after: c.after }) or discard;
             last = c.id;
         }
         if rows.more {
@@ -39,6 +62,20 @@ locus Changes {
         }
         return out;
     }
+}
+
+/// A `ChangeRead` as the surface's typed `Change`.
+fn change_of_read(c: ChangeRead) -> Change fallible(ApiError) {
+    return Change { id: c.id, at: c.at, has_principal: c.has_principal, principal: c.principal, action: c.action, target: c.target, has_before: c.has_before, before: if c.has_before { stored_value(c.before, "change " + c.id + "'s before") or raise } else { std::json::Value::null() }, has_after: c.has_after, after: if c.has_after { stored_value(c.after, "change " + c.id + "'s after") or raise } else { std::json::Value::null() } };
+}
+
+/// A `ChangeReadList` as the surface's typed `ChangeList`.
+fn change_list_of_read(l: ChangeReadList) -> ChangeList fallible(ApiError) {
+    let mut out = ChangeList { has_next_cursor: l.has_next_cursor, next_cursor: l.next_cursor };
+    for c in l.data {
+        push(out.data, change_of_read(c) or raise) or discard;
+    }
+    return out;
 }
 
 /// A change made now. `before` and `after` are JSON, "" for `null`.
@@ -70,12 +107,12 @@ fn read_change_query(p: std::http::RouteParams) -> st::ChangeQuery fallible(ApiE
     return q;
 }
 
-fn change_json(c: Change) -> String {
+fn change_json(c: ChangeRead) -> String {
     return "{\"id\": " + jq(c.id) + ", \"at\": " + jtime(c.at) + ", \"principal\": " + jstring_or_null(c.has_principal, c.principal) + ", \"action\": " + jq(action_name(c.action))
         + ", \"target\": " + jq(c.target) + ", \"before\": " + jraw_if(c.has_before, c.before) + ", \"after\": " + jraw_if(c.has_after, c.after) + "}";
 }
 
-fn change_list_json(l: ChangeList) -> String {
+fn change_list_json(l: ChangeReadList) -> String {
     let entries_list = st::JsonList { };
     for c in l.data {
         entries_list.add(change_json(c));
