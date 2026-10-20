@@ -247,6 +247,77 @@ Nothing else starts them.
 `dna/tests/senses_reflex_test.hl` runs the whole loop on the
 organism's allocations in the test file's own habitat.
 
+## Integration watches
+
+The services your code calls change without asking. An **integration
+watch** notices for you: the genome names where each integration says
+what it is, and the organism reads it on a cadence and tells the position
+that owns the integration when it moved. Declare one table per
+integration in `hale.toml`:
+
+```toml
+[dna.integrations.pay-changelog]
+position = "payments/dev"
+source = "changelog"
+url = "https://pay.example/changelog"
+every = "1d"
+
+[dna.integrations.pay-api]
+position = "payments/dev"
+codebase = "ledger-svc"
+source = "openapi"
+surface = "integrations/pay.hl"
+cron = "0 6 * * 1-5"
+```
+
+| key | what it says |
+| --- | --- |
+| `position` | the position that owns it; its checks run under it, and its concerns go to it |
+| `source` | `changelog` or `docs` (a page), `feed` (RSS or Atom), or `openapi` |
+| `url` | for a page or a feed: `https://`, `http://` or `file://` |
+| `surface` | for `openapi`: the surface `hale api import` wrote and you committed ([Noticing when the service moves](../services/api.md#noticing-when-the-service-moves)) |
+| `every` / `cron` | the cadence, as a schedule takes it: one or the other |
+| `codebase` | optional: the attached codebase it belongs to, named in what it lands |
+
+An OpenAPI integration takes no `url`: its source is the one the surface
+was imported from, and its check is `hale api drift` on the surface. The
+organization reads the tables when they change and declares a schedule of
+`integration-check` for each, `integration.<name>`, convened by its
+position, so `hale dna schedule` lists them and a position nobody holds
+is refused as any convener is ([Schedules](./schedules.md)). A table that
+cannot stand is an `integration.refused` row saying why.
+
+Each check reads the source and keeps only what can move for a reason:
+a page's text, without its markup, scripts, styles, head or comments;
+a feed's entries, a line each; an API's drift lines. The first check is
+the baseline and says nothing. After that, a check that finds the same
+text writes nothing at all, and one that finds it moved lands:
+
+- a reading, `integrations/integration.<name>.changed/<task>`, whose
+  payload carries the unified diff and names the receipt memory keeps it
+  under:
+
+  ```text
+  --- integration.pay-api e3b0c44298fc
+  +++ integration.pay-api 92c69fb5be46
+  @@ -0,0 +1 @@
+  +drift Pay added create_refund
+  ```
+
+- a concern from `<position>/integration.<name>`, so it is routed to the
+  position, whose words name the reading and the receipt. One move is one
+  concern, however often its check runs again.
+
+A source that cannot be read (a fetch that fails, a status outside 2xx, a
+drift check that cannot read its surface) is an `integration.unreached`
+row. One failure is a blip and says nothing; the third in a row lands one
+reading, `integrations/integration.<name>.unreachable/<task>`, and no
+concern.
+
+From there the concern is a concern like any other: escalated, and
+proposed as knowledge when the watch keeps raising them. It does not
+become a task by itself yet.
+
 ## How it breaks
 
 | symptom | cause | what to do |
@@ -256,3 +327,5 @@ organism's allocations in the test file's own habitat.
 | `reflexes: the store at … did not answer (…)` | the store is down | `hale dna senses up` |
 | `reflexes: the vault holds no credential …` | the reflexes' password is not drawn | `hale dna upgrade` |
 | a concern that never becomes a proposal | its source has no parent | name the source as a path under its parent |
+| an `integration.refused` row | a `[dna.integrations.<name>]` table that cannot stand | fix what its `why` names |
+| `schedule.refused integration.<name>`, `nobody holds position:<p>` | the integration's position has no holder | `hale dna fill <p> <holder>`; the table is declared again when it changes or the organization restarts |

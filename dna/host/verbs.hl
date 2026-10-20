@@ -1279,22 +1279,6 @@ fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: 
     return answer("schedules: " + to_string(n) + "\n" + out);
 }
 
-// An interval as `hale dna schedule declare --every` takes it: milliseconds
-// with a unit (`500ms`, `30s`, `15m`, `1h`, `1d`); 0 when it is none.
-fn every_ms_of(text: String) -> Int {
-    let t = std::str::trim(text);
-    let unit = if std::str::ends_with(t, "ms") { "ms" } else if len(t) > 0 { t[(len(t) - 1)..len(t)] } else { "" };
-    let digits = if unit == "ms" { t[0..(len(t) - 2)] } else if len(unit) > 0 { t[0..(len(t) - 1)] } else { "" };
-    let n = std::str::parse_int(digits) or 0;
-    if n <= 0 { return 0; }
-    if unit == "ms" { return n; }
-    if unit == "s" { return n * 1000; }
-    if unit == "m" { return n * 60000; }
-    if unit == "h" { return n * 3600000; }
-    if unit == "d" { return n * 86400000; }
-    return 0;
-}
-
 // GH #1143: `hale dna schedule declare`: the schedule asked of the
 // organization, which declares it or refuses it (the definition one its
 // catalog admits, the args what that definition takes, a convening
@@ -1303,7 +1287,7 @@ fn every_ms_of(text: String) -> Int {
 @bounded_by(deadline)
 fn schedule_declare(root: String, seed: String, id: String, who: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
     if len(id) == 0 || len(definition) == 0 || len(convener) == 0 || (len(every) == 0) == (len(cron) == 0) { return fail("usage: hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]"); }
-    let every_ms = if len(every) > 0 { every_ms_of(every) } else { 0 };
+    let every_ms = if len(every) > 0 { dna::every_ms_of(every) } else { 0 };
     if len(every) > 0 && every_ms <= 0 { return fail("schedule declare: --every " + every + " is no interval (a number and ms, s, m, h or d)"); }
     let position = if std::str::starts_with(convener, "position:") { convener } else { "position:" + convener };
     let request_id = request_digest_id(root, "s", id + "\n" + to_string(every_ms) + "\n" + cron + "\n" + definition + "\n" + args + "\n" + position + "\n" + who);

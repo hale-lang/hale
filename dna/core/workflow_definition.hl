@@ -88,7 +88,7 @@ fn workflow_part_missing(store: String) -> String {
 // among them — a path not moved onto the catalog yet, or a revision from a
 // newer toolchain with a step this one does not know — is refused at
 // admission, naming the step, never failed when it runs.
-const ORGANISM_STEPS: String = "practice-ratify/ratify practice-ratify/hat concern-escalate/raise optimize-walk/walk";
+const ORGANISM_STEPS: String = "practice-ratify/ratify practice-ratify/hat concern-escalate/raise optimize-walk/walk integration-check/check";
 
 // The words of `s`, as the catalog counts them.
 fn step_words(s: String) -> Int {
@@ -1171,6 +1171,12 @@ fn define_baseline(c: WorkflowCatalog) {
 
     let ow = c.define("optimize-walk", 1, "record", "the optimize pass: the machinery walked on the Board's cadence");
     organism_leaf(c, "optimize-walk", 0, "walk", "the machinery walked and the leader's proposals, each a row");
+
+    // phase 3: an integration's source checked on the cadence the genome
+    // declares, convened by the position that owns it
+    let ic = c.define("integration-check", 1, "record", "an integration's source checked: a move is a reading and a concern for its position");
+    organism_leaf(c, "integration-check", 0, "check", "the source read and normalized; a moved digest's reading, with the diff as its receipt, and a concern");
+    let io = c.occurs("integration-check", 1, "skip", "integration");
 
     let sr = c.define("secret-rotate", 1, "vault record", "a secret rotated");
     organism_leaf(c, "secret-rotate", 0, "rotate", "the named value rotated");

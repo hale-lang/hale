@@ -21,8 +21,9 @@ Each kind's placement is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
 `report`, `lease`, `claim`, `reading` (an application's events,
-#987) and `reflex` (what a reflex made the body do, #988) families are
-the Ledger's, as are
+#987), `reflex` (what a reflex made the body do, #988) and `integration`
+(what an integration's checks observed, phase 3) families are the
+Ledger's, as are
 `concern.requested` / `.raised` / `.refused`, `grant.reserved` /
 `.released` / `.fenced` / `.reservation_refused` (money;
 `grant.refused` — a grant born wider than its ceiling — is authority
@@ -1485,6 +1486,9 @@ record's.
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
 | `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given), `toolchain` (`go`, `hale` or `none`, the default) and who; a later attach of the name states it anew |
 | `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
+| `integration.observed` | ledger | an integration's check that recorded a digest (entity `integration:<name>`): `outcome` `baseline` (the first), `moved` (with `from`, `diff` the diff's receipt and `reading`) or `reached` (unmoved, ending a run of failures); `digest` is the normalized source's, kept as a receipt; `task` the check's execution (**Integration watches**) |
+| `integration.unreached` | ledger | a check whose source could not be read: `why`, `streak` (failures in a row), `reading` (the `unreachable` reading the third lands, else empty), `task` |
+| `integration.refused` | ledger | an integration the genome declares that cannot stand: `why`, once per reason |
 | `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
@@ -1645,6 +1649,86 @@ opens the review through the leg's forge hand and files the outcome as
 reference and makes no Mutation of its own genome. The language hands (Go)
 that make the commands typed are a later item.
 
+### Integration watches
+
+An integration is an external service the organism depends on, declared
+in the genome's `hale.toml`, one table per integration
+(`dna/core/integrations.hl`):
+
+```toml
+[dna.integrations.pay-api]
+position = "payments/dev"        # the owning position (`position:` optional)
+codebase = "ledger-svc"          # optional: the codebase it belongs to
+source = "openapi"               # changelog | docs | feed | openapi
+surface = "integrations/pay.hl"  # openapi only: the surface `hale api import` committed
+every = "1d"                     # or cron = "0 6 * * *" (UTC), not both
+```
+
+A `changelog`, `docs` or `feed` integration names a `url`, `http://`,
+`https://` or `file://`, and no `surface`; an `openapi` one names its
+`surface` (a path inside the genome) and no `url`, since its source is
+the one the surface was imported from (`from openapi "…"`). The name is
+lowercase letters, digits, `-` and `_`. A table that cannot stand is
+`integration.refused <name> {why}`, once per reason, and nothing more.
+
+On its refresh the organization reads the declarations, and when they
+changed since it last read them it declares, for each one, the schedule
+`integration.<name>`: `integration-check` on the cadence, its inputs
+`{integration, source, url, surface, position, codebase}`, convened by
+`position:<position>`. The declaration is a schedule like any other
+(**Schedules**): a position nobody holds is `schedule.refused` with
+the hole, and the same terms again write nothing. An occurrence of an integration the
+genome no longer declares, or no longer declares soundly, checks nothing
+and writes nothing (`hale dna schedule pause integration.<name>` stops
+it occurring).
+
+Each occurrence's `check` reads the source and normalizes it:
+
+- `changelog` and `docs`: a body whose first character is `<` is HTML,
+  read as text with its markup stripped, a line per block element, and
+  the volatile parts left out (`head`, `script`, `style`, `noscript`,
+  `template`, `svg`, `iframe`, `object` and comments); any other body is
+  its lines. Each line has its common entities read, its white space
+  collapsed and its ends trimmed, and blank lines are dropped.
+- `feed`: the entries (RSS `item`, Atom `entry`), a line each, `title |
+  link` (the `guid` or `id` without a link); the feed's own fields and
+  dates are not read.
+- `openapi`: the `drift …` lines of `hale api drift <surface>`, run in
+  the genome; a surface in step is the empty text, and an exit other
+  than 0 or 1 is a failed read.
+
+A fetch is one GET (`std::http::get`, 30 seconds, no redirects followed:
+a status outside 2xx fails) or a file read, at most 4 MiB, in UTF-8. The
+digest is the normalized text's sha256, and the text is kept as a
+receipt under it. Against the integration's last `integration.observed`:
+
+- none: `integration.observed {outcome: baseline}`, and nothing lands;
+- the same digest: nothing is written (a `reached` row when it ends a
+  run of failures);
+- another digest: the unified diff of the last snapshot and this text,
+  labelled `integration.<name> <from12>` / `<to12>`, cut at a line past
+  16 KiB with a line saying so, is kept as a receipt; a
+  `reading.recorded` lands, entity
+  `integrations/integration.<name>.changed/<task>`, `app` `integrations`,
+  `event` and `subject` `integration.<name>.changed`, its payload `{id,
+  integration, source, url | surface, position, codebase?, task, from,
+  to, receipt, diff}`; then `integration.observed {outcome: moved}`; and
+  the organization admits a concern (`on_concern`) from
+  `<position>/integration.<name>`, so it is routed to the position, its
+  `request` the reading's entity and its words naming the reading and
+  the receipt.
+
+A read that fails writes `integration.unreached {why, streak}`. The
+third in a row (`INTEGRATION_UNREACHABLE_AFTER`) lands one
+`reading.recorded` `integrations/integration.<name>.unreachable/<task>`
+(payload `{…, why, failures}`) and no concern; the failures before and
+after it land nothing. A check performed again finds the row its task
+wrote and asks its concern again under the same request, which is one
+concern.
+
+The concern goes the way every concern goes (`concern-escalate`): raised
+and routed, and proposed as knowledge at the threshold. Nothing turns a
+concern routed to a position into a task under it; that is a later item.
 
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must
@@ -1770,6 +1854,7 @@ bound at admission — and a new Task binds the newest (`latest`).
 | `deploy-observe` | `deploy` (heart) · `settle` (record) |
 | `concern-escalate` | `raise` (record) |
 | `optimize-walk` | `walk` (record) |
+| `integration-check` | `check` (record) |
 | `secret-rotate` | `rotate` (vault) · `recorded` (record) |
 | `body-provision` | `provision` · `start` (host) · `lease` (memory) · `observed` (record) |
 | `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | the ask's one leaf: an edit prepared for review, a person's job, a judgment handed back as an `Assessment`, or a change made by the position it is routed to (record) |
@@ -1797,7 +1882,8 @@ the leader's word, memory's projection) is kept and performed again when
 what it waits on may have arrived: a verdict, the leader's answer, the
 tick. The organization performs the steps this toolchain knows, by
 definition and key: `practice-ratify/ratify`, `practice-ratify/hat`,
-`concern-escalate/raise`, `optimize-walk/walk`. A definition with an
+`concern-escalate/raise`, `optimize-walk/walk`,
+`integration-check/check`. A definition with an
 organism step it does not know — a path not moved onto the catalog yet
 (`ask-triage`, whose ask is still admitted as `ask-edit` or `ask-person`
 after the leader plans it), or a revision from a newer toolchain — is
@@ -1848,6 +1934,12 @@ what an admission would refuse each definition for.
   reads the machinery's signals, asks the leader once per incarnation
   and is done at its `org.reviewed` row, which names the execution
   (`task`).
+- **integration-check** is one integration's check, and occurs on the
+  schedule the organization declares for it from the genome
+  (**Integration watches**); it takes `integration`, and its inputs
+  carry the declaration's terms. `check` reads the source and writes
+  what **Integration watches** says, or finds what it wrote when it is
+  performed again.
 
 **The ledger is the runtime.** Every step is a few rows of the day's
 work (`step.*`, `attempt.*`, `work.settled`, `effect.*`), each one row
