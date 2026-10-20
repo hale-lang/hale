@@ -1,4 +1,5 @@
 crates/hale-cli/tests/api_client_binding.rs#0 ba0dc3b4d32de1dc
+crates/hale-cli/tests/api_client_binding.rs#3 20aea2ba8b5dc9ab
 crates/hale-cli/tests/api_contract_fixtures.rs#2 fae132f30cf626ac
 crates/hale-cli/tests/api_contract_fixtures.rs#3 49649a8a55d7c971
 crates/hale-cli/tests/api_contract_fixtures.rs#4 12b424787237e947

@@ -568,3 +568,152 @@ fn a_legs_tools_are_the_rows_its_roles_admit_namespaced_by_surface() {
     assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// The codegen suite's: what a child listens on, read from `/proc`.
+#[path = "../../hale-codegen/tests/support/child.rs"]
+#[allow(dead_code)]
+mod child;
+
+/// The surface both programs declare: the server answers it, the client is
+/// typed by it.
+const ROUND_TRIP_SURFACE: &str = r#"
+type OrderError = enum { @not_found Missing, @conflict Taken(String), @invalid Bad, @forbidden Nope, @unavailable Busy, Closed };
+type Ask { id: Int; }
+type Order { id: Int; name: String; }
+
+api Shop {
+    rpc Orders::get;
+}
+
+locus Orders {
+    fn get(a: Ask) -> Order fallible(OrderError) {
+        if a.id == 1 { fail OrderError::Missing; }
+        if a.id == 2 { fail OrderError::Taken("bob"); }
+        if a.id == 3 { fail OrderError::Bad; }
+        if a.id == 4 { fail OrderError::Nope; }
+        if a.id == 5 { fail OrderError::Busy; }
+        if a.id == 6 { fail OrderError::Closed; }
+        return Order { id: a.id, name: "ok" };
+    }
+}
+"#;
+
+const ROUND_TRIP_SERVER: &str = r#"
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: token }; }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Server {
+    params {
+        bearer: Tokens = Tokens { };
+        orders: Orders = Orders { };
+        web: api::Exposure = api::serve(Shop, http::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "web", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
+    }
+    run() {
+        while !self.draining { std::time::sleep(10ms); }
+        self.web.stop();
+    }
+}
+
+fn main() { Server { }; }
+"#;
+
+const ROUND_TRIP_CLIENT: &str = r#"
+locus Me {
+    fn bearer(role: String) -> String { return "caller-1"; }
+}
+
+fn line(o: ShopOrdersGetOutcome) -> String {
+    return match o {
+        ShopOrdersGetOutcome::Result(v) -> "result " + to_string(v.id) + " " + v.name,
+        ShopOrdersGetOutcome::HandlerError(e) -> match e {
+            OrderError::Missing -> "Missing",
+            OrderError::Taken(who) -> "Taken " + who,
+            OrderError::Bad -> "Bad",
+            OrderError::Nope -> "Nope",
+            OrderError::Busy -> "Busy",
+            OrderError::Closed -> "Closed",
+        },
+        ShopOrdersGetOutcome::Refusal(r) -> "refusal " + r.kind + " " + r.reason,
+        ShopOrdersGetOutcome::ServerError -> "server_error",
+        ShopOrdersGetOutcome::Lost(why) -> "lost " + why,
+    };
+}
+
+main locus Caller {
+    params {
+        me: Me = Me { };
+        shop: api::Client = api::client(Shop, http::Client { base: std::env::var("SHOP"), principals: self.me });
+    }
+    run() {
+        let mut id = 1;
+        while id <= 7 {
+            println(to_string(id) + ": " + line(self.shop.orders_get(Ask { id: id })));
+            id = id + 1;
+        }
+    }
+}
+
+fn main() { Caller { }; }
+"#;
+
+/// Two Hale programs: one serves `Shop` over `http::Rpc`, the other holds a
+/// client of the same surface. Every error class the handler fails with
+/// reaches the caller as the variant it failed with.
+#[test]
+fn a_client_reads_a_served_surfaces_outcomes_as_the_server_wrote_them() {
+    let dir = unique_dir("round_trip");
+    std::fs::write(
+        dir.join("server.hl"),
+        format!("{ROUND_TRIP_SURFACE}{ROUND_TRIP_SERVER}"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("caller.hl"),
+        format!("{ROUND_TRIP_SURFACE}{ROUND_TRIP_CLIENT}"),
+    )
+    .unwrap();
+    for (src, bin) in [("server.hl", "server"), ("caller.hl", "caller")] {
+        let built = run(&dir, &["build", src, "-o", bin]);
+        assert!(
+            built.status.success(),
+            "{src} builds:\n{}",
+            text(&built.stderr)
+        );
+    }
+    let mut server = Command::new(dir.join("server"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the server");
+    // the server binds port 0; its port is read back from the kernel
+    let port = child::tcp_port(&mut server);
+    let out = Command::new(dir.join("caller"))
+        .env("SHOP", format!("http://127.0.0.1:{port}"))
+        .output()
+        .expect("run the caller");
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let lines: Vec<String> = text(&out.stdout).lines().map(str::to_string).collect();
+    assert_eq!(
+        lines,
+        [
+            "1: Missing",
+            "2: Taken bob",
+            "3: Bad",
+            "4: Nope",
+            "5: Busy",
+            "6: Closed",
+            "7: result 7 ok"
+        ],
+        "each class's status, read back as the handler's own variant"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

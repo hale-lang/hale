@@ -1894,6 +1894,16 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
                 let alts = init.and_then(alternatives);
                 let reused = if alts.is_none() { init.and_then(reused_source) } else { None };
+                // A contract-typed slot handed an instance the scope already
+                // holds (`principals: self.creds`, a client's or a
+                // transport's source) is a reference to that instance, which
+                // has its row where it was built: no row of its own, and
+                // nothing unknown about it.
+                if matches!(declared_named, Named::Contract)
+                    && reused.as_deref().is_some_and(|r| r.starts_with("self."))
+                {
+                    continue;
+                }
                 // The literal a held instance was built from: a local of
                 // the template's scope bound to one.
                 let source = match (&reused, written_here, lets) {

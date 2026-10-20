@@ -39,7 +39,10 @@ impl Stderr {
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 while let Ok(n @ 1..) = e.read(&mut buf) {
-                    t.text.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+                    t.text
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&buf[..n]));
                 }
                 t.done.store(true, std::sync::atomic::Ordering::SeqCst);
             });
@@ -67,7 +70,12 @@ impl Stderr {
 /// has said it is up, so the socket is there ([`tcp_port`] waits for it).
 pub fn bound_port(pid: u32, err: &Stderr) -> u16 {
     let ports = listening_ports(pid);
-    assert_eq!(ports.len(), 1, "one listening socket: {ports:?}; stderr:\n{}", err.text());
+    assert_eq!(
+        ports.len(),
+        1,
+        "one listening socket: {ports:?}; stderr:\n{}",
+        err.text()
+    );
     ports[0]
 }
 
@@ -87,7 +95,11 @@ pub fn listening_ports(pid: u32) -> Vec<u16> {
 /// while the kernel is still closing them.
 #[cfg(target_os = "linux")]
 pub fn listening_addrs(pid: u32) -> Vec<SocketAddrV4> {
-    sockets_of(pid, "tcp").into_iter().filter(|s| s.state == "0A").map(|s| s.local).collect()
+    sockets_of(pid, "tcp")
+        .into_iter()
+        .filter(|s| s.state == "0A")
+        .map(|s| s.local)
+        .collect()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -110,7 +122,12 @@ pub fn udp_addrs(pid: u32) -> Vec<SocketAddrV4> {
 #[cfg(not(target_os = "linux"))]
 fn lsof_addrs(pid: u32, select: &[&str]) -> Vec<SocketAddrV4> {
     let of = |pid: u32| -> Vec<SocketAddrV4> {
-        let Ok(out) = std::process::Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string()]).args(select).arg("-Fn").output() else {
+        let Ok(out) = std::process::Command::new("lsof")
+            .args(["-nP", "-a", "-p", &pid.to_string()])
+            .args(select)
+            .arg("-Fn")
+            .output()
+        else {
             return Vec::new();
         };
         String::from_utf8_lossy(&out.stdout)
@@ -118,7 +135,10 @@ fn lsof_addrs(pid: u32, select: &[&str]) -> Vec<SocketAddrV4> {
             .filter_map(|l| l.strip_prefix('n'))
             .filter(|n| !n.contains("->"))
             .filter_map(|n| match n.strip_prefix("*:") {
-                Some(port) => port.parse().ok().map(|p| SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p)),
+                Some(port) => port
+                    .parse()
+                    .ok()
+                    .map(|p| SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, p)),
                 None => n.parse().ok(),
             })
             .collect()
@@ -143,7 +163,10 @@ pub fn exited(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
-        .and_then(|stat| stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()));
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.chars().next())
+        });
     #[cfg(not(target_os = "linux"))]
     let state = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -162,37 +185,67 @@ pub fn tcp_port(child: &mut Child) -> u16 {
 /// [`tcp_port`], for a child that may first build what it serves (a
 /// toolchain cache that is cold on a fresh box).
 pub fn tcp_port_within(child: &mut Child, limit: Duration) -> u16 {
-    wait_for(child, "a listening TCP socket", limit, |pid| listening_addrs(pid)).port()
+    wait_for(child, "a listening TCP socket", limit, |pid| {
+        listening_addrs(pid)
+    })
+    .port()
 }
 
 /// The port `child`'s one listening TCP socket on `host` was given (a
 /// program with several listeners binds each on a loopback address of
 /// its own: `127.0.0.1:0`, `127.0.0.2:0`, …).
 pub fn tcp_port_on(child: &mut Child, host: Ipv4Addr) -> u16 {
-    wait_for(child, &format!("a listening TCP socket on {host}"), Duration::from_secs(60), |pid| {
-        listening_addrs(pid).into_iter().filter(|a| *a.ip() == host).collect()
-    })
+    wait_for(
+        child,
+        &format!("a listening TCP socket on {host}"),
+        Duration::from_secs(60),
+        |pid| {
+            listening_addrs(pid)
+                .into_iter()
+                .filter(|a| *a.ip() == host)
+                .collect()
+        },
+    )
     .port()
 }
 
 /// The port `child`'s one bound, unconnected UDP socket was given, once
 /// it has one.
 pub fn udp_port(child: &mut Child) -> u16 {
-    wait_for(child, "a bound UDP socket", Duration::from_secs(60), |pid| udp_addrs(pid)).port()
+    wait_for(
+        child,
+        "a bound UDP socket",
+        Duration::from_secs(60),
+        |pid| udp_addrs(pid),
+    )
+    .port()
 }
 
 /// The port `child`'s one bound, unconnected UDP socket on `host` was
 /// given.
 pub fn udp_port_on(child: &mut Child, host: Ipv4Addr) -> u16 {
-    wait_for(child, &format!("a bound UDP socket on {host}"), Duration::from_secs(60), |pid| {
-        udp_addrs(pid).into_iter().filter(|a| *a.ip() == host).collect()
-    })
+    wait_for(
+        child,
+        &format!("a bound UDP socket on {host}"),
+        Duration::from_secs(60),
+        |pid| {
+            udp_addrs(pid)
+                .into_iter()
+                .filter(|a| *a.ip() == host)
+                .collect()
+        },
+    )
     .port()
 }
 
 /// Poll `probe` until it finds exactly one socket. The child exiting
 /// first, or two sockets where one was meant, fails the test.
-fn wait_for(child: &mut Child, what: &str, limit: Duration, probe: impl Fn(u32) -> Vec<SocketAddrV4>) -> SocketAddrV4 {
+fn wait_for(
+    child: &mut Child,
+    what: &str,
+    limit: Duration,
+    probe: impl Fn(u32) -> Vec<SocketAddrV4>,
+) -> SocketAddrV4 {
     let start = Instant::now();
     loop {
         let found = probe(child.id());
@@ -225,7 +278,13 @@ const RESERVED_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 100);
 /// `127.0.0.1` (macOS, which carries only that one by default).
 pub fn reserved_host() -> Ipv4Addr {
     static HOST: std::sync::OnceLock<Ipv4Addr> = std::sync::OnceLock::new();
-    *HOST.get_or_init(|| if UdpSocket::bind((RESERVED_HOST, 0)).is_ok() { RESERVED_HOST } else { Ipv4Addr::LOCALHOST })
+    *HOST.get_or_init(|| {
+        if UdpSocket::bind((RESERVED_HOST, 0)).is_ok() {
+            RESERVED_HOST
+        } else {
+            Ipv4Addr::LOCALHOST
+        }
+    })
 }
 
 /// An address a program can be told before it starts and bind once it
@@ -261,7 +320,10 @@ impl Reserved {
                 let host = reserved_host();
                 // on 127.0.0.1 itself the held sockets would be the program's bind's conflict
                 let held = (host != Ipv4Addr::LOCALHOST).then_some((tcp, udp));
-                return Reserved { _held: held, addr: SocketAddrV4::new(host, port) };
+                return Reserved {
+                    _held: held,
+                    addr: SocketAddrV4::new(host, port),
+                };
             }
         }
         panic!("no port free for both TCP and UDP in 64 tries");
@@ -320,13 +382,21 @@ fn sockets_of(pid: u32, proto: &str) -> Vec<Socket> {
             .map(|d| {
                 d.flatten()
                     .filter_map(|e| std::fs::read_link(e.path()).ok())
-                    .filter_map(|t| t.to_string_lossy().strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).map(str::to_string))
+                    .filter_map(|t| {
+                        t.to_string_lossy()
+                            .strip_prefix("socket:[")
+                            .and_then(|r| r.strip_suffix(']'))
+                            .map(str::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default()
     };
     let ours = sockets("self");
-    let inodes: BTreeSet<String> = sockets(&pid.to_string()).difference(&ours).cloned().collect();
+    let inodes: BTreeSet<String> = sockets(&pid.to_string())
+        .difference(&ours)
+        .cloned()
+        .collect();
     // `0100007F:1F90`: the address's bytes in network order, printed as
     // a host-order word, then the port
     let addr = |a: &str| -> Option<SocketAddrV4> {
@@ -342,7 +412,11 @@ fn sockets_of(pid: u32, proto: &str) -> Vec<Socket> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
             if f.len() > 9 && inodes.contains(f[9]) {
-                Some(Socket { local: addr(f[1])?, remote: addr(f[2])?, state: f[3].to_string() })
+                Some(Socket {
+                    local: addr(f[1])?,
+                    remote: addr(f[2])?,
+                    state: f[3].to_string(),
+                })
             } else {
                 None
             }

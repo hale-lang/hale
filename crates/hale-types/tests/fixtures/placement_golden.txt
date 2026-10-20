@@ -696,25 +696,16 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-cli/tests/api_client_binding.rs#292b6815
 root	App	the entry
-hole	App@literal1.shop.__transport.principals	reuse `self.creds`
-hole	App@literal1.shop.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
-hole	App@literal1.shop_mcp.__transport.principals	reuse `self.creds`
-hole	App@literal1.shop_mcp.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
-hole	App@literal1.shelf.__transport.principals	reuse `self.creds`
-hole	App@literal1.shelf.__transport.principals	unresolved declaration `__StdApiClientPrincipals`
 row	App@literal1	App	main	default
 -- App@literal1.shelf	__ApiClient_Shelf
 row	~	__ApiClient_Shelf	main	default
 row	~.__transport	__StdApiHttpClient	main	inherited
-row	~.__transport.principals	<hole>	main	inherited
 -- App@literal1.shop	__ApiClient_Shop
 row	~	__ApiClient_Shop	main	default
 row	~.__transport	__StdApiHttpClient	main	inherited
-row	~.__transport.principals	<hole>	main	inherited
 -- App@literal1.shop_mcp	__ApiClient_Shop
 row	~	__ApiClient_Shop	main	default
 row	~.__transport	__StdApiMcpClient	main	inherited
-row	~.__transport.principals	<hole>	main	inherited
 -- App@literal1.tools	__ApiClient_Tools
 row	~	__ApiClient_Tools	main	default
 row	~.__transport	__StdApiMcpClient	main	inherited
@@ -771,15 +762,12 @@ shared	dynamic	sites in the seed #489147fd
 == crates/hale-cli/tests/check_tcp_substrate.rs#63188846
 root	App	the entry
 domain	pool:web	async_io
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.web	__StdHttpServer
 row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
-row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Api	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
@@ -2727,15 +2715,12 @@ row	~.cs.1	C	pool:io	inherited
 root	App	the entry
 domain	pool:io
 hole	App@literal1.srv.handler.web	reuse `web`
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.web	Web	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -2749,15 +2734,12 @@ root	App	the entry
 domain	pool:io
 hole	App@literal1.srv.handler.knowledge	reuse `knowledge`
 hole	App@literal1.srv.handler.knowledge	unresolved declaration `Provider`
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.knowledge	<hole>	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -2771,8 +2753,6 @@ shared	dynamic	sites in the seed #08d84dd7
 root	App	the entry
 domain	pool:io
 hole	App@literal1.srv.handler.provider	reuse `provider`
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	Provider@main2.service	reuse `native`
 row	App@literal1	App	main	default
 -- App@literal1.srv	__StdHttpServer
@@ -2780,7 +2760,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.provider	Provider	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
@@ -3694,14 +3673,11 @@ row	Stamp@main4	Stamp	main	default
 shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
 
 == crates/hale-codegen/tests/http_router.rs#81bc0c99
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Routes	main	inherited
 row	~.handler.hello	Hello	main	inherited
 row	~.handler.router	__StdHttpRouter	main	inherited
@@ -3726,15 +3702,12 @@ row	~.router.not_found	__StdHttpNotFound404	main	inherited
 == crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#5db2307f
 root	App	the entry
 domain	pool:io
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.srv	__StdHttpServer
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Routes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	dynamic	sites in the seed #08d84dd7
@@ -3742,30 +3715,23 @@ shared	dynamic	sites in the seed #08d84dd7
 == crates/hale-codegen/tests/http_server_concurrent.rs#a34912ce
 root	App	the entry
 domain	pool:web	async_io
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
-shared	App@literal1.web	__StdHttpServer #c2faedd3
+shared	App@literal1.web	__StdHttpServer #23fa7bd1
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_concurrent.rs#d69c042a
 root	App	the entry
 domain	pool:web	async_io
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
-shared	App@literal1.web	__StdHttpServer #c2faedd3
+shared	App@literal1.web	__StdHttpServer #23fa7bd1
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_memory.rs#b0d4feca
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Big	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -3773,49 +3739,38 @@ shared	dynamic	sites in the seed #069c8230
 == crates/hale-codegen/tests/http_server_memory.rs#cc9dbddc
 root	App	the entry
 domain	pool:web	async_io
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.web	__StdHttpServer
 row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
-row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Big	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
 
 == crates/hale-codegen/tests/http_server_memory.rs#88079992
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Count	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_split_write.rs#74f0dac9
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Echo	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_upgrade.rs#715cadda
 hole	__StdHttpServer@main2.handler	reuse `h`
-hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	TakeoverHandler@main1	TakeoverHandler	main	default
 row	__StdIoTcpStream@main3	__StdIoTcpStream	main	default
 -- __StdHttpServer@main2	__StdHttpServer
@@ -3823,22 +3778,18 @@ row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	TakeoverHandler	main	inherited	built by TakeoverHandler@main1
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
 
 == crates/hale-codegen/tests/http_upgrade.rs#b623a938
 hole	__StdHttpServer@main2.handler	reuse `h`
-hole	__StdHttpServer@main2.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main2.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	RawHandler@main1	RawHandler	main	default
 -- __StdHttpServer@main2	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	RawHandler	main	inherited	built by RawHandler@main1
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -3951,14 +3902,11 @@ row	M@main1	M	main	default
 row	WV@main1	WV	main	default
 
 == crates/hale-codegen/tests/library_shape_http_json.rs#bc43d602
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	Routes	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
 shared	dynamic	sites in the seed #069c8230
@@ -5321,15 +5269,12 @@ shared	__StdMetricsRegistry@main1	__StdMetricsRegistry #0ee61f7f
 
 == crates/hale-codegen/tests/stdlib_metrics.rs#f2bcc5b8
 hole	__StdHttpServer@main1.handler.registry	unenumerable initializer
-hole	__StdHttpServer@main1.conns.handler.handler	reuse `self.handler`
-hole	__StdHttpServer@main1.conns.handler.handler	unresolved declaration `std::http::Handler`
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 -- __StdHttpServer@main1	__StdHttpServer
 row	~	__StdHttpServer	main	default
 row	~.conns	__StdIoTcpConnections	main	inherited
 row	~.conns.flows	__StdIoTcpFlows	main	inherited
 row	~.conns.handler	__StdHttpResponder	main	inherited
-row	~.conns.handler.handler	<hole>	main	inherited
 row	~.handler	__StdMetricsEndpoint	main	inherited
 row	~.handler.registry	__StdMetricsRegistry	main	inherited
 row	~.relay	__StdIoTcpRelay	main	inherited
@@ -5539,8 +5484,6 @@ dynamic	__StdIoTcpStream	on pool:zero
 root	App	the entry
 domain	pinned:App@literal1.acc
 domain	pinned:App@literal1.web
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 shared	App@literal1.acc	__StdIoTcpAcceptor #1ef3cccf
 -- App@literal1.web	__StdHttpServer
@@ -5548,7 +5491,6 @@ row	~	__StdHttpServer	pinned:~	entry	off owner
 row	~.conns	__StdIoTcpConnections	pinned:~	inherited
 row	~.conns.flows	__StdIoTcpFlows	pinned:~	inherited
 row	~.conns.handler	__StdHttpResponder	pinned:~	inherited
-row	~.conns.handler.handler	<hole>	pinned:~	inherited
 row	~.handler	Tag	pinned:~	inherited
 row	~.relay	__StdIoTcpRelay	pinned:~	inherited
 -- dynamic	sites in the seed
@@ -5562,15 +5504,12 @@ dynamic	__StdIoTcpStream	on pinned:App@literal1.web
 == crates/hale-codegen/tests/tcp_substrate.rs#de4e80a1
 root	App	the entry
 domain	pool:web	async_io
-hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.web.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.web	__StdHttpServer
 row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
-row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Tag	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 shared	dynamic	sites in the seed #af37ec58
@@ -8350,13 +8289,9 @@ dynamic	Cache	on main|unresolved arguments	in the seed
 == tests/hale/http_request_cap_test.hl
 root	App	the entry
 domain	pool:io	async_io
-hole	App@literal1.small.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.small.conns.handler.handler	unresolved declaration `std::http::Handler`
-hole	App@literal1.plain.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.plain.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
-shared	App@literal1.plain	__StdHttpServer #1816dd9c
-shared	App@literal1.small	__StdHttpServer #1816dd9c
+shared	App@literal1.plain	__StdHttpServer #a4f10215
+shared	App@literal1.small	__StdHttpServer #a4f10215
 -- dynamic	sites in the seed
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpResponder	on pool:io
@@ -8371,8 +8306,6 @@ dynamic	__StdIoTcpStream	on main	in the seed
 == tests/hale/http_stream_test.hl
 root	App	the entry
 domain	pool:io	async_io
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 -- App@literal1.held	Held
 row	~	Held	main	default
@@ -8382,7 +8315,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Streams	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in the seed
@@ -10026,10 +9958,8 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/api/tests/read_api_test.hl
 root	App	the entry
 domain	pool:io
-hole	App@literal1.server.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.server.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
-shared	App@literal1.server	__StdHttpServer #ca00e9fa
+shared	App@literal1.server	__StdHttpServer #bab40621
 -- dynamic	sites in api/tests
 dynamic	Cases	on main
 dynamic	__StdBytesBytesBuilder	on pool:io|unknown (no instance)
@@ -10899,8 +10829,6 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/anthropic_messages_test.hl
 root	App	the entry
 domain	pool:io
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #a94d581e
 shared	App@literal1.hosted	__lib_dna__core___models__AnthropicMessages #d1670536
@@ -10911,7 +10839,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	FakeAnthropic	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	App@literal1.wrong_scheme	__lib_dna__core___models__AnthropicMessages #d1670536
@@ -11713,14 +11640,12 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/hosted_hat_test.hl
 root	App	the entry
 domain	pool:io
-hole	App@literal1.server.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.server.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 row	App@literal1.head	__StdProcessChild	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #a94d581e
 shared	App@literal1.journal	__lib_dna__core___routing__RoutedJournal #d907b0f2
-shared	App@literal1.server	__StdHttpServer #ca00e9fa
+shared	App@literal1.server	__StdHttpServer #bab40621
 shared	dynamic	sites in core #3f3692f5
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in oidc #f5f825c3
@@ -12176,12 +12101,10 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/oidc_head_test.hl
 root	App	the entry
 domain	pool:io
-hole	App@literal1.server.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.server.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 row	App@literal1.head	__StdProcessChild	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
-shared	App@literal1.server	__StdHttpServer #ca00e9fa
+shared	App@literal1.server	__StdHttpServer #bab40621
 shared	dynamic	sites in core #de2fb49b
 shared	dynamic	sites in oidc #f5f825c3
 -- dynamic	sites in tests
@@ -12239,42 +12162,8 @@ dynamic	__StdBytesBytesBuilder	on pinned:SilentDesk@literal1.sense	in the stdlib
 shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/voice-heart/api/tests/accounts_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12311,206 +12200,36 @@ shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/capabilities_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/catalog_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/change_page_memory_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/changes_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/endpoints_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12519,42 +12238,8 @@ shared	dynamic	sites in the stdlib #c3a51769
 row	__lib____events__UsageJson@main1	__lib____events__UsageJson	main	default
 
 == dna/tests/onboarding/voice-heart/api/tests/free_json_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12573,42 +12258,8 @@ row	__lib____governance__PracticeLimits@main9	__lib____governance__PracticeLimit
 == dna/tests/onboarding/voice-heart/api/tests/handover_test.hl
 
 == dna/tests/onboarding/voice-heart/api/tests/health_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 -- __lib____health__Probes@main2	__lib____health__Probes
 row	~	__lib____health__Probes	main	default
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
@@ -12634,245 +12285,58 @@ shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/inference_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/keys_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/limits_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/models_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/node_plane_test.hl
 hole	__lib____endpoints__Endpoints@main2.link	reuse `link`
-hole	__lib____endpoints__Endpoints@main2.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main2.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main2.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main2.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main2.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.node_plane.link	unresolved declaration `__lib____link__Link`
 row	Recorder@main1	Recorder	main	default
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- __lib____endpoints__Endpoints@main2	__lib____endpoints__Endpoints
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
-row	~.accounts.store	<hole>	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
-row	~.bearer.store	<hole>	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
-row	~.catalog.store	<hole>	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
-row	~.changes.store	<hole>	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
-row	~.inference.link	<hole>	main	inherited
-row	~.inference.store	<hole>	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
-row	~.keys.store	<hole>	main	inherited
 row	~.link	Recorder	main	inherited	built by Recorder@main1
 row	~.models	__lib____catalog__Models	main	inherited
-row	~.models.store	<hole>	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
-row	~.node_bearer.store	<hole>	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
-row	~.node_plane.link	<hole>	main	inherited
-row	~.node_plane.store	<hole>	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
-row	~.nodes.link	<hole>	main	inherited
-row	~.nodes.store	<hole>	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
-row	~.probes.store	<hole>	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
-row	~.projects.store	<hole>	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
-row	~.seats.link	<hole>	main	inherited
-row	~.seats.store	<hole>	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited
@@ -12894,42 +12358,8 @@ row	~.store.window_rows	__lib_x2e_x2e__x2e_x2e__store___store__WindowTable	main	
 shared	dynamic	sites in api #a6ea2058
 
 == dna/tests/onboarding/voice-heart/api/tests/nodes_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12937,42 +12367,8 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/onboarding/voice-heart/api/tests/patch_test.hl
 
 == dna/tests/onboarding/voice-heart/api/tests/projects_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
@@ -12995,123 +12391,38 @@ dynamic	__StdSecretCredential	on main
 dynamic	__lib____governance__Governance	on main
 
 == dna/tests/onboarding/voice-heart/api/tests/registered_account_test.hl
-hole	__lib____endpoints__Endpoints@main1.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main1.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main1.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main1.node_plane.link	unresolved declaration `__lib____link__Link`
 row	__StdIoTcpStream@main2	__StdIoTcpStream	main	default
-shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #8ef1de16
+shared	__lib____endpoints__Endpoints@main1	__lib____endpoints__Endpoints #3b993c9f
 shared	dynamic	sites in api #446d82b3
 shared	dynamic	sites in lib/pond/realtime/nats #164fddea
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/onboarding/voice-heart/api/tests/serve_test.hl
 hole	__lib____endpoints__Endpoints@main2.link	reuse `nodes`
-hole	__lib____endpoints__Endpoints@main2.probes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.probes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_bearer.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.node_bearer.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.models.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.models.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.inference.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.inference.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.inference.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.inference.link	unresolved declaration `__lib____link__Link`
 hole	__lib____endpoints__Endpoints@main2.inference.held	reuse `self.held`
-hole	__lib____endpoints__Endpoints@main2.catalog.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.catalog.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.projects.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.projects.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.keys.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.keys.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.accounts.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.accounts.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.nodes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.nodes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.nodes.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.nodes.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main2.seats.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.seats.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.seats.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.seats.link	unresolved declaration `__lib____link__Link`
-hole	__lib____endpoints__Endpoints@main2.changes.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.changes.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.store	reuse `self.store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.store	unresolved declaration `__lib_x2e_x2e__x2e_x2e__store___store__Store`
-hole	__lib____endpoints__Endpoints@main2.node_plane.link	reuse `self.link`
-hole	__lib____endpoints__Endpoints@main2.node_plane.link	unresolved declaration `__lib____link__Link`
 row	Nodes@main1	Nodes	main	default
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- __lib____endpoints__Endpoints@main2	__lib____endpoints__Endpoints
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
-row	~.accounts.store	<hole>	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
-row	~.bearer.store	<hole>	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
-row	~.catalog.store	<hole>	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
-row	~.changes.store	<hole>	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
-row	~.inference.link	<hole>	main	inherited
-row	~.inference.store	<hole>	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
-row	~.keys.store	<hole>	main	inherited
 row	~.link	Nodes	main	inherited	built by Nodes@main1
 row	~.models	__lib____catalog__Models	main	inherited
-row	~.models.store	<hole>	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
-row	~.node_bearer.store	<hole>	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
-row	~.node_plane.link	<hole>	main	inherited
-row	~.node_plane.store	<hole>	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
-row	~.nodes.link	<hole>	main	inherited
-row	~.nodes.store	<hole>	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
-row	~.probes.store	<hole>	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
-row	~.projects.store	<hole>	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
-row	~.seats.link	<hole>	main	inherited
-row	~.seats.store	<hole>	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited
@@ -13182,8 +12493,6 @@ shared	dynamic	sites in store #cc4c99f2
 == dna/tests/openai_chat_test.hl
 root	App	the entry
 domain	pool:io
-hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 row	App@literal1.local	__lib_dna__core___models__LocalModel	main	default
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #a94d581e
@@ -13195,7 +12504,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	FakeOpenAi	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	dynamic	sites in core #b4d712d4
@@ -14951,8 +14259,6 @@ hole	Head@literal1.srv.handler.organization_candidates	reuse `organization_candi
 hole	Head@literal1.srv.handler.organization_runtime	reuse `runtime`
 hole	Head@literal1.srv.handler.organization_runtime	unresolved declaration `OrganizationRuntimeProvider`
 hole	Head@literal1.srv.handler.auth	reuse `auth`
-hole	Head@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	Head@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	Head@literal1.commands.admission.provider	reuse `commands`
 hole	Head@literal1.commands.admission.provider	unresolved declaration `CommandProvider`
 hole	Head@literal1.commands.knowledge.provider	reuse `knowledge_commands`
@@ -14968,8 +14274,6 @@ hole	Head@literal2.srv.handler.people	unresolved declaration `PeopleProvider`
 hole	Head@literal2.srv.handler.organization_candidates	reuse `organization_candidates`
 hole	Head@literal2.srv.handler.organization_runtime	reuse `runtime`
 hole	Head@literal2.srv.handler.organization_runtime	unresolved declaration `OrganizationRuntimeProvider`
-hole	Head@literal2.srv.conns.handler.handler	reuse `self.handler`
-hole	Head@literal2.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	Head@literal2.commands.admission.provider	reuse `commands`
 hole	Head@literal2.commands.admission.provider	unresolved declaration `CommandProvider`
 hole	Head@literal2.commands.knowledge.provider	reuse `knowledge_commands`
@@ -14993,7 +14297,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -15024,7 +14327,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -15214,8 +14516,6 @@ hole	PracticeReviewHead@literal1.srv.handler.organization_candidates.authority	u
 hole	PracticeReviewHead@literal1.srv.handler.organization_runtime	reuse `runtime`
 hole	PracticeReviewHead@literal1.srv.handler.organization_runtime	unresolved declaration `__lib_dna__api___organization_status__OrganizationRuntimeProvider`
 hole	PracticeReviewHead@literal1.srv.handler.auth	reuse `auth`
-hole	PracticeReviewHead@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	PracticeReviewHead@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	PracticeReviewHead@literal1.commands.admission.provider	reuse `commands`
 hole	PracticeReviewHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 hole	PracticeReviewHead@literal1.commands.knowledge.provider	reuse `knowledge_commands`
@@ -15230,8 +14530,6 @@ hole	PracticeReviewHead@literal2.srv.handler.organization_candidates.authority	r
 hole	PracticeReviewHead@literal2.srv.handler.organization_candidates.authority	unresolved declaration `__lib_dna__operations___governance_admission__GovernanceAuthority`
 hole	PracticeReviewHead@literal2.srv.handler.organization_runtime	reuse `runtime`
 hole	PracticeReviewHead@literal2.srv.handler.organization_runtime	unresolved declaration `__lib_dna__api___organization_status__OrganizationRuntimeProvider`
-hole	PracticeReviewHead@literal2.srv.conns.handler.handler	reuse `self.handler`
-hole	PracticeReviewHead@literal2.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	PracticeReviewHead@literal2.commands.admission.provider	reuse `commands`
 hole	PracticeReviewHead@literal2.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	reuse `knowledge_commands`
@@ -15254,7 +14552,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.definitions	<hole>	pool:io	inherited
@@ -15304,7 +14601,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -15749,8 +15045,6 @@ hole	HeadMain@literal1.slots	reuse `slots`
 hole	HeadMain@literal1.srv.handler.web	reuse `web`
 hole	HeadMain@literal1.srv.handler.slots	reuse `slots`
 hole	HeadMain@literal1.srv.handler.auth	reuse `auth`
-hole	HeadMain@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	HeadMain@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	HeadMain@literal1.watch.slots	reuse `slots`
 row	HeadMain@literal1	HeadMain	main	default
 row	HeadMain@literal1.slots	PushSlots	main	inherited
@@ -15764,7 +15058,6 @@ row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Head	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.slots	PushSlots	pool:io	inherited
@@ -15848,8 +15141,6 @@ domain	pool:__api_http	async_io
 hole	FixtureHead@literal1.srv.handler.web	reuse `web`
 hole	FixtureHead@literal1.srv.handler.definitions	reuse `definitions`
 hole	FixtureHead@literal1.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
-hole	FixtureHead@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	FixtureHead@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	FixtureHead@literal1.commands.admission.provider	reuse `provider`
 hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 hole	FixtureProvider@main4.original.catalog	reuse `original`
@@ -15863,7 +15154,7 @@ shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
-shared	FixtureHead@literal1.srv	__StdHttpServer #cd5fc352
+shared	FixtureHead@literal1.srv	__StdHttpServer #70fbeaf2
 -- FixtureProvider@main4	FixtureProvider
 row	~	FixtureProvider	main	default
 row	~.original	__lib_dna__operations___definitions__DeclaredWorkflowCatalog	main	inherited
@@ -15926,8 +15217,6 @@ domain	pool:__api_http	async_io
 hole	FixtureHead@literal1.srv.handler.web	reuse `web`
 hole	FixtureHead@literal1.srv.handler.definitions	reuse `definitions`
 hole	FixtureHead@literal1.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
-hole	FixtureHead@literal1.srv.conns.handler.handler	reuse `self.handler`
-hole	FixtureHead@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
 hole	FixtureHead@literal1.commands.admission.provider	reuse `provider`
 hole	FixtureHead@literal1.commands.admission.provider	unresolved declaration `__lib_dna__api___commands__CommandProvider`
 row	FixtureHead@literal1	FixtureHead	main	default
@@ -15940,7 +15229,7 @@ shared	FixtureHead@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #dbee5355
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
-shared	FixtureHead@literal1.srv	__StdHttpServer #cd5fc352
+shared	FixtureHead@literal1.srv	__StdHttpServer #70fbeaf2
 shared	dynamic	sites in api #ff9a194b
 -- dynamic	sites in api/tests/commands
 dynamic	__StdApiHttpConns	on pool:__api_http
@@ -17948,40 +17237,19 @@ row	~.entries	__StdHttpEntryList	main	inherited
 row	~.mws	__StdHttpMwList	main	inherited
 row	~.not_found	__StdHttpNotFound404	main	inherited
 
-== shared __StdHttpServer #1816dd9c
-row	~	__StdHttpServer	pool:io	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:io	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
-row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
-row	~.handler	Echo	pool:io	inherited
-row	~.relay	__StdIoTcpRelay	pool:io	inherited
-
-== shared __StdHttpServer #c2faedd3
+== shared __StdHttpServer #23fa7bd1
 row	~	__StdHttpServer	pool:web	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:web	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:web	inherited
 row	~.conns.handler	__StdHttpResponder	pool:web	inherited
-row	~.conns.handler.handler	<hole>	pool:web	inherited
 row	~.handler	Slow	pool:web	inherited
 row	~.relay	__StdIoTcpRelay	pool:web	inherited
 
-== shared __StdHttpServer #ca00e9fa
+== shared __StdHttpServer #70fbeaf2
 row	~	__StdHttpServer	pool:io	entry	off owner
 row	~.conns	__StdIoTcpConnections	pool:io	inherited
 row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
-row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
-row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
-row	~.relay	__StdIoTcpRelay	pool:io	inherited
-
-== shared __StdHttpServer #cd5fc352
-row	~	__StdHttpServer	pool:io	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:io	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
-row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	__lib_dna__api___main__Api	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.auth.exchange	__lib_dna__ui___main__CodeExchange	pool:io	inherited
@@ -18024,6 +17292,23 @@ row	~.handler.roles.git.store.sigs	__lib_dna__core___journal__Authors	pool:io	in
 row	~.handler.roles.rows	__lib_dna__core___journal__EventRows	pool:io	inherited
 row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdHttpServer #a4f10215
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.handler	Echo	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdHttpServer #bab40621
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
+row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
 == shared __StdIoH2Listener #b0c4764c
@@ -18086,24 +17371,17 @@ row	~.store	__StdMetricsMap	main	inherited
 row	~	__StdObserveOtlp	pinned:~	entry	off owner
 row	~.client	__StdHttpClient	pinned:~	inherited
 
-== shared __lib____endpoints__Endpoints #8ef1de16
+== shared __lib____endpoints__Endpoints #3b993c9f
 row	~	__lib____endpoints__Endpoints	main	default
 row	~.accounts	__lib____accounts__Accounts	main	inherited
-row	~.accounts.store	<hole>	main	inherited
 row	~.bearer	__lib____projects__KeyBearer	main	inherited
-row	~.bearer.store	<hole>	main	inherited
 row	~.catalog	__lib____catalog__Catalog	main	inherited
-row	~.catalog.store	<hole>	main	inherited
 row	~.changes	__lib____changes__Changes	main	inherited
-row	~.changes.store	<hole>	main	inherited
 row	~.held	__lib____governance__HeldLimits	main	inherited
 row	~.inference	__lib____inference__Inference	main	inherited
 row	~.inference.held	__lib____governance__HeldLimits	main	inherited
-row	~.inference.link	<hole>	main	inherited
-row	~.inference.store	<hole>	main	inherited
 row	~.inference.windows	__lib____admission__Windows	main	inherited
 row	~.keys	__lib____projects__Keys	main	inherited
-row	~.keys.store	<hole>	main	inherited
 row	~.link	__lib____link__NatsLink	main	inherited
 row	~.link.attempt	__lib____link__NatsAttempt	main	inherited
 row	~.link.attempt.c	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___client__NatsClient	main	inherited
@@ -18123,23 +17401,13 @@ row	~.link.attempt.c.stash_meta.starts	__lib_x2e_x2e__x2e_x2e__lib__pond__realti
 row	~.link.attempt.c.stash_meta.subj_lens	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.link.attempt.c.stash_sids	__lib_x2e_x2e__x2e_x2e__lib__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.models	__lib____catalog__Models	main	inherited
-row	~.models.store	<hole>	main	inherited
 row	~.node_bearer	__lib____fleet__NodeBearer	main	inherited
-row	~.node_bearer.store	<hole>	main	inherited
 row	~.node_plane	__lib____fleet__NodePlane	main	inherited
-row	~.node_plane.link	<hole>	main	inherited
-row	~.node_plane.store	<hole>	main	inherited
 row	~.node_secret	__StdSecretCredential	main	inherited
 row	~.nodes	__lib____nodes__Nodes	main	inherited
-row	~.nodes.link	<hole>	main	inherited
-row	~.nodes.store	<hole>	main	inherited
 row	~.probes	__lib____health__Probes	main	inherited
-row	~.probes.store	<hole>	main	inherited
 row	~.projects	__lib____projects__Projects	main	inherited
-row	~.projects.store	<hole>	main	inherited
 row	~.seats	__lib____nodes__Seats	main	inherited
-row	~.seats.link	<hole>	main	inherited
-row	~.seats.store	<hole>	main	inherited
 row	~.store	__lib_x2e_x2e__x2e_x2e__store___store__MemoryStore	main	inherited
 row	~.store.account_order	__lib_x2e_x2e__x2e_x2e__store___store__IdOrder	main	inherited
 row	~.store.account_rows	__lib_x2e_x2e__x2e_x2e__store___store__AccountTable	main	inherited
