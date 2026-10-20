@@ -34,6 +34,7 @@ use verbs::fleet::run_fleet;
 use verbs::help::{subcommand_help, usage};
 use shared::stale::check_stale_cli;
 mod build_env;
+mod deploy;
 mod fleet;
 mod dna;
 mod iris;
@@ -188,6 +189,13 @@ fn main() -> ExitCode {
     if cmd == "fleet" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_fleet(&rest);
+    }
+
+    // GH #1477: `hale deploy render` — the program's placement as a
+    // compose or Kubernetes description; never deploys.
+    if cmd == "deploy" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return deploy::run_deploy(&rest);
     }
 
     // GH #476 Track A: `hale topology graph <artifact>` — deterministic

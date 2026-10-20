@@ -1,0 +1,14 @@
+[claims]
+no_base = true
+
+[environments.prod]
+source_only = true
+backend = "compose"
+
+[environments.prod.env]
+LOG_LEVEL = "info"
+REGION = "eu"
+
+[environments.staging]
+source_only = true
+backend = "kubernetes"

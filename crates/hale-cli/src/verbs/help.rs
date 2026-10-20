@@ -18,6 +18,7 @@ pub(crate) fn usage() {
     eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
     eprintln!("    hale model dump <file.hl | dir> derive + print the canonical ApplicationModel (internal; experimental)");
     eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
+    eprintln!("    hale deploy render <path>     a program's placement as compose or Kubernetes (never deploys)");
     eprintln!("    hale fleet check|dump|sign    compose topology artifacts across binaries (also attest|keygen)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("        [--observe[=<port>]] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
@@ -95,6 +96,10 @@ pub(crate) fn subcommand_help(cmd: &str) -> bool {
         // so there is one description of the flag set.
         "check" | "verify" => {
             check_usage(cmd == "verify");
+            return true;
+        }
+        "deploy" => {
+            print!("{}", crate::deploy::usage());
             return true;
         }
         "fleet" => {

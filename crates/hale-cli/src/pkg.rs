@@ -208,6 +208,14 @@ pub struct EnvSpec {
     /// nobody, which `--matrix` accepts; an absent role it does not.
     #[serde(default)]
     pub roles: BTreeMap<String, Vec<String>>,
+    /// GH #1477: the deployment backend `hale deploy render` uses here,
+    /// `compose` or `kubernetes`; `--backend` overrides it.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// GH #1477: `[environments.<name>.env]` — the environment values
+    /// every rendered workload carries here.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// GH #1109: the spellings a role member may take.

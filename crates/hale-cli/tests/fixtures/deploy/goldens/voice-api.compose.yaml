@@ -1,0 +1,10 @@
+# Rendered by `hale deploy render` from api: a pure function of the checked program.
+# Build each program first (`hale build <seed>`); a service runs its built binary from
+# the mount, in a glibc image compatible with the build host.
+services:
+  api:
+    image: debian:stable-slim
+    working_dir: /app
+    volumes:
+      - "api:/app:ro"
+    command: ["/app/api"]

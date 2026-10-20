@@ -1411,6 +1411,39 @@ application tier; a fleet is an ARRANGEMENT of deployed instances.
 collapsing them would force every entrypoint's law to be a function
 of some deployment it may not even appear in.
 
+### Rendering a deployment (GH #1477)
+
+`hale deploy render <path> --backend compose|kubernetes [--env <name>]
+[--out <dir>]` writes a platform description of a program's own
+placement, to stdout or to `<dir>/compose.yaml` / `kubernetes.yaml`.
+`<path>` is a seed or a fleet plan. It is a pure function of what the
+program already declares, and it never builds, applies or contacts
+anything:
+
+- the seed's checked topology (`hale check --dump-topology`): the
+  `std::observe::Scrape` endpoint (host, port, path) and the bindings;
+- the main locus's `std::observe::Probes` param, when its port is
+  literal or defaulted;
+- a plan's instances and routes: one compose service per instance, one
+  Kubernetes Deployment per program with `replicas` the number of
+  instances that run it, and a compose `depends_on` from a route's
+  subscriber to its publishers (`service_healthy` when the publisher
+  holds probes, else `service_started`);
+- `[environments.<name>]`: `backend = "compose" | "kubernetes"` (the
+  `--backend` flag overrides it) and `[environments.<name>.env]`, string
+  values every rendered workload carries.
+
+Probes render the compose `healthcheck` (GET `/healthz`) and the
+Kubernetes `livenessProbe` (`/healthz`) and `readinessProbe` (`/readyz`);
+a Scrape renders the published port and the `prometheus.io/*` pod
+annotations. A program without the param renders no probe section and a
+note says so on stderr; nothing is invented. A binding over a unix socket
+or a ring names a local path, not a port, and publishes nothing. No
+`HorizontalPodAutoscaler` is rendered: no environment key declares a
+scale policy. Output is ordered by instance id and program name, so it
+diffs. A directory with no `.hl` source (a repository) is refused: a
+backend renders an organism's own programs, never a foreign heart's.
+
 There is deliberately no coverage check over plans — unlike
 entrypoints, which are discoverable seeds, a plan is an arbitrary
 file path, so "every plan in the repository is declared" is not a
