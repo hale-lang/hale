@@ -78,8 +78,8 @@ fn witness_whole() -> String {
     let s = swap(&s, "operator: \"uid:1000\"", "operator: std::env::var(\"OPERATOR\")");
     let s = swap(
         &s,
-        "as: \"admin\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n",
-        "as: \"admin\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n        feed: api::Exposure = api::serve(Public, self.hub, as: \"feed\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n",
+        "as: \"admin\",\n            receivers: { Orders: self.orders },\n            bound: 16,\n            on_full: refuse\n        );\n",
+        "as: \"admin\",\n            receivers: { Orders: self.orders },\n            bound: 16,\n            on_full: refuse\n        );\n        feed: api::Exposure = api::serve(Public, self.hub, as: \"feed\", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);\n",
     );
     let s = swap(
         &s,

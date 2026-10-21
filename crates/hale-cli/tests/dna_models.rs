@@ -98,7 +98,7 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     assert!(out.contains("leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day"), "{out}");
     for needle in [
         "fn frontier() -> dna::OpenAiChat",
-        "model: \"gpt-4o\", endpoint: \"https://api.openai.com/v1/chat/completions\", credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" }",
+        "model: \"gpt-4o\",\n        endpoint: \"https://api.openai.com/v1/chat/completions\",\n        credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" },",
         "fn fast() -> dna::OpenAiChat",
         "fn desk() -> dna::LocalModel",
         "fn leader_models() -> dna::ModelRouter",
@@ -137,8 +137,8 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     let catalog = std::fs::read_to_string(d2.join("withkey/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  found   ANTHROPIC_API_KEY in the vault, no ollama on PATH"), "{out}");
     assert!(out.contains("frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_API_KEY)"), "{out}");
-    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"deep\", model: \"claude-opus-5\", endpoint: \"https://api.anthropic.com/v1/messages\", credential: dna::HostedCredential { key: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" }, input_micros_per_1k: 15000, output_micros_per_1k: 75000 };"), "{catalog}");
-    assert!(catalog.contains("fn fast() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"quick\", model: \"claude-haiku-4-5-20251001\""), "{catalog}");
+    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages {\n        name: \"deep\",\n        model: \"claude-opus-5\",\n        endpoint: \"https://api.anthropic.com/v1/messages\",\n        credential: dna::HostedCredential { key: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" },\n        input_micros_per_1k: 15000,\n        output_micros_per_1k: 75000,\n    };"), "{catalog}");
+    assert!(catalog.contains("fn fast() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages {\n        name: \"quick\",\n        model: \"claude-haiku-4-5-20251001\""), "{catalog}");
     assert!(!catalog.contains("-> dna::OpenAiChat"), "no OpenAI backend when Anthropic is chosen:\n{catalog}");
     // and the organization checks and builds from it
     let (ok, out) = hale_env(&["check", "--matrix", "."], &d2.join("withkey"), &[], &[]);

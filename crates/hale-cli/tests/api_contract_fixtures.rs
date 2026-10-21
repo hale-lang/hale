@@ -973,7 +973,7 @@ fn the_compiler_prints_every_description_byte_for_byte() {
 #[test]
 fn a_grpc_exposure_is_described_with_the_grpc_outcomes() {
     let program = std::fs::read_to_string(contract_dir().join("program.hl")).expect("program.hl");
-    let swapped = program.replacen("http::Rpc { bind: \"127.0.0.1:8080\"", "grpc::Rpc { bind: \"127.0.0.1:8080\"", 1);
+    let swapped = program.replacen("http::Rpc {\n                bind: \"127.0.0.1:8080\"", "grpc::Rpc {\n                bind: \"127.0.0.1:8080\"", 1);
     assert_ne!(swapped, program, "the contract still serves public over http::Rpc at :8080");
     let got = hale_over("grpc_described", &swapped, &["--api", "--exposure", "public", "--caller", "alice", "--holds", "trader"]);
     assert!(errors_against_schema(&got).is_empty(), "{:?}", errors_against_schema(&got));

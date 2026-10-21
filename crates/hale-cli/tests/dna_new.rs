@@ -46,7 +46,7 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     assert!(!main.contains("dna::") && !main.contains("genome"), "the application is not grafted: {main}");
     assert!(!app.join("dna_constitution.hl").exists() && !app.join("dna/assembly.hl").exists(), "no law or assembly in the application");
     let law = std::fs::read_to_string(app.join("dna/org/law.hl")).unwrap();
-    assert!(law.contains("apply_only_through_the_substrate: forbid reaches(positions, effects(genome_apply)) avoiding substrate;"), "{law}");
+    assert!(law.contains("apply_only_through_the_substrate: forbid reaches(\n        positions,\n        effects(genome_apply)\n    ) avoiding substrate;"), "{law}");
     assert!(law.contains("editors_never_commit: forbid reaches(editors, effects(repo_write));"), "{law}");
     assert!(law.contains("editors_never_learn: forbid reaches(editors, knowledge);"), "{law}");
     let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();

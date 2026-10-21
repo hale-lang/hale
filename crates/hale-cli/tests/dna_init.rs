@@ -254,7 +254,7 @@ fn upgrade_retires_the_owners_map() {
             "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true\n",
             "            planned: true,\n            // GH #596 O: the optimize pass — the leader walks the machinery\n            // on this cadence, in milliseconds; 0 is never. The Board's to set.\n            optimize_every_ms: 0\n",
         )
-        .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }")
+        .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000);\n        }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }")
         // and its Board field, before it was `board`
         .replace("            board: dna::Board { who: \"board\" },\n", "            membrane: dna::Board { who: \"board\" },\n");
     assert!(older.contains("optimize_every_ms: 0") && older.contains("monotonic_ns()") && older.contains("membrane: dna::Board"), "the older generator's main.hl is built");
