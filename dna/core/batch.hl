@@ -7,8 +7,9 @@
 //   open <name> [under <node>] | <mandate>
 //   fill <name> <holder>                fill * <holder>   (every vacant seat)
 //   vacate <name> <holder>
-//   practice <name> | <text>
-//   law <name> | <text>                 (a practice proposed as law, GH #1591)
+//   practice <name> [for <position>] | <text>
+//   law <name> [for <position>] | <text>   (a practice proposed as law, GH #1591)
+//   idea <name> [for <position>] | <text>  (knowledge, e.g. an external source)
 //   assign <name> reviews <node>        unassign <name> reviews <node>
 //   close <name>
 //   merge <name> into <name>            split <name> into <name> <name>
@@ -18,7 +19,10 @@
 //   nursery <source>                    (a nursery the Board trusts for packs)
 //
 // `#` starts a comment, and blank lines are skipped. A name is a position's,
-// with or without its `position:` prefix.
+// with or without its `position:` prefix. A practice or an idea `for` a
+// position is bound to it (its target), and is otherwise bound to `org`; one
+// already in force with the same text and target is kept, not proposed
+// again, so a pack adopted again proposes only what it adds.
 //
 // A batch is checked whole before it is proposed (`batch_plan`): each step
 // against the graph the record states and the steps beside it, and the
@@ -46,7 +50,9 @@
 
 // A planned batch. `steps` are the normalized steps, one a line:
 // `open\t<position>\t<under>\t<mandate>`, `fill\t<position>\t<holder>` or
-// `vacate\t<position>\t<holder>` or `practice\t<name>\t<text>`.
+// `vacate\t<position>\t<holder>`, `practice\t<name>\t<text>[\t<law>[\t<target>]]`
+// or `idea\t<name>\t<text>[\t\t<target>]` (`<law>` is `law` or empty, and
+// with no target it is bound to `org`).
 // `before` and `after` are org charts as `org_chart` writes them.
 type BatchPlan {
     ok: Bool = false;
@@ -199,16 +205,23 @@ fn batch_steps(text: String) -> BatchPlan {
         // GH #1591: `law` is a practice its document proposes as law, which
         // the Board ratifies as law or as advice; a step's fourth field says
         // so (`practice\t<name>\t<text>\tlaw`)
-        if std::str::starts_with(line, "practice ") || std::str::starts_with(line, "law ") {
+        if std::str::starts_with(line, "practice ") || std::str::starts_with(line, "law ") || std::str::starts_with(line, "idea ") {
             let law = std::str::starts_with(line, "law ");
-            let verb = if law { "law" } else { "practice" };
+            let verb = line[0..std::str::index_of(line, " ")];
+            let what = if verb == "idea" { "an idea" } else { "a " + verb };
             let bar = std::str::index_of(line, "|");
-            if bar < 0 { out.why = at + "a " + (if law { "law" } else { "practice" }) + " is proposed with its text: `" + verb + " <name> | <text>`"; return out; }
-            let name = std::str::trim(line[(len(verb) + 1)..bar]);
+            if bar < 0 { out.why = at + what + " is proposed with its text: `" + verb + " <name> [for <position>] | <text>`"; return out; }
+            let head = std::str::trim(line[(len(verb) + 1)..bar]);
             let text = std::str::trim(line[(bar + 1)..len(line)]);
-            if !batch_word(name) { out.why = at + "a practice is named by one word, with no space or `|`"; return out; }
-            if len(text) == 0 || std::str::contains(text, "\t") { out.why = at + "a practice is one line of text, with no tab"; return out; }
-            out.steps = out.steps + "practice\t" + name + "\t" + text + (if law { "\tlaw" } else { "" }) + "\n";
+            let for_at = std::str::index_of(head, " for ");
+            let name = if for_at < 0 { head } else { std::str::trim(head[0..for_at]) };
+            let target = if for_at < 0 { "" } else { std::str::trim(head[(for_at + 5)..len(head)]) };
+            if !batch_word(name) { out.why = at + what + " is named by one word, with no space or `|`"; return out; }
+            if for_at >= 0 && !batch_word(target) { out.why = at + "`for` names the one position it is bound to"; return out; }
+            if len(text) == 0 || std::str::contains(text, "\t") { out.why = at + what + " is one line of text, with no tab"; return out; }
+            let kind = if verb == "idea" { "idea" } else { "practice" };
+            // the law mark and the target only when given: `practice\t<name>\t<text>`
+            out.steps = out.steps + kind + "\t" + name + "\t" + text + (if law || for_at >= 0 { "\t" + (if law { "law" } else { "" }) } else { "" }) + (if for_at >= 0 { "\t" + batch_position(target) } else { "" }) + "\n";
             continue;
         }
         if std::str::starts_with(line, "fill ") || std::str::starts_with(line, "vacate ") {
@@ -257,7 +270,7 @@ fn batch_steps(text: String) -> BatchPlan {
             continue;
         }
         if dna_batch_verb(verb) { out.why = at + "`" + verb + "` is written `" + batch_usage(verb) + "`"; return out; }
-        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
+        out.why = at + "`" + verb + "` is no step a batch takes (open, fill, vacate, practice, law, idea, retire-practice, nursery, assign, unassign, close, merge, split, expose, depend, externalize, internalize)";
         return out;
     }
     if len(out.steps) == 0 { out.why = "the batch has no steps"; return out; }
@@ -433,27 +446,41 @@ fn batch_plan(j: Journal, receipts: Receipts, text: String) -> BatchPlan {
         if len(under) > 0 && !record_graph_has(g.nodes, under) && !std::str::contains(opened, "\n" + under + "\n") { out.why = "`under " + under + "` (opening `" + p + "`) names no node the graph states or the batch opens"; return out; }
         st = plan_open(st, p, under, batch_field(step, 3));
     }
-    // the practices it proposes: one of a name, never one in force
+    // the practices and ideas it proposes: one of a name, bound to a
+    // position the graph states or the batch opens; one in force with the
+    // same text and target is kept, and one in force otherwise is refused
     let mut practices = "\n";
+    let mut kept = "";
     rest = out.steps;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if batch_field(step, 0) != "practice" { continue; }
+        let kind = batch_field(step, 0);
+        if kind != "practice" && kind != "idea" { kept = kept + step + "\n"; continue; }
         let name = batch_field(step, 1);
-        if std::str::contains(practices, "\n" + name + "\n") { out.why = "the practice `" + name + "` is proposed twice in the batch"; return out; }
-        if chart_has(out.before, "practice " + name) { out.why = "the practice `" + name + "` is in force already; propose a new version of it on its own"; return out; }
-        practices = practices + name + "\n";
-        st.after = st.after + "practice " + name + "\n";
+        let target = batch_field(step, 4);
+        if std::str::contains(practices, "\n" + kind + " " + name + "\n") { out.why = "the " + kind + " `" + name + "` is proposed twice in the batch"; return out; }
+        practices = practices + kind + " " + name + "\n";
+        if len(target) > 0 && !chart_has(st.after, "position " + target) { out.why = "the " + kind + " `" + name + "` is for `" + target + "`, no position the graph states or the batch opens"; return out; }
+        let held = batch_knowledge_digest(j, kind, name);
+        if len(held) > 0 {
+            let doc = receipts.read(held[7..len(held)]);
+            if native_json_string(doc, "text") == batch_field(step, 2) && native_json_string(doc, "target") == (if len(target) > 0 { target } else { "org" }) { continue; }
+            out.why = "the " + kind + " `" + name + "` is in force already; propose a new version of it on its own"; return out;
+        }
+        kept = kept + step + "\n";
+        if kind == "practice" { st.after = st.after + "practice " + name + "\n"; }
     }
+    out.steps = kept;
+    if len(out.steps) == 0 { out.why = "nothing to propose: every step is in force already"; return out; }
     rest = out.steps;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let verb = batch_field(step, 0);
-        if verb == "open" || verb == "practice" { continue; }
+        if verb == "open" || verb == "practice" || verb == "idea" { continue; }
         let p = batch_field(step, 1);
         let q = batch_field(step, 2);
         // every vacant seat is known once every other step is taken
@@ -1181,13 +1208,15 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         let nl = std::str::index_of(rest, "\n");
         let step = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if batch_field(step, 0) != "practice" { continue; }
+        let pk = batch_field(step, 0);
+        if pk != "practice" && pk != "idea" { continue; }
         let pn = batch_field(step, 1);
-        let pdoc = knowledge_document(Idea { kind: "practice", text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name, law: batch_field(step, 3) == "law" }, "org");
+        let pt = if len(batch_field(step, 4)) > 0 { batch_field(step, 4) } else { "org" };
+        let pdoc = knowledge_document(Idea { kind: pk, text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name, law: batch_field(step, 3) == "law" }, pt);
         let pd = digest_of(pdoc);
         docs = docs + pdoc + "\n";
-        members = members + batch_member_row(pd, "practice", by, "org", pn, at);
-        ideas = ideas + "practice/" + pn + " " + pd + "\n";
+        members = members + batch_member_row(pd, pk, by, pt, pn, at);
+        ideas = ideas + pk + "/" + pn + " " + pd + "\n";
         count = count + 1;
     }
     // a retirement per practice it retires: ratified, it retires the
@@ -1296,8 +1325,12 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
 }
 
 // The digest of the practice named `name` in force, "" when none.
+fn batch_practice_digest(j: Journal, name: String) -> String { return batch_knowledge_digest(j, "practice", name); }
+
+// The digest of the knowledge of `kind` named `name` in force (ratified,
+// not retired), "" when none.
 @bounded_by(j)
-fn batch_practice_digest(j: Journal, name: String) -> String {
+fn batch_knowledge_digest(j: Journal, kind: String, name: String) -> String {
     let mut ratified = "\n";
     let mut retired = "\n";
     let mut i = 0;
@@ -1311,7 +1344,7 @@ fn batch_practice_digest(j: Journal, name: String) -> String {
     i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == "practice" && native_json_string(e.body, "name") == name && std::str::contains(ratified, "\n" + e.entity + "\n") && !std::str::contains(retired, "\n" + e.entity + "\n") { found = e.entity; }
+        if e.kind == "knowledge.proposed" && native_json_string(e.body, "kind") == kind && native_json_string(e.body, "name") == name && std::str::contains(ratified, "\n" + e.entity + "\n") && !std::str::contains(retired, "\n" + e.entity + "\n") { found = e.entity; }
         i = i + 1;
     }
     return found;
@@ -1368,7 +1401,7 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
 @bounded_by(steps)
 fn batch_summary(steps: String) -> String {
     let mut out = "";
-    let mut verbs = "open fill vacate practice retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
+    let mut verbs = "open fill vacate practice idea retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
     while len(verbs) > 0 {
         let sp = std::str::index_of(verbs, " ");
         let v = verbs[0..sp];
@@ -1409,8 +1442,9 @@ fn batch_text(steps: String) -> String {
         if verb == "open" {
             let under = batch_field(step, 2);
             out = out + "open " + batch_field(step, 1) + (if len(under) > 0 { " under " + under } else { "" }) + " | " + batch_field(step, 3) + "\n";
-        } else if verb == "practice" {
-            out = out + (if batch_field(step, 3) == "law" { "law " } else { "practice " }) + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
+        } else if verb == "practice" || verb == "idea" {
+            let target = batch_field(step, 4);
+            out = out + (if batch_field(step, 3) == "law" { "law " } else { verb + " " }) + batch_field(step, 1) + (if len(target) > 0 { " for " + target } else { "" }) + " | " + batch_field(step, 2) + "\n";
         } else if verb == "assign" || verb == "unassign" {
             out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2) + "\n";
         } else if verb == "close" || verb == "externalize" || verb == "retire-practice" || verb == "nursery" {

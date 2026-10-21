@@ -247,77 +247,80 @@ Nothing else starts them.
 `dna/tests/senses_reflex_test.hl` runs the whole loop on the
 organism's allocations in the test file's own habitat.
 
-## Integration watches
+## Upstream watches
 
-The services your code calls change without asking. An **integration
-watch** notices for you: the genome names where each integration says
-what it is, and the organism reads it on a cadence and tells the position
-that owns the integration when it moved. Declare one table per
-integration in `hale.toml`:
+The services your code calls change without asking. A **watched
+upstream** notices for you, and it is a practice like any other: the
+organism reads the source on the cadence the practice names and tells the
+position that owns the integration when it moved. The standard pack holds
+the template; propose it once per upstream:
 
-```toml
-[dna.integrations.pay-changelog]
-position = "payments/dev"
-source = "changelog"
-url = "https://pay.example/changelog"
-every = "1d"
-
-[dna.integrations.pay-api]
-position = "payments/dev"
-codebase = "ledger-svc"
-source = "openapi"
-surface = "integrations/pay.hl"
-cron = "0 6 * * 1-5"
+```sh
+hale dna pack apply standard --set integration=pay-changelog --set position=payments/dev \
+    --set source=https://pay.example/changelog --set kind=changelog --set every=1d
+hale dna pack apply standard --set integration=pay-api --set position=payments/dev \
+    --set source=integrations/pay.hl --set kind=openapi --set every=1d
 ```
 
-| key | what it says |
+Each is one Review for the Board. It proposes the practice
+`standard/upstream-watched/<integration>`, bound to the position, whose
+text carries its terms:
+
+```text
+The upstream pay-api is watched for its position: … source=integrations/pay.hl kind=openapi every=1d step=source-check
+```
+
+| term | what it says |
 | --- | --- |
-| `position` | the position that owns it; its checks run under it, and its concerns go to it |
-| `source` | `changelog` or `docs` (a page), `feed` (RSS or Atom), or `openapi` |
-| `url` | for a page or a feed: `https://`, `http://` or `file://` |
-| `surface` | for `openapi`: the surface `hale api import` wrote and you committed ([Noticing when the service moves](../services/api.md#noticing-when-the-service-moves)) |
-| `every` / `cron` | the cadence, as a schedule takes it: one or the other |
-| `codebase` | optional: the attached codebase it belongs to, named in what it lands |
+| `source=` | for a page or a feed, its URL: `https://`, `http://` or `file://`; for `openapi`, the surface `hale api import` wrote and you committed ([Noticing when the service moves](../services/api.md#noticing-when-the-service-moves)) |
+| `kind=` | `changelog` or `docs` (a page), `feed` (RSS or Atom), or `openapi` |
+| `every=` | the cadence, as a schedule takes it |
+| `step=` | `source-check`, the step each occurrence runs |
 
-An OpenAPI integration takes no `url`: its source is the one the surface
-was imported from, and its check is `hale api drift` on the surface. The
-organization reads the tables when they change and declares a schedule of
-`integration-check` for each, `integration.<name>`, convened by its
-position, so `hale dna schedule` lists them and a position nobody holds
-is refused as any convener is ([Schedules](./schedules.md)). A table that
-cannot stand is an `integration.refused` row saying why.
+and beside it the idea `standard/upstream-source/<integration>`, the
+source itself as knowledge bound to the same position. Once the Board
+ratifies them, the practice declares its schedule (its id the practice's
+name, of `source-check`, convened by its position), so `hale dna schedule`
+lists it and a position nobody holds is refused as any convener is
+([Schedules](./schedules.md)). An OpenAPI source takes no URL: its source
+is the one the surface was imported from, and its check is `hale api
+drift` on the surface. To change a watch, amend the practice; to stop
+it, retire it (`retire-practice`), and its occurrences check nothing.
 
-Each check reads the source and keeps only what can move for a reason:
-a page's text, without its markup, scripts, styles, head or comments;
-a feed's entries, a line each; an API's document, parsed and canonical
-(`hale api drift --document`), summarized by its drift lines. The
-document is what is compared, so a second change to an operation that
-already drifted is still a move. The first check is
-the baseline and says nothing. After that, a check that finds the same
-text writes nothing at all, and one that finds it moved lands:
+Each occurrence runs `source-check` with the practice as its parameters.
+It reads the source and keeps only what can move for a reason: a page's
+text, without its markup, scripts, styles, head or comments; a feed's
+entries, a line each; an API's document, parsed and canonical (`hale api
+drift --document`), summarized by its drift lines. The document is what
+is compared, so a second change to an operation that already drifted is
+still a move. What it is compared with is the snapshot the previous
+occurrence saw, which that occurrence's outcome names. The first
+occurrence is the baseline and says nothing. After that, one that finds
+the same text writes nothing, and one that finds it moved lands:
 
-- a reading, `integrations/integration.<name>.changed/<task>`, whose
-  payload carries the unified diff and names the receipt memory keeps it
-  under; an API's leads with its drift lines:
+- a reading, `sources/<integration>.changed/<task>`, whose payload
+  carries the unified diff and names the receipt memory keeps it under;
+  an API's leads with its drift lines:
 
   ```text
   drift Pay added create_refund
-  --- integration.pay-api 3a71c0d2e9b4
-  +++ integration.pay-api 92c69fb5be46
+  --- standard/upstream-watched/pay-api 3a71c0d2e9b4
+  +++ standard/upstream-watched/pay-api 92c69fb5be46
   @@ -30,6 +30,15 @@
   …
   +    "/refunds": {
   ```
 
-- a concern from `<position>/integration.<name>`, so it is routed to the
+- a concern from `<position>/<integration>`, so it is routed to the
   position, whose words name the reading and the receipt. One move is one
   concern, however often its check runs again.
 
 A source that cannot be read (a fetch that fails, a status outside 2xx, a
-drift check that cannot read its surface) is an `integration.unreached`
-row. One failure is a blip and says nothing; the third in a row lands one
-reading, `integrations/integration.<name>.unreachable/<task>`, and no
-concern.
+drift check that cannot read its surface) fails the occurrence. One
+failure is a blip and says nothing; the third in a row also lands one
+reading, `sources/<integration>.unreachable/<task>`, and no concern. A
+practice whose terms do not stand (a kind outside the four, say) fails
+every occurrence saying why, and lands nothing.
 
 From there the concern is a concern like any other: escalated, and
 proposed as knowledge when the watch keeps raising them. It does not
@@ -332,5 +335,5 @@ become a task by itself yet.
 | `reflexes: the store at … did not answer (…)` | the store is down | `hale dna senses up` |
 | `reflexes: the vault holds no credential …` | the reflexes' password is not drawn | `hale dna upgrade` |
 | a concern that never becomes a proposal | its source has no parent | name the source as a path under its parent |
-| an `integration.refused` row | a `[dna.integrations.<name>]` table that cannot stand | fix what its `why` names |
-| `schedule.refused integration.<name>`, `nobody holds position:<p>` | the integration's position has no holder | `hale dna fill <p> <holder>`; the table is declared again when it changes or the organization restarts |
+| a `source-check` occurrence failed with the result `refused` | the watch's practice has terms that do not stand | amend the practice: fix what its narrative names |
+| `schedule.refused standard/upstream-watched/<name>`, `nobody holds position:<p>` | the practice's position had no holder when it was ratified | `hale dna fill <p> <holder>`, then declare it by hand: `hale dna schedule declare <name> --every <cadence> --definition source-check --convener <p> --args '{"practice": "<digest>", "name": "<name>"}'` |

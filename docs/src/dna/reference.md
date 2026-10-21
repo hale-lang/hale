@@ -354,7 +354,7 @@ hale dna ingest [project] [--at <rev>]
 hale dna position open <name> --mandate "<text>" [--text <what it is>] [--under <part>] [--as <who>]
                              open a position at run time: its node and its mandate, one Board Review (`review positions approve`)
 hale dna apply <file> [--dry-run] [--as <who>] [--on-holes]
-                             several changes to the structure (`open`, `fill`, `fill *`, `vacate`, `practice`, `assign`, `unassign`, `close`, `merge`,
+                             several changes to the structure (`open`, `fill`, `fill *`, `vacate`, `practice`, `law`, `idea`, `assign`, `unassign`, `close`, `merge`,
                              `split`, `expose`, `depend`, `externalize`, `internalize`, `retire-practice`) as one Board Review, applied all or nothing
                              (`review changes approve`); --dry-run prints the org chart before and after and proposes nothing; --on-holes
                              plans it on the holes the graft proposed that the Board has not decided, and ratifies it after them
@@ -518,7 +518,6 @@ kind it does not know keeps walking.
 |---|---|---|
 | `application.attached` / `application.detached` | record | the application the organism oversees, and its removal |
 | `codebase.attached` / `codebase.detached` | record | a foreign codebase attached with no application: repository, build and test commands, default branch; and its removal |
-| `integration.observed` / `integration.unreached` / `integration.refused` | ledger | an integration's check: the baseline, a move (its reading and diff) or a source reached again; a failed read and its streak; a declaration in `hale.toml` that cannot stand ([Integration watches](./senses.md#integration-watches)) |
 | `expression.restart_requested` | record | the organization asks for a change to be expressed |
 | `expression.restarted` / `expression.deployed` | record | what the new expression reports, or what a deployment gateway expressed |
 | `expression.observed` / `expression.crashed` | record | the observation window's outcome |
@@ -691,7 +690,6 @@ habitat, below.
 | memory, receipts | receipts, by the digest of their content (protected classes sealed) |
 | memory, leases | leases with fencing tokens, swapped by token; the body lease is one |
 | `hale.toml` `[dna] record` | the record's identity: the digest of its first row |
-| `hale.toml` `[dna.integrations.<name>]` | an upstream integration the organism watches: its owning position, source and cadence ([Integration watches](./senses.md#integration-watches)) |
 | `.hale/dna/memory.env` | the head's DSN and where it came from (`HALE_DNA_MEMORY_FROM`), kept by `hale habitat migrate` and `hale dna memory migrate`; mode 600, head role only, git-ignored |
 | `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
 | `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |

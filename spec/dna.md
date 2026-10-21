@@ -21,9 +21,8 @@ Each kind's placement is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
 `report`, `lease`, `claim`, `reading` (an application's events,
-#987), `reflex` (what a reflex made the body do, #988) and `integration`
-(what an integration's checks observed, phase 3) families are the
-Ledger's, as are
+#987) and `reflex` (what a reflex made the body do, #988) families are
+the Ledger's, as are
 `concern.requested` / `.raised` / `.refused`, `grant.reserved` /
 `.released` / `.fenced` / `.reservation_refused` (money;
 `grant.refused` — a grant born wider than its ceiling — is authority
@@ -849,8 +848,10 @@ sync.
   an ask: an occurrence is an execution, and its key is its
   idempotence.
   **Declared by ratification.** A ratified practice whose receipt
-  carries `schedule` (a JSON object as text) declares it in its
-  `ratify` step; the ratification stands when the declaration is
+  carries `schedule` (a JSON object as text), or whose text names a
+  cadence and a step among its terms (**A practice's terms**, below),
+  declares it in its `ratify` step, and so does each practice of a
+  family (a pack) the Board ratifies whole; the ratification stands when the declaration is
   refused — the step is done, `ratified by <who>; its schedule was
   refused (<why>)`, and the refusal is its own `schedule.refused` row
   naming the hole. `hale dna schedule
@@ -865,7 +866,25 @@ sync.
   convener is answered `declared: false` with why, and nothing is
   declared; while nobody holds the Board, or no memory is named, the
   verified requester declares, as a Review's fallback decides by its
-  required authority. A declaration is
+  required authority.
+  **A practice's terms.** A practice's text may carry terms, words
+  `<key>=<value>` (the value the rest of the word; `practice_term`,
+  `dna/core/practices.hl`): the parameters of what the practice runs.
+  Only a document of kind `practice` runs anything: an idea or a mandate
+  whose text shows terms (an example, say) declares nothing. A
+  practice whose terms name `every=` (an interval, `500ms`, `30s`, `15m`,
+  `1h`, `1d`) and `step=<definition>` declares, ratified, the schedule
+  whose id is its name, of that definition, every that interval,
+  convened by the position it is bound to (its target, `position:<p>`;
+  a practice bound to `org` names no convener and is refused). Either
+  way, by its receipt's `schedule` or by its terms, an occurrence's
+  inputs are `{practice, name}` (the ratified digest and the practice's
+  name) and whatever the receipt's `args` add, so the step reads its
+  parameters from the practice itself: an amendment the Board ratifies
+  changes the terms, and the schedule is declared again with them.
+  **Upstream watches** (below) is the first practice that runs a step
+  this way.
+  A declaration is
   `schedule.declared <id> {every_ms, cron, definition, args, convener,
   from}`, written when new or changed — declaring the same schedule
   unchanged writes nothing — and `from` is the occurrence it was
@@ -1486,9 +1505,6 @@ record's.
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
 | `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given), `toolchain` (`go`, `hale` or `none`, the default) and who; a later attach of the name states it anew |
 | `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
-| `integration.observed` | ledger | an integration's check that recorded a digest (entity `integration:<name>`): `outcome` `baseline` (the first), `moved` (with `from`, `diff` the diff's receipt and `reading`) or `reached` (unmoved, ending a run of failures); `digest` is the normalized source's, kept as a receipt; `task` the check's execution (**Integration watches**) |
-| `integration.unreached` | ledger | a check whose source could not be read: `why`, `streak` (failures in a row), `reading` (the `unreachable` reading the third lands, else empty), `task` |
-| `integration.refused` | ledger | an integration the genome declares that cannot stand: `why`, once per reason |
 | `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
@@ -1649,40 +1665,39 @@ opens the review through the leg's forge hand and files the outcome as
 reference and makes no Mutation of its own genome. The language hands (Go)
 that make the commands typed are a later item.
 
-### Integration watches
+### Upstream watches
 
-An integration is an external service the organism depends on, declared
-in the genome's `hale.toml`, one table per integration
-(`dna/core/integrations.hl`):
+A watched upstream (an external service the organism depends on) is a
+practice, never a manifest table or a record family of its own. The
+standard pack's template `standard/upstream-watched/<name>` is proposed
+once per upstream (`hale dna pack apply standard --set integration=<name>
+--set position=<owner> --set source=<source> --set kind=<kind> --set
+every=<cadence>`), ratified by the Board with the rest of its batch, and
+bound to the owning position (its target `position:<owner>`). The batch
+also proposes an idea, `standard/upstream-source/<name>`, the source as
+knowledge, an external source with its URL, bound to the same position.
+The practice's text names its terms (**A practice's terms**):
 
-```toml
-[dna.integrations.pay-api]
-position = "payments/dev"        # the owning position (`position:` optional)
-codebase = "ledger-svc"          # optional: the codebase it belongs to
-source = "openapi"               # changelog | docs | feed | openapi
-surface = "integrations/pay.hl"  # openapi only: the surface `hale api import` committed
-every = "1d"                     # or cron = "0 6 * * *" (UTC), not both
-```
+- `source=`: `http://`, `https://` or `file://` for a page or a feed;
+  for an OpenAPI document, the surface `hale api import` wrote and the
+  genome commits (a path inside it), whose source is the one it was
+  imported from (`from openapi "…"`);
+- `kind=`: `changelog`, `docs`, `feed` or `openapi`;
+- `every=`: the cadence, as a schedule takes it;
+- `step=source-check`: the step its occurrences run.
 
-A `changelog`, `docs` or `feed` integration names a `url`, `http://`,
-`https://` or `file://`, and no `surface`; an `openapi` one names its
-`surface` (a path inside the genome) and no `url`, since its source is
-the one the surface was imported from (`from openapi "…"`). The name is
-lowercase letters, digits, `-` and `_`. A table that cannot stand is
-`integration.refused <name> {why}`, once per reason, and nothing more.
+Ratified, the practice declares the schedule its text names, its id the
+practice's name, of `source-check`, convened by its position: a position
+nobody holds is `schedule.refused` with the hole, and the same terms
+again write nothing (**Schedules**). Each occurrence's inputs are
+`{practice, name}`, and its `check` step (`dna/core/source_check.hl`)
+reads its parameters from the practice's receipt; a document that is not
+a practice is refused (result `refused`). A practice that is not in
+force (never ratified, or retired) checks nothing. One whose terms do
+not stand (no position, a kind outside the four, a source of the wrong
+shape) fails its occurrence saying why, its result `refused`.
 
-On its refresh the organization reads the declarations, and when they
-changed since it last read them it declares, for each one, the schedule
-`integration.<name>`: `integration-check` on the cadence, its inputs
-`{integration, source, url, surface, position, codebase}`, convened by
-`position:<position>`. The declaration is a schedule like any other
-(**Schedules**): a position nobody holds is `schedule.refused` with
-the hole, and the same terms again write nothing. An occurrence of an integration the
-genome no longer declares, or no longer declares soundly, checks nothing
-and writes nothing (`hale dna schedule pause integration.<name>` stops
-it occurring).
-
-Each occurrence's `check` reads the source and normalizes it:
+The step reads the source and normalizes it:
 
 - `changelog` and `docs`: a body whose first character is `<` is HTML,
   read as text with its markup stripped, a line per block element, and
@@ -1705,32 +1720,41 @@ Each occurrence's `check` reads the source and normalizes it:
 A fetch is one GET (`std::http::get`, 30 seconds, no redirects followed:
 a status outside 2xx fails) or a file read, at most 4 MiB, in UTF-8. The
 digest is the normalized text's sha256, and the text is kept as a
-receipt under it. Against the integration's last `integration.observed`:
+receipt under it. The baseline is the receipt the previous occurrence
+named: each occurrence's outcome is the record of what it saw, and the
+step reads the outcomes of the practice's earlier occurrences (by its
+name, so an amended practice keeps its baseline). An outcome `done`
+names the snapshot it saw as its `result` (`sha256:…`); one `failed`
+with the result `unreached` could not read the source. Against the
+baseline:
 
-- none: `integration.observed {outcome: baseline}`, and nothing lands;
-- the same digest: nothing is written (a `reached` row when it ends a
-  run of failures);
-- another digest: the unified diff of the last snapshot and this text,
-  labelled `integration.<name> <from12>` / `<to12>`, cut at a line past
-  16 KiB with a line saying so, is kept as a receipt; a
-  `reading.recorded` lands, entity
-  `integrations/integration.<name>.changed/<task>`, `app` `integrations`,
-  `event` and `subject` `integration.<name>.changed`, its payload `{id,
-  integration, source, url | surface, position, codebase?, task, from,
-  to, drift (openapi), receipt, diff}`; an API's receipt leads with its
-  drift lines, then the diff of the canonical document; then `integration.observed {outcome: moved}`; and
-  the organization admits a concern (`on_concern`) from
-  `<position>/integration.<name>`, so it is routed to the position, its
-  `request` the reading's entity and its words naming the reading and
-  the receipt.
+- none: the outcome names the snapshot, and nothing else is written;
+- the same digest: the same, nothing else;
+- another digest: the unified diff of the baseline's snapshot and this
+  text, labelled `<practice name> <from12>` / `<to12>`, cut at a line
+  past 16 KiB with a line saying so, is kept as a receipt; a
+  `reading.recorded` lands, entity `sources/<watch>.changed/<task>`
+  (`<watch>` the last segment of the practice's name), `app` `sources`,
+  `event` and `subject` `<watch>.changed`, its payload `{id, practice,
+  name, kind, source, position, task, from, to, drift (openapi), receipt,
+  diff}`; an API's receipt leads with its drift lines, then the diff of
+  the canonical document; and the organization admits a concern
+  (`on_concern`) from `<position>/<watch>`, so it is routed to the
+  position, its `request` the reading's entity and its words naming the
+  reading and the receipt.
 
-A read that fails writes `integration.unreached {why, streak}`. The
-third in a row (`INTEGRATION_UNREACHABLE_AFTER`) lands one
-`reading.recorded` `integrations/integration.<name>.unreachable/<task>`
-(payload `{…, why, failures}`) and no concern; the failures before and
-after it land nothing. A check performed again finds the row its task
-wrote and asks its concern again under the same request, which is one
-concern.
+A read that fails is the occurrence's own failure, result `unreached`.
+The third in a row (`SOURCE_UNREACHABLE_AFTER`) also lands one
+`reading.recorded` `sources/<watch>.unreachable/<task>` (payload `{…,
+why, failures}`) and no concern; the failures before and after it land
+nothing, and an occurrence that reads the source again ends the run. A
+step performed again (a restart before its outcome) that finds a reading
+its task landed answers from that reading, without reading the source
+again: a move's outcome names the snapshot the reading moved to, and its
+concern, asked again under the same request, names the reading's
+receipt, so a source that moved on since is the next occurrence's move. The step
+keeps no rows of its own: what each occurrence saw is its outcome, and
+the snapshots and diffs are receipts.
 
 The concern goes the way every concern goes (`concern-escalate`): raised
 and routed, and proposed as knowledge at the threshold. Nothing turns a
@@ -1860,7 +1884,7 @@ bound at admission — and a new Task binds the newest (`latest`).
 | `deploy-observe` | `deploy` (heart) · `settle` (record) |
 | `concern-escalate` | `raise` (record) |
 | `optimize-walk` | `walk` (record) |
-| `integration-check` | `check` (record) |
+| `source-check` | `check` (record) |
 | `secret-rotate` | `rotate` (vault) · `recorded` (record) |
 | `body-provision` | `provision` · `start` (host) · `lease` (memory) · `observed` (record) |
 | `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | the ask's one leaf: an edit prepared for review, a person's job, a judgment handed back as an `Assessment`, or a change made by the position it is routed to (record) |
@@ -1889,7 +1913,7 @@ what it waits on may have arrived: a verdict, the leader's answer, the
 tick. The organization performs the steps this toolchain knows, by
 definition and key: `practice-ratify/ratify`, `practice-ratify/hat`,
 `concern-escalate/raise`, `optimize-walk/walk`,
-`integration-check/check`. A definition with an
+`source-check/check`. A definition with an
 organism step it does not know — a path not moved onto the catalog yet
 (`ask-triage`, whose ask is still admitted as `ask-edit` or `ask-person`
 after the leader plans it), or a revision from a newer toolchain — is
@@ -1940,12 +1964,11 @@ what an admission would refuse each definition for.
   reads the machinery's signals, asks the leader once per incarnation
   and is done at its `org.reviewed` row, which names the execution
   (`task`).
-- **integration-check** is one integration's check, and occurs on the
-  schedule the organization declares for it from the genome
-  (**Integration watches**); it takes `integration`, and its inputs
-  carry the declaration's terms. `check` reads the source and writes
-  what **Integration watches** says, or finds what it wrote when it is
-  performed again.
+- **source-check** is one check of an upstream a practice watches, and
+  occurs on the schedule the practice declares (**Upstream watches**);
+  it takes `practice` and `name`, and its parameters are the practice's
+  text. `check` reads the source and lands what **Upstream watches**
+  says, or finds the reading it landed when it is performed again.
 
 **The ledger is the runtime.** Every step is a few rows of the day's
 work (`step.*`, `attempt.*`, `work.settled`, `effect.*`), each one row
@@ -5119,9 +5142,11 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `fill * <holder>`,
-  `vacate <name> <holder>`, `practice <name> | <text>`, `law <name> |
-  <text>` (a practice its document proposes as law, `law: true`, which
-  the Board ratifies as law or as advice; GH #1591), `retire-practice <name>`,
+  `vacate <name> <holder>`, `practice <name> [for <position>] |
+  <text>`, `law <name> [for <position>] | <text>` (a practice its
+  document proposes as law, `law: true`, which the Board ratifies as law
+  or as advice; GH #1591), `idea <name> [for <position>] | <text>`
+  (knowledge, such as an external source), `retire-practice <name>`,
   `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
@@ -5136,10 +5161,17 @@ The live half is memory's, projected from the record by the spine
   `fill` of a position the graph does not state and the batch does not
   open, a `fill` of a stated position with no ratified mandate, a hold
   the organization would then hold twice, or a `vacate` of a hold the
-  record does not state, asked twice or filled in the same batch, or a
-  practice named twice or already in force is
+  record does not state, asked twice or filled in the same batch, a
+  practice or an idea named twice, one `for` a position the graph does
+  not state and the batch does not open, or one already in force with
+  another text or target is
   refused whole, naming the
-  step, and nothing is written. Opens are taken first, so a step may
+  step, and nothing is written. A practice or an idea `for` a position
+  is bound to it (its document's and its member row's target), and to
+  `org` without one. One in force with the same text and target is
+  kept: the step leaves the batch, so a pack adopted again proposes only
+  what it adds, and a batch left with no step is refused, `nothing to
+  propose: every step is in force already`. Opens are taken first, so a step may
   name a position a later line opens; every other step is taken in the
   order written, against the organization the steps before it leave.
   `fill * <holder>` is taken last: every position the organization would
@@ -5257,7 +5289,12 @@ The live half is memory's, projected from the record by the spine
   `standard/logs-are-structured`, is that every line a running part logs
   is a record, held by the Board in review until the compiler classes the
   stdio streams, the law can name a `program` group and `std::log` is the
-  logger (GH #1591)); a git
+  logger (GH #1591); beside the clauses it holds a template, two `? `
+  lines kept only when `integration`, `position`, `source`, `kind` and
+  `every` are all set, that propose one watched upstream: the practice
+  `standard/upstream-watched/<integration>` and the idea
+  `standard/upstream-source/<integration>`, both `for` the position
+  (**Upstream watches**)); a git
   repository is cloned into `$XDG_CACHE_HOME/hale/nursery/` and read at
   the revision after `#`, its default branch's head without one. The CLI
   renders the pack: every parameter replaced by its `--set` value or its

@@ -133,3 +133,88 @@ locus PracticeRecord {
         return step_done(pkg.digest, "the hat for " + target + " at row " + to_string(pkg.revision));
     }
 }
+
+// ---- a practice's terms: the parameters of what it runs (phase 3) ----------
+//
+// A practice's text may carry terms: words `<key>=<value>`, the value the
+// rest of the word. They are the parameters of what the practice runs. A
+// practice that names a cadence (`every=`) and a step (`step=<definition>`)
+// declares that schedule once it is ratified, as one whose receipt carries
+// a `schedule` does, convened by the position it is bound to (its target).
+// Either way the occurrences' inputs name the practice, `practice` (its
+// digest) and `name`, so the step reads its parameters from the practice's
+// own text: amended by the next version, never copied beside it.
+
+// The value of `key` among `text`'s terms, "" when it names none.
+@bounded_by(text)
+fn practice_term(text: String, key: String) -> String {
+    let mut rest = std::str::replace(std::str::replace(text, "\n", " "), "\t", " ");
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if std::str::starts_with(w, key + "=") { return w[(len(key) + 1)..len(w)]; }
+    }
+    return "";
+}
+
+// The inputs an occurrence of practice `digest` (named `name`) is admitted
+// with: the practice, and whatever `args` (a JSON object) adds.
+fn practice_args(digest: String, name: String, args: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("practice", digest);
+    b.string_field("name", name);
+    b.end_object();
+    let own = b.result();
+    let rest = std::str::trim(args);
+    if !std::str::starts_with(rest, "{") || std::str::trim(rest[1..len(rest)]) == "}" { return own; }
+    return own[0..(len(own) - 1)] + ", " + rest[1..len(rest)];
+}
+
+// The schedule the practice `doc` (its receipt, under `digest`) declares
+// once ratified: its receipt's `schedule`, or, for a practice, the cadence
+// and step its text names, convened by the position it is bound to. No id and no definition
+// when it declares none.
+fn practice_schedule(digest: String, doc: String) -> Schedule {
+    let name = std::json::find_string_field(doc, "name");
+    let sched = std::json::find_string_field(doc, "schedule");
+    if len(sched) > 0 {
+        return Schedule {
+            id: std::json::find_string_field(sched, "id"),
+            every_ms: std::json::find_int_field(sched, "every_ms"),
+            cron: std::json::find_string_field(sched, "cron"),
+            definition: std::json::find_string_field(sched, "definition"),
+            args: practice_args(digest, name, std::json::find_string_field(sched, "args")),
+            convener: std::json::find_string_field(sched, "convener")
+        };
+    }
+    // only a practice runs anything: an idea or a mandate whose text shows
+    // terms (an example, say) schedules nothing
+    if std::json::find_string_field(doc, "kind") != "practice" { return Schedule { }; }
+    let text = std::json::find_string_field(doc, "text");
+    let step = practice_term(text, "step");
+    let every = practice_term(text, "every");
+    if len(step) == 0 && len(every) == 0 { return Schedule { }; }
+    let target = std::json::find_string_field(doc, "target");
+    return Schedule {
+        id: name, every_ms: every_ms_of(every), definition: step, args: practice_args(digest, name, "{}"),
+        convener: if std::str::starts_with(target, "position:") { target } else { "" }
+    };
+}
+
+// An interval as a schedule takes it: milliseconds with a unit (`500ms`,
+// `30s`, `15m`, `1h`, `1d`); 0 when it is none.
+fn every_ms_of(text: String) -> Int {
+    let t = std::str::trim(text);
+    let unit = if std::str::ends_with(t, "ms") { "ms" } else if len(t) > 0 { t[(len(t) - 1)..len(t)] } else { "" };
+    let digits = if unit == "ms" { t[0..(len(t) - 2)] } else if len(unit) > 0 { t[0..(len(t) - 1)] } else { "" };
+    let n = std::str::parse_int(digits) or 0;
+    if n <= 0 { return 0; }
+    if unit == "ms" { return n; }
+    if unit == "s" { return n * 1000; }
+    if unit == "m" { return n * 60000; }
+    if unit == "h" { return n * 3600000; }
+    if unit == "d" { return n * 86400000; }
+    return 0;
+}

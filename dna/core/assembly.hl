@@ -366,7 +366,6 @@ locus Dna {
         org_source: OrganizationSourceRecord = OrganizationSourceRecord { }; // C3 family 4: prepared Organization source requests
         practices: PracticeRecord = PracticeRecord { }; // C3 family 5: practices asked, ratified through practice-ratify, read by the hat
         concerns: ConcernRecord = ConcernRecord { }; // C3 family 6: concerns raised and escalated, pressure toward an organ
-        integrations: IntegrationRecord = IntegrationRecord { }; // phase 3: what each integration's checks observed, and the readings they landed
         spending: SpendRecord = SpendRecord { }; // C3 family 7: model calls and their gate, a child's money reserved and settled
         positions: PositionRecord = PositionRecord { }; // C3 family 7: holders proposed for positions
         steps: StepRecord = StepRecord { }; // C3 family 8 (Work): the organization's own steps that wait
@@ -416,7 +415,6 @@ locus Dna {
         self.org_source.bind(self.journal);
         self.practices.bind(self.journal);
         self.concerns.bind(self.journal);
-        self.integrations.bind(self.journal, self.verification.receipts);
         self.spending.bind(self.journal);
         self.positions.bind(self.journal, self.verification.receipts);
         self.cases.bind(self.journal);
@@ -917,7 +915,6 @@ locus Dna {
             self.reroute_reviews();
             self.announce_gate_runs();
             let reopened = self.reopen_expired_claims();
-            self.watch_integrations();
         }
         // GH #667: a transfer another owner's member accepted for this
         // owner becomes this owner's handed Task
@@ -2620,7 +2617,7 @@ locus Dna {
         let out = if definition == "practice-ratify" { self.practice_step(task, key, x) }
         else if definition == "concern-escalate" { self.concern_step(task, key, x) }
         else if definition == "optimize-walk" { self.optimize_step(task, key, x) }
-        else if definition == "integration-check" { self.integration_step(task, key, x) }
+        else if definition == "source-check" { self.source_step(task, key, x) }
         else { step_failed("the organization performs no step " + definition + "/" + key) };
         if len(out.disposition) == 0 { return false; }
         return self.step_report(s, out);
@@ -2656,22 +2653,34 @@ locus Dna {
             if std::str::starts_with(t, "refused") { eprintln("organization: the ratification of ", review_id, " was ", t); }
         }
     }
-    // GH #1143: the schedule a ratified practice carries (its receipt's
-    // `schedule`, a JSON object as text), declared; "" when it carries none
-    // or it was declared, else why not.
+    // GH #1143: the schedule a ratified practice declares (its receipt's
+    // `schedule`, or the cadence and step its text names: `practice_schedule`),
+    // declared; "" when it declares none or it was declared, else why not.
     fn declare_practice_schedule(digest: String) -> String {
         let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-        let doc = self.verification.receipts.read(raw);
-        let sched = std::json::find_string_field(doc, "schedule");
-        if len(sched) == 0 { return ""; }
-        return self.scheduler.declare(Schedule {
-            id: std::json::find_string_field(sched, "id"),
-            every_ms: std::json::find_int_field(sched, "every_ms"),
-            cron: std::json::find_string_field(sched, "cron"),
-            definition: std::json::find_string_field(sched, "definition"),
-            args: if len(std::json::find_string_field(sched, "args")) > 0 { std::json::find_string_field(sched, "args") } else { "{}" },
-            convener: std::json::find_string_field(sched, "convener")
-        }, self.catalog, self.knowledge_client);
+        let s = practice_schedule(if std::str::starts_with(digest, "sha256:") { digest } else { "sha256:" + digest }, self.verification.receipts.read(raw));
+        if len(s.id) == 0 && len(s.definition) == 0 { return ""; }
+        return self.scheduler.declare(s, self.catalog, self.knowledge_client);
+    }
+    // The schedules a ratified family's members declare (a pack's
+    // practices), each as a practice ratified alone declares its own; ""
+    // when every one was declared or none declares one, else why not.
+    @bounded_by(digest)
+    fn declare_family_schedules(digest: String) -> String {
+        let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let mut rest = native_json_string(self.verification.receipts.read(raw), "ideas");
+        let mut why = "";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            // `<name> <digest>`: the digest is the line's last 71 bytes
+            let member = if len(line) >= 71 { line[(len(line) - 71)..len(line)] } else { "" };
+            if !digest_well_formed(member) { continue; }
+            let w = self.declare_practice_schedule(member);
+            if len(w) > 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + w; }
+        }
+        return why;
     }
     fn practice_step(task: String, key: String, x: String) -> StepVerdict {
         let digest = std::json::find_string_field(x, "digest");
@@ -2696,7 +2705,7 @@ locus Dna {
                 // next. The ratification stands either way: a refused
                 // schedule is its own row (`schedule.refused`, naming the
                 // hole), not a failed ratification
-                let why = self.declare_practice_schedule(digest);
+                let why = if family == "library.family.ratified" { self.declare_family_schedules(digest) } else { self.declare_practice_schedule(digest) };
                 if len(why) > 0 { return step_done(digest, "ratified by " + by + "; its schedule was refused (" + why + ")"); }
                 return step_done(digest, "ratified by " + by);
             }
@@ -2730,61 +2739,30 @@ locus Dna {
         return step_done(to_string(r.seen), "raised, occurrence " + to_string(r.seen) + ", routed to " + (if len(parent) > 0 { parent } else { "no parent" }));
     }
 
-    // ---- integration-check (phase 3) ----
-    // The integrations the genome declares (`[dna.integrations.<name>]` in
-    // its hale.toml), each declared as a schedule of integration-check
-    // convened by the position that owns it. Read on the refresh, and
-    // declared again only when the declarations changed; one that cannot
-    // stand is an `integration.refused` row, and a schedule the scheduler
-    // refuses (a position nobody holds) its `schedule.refused`.
-    fn watch_integrations() {
-        let root = self.gateway.repo_path();
-        let names = integration_names(root);
-        let mut terms = "\n";
-        let mut rest = names;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let w = integration_of(root, rest[0..nl]);
-            rest = rest[(nl + 1)..len(rest)];
-            terms = terms + w.name + " " + w.why + " " + schedule_json(integration_schedule(w)) + "\n";
-        }
-        if self.integrations.unchanged(terms) { return; }
-        rest = names;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let w = integration_of(root, rest[0..nl]);
-            rest = rest[(nl + 1)..len(rest)];
-            if len(w.why) > 0 { self.integrations.refuse(w); continue; }
-            let why = self.scheduler.declare(integration_schedule(w), self.catalog, self.knowledge_client);
-            if len(why) > 0 { eprintln("hale dna: integration ", w.name, ": ", why); }
-        }
-    }
-    // One step: the source read, normalized and compared with the last
-    // digest seen. A move lands its reading and a concern from
-    // `<position>/integration.<name>`, routed to the position, whose
-    // request is the reading; a check asked again finds what it wrote.
-    fn integration_step(task: String, key: String, x: String) -> StepVerdict {
-        if key != "check" { return step_failed("integration-check has no step `" + key + "`"); }
-        let w = integration_from_inputs(x);
-        if !integration_name_ok(w.name) || len(w.position) == 0 { return step_failed("integration-check's inputs name no integration and position"); }
-        // asked again (a redelivery, a restart): what it wrote is the
-        // answer, and a move's concern is asked again under its request
-        let had = self.integrations.answered(task);
-        if len(had) > 0 {
-            let outcome = if len(std::json::find_string_field(had, "why")) > 0 { "unreached" } else { std::json::find_string_field(had, "outcome") };
-            let reading = std::json::find_string_field(had, "reading");
-            if outcome == "moved" { self.on_concern(Concern { source: integration_concern_source(w), what: integration_concern_what(w, reading, std::json::find_string_field(had, "diff")), severity: 1, request: reading }); }
-            return step_done(outcome, w.name + ": checked already (" + outcome + ")");
-        }
-        // taken out of the genome, or no longer sound there: nothing is checked
-        let now = integration_of(self.gateway.repo_path(), w.name);
-        if !std::str::contains("\n" + integration_names(self.gateway.repo_path()), "\n" + w.name + "\n") || len(now.why) > 0 { return step_done("undeclared", "the genome no longer declares integration " + w.name + "; nothing was checked"); }
-        let ans = self.integrations.observe(task, w, integration_observe(w, self.gateway.repo_path(), resolve_toolchain("")));
-        if !ans.ok { return step_failed(ans.narrative); }
-        if ans.outcome == "moved" {
-            self.on_concern(Concern { source: integration_concern_source(w), what: ans.what, severity: 1, request: ans.reading });
-        }
-        return step_done(ans.outcome, ans.narrative);
+    // ---- source-check (phase 3) ----
+    // One step, parameterized by the practice that convened it: the source
+    // its text names read, normalized and compared with the snapshot the
+    // previous occurrence named (dna/core/source_check.hl). A move lands its
+    // reading and a concern from `<position>/<watch>`, routed to the
+    // position the practice is bound to, whose request is the reading; a
+    // check asked again finds the reading it landed and asks its concern
+    // again under the same request.
+    fn source_step(task: String, key: String, x: String) -> StepVerdict {
+        if key != "check" { return step_failed("source-check has no step `" + key + "`"); }
+        let digest = std::json::find_string_field(x, "practice");
+        let doc = if digest_well_formed(digest) { self.verification.receipts.read(digest[7..len(digest)]) } else { "" };
+        if len(doc) == 0 || digest_of(doc) != digest { return StepVerdict { disposition: "failed", result: "refused", narrative: "source-check names no practice the record keeps (`" + digest + "`)" }; }
+        if std::json::find_string_field(doc, "kind") != "practice" { return StepVerdict { disposition: "failed", result: "refused", narrative: "source-check runs for a practice, and `" + digest + "` is " + std::json::find_string_field(doc, "kind") + " knowledge" }; }
+        // a practice retired, or never ratified, watches nothing
+        if !self.knowledge_record.ratified(digest) || len(self.knowledge_record.retired_by(digest)) > 0 { return step_done("", "the practice " + std::json::find_string_field(doc, "name") + " is not in force; nothing was checked"); }
+        let w = source_watch(digest, doc);
+        if len(w.why) > 0 { return StepVerdict { disposition: "failed", result: "refused", narrative: w.name + ": " + w.why }; }
+        // a reading already landed answers without reading the source again
+        let landed = source_replay(self.journal, task, w);
+        let a = if len(landed.disposition) > 0 { landed } else { source_check(self.journal, self.verification.receipts, task, w, source_observe(w, self.gateway.repo_path(), resolve_toolchain(""))) };
+        if len(a.disposition) == 0 { return step_failed(a.narrative); }
+        if len(a.what) > 0 { self.on_concern(Concern { source: w.position + "/" + w.watch, what: a.what, severity: 1, request: a.reading }); }
+        return StepVerdict { disposition: a.disposition, result: a.result, narrative: a.narrative };
     }
 
     // ---- optimize-walk ----

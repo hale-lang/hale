@@ -214,12 +214,18 @@ answers with one small proposal or none, and `org.reviewed` records
 either. A different cadence is an amendment to the practice, which the
 Board ratifies ([Shaping and governing it](./shaping.md)).
 
-## The genome declares some: integration watches
+## A practice's text as its step's parameters: upstream watches
 
-Each `[dna.integrations.<name>]` table in `hale.toml` is a schedule the
-organization declares itself, `integration.<name>`, of
-`integration-check`, convened by the integration's position ([Integration
-watches](./senses.md#integration-watches)).
+A practice can also name its schedule in its own text, as terms, words
+`<key>=<value>`: `every=1d step=source-check` declares, once ratified,
+the schedule whose id is the practice's name, of `source-check`, every
+day, convened by the position the practice is bound to. Every
+occurrence's inputs name the practice (`practice`, its digest, and
+`name`), whichever way it declared its schedule, so the step reads the
+rest of its parameters from the practice's text: amending the practice
+changes them, and nothing is copied beside it. A watched upstream is the
+first practice that works this way ([Upstream
+watches](./senses.md#upstream-watches)).
 
 ## The rows
 
