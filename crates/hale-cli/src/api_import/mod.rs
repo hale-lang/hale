@@ -60,6 +60,61 @@ pub fn read_surface(
     mapping::from_openapi(&doc, name, location)
 }
 
+/// The source itself, parsed: an OpenAPI document (JSON or YAML alike), or
+/// an MCP endpoint's server and tool list as `{"server", "tools"}`. Its
+/// canonical text (`serde_json`'s maps keep their keys sorted) identifies
+/// the source's revision where its drift lines, a row and a slot, do not.
+pub fn source_document(kind: Kind, source: &str, base: &Path) -> Result<serde_json::Value, String> {
+    if kind == Kind::Mcp {
+        let (tools, server) = fetch::mcp_tools(source)?;
+        return Ok(serde_json::json!({ "server": server, "tools": tools }));
+    }
+    if fetch::is_url(source) {
+        return fetch::get_json(source);
+    }
+    let path = base.join(source);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    fetch::parse_document(&text, &path.display().to_string())
+}
+
+/// `hale api drift --document`: each imported surface's source document,
+/// canonical (keys sorted, two-space indent), one after another, each
+/// ending in a newline.
+pub fn documents(files: &[PathBuf], only: Option<&str>) -> Result<String, String> {
+    let mut out = String::new();
+    let mut found = false;
+    for f in files {
+        let text = std::fs::read_to_string(f)
+            .map_err(|e| format!("could not read {}: {e}", f.display()))?;
+        let p = parse(&text, &f.display().to_string())?;
+        for d in hale_syntax::ast::flat_decls(&p.items) {
+            let TopDecl::Api(api) = d else { continue };
+            let Some(src) = &api.source else { continue };
+            if only.is_some_and(|o| o != api.name.name) {
+                continue;
+            }
+            found = true;
+            let kind = if src.kind.name == "mcp" {
+                Kind::Mcp
+            } else {
+                Kind::OpenApi
+            };
+            let base = f.parent().map(Path::to_path_buf).unwrap_or_default();
+            let doc = source_document(kind, &src.location, &base)
+                .map_err(|e| format!("`{}`: {e}", api.name.name))?;
+            out.push_str(&serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?);
+            out.push('\n');
+        }
+    }
+    if let (Some(o), false) = (only, found) {
+        return Err(format!(
+            "no imported surface `{o}` is declared (an `api {o} from openapi|mcp \"...\"` block)"
+        ));
+    }
+    Ok(out)
+}
+
 /// `to` relative to the directory `from`, as the import records a file
 /// source beside the block that names it.
 fn relative(to: &Path, from: &Path) -> String {
@@ -100,7 +155,7 @@ not be read or mapped, 2 usage.
 
 pub(crate) fn drift_usage() -> &'static str {
     "\
-usage: hale api drift [file.hl | dir] [--surface NAME]
+usage: hale api drift [file.hl | dir] [--surface NAME] [--document]
 
 Reads each imported surface's source again (the `from` of its `api` block) and
 compares it to the rows the program was written against, row by row. Each
@@ -111,6 +166,10 @@ difference is one line on stdout:
 and a surface in step prints `SURFACE: in step with LOCATION (N rows)`. Exit 0 in
 step, 1 drift, 2 a source that could not be read or a usage error.
 `hale check --api` runs the same check over the program it describes.
+`--document` compares nothing: it prints each source document itself, parsed and
+canonical (JSON, keys sorted), so a watcher can tell one revision of the source
+from the next even while its drift lines stay the same. Exit 0, or 2 when a
+source could not be read.
 "
 }
 
@@ -506,9 +565,11 @@ pub fn print_reports(reports: &[Report], out: &mut dyn std::io::Write) -> u8 {
 pub fn run_drift(rest: &[String]) -> ExitCode {
     let mut target = None;
     let mut only = None;
+    let mut document = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
+            "--document" => document = true,
             "--surface" => {
                 i += 1;
                 only = rest.get(i).cloned();
@@ -531,6 +592,18 @@ pub fn run_drift(rest: &[String]) -> ExitCode {
         i += 1;
     }
     let target = target.unwrap_or_else(|| PathBuf::from("."));
+    if document {
+        return match hl_files(&target).and_then(|files| documents(&files, only.as_deref())) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("hale api drift: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let reports = match hl_files(&target).and_then(|files| drift(&files, only.as_deref())) {
         Ok(r) => r,
         Err(e) => {

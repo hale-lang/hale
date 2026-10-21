@@ -25,7 +25,7 @@ usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
        hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
                      [--bearer T] [--request-id ID] [--digest D] [--raw]
        hale api import <openapi-url-or-file | mcp-url> --as NAME [--out FILE] [--openapi | --mcp]
-       hale api drift [file.hl | dir] [--surface NAME]
+       hale api drift [file.hl | dir] [--surface NAME] [--document]
 
 `describe` asks a running program for the description it serves the caller and
 prints it: the exposure's identity (surface, digest, name), the caller and its

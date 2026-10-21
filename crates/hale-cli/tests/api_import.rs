@@ -663,6 +663,58 @@ fn a_yaml_document_is_held_to_its_import_by_drift() {
     );
 }
 
+/// `--document` prints the source itself, canonical: a YAML document and its
+/// JSON print the same text, and a second change to a row whose drift line
+/// stays the same still changes the document.
+#[test]
+fn drift_document_is_the_source_canonical() {
+    let dir = unique_dir("drift_document");
+    std::fs::write(dir.join("notes.yaml"), NOTES_YAML).unwrap();
+    std::fs::write(dir.join("notes.json"), NOTES_JSON).unwrap();
+    for (file, out) in [("notes.yaml", "y.hl"), ("notes.json", "j.hl")] {
+        let made = run(
+            &dir,
+            &["api", "import", file, "--as", "Notes", "--out", out],
+        );
+        assert!(
+            made.status.success(),
+            "import {file}: {}",
+            text(&made.stderr)
+        );
+    }
+    let doc = |hl: &str| {
+        let out = run(&dir, &["api", "drift", hl, "--document"]);
+        assert!(
+            out.status.success(),
+            "drift --document: {}",
+            text(&out.stderr)
+        );
+        text(&out.stdout)
+    };
+    let yaml = doc("y.hl");
+    assert!(
+        yaml.starts_with("{\n  \"components\""),
+        "keys sorted: {yaml}"
+    );
+    assert_eq!(yaml, doc("j.hl"), "YAML and JSON read alike");
+    let drift = || text(&run(&dir, &["api", "drift", "y.hl"]).stdout);
+    std::fs::write(
+        dir.join("notes.yaml"),
+        NOTES_YAML.replace("version: 2.1.0", "version: 2.2.0"),
+    )
+    .unwrap();
+    let (first, first_lines) = (doc("y.hl"), drift());
+    std::fs::write(
+        dir.join("notes.yaml"),
+        NOTES_YAML.replace("version: 2.1.0", "version: 2.3.0"),
+    )
+    .unwrap();
+    let (second, second_lines) = (doc("y.hl"), drift());
+    assert_eq!(first_lines, second_lines, "the drift lines read the same");
+    assert_ne!(first, yaml, "the first change moves the document");
+    assert_ne!(second, first, "and so does the second");
+}
+
 #[test]
 fn a_yaml_construct_the_reader_refuses_names_its_line() {
     let dir = unique_dir("yaml_refuse");

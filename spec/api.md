@@ -2818,7 +2818,7 @@ The file is a function of the source: two imports of one document write
 the same bytes, so it is committed with the program and re-imported to
 change it, never edited by hand.
 
-**`hale api drift [file.hl | dir] [--surface NAME]`** reads each imported
+**`hale api drift [file.hl | dir] [--surface NAME] [--document]`** reads each imported
 surface's source again, maps it as the import does, and compares the two
 row by row by **shape**: a row's request, response and `wire:`, every
 record they name written out as its fields' JSON keys and types (an
@@ -2840,6 +2840,14 @@ runs the same check over every file the program loads, the seeds it
 imports included, each seed's blocks against its own records and their
 sources relative to their own files, after its document: the lines go to
 stderr, and drift exits 1.
+
+`--document` compares nothing: it prints each imported surface's source
+itself, parsed (an OpenAPI document, JSON or YAML alike; an MCP endpoint's
+`{"server", "tools"}`) and canonical: JSON with every object's keys sorted,
+two-space indent, a newline after each document. Exit 0, or 2 when a source
+cannot be read. Drift lines name a row and a slot, so two upstream changes
+to one row read the same; the document tells one revision of the source
+from the next, which is what a watcher digests (DNA's integration watches).
 
 ## Calling a surface
 

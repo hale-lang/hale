@@ -1294,6 +1294,12 @@ cannot be read exits 2. The lines are meant for a script or a watcher to
 parse. `hale check --api` runs the same check after its document, printing
 the lines on stderr.
 
+A drift line names a row and the slot that moved, so a second change to a
+row that has already drifted reads the same as the first. To tell one
+revision of the source from the next, `hale api drift --document` prints the
+source itself, parsed and canonical (JSON, keys sorted), whatever form it
+was served in.
+
 ## When it says no
 
 A refusal is an answer, never a failure of the program:

@@ -214,6 +214,13 @@ answers with one small proposal or none, and `org.reviewed` records
 either. A different cadence is an amendment to the practice, which the
 Board ratifies ([Shaping and governing it](./shaping.md)).
 
+## The genome declares some: integration watches
+
+Each `[dna.integrations.<name>]` table in `hale.toml` is a schedule the
+organization declares itself, `integration.<name>`, of
+`integration-check`, convened by the integration's position ([Integration
+watches](./senses.md#integration-watches)).
+
 ## The rows
 
 | row | written by | what it says |

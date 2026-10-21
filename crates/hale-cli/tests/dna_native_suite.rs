@@ -1088,6 +1088,7 @@ fn dna_fixture_set_is_complete() {
             "idle_body_cpu_test.hl",
             "ingest_test.hl",
             "init_with_test.hl",
+            "integration_watch_test.hl",
             "journal_contention_test.hl",
             "journal_incremental_test.hl",
             "journal_test.hl",
@@ -1279,7 +1280,7 @@ fn nothing_reads_the_git_record() {
 /// `bind`, and nothing else in the organism's code writes into it, the
 /// assembly included. What one family needs of another is a row or a
 /// topic. A family is added here with the PR that carves it out.
-const FAMILIES: &[(&str, &str)] = &[("evidence", "dna/core/evidence.hl"), ("scheduler", "dna/core/scheduler.hl"), ("knowledge_record", "dna/core/knowledge_record.hl"), ("org_source", "dna/core/org_source.hl"), ("practices", "dna/core/practices.hl"), ("concerns", "dna/core/concerns.hl"), ("spending", "dna/core/spending.hl"), ("positions", "dna/core/positions.hl"), ("steps", "dna/core/steps.hl"), ("cases", "dna/core/cases.hl"), ("attempts", "dna/core/attempts.hl"), ("reviews", "dna/core/reviews.hl")];
+const FAMILIES: &[(&str, &str)] = &[("evidence", "dna/core/evidence.hl"), ("scheduler", "dna/core/scheduler.hl"), ("knowledge_record", "dna/core/knowledge_record.hl"), ("org_source", "dna/core/org_source.hl"), ("practices", "dna/core/practices.hl"), ("concerns", "dna/core/concerns.hl"), ("integrations", "dna/core/integrations.hl"), ("spending", "dna/core/spending.hl"), ("positions", "dna/core/positions.hl"), ("steps", "dna/core/steps.hl"), ("cases", "dna/core/cases.hl"), ("attempts", "dna/core/attempts.hl"), ("reviews", "dna/core/reviews.hl")];
 
 /// The params a family's file declares, by name: the lines of its first
 /// `params { … }` block.

@@ -1,0 +1,654 @@
+// Integration watches (phase 3). Per external integration the genome
+// declares a source — a changelog page, a docs page, a releases feed, or an
+// OpenAPI document watched through the committed surface `hale api import`
+// wrote — as a `[dna.integrations.<name>]` table in `hale.toml`. The
+// organization declares one schedule of `integration-check` per
+// integration, convened by the position that owns it; each occurrence
+// fetches the source, normalizes it, and compares its digest with the last
+// one seen. A moved digest lands a reading, `integration.<name>.changed`,
+// whose receipt is the unified diff of the normalized text (for OpenAPI,
+// of the drift lines), and a concern routed to the owning position. The
+// first observation is the baseline and lands nothing; nothing lands when
+// nothing moved. A fetch that fails is an `integration.unreached` row, and
+// the `INTEGRATION_UNREACHABLE_AFTER`th in a row lands a reading,
+// `integration.<name>.unreachable`, and no concern.
+//
+// The rows (the Ledger's, `integration` family), each entity
+// `integration:<name>`:
+//   integration.observed  {integration, outcome: baseline|moved|reached,
+//                          digest, from, diff, reading, task}
+//   integration.unreached {integration, why, streak, reading, task}
+//   integration.refused   {integration, why}: a declaration that cannot stand
+// The snapshot is a receipt under its own digest: the normalized text, so
+// the next move has its "before".
+
+// The kinds of source a declaration names.
+const INTEGRATION_SOURCES: String = "changelog docs feed openapi";
+// A fetch that fails this many times in a row lands one `unreachable`
+// reading; fewer land none.
+const INTEGRATION_UNREACHABLE_AFTER: Int = 3;
+// The largest diff a reading carries; a longer one is cut at a line.
+const INTEGRATION_DIFF_MAX: Int = 16384;
+// The largest source a check reads; a larger one is a failed fetch.
+const INTEGRATION_FETCH_MAX: Int = 4194304;
+// The application name the organism's own readings of integrations land
+// under (`integrations/<event>/<id>`), as the reflexes' land under
+// `reflexes`.
+const INTEGRATION_APP: String = "integrations";
+
+// Tags that end a line of text, and elements whose content is never text.
+const HTML_BREAKS: String = "p div br li ul ol dl dt dd h1 h2 h3 h4 h5 h6 tr td th table thead tbody section article header footer nav pre blockquote hr main aside figure figcaption details summary";
+const HTML_SKIPPED: String = "script style noscript template head svg iframe object";
+
+// One integration as the genome declares it; `why` when it cannot stand.
+type Integration {
+    name: String = "";
+    codebase: String = ""; // the attached codebase it belongs to, "" for none
+    position: String = ""; // the owning position, without `position:`
+    source: String = ""; // changelog | docs | feed | openapi
+    url: String = ""; // http://, https:// or file://; none for openapi
+    surface: String = ""; // openapi: the committed imported surface, relative to the genome
+    every_ms: Int = 0;
+    cron: String = "";
+    why: String = "";
+}
+
+// What one check of a source read: the normalized text, or why not.
+type IntegrationSeen {
+    ok: Bool = false;
+    text: String = "";
+    summary: String = ""; // openapi: the drift lines, which the receipt leads with
+    why: String = "";
+}
+
+// What one check came to: `outcome` (baseline, moved, unchanged,
+// reached, unreached, unreachable), the reading it landed and the
+// concern's words for a move.
+type IntegrationAnswer {
+    ok: Bool = false;
+    outcome: String = "";
+    reading: String = "";
+    what: String = "";
+    narrative: String = "";
+}
+
+// An integration's name: lowercase letters, digits, `-` and `_`, at most 64.
+fn integration_name_ok(name: String) -> Bool { return codebase_name_ok(name); }
+
+// A position's name as a concern's path carries it: `/`-separated
+// segments of letters, digits and `-_.`.
+fn integration_position_ok(p: String) -> Bool {
+    if len(p) == 0 || len(p) > 128 || std::str::starts_with(p, "/") || std::str::ends_with(p, "/") || std::str::contains(p, "//") { return false; }
+    let mut i = 0;
+    while i < len(p) {
+        let c = p[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == "/";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The names of the `[dna.integrations.<name>]` tables of `hale.toml` at
+// `root`, one per line, in the order they stand.
+@bounded_by(root)
+fn integration_names(root: String) -> String {
+    let text = std::io::fs::read_file(root + "/hale.toml") or "";
+    let mut seen = "\n";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(toml_uncomment(if nl < 0 { rest } else { rest[0..nl] }));
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, "[") || std::str::starts_with(line, "[[") { continue; }
+        let close = toml_index_outside(line, "]");
+        if close < 0 { continue; }
+        let table = toml_dotted(line[1..close]);
+        if !std::str::starts_with(table, "dna.integrations.") { continue; }
+        let name = table[17..len(table)];
+        if len(name) == 0 || std::str::contains(name, ".") { continue; }
+        if !std::str::contains(seen, "\n" + name + "\n") { seen = seen + name + "\n"; }
+    }
+    return seen[1..len(seen)];
+}
+
+// A key of integration `name`'s table, and why it cannot be read.
+fn integration_key(root: String, name: String, key: String) -> ManifestValue {
+    return manifest_dna_value(root, "integrations." + name + "." + key);
+}
+
+// An interval as a schedule takes it: milliseconds with a unit (`500ms`,
+// `30s`, `15m`, `1h`, `1d`); 0 when it is none.
+fn every_ms_of(text: String) -> Int {
+    let t = std::str::trim(text);
+    let unit = if std::str::ends_with(t, "ms") { "ms" } else if len(t) > 0 { t[(len(t) - 1)..len(t)] } else { "" };
+    let digits = if unit == "ms" { t[0..(len(t) - 2)] } else if len(unit) > 0 { t[0..(len(t) - 1)] } else { "" };
+    let n = std::str::parse_int(digits) or 0;
+    if n <= 0 { return 0; }
+    if unit == "ms" { return n; }
+    if unit == "s" { return n * 1000; }
+    if unit == "m" { return n * 60000; }
+    if unit == "h" { return n * 3600000; }
+    if unit == "d" { return n * 86400000; }
+    return 0;
+}
+
+// Integration `name` as the genome at `root` declares it, with why it
+// cannot stand when it cannot.
+fn integration_of(root: String, name: String) -> Integration {
+    let position = integration_key(root, name, "position");
+    let codebase = integration_key(root, name, "codebase");
+    let source = integration_key(root, name, "source");
+    let url = integration_key(root, name, "url");
+    let surface = integration_key(root, name, "surface");
+    let every = integration_key(root, name, "every");
+    let cron = integration_key(root, name, "cron");
+    let p = if std::str::starts_with(position.value, "position:") { position.value[9..len(position.value)] } else { position.value };
+    let w = Integration {
+        name: name, codebase: codebase.value, position: p, source: source.value, url: url.value,
+        surface: surface.value, every_ms: every_ms_of(every.value), cron: cron.value
+    };
+    let unreadable = if len(position.why) > 0 { "position: " + position.why }
+    else if len(codebase.why) > 0 { "codebase: " + codebase.why }
+    else if len(source.why) > 0 { "source: " + source.why }
+    else if len(url.why) > 0 { "url: " + url.why }
+    else if len(surface.why) > 0 { "surface: " + surface.why }
+    else if len(every.why) > 0 { "every: " + every.why }
+    else if len(cron.why) > 0 { "cron: " + cron.why }
+    else { "" };
+    let mut out = w;
+    out.why = if len(unreadable) > 0 { unreadable } else { integration_refusal(w, every.present && w.every_ms <= 0) };
+    return out;
+}
+
+// Why `w` cannot stand as a declaration, "" when it can. `bad_every` is an
+// `every` given that names no interval.
+fn integration_refusal(w: Integration, bad_every: Bool) -> String {
+    if !integration_name_ok(w.name) { return "the name `" + w.name + "` is not lowercase letters, digits, - and _ (at most 64)"; }
+    if len(w.position) == 0 { return "it names no `position` that owns it"; }
+    if !integration_position_ok(w.position) { return "the position `" + w.position + "` is not a /-path of letters, digits and -_."; }
+    if len(w.codebase) > 0 && !codebase_name_ok(w.codebase) { return "the codebase `" + w.codebase + "` is not a codebase's name"; }
+    if !word_in(w.source, INTEGRATION_SOURCES) { return "its `source` is one of " + INTEGRATION_SOURCES + ", not `" + w.source + "`"; }
+    if w.source == "openapi" {
+        if len(w.surface) == 0 { return "an openapi integration names the `surface` `hale api import` wrote, committed in the genome"; }
+        if len(w.url) > 0 { return "an openapi integration is watched through its surface's own source (the `from openapi \"…\"` that `hale api import` wrote), and takes no `url`"; }
+        if std::str::starts_with(w.surface, "/") || std::str::contains(w.surface, "..") { return "its `surface` is a path inside the genome"; }
+    } else {
+        if len(w.surface) > 0 { return "only an openapi integration takes a `surface`"; }
+        if !(std::str::starts_with(w.url, "https://") || std::str::starts_with(w.url, "http://") || std::str::starts_with(w.url, "file://")) { return "its `url` is http://, https:// or file://, not `" + w.url + "`"; }
+    }
+    if bad_every { return "its `every` is a number and a unit (ms, s, m, h, d)"; }
+    if w.every_ms <= 0 && len(w.cron) == 0 { return "it names its cadence: `every` or `cron`"; }
+    if w.every_ms > 0 && len(w.cron) > 0 { return "it names `every` or `cron`, not both"; }
+    return "";
+}
+
+// The schedule that convenes `w`'s check: `integration.<name>`, of
+// integration-check, its terms the inputs, convened by its position.
+fn integration_schedule(w: Integration) -> Schedule {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("integration", w.name);
+    b.string_field("source", w.source);
+    b.string_field("url", w.url);
+    b.string_field("surface", w.surface);
+    b.string_field("position", w.position);
+    b.string_field("codebase", w.codebase);
+    b.end_object();
+    return Schedule { id: "integration." + w.name, every_ms: w.every_ms, cron: w.cron, definition: "integration-check", args: b.result(), convener: "position:" + w.position };
+}
+
+// An integration as an occurrence's inputs carry it.
+fn integration_from_inputs(x: String) -> Integration {
+    return Integration {
+        name: std::json::find_string_field(x, "integration"),
+        source: std::json::find_string_field(x, "source"),
+        url: std::json::find_string_field(x, "url"),
+        surface: std::json::find_string_field(x, "surface"),
+        position: std::json::find_string_field(x, "position"),
+        codebase: std::json::find_string_field(x, "codebase")
+    };
+}
+
+// The concern's source: a part under the owning position, so the concern
+// is routed to the position.
+fn integration_concern_source(w: Integration) -> String { return w.position + "/integration." + w.name; }
+
+// A move's concern, in words: what moved, and where its reading and diff are.
+fn integration_concern_what(w: Integration, reading: String, diff: String) -> String {
+    return "integration " + w.name + " (" + w.source + " " + (if w.source == "openapi" { w.surface } else { w.url }) + ") moved upstream: reading " + reading + ", its diff the receipt " + diff;
+}
+
+// ---- reading a source --------------------------------------------------------
+
+// The bytes at `url` (http, https or file), or why not.
+fn integration_fetch(url: String) -> IntegrationSeen {
+    if std::str::starts_with(url, "file://") {
+        let path = url[7..len(url)];
+        if !std::io::fs::file_exists(path) { return IntegrationSeen { why: "no file at " + path }; }
+        let text = std::io::fs::read_file(path) or "";
+        if len(text) > INTEGRATION_FETCH_MAX { return IntegrationSeen { why: "the source is over " + to_string(INTEGRATION_FETCH_MAX) + " bytes" }; }
+        return IntegrationSeen { ok: true, text: text };
+    }
+    let r = std::http::get(url) or std::http::ClientResponse { status: -1, headers: err.kind + " " + err.detail, body: b"" };
+    if r.status < 0 { return IntegrationSeen { why: "the fetch failed: " + r.headers }; }
+    if r.status < 200 || r.status > 299 { return IntegrationSeen { why: url + " answered " + to_string(r.status) }; }
+    if len(r.body) > INTEGRATION_FETCH_MAX { return IntegrationSeen { why: "the source is over " + to_string(INTEGRATION_FETCH_MAX) + " bytes" }; }
+    let text = std::str::from_bytes(r.body);
+    if std::str::cp_count(text) < 0 { return IntegrationSeen { why: "the source is not UTF-8" }; }
+    return IntegrationSeen { ok: true, text: text };
+}
+
+// `w`'s source read and normalized: a page's text, a feed's entries, or
+// an OpenAPI surface's drift lines. `root` is the genome, where a surface is.
+fn integration_observe(w: Integration, root: String, hale: String) -> IntegrationSeen {
+    if w.source == "openapi" {
+        // the document itself identifies the upstream revision; the drift
+        // lines (a row and a slot) summarize it against the surface, and
+        // stay the same through a second change to a row that drifted
+        let doc = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\" --document\nsh\n" + root + "\n" + hale + "\n" + w.surface);
+        if doc.code != 0 { return IntegrationSeen { why: drift_failure(w, doc) }; }
+        let r = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\"\nsh\n" + root + "\n" + hale + "\n" + w.surface);
+        if r.code != 0 && r.code != 1 { return IntegrationSeen { why: drift_failure(w, r) }; }
+        if len(doc.stdout) > INTEGRATION_FETCH_MAX { return IntegrationSeen { why: "the source is over " + to_string(INTEGRATION_FETCH_MAX) + " bytes" }; }
+        return IntegrationSeen { ok: true, text: doc.stdout, summary: drift_lines(r.stdout) };
+    }
+    let got = integration_fetch(w.url);
+    if !got.ok { return got; }
+    if w.source == "feed" { return IntegrationSeen { ok: true, text: feed_entries(got.text) }; }
+    return IntegrationSeen { ok: true, text: page_text(got.text) };
+}
+
+// Why the drift check of `w`'s surface could not read its source.
+fn drift_failure(w: Integration, r: RunResult) -> String {
+    let said = std::str::trim(r.stderr + " " + r.stdout);
+    return "the drift check of " + w.surface + " exited " + to_string(r.code) + (if len(said) > 0 { ": " + (if len(said) > 400 { said[0..400] } else { said }) } else { "" });
+}
+
+// The `drift …` lines of `hale api drift`'s output.
+@bounded_by(out)
+fn drift_lines(out: String) -> String {
+    let mut text = "";
+    let mut rest = out;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, "drift ") { text = text + line + "\n"; }
+    }
+    return text;
+}
+
+// A page as text: HTML (a document whose first character is `<`) with its
+// markup and volatile parts (scripts, styles, the head, comments) stripped
+// and a line per block; any other text with its line endings and trailing
+// spaces made plain. Blank lines go either way.
+fn page_text(s: String) -> String {
+    let t = std::str::trim(s);
+    if std::str::starts_with(t, "<") { return text_lines(html_text(t)); }
+    return text_lines(s);
+}
+
+// A tag's name from what stands between `<` and `>`: lowercase, without
+// its `/` or attributes.
+fn tag_name(inner: String) -> String {
+    let mut s = std::str::trim(inner);
+    if std::str::starts_with(s, "/") { s = s[1..len(s)]; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 47 { return std::str::lower(s[0..i]); }
+        i = i + 1;
+    }
+    return std::str::lower(s);
+}
+
+// HTML's text, a line per block element, with the skipped elements'
+// content and every comment left out.
+@bounded_by(html)
+fn html_text(html: String) -> String {
+    let v = std::str::bytes_view(html);
+    let low = std::str::bytes_view(std::str::lower(html));
+    let n = len(html);
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        if std::str::byte_at(v, i) != 60 {
+            let lt = std::str::find(v, "<", i);
+            let end = if lt < 0 { n } else { lt };
+            std::str::builder_append(out, std::str::slice(v, i, end));
+            i = end;
+            continue;
+        }
+        if std::str::slice(v, i, i + 4) == "<!--" {
+            let end = std::str::find(v, "-->", i + 4);
+            i = if end < 0 { n } else { end + 3 };
+            continue;
+        }
+        let close = std::str::find(v, ">", i + 1);
+        if close < 0 { i = n; continue; }
+        let inner = std::str::slice(v, i + 1, close);
+        let name = tag_name(inner);
+        let closing = std::str::starts_with(std::str::trim(inner), "/");
+        if !closing && word_in(name, HTML_SKIPPED) && !std::str::ends_with(inner, "/") {
+            let end = std::str::find(low, "</" + name, close + 1);
+            if end < 0 { i = n; continue; }
+            let gt = std::str::find(v, ">", end);
+            i = if gt < 0 { n } else { gt + 1 };
+            continue;
+        }
+        if word_in(name, HTML_BREAKS) { std::str::builder_append(out, "\n"); }
+        i = close + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The entities a page's text spells most, as the characters they are.
+fn html_unescape(s: String) -> String {
+    if !std::str::contains(s, "&") { return s; }
+    let mut t = std::str::replace(s, "&nbsp;", " ");
+    t = std::str::replace(t, "&lt;", "<");
+    t = std::str::replace(t, "&gt;", ">");
+    t = std::str::replace(t, "&quot;", "\"");
+    t = std::str::replace(t, "&#39;", "'");
+    t = std::str::replace(t, "&apos;", "'");
+    t = std::str::replace(t, "&amp;", "&");
+    return t;
+}
+
+// Each line of `s` with its entities read, its runs of white space one
+// space and its ends trimmed; blank lines dropped.
+@bounded_by(s)
+fn text_lines(s: String) -> String {
+    let v = std::str::bytes_view(s);
+    let n = len(s);
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::find(v, "\n", i);
+        let end = if nl < 0 { n } else { nl };
+        let mut line = std::str::replace(std::str::replace(std::str::slice(v, i, end), "\r", " "), "\t", " ");
+        while std::str::contains(line, "  ") { line = std::str::replace(line, "  ", " "); }
+        line = std::str::trim(html_unescape(line));
+        if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
+        i = end + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The text of the first `<tag …>…</tag>` in `entry`, CDATA and markup
+// stripped; for a self-closed `<link href="…"/>` (Atom), its `href`.
+fn feed_field(entry: String, low: String, tag: String) -> String {
+    let at = std::str::index_of(low, "<" + tag);
+    if at < 0 { return ""; }
+    let after = at + 1 + len(tag);
+    if after < len(low) {
+        let c = std::str::byte_at_unchecked(low, after);
+        // `<title` must not match `<titles`
+        if !(c == 62 || c == 32 || c == 47 || c == 9 || c == 10 || c == 13) { return ""; }
+    }
+    let gt = std::str::index_of_from(low, ">", at);
+    if gt < 0 { return ""; }
+    let open = entry[at..gt];
+    if std::str::ends_with(open, "/") {
+        let h = std::str::index_of(open, "href=\"");
+        if h < 0 { return ""; }
+        let rest = open[(h + 6)..len(open)];
+        let q = std::str::index_of(rest, "\"");
+        return if q < 0 { "" } else { rest[0..q] };
+    }
+    let end = std::str::index_of_from(low, "</" + tag, gt);
+    if end < 0 { return ""; }
+    let mut body = entry[(gt + 1)..end];
+    body = std::str::replace(std::str::replace(body, "<![CDATA[", ""), "]]>", "");
+    return std::str::trim(std::str::replace(text_lines(html_text(body)), "\n", " "));
+}
+
+// A feed's entries (RSS `<item>`, Atom `<entry>`), one line each: the
+// title, then the link, guid or id. The feed's own dates and anything
+// outside an entry are not read.
+@bounded_by(feed)
+fn feed_entries(feed: String) -> String {
+    let low_all = std::str::lower(feed);
+    let v = std::str::bytes_view(low_all);
+    let n = len(feed);
+    let tag = if std::str::find(v, "<item", 0) >= 0 { "item" } else { "entry" };
+    let out = std::str::builder_new();
+    let mut i = 0;
+    while i < n {
+        let at = std::str::find(v, "<" + tag, i);
+        if at < 0 { break; }
+        let end = std::str::find(v, "</" + tag + ">", at);
+        if end < 0 { break; }
+        let entry = feed[at..end];
+        let low = low_all[at..end];
+        let title = feed_field(entry, low, "title");
+        let link = feed_field(entry, low, "link");
+        let id = if len(link) > 0 { link } else if len(feed_field(entry, low, "guid")) > 0 { feed_field(entry, low, "guid") } else { feed_field(entry, low, "id") };
+        let line = std::str::trim(title + (if len(id) > 0 { " | " + id } else { "" }));
+        if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
+        i = end + len(tag) + 3;
+    }
+    return std::str::builder_finish(out);
+}
+
+// The sha256 of `text`, hex: the digest its receipt is kept under.
+fn integration_digest(text: String) -> String { return hex(std::crypto::sha256(std::bytes::from_string(text))); }
+
+// The unified diff from `before` to `after`, labelled with the
+// integration and both digests, cut at `INTEGRATION_DIFF_MAX` bytes on a
+// line, saying so.
+fn integration_diff(name: String, before: String, after: String, from: String, to: String) -> String {
+    let base = "/tmp/dna-integration-" + to_string(std::process::pid()) + "-" + name;
+    std::io::fs::write_file(base + ".before", before) or discard;
+    std::io::fs::write_file(base + ".after", after) or discard;
+    let r = run_tool("diff\n-u\n" + base + ".before\n" + base + ".after");
+    std::io::fs::unlink(base + ".before") or discard;
+    std::io::fs::unlink(base + ".after") or discard;
+    // drop diff's own header (temporary paths and times) for ours
+    let mut body = r.stdout;
+    let mut k = 0;
+    while k < 2 && (std::str::starts_with(body, "--- ") || std::str::starts_with(body, "+++ ")) {
+        let nl = std::str::index_of(body, "\n");
+        body = if nl < 0 { "" } else { body[(nl + 1)..len(body)] };
+        k = k + 1;
+    }
+    let head = "--- integration." + name + " " + short_digest(from) + "\n+++ integration." + name + " " + short_digest(to) + "\n";
+    let whole = head + body;
+    if len(whole) <= INTEGRATION_DIFF_MAX { return whole; }
+    let mut cut = INTEGRATION_DIFF_MAX;
+    while cut > 0 && whole[(cut - 1)..cut] != "\n" { cut = cut - 1; }
+    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its " + to_string(len(whole)) + " bytes\n";
+}
+
+fn short_digest(d: String) -> String { return if len(d) > 12 { d[0..12] } else if len(d) > 0 { d } else { "(none)" }; }
+
+// ---- the record ---------------------------------------------------------------
+
+// The integrations' rows (phase 3): what each one's checks observed, the
+// readings they landed, and the declarations the genome made that could not
+// stand. It holds the journal and the receipts the assembly lends it, and
+// the declarations it last read from the genome.
+locus IntegrationRecord {
+    params {
+        journal: Journal = MemJournal { };
+        receipts: Receipts = FileReceipts { };
+        declared: String = "\n"; // the genome's declarations as last read, so an unchanged genome declares nothing again
+    }
+    fn bind(j: Journal, r: Receipts) { self.journal = j; self.receipts = r; }
+    // Whether `terms` (every declaration's terms) are what was read last;
+    // they are remembered either way.
+    fn unchanged(terms: String) -> Bool {
+        if terms == self.declared { return true; }
+        self.declared = terms;
+        return false;
+    }
+    // A declaration that cannot stand, once per reason.
+    @bounded_by(self.journal)
+    fn refuse(w: Integration) {
+        let entity = "integration:" + w.name;
+        let mut last = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "integration.refused" && e.entity == entity { last = std::json::find_string_field(e.body, "why"); }
+            i = i + 1;
+        }
+        if last == w.why { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("integration", w.name);
+        b.string_field("why", w.why);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "integration.refused", entity, b.result());
+    }
+    // What check `task` already wrote, "" when nothing: its row's body.
+    @bounded_by(self.journal)
+    fn answered(task: String) -> String {
+        let mut i = self.journal.revision() - 1;
+        while i >= 0 {
+            let e = self.journal.read(i);
+            if (e.kind == "integration.observed" || e.kind == "integration.unreached") && std::json::find_string_field(e.body, "task") == task { return std::str::clone(e.body); }
+            i = i - 1;
+        }
+        return "";
+    }
+    // Check `task` of `w`, what it read being `seen`: the baseline, a move
+    // (its reading), an unmoved digest (nothing), or a failed read (its
+    // reading once the failures make a streak).
+    @bounded_by(self.journal)
+    fn observe(task: String, w: Integration, seen: IntegrationSeen) -> IntegrationAnswer {
+        let entity = "integration:" + w.name;
+        let mut last = "";
+        let mut streak = 0;
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.entity == entity && e.kind == "integration.observed" { last = e.body; streak = 0; }
+            if e.entity == entity && e.kind == "integration.unreached" { streak = streak + 1; }
+            i = i + 1;
+        }
+        if !seen.ok {
+            streak = streak + 1;
+            let reading = if streak == INTEGRATION_UNREACHABLE_AFTER { self.land_unreachable(task, w, seen.why, streak) } else { "" };
+            if streak == INTEGRATION_UNREACHABLE_AFTER && len(reading) == 0 { return IntegrationAnswer { narrative: "the unreachable reading of " + w.name + " was not taken" }; }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("integration", w.name);
+            b.string_field("why", seen.why);
+            b.int_field("streak", streak);
+            b.string_field("reading", reading);
+            b.string_field("task", task);
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "integration.unreached", entity, b.result());
+            if !x.ok { return IntegrationAnswer { narrative: "the record did not take the failed check: " + x.error }; }
+            return IntegrationAnswer { ok: true, outcome: if len(reading) > 0 { "unreachable" } else { "unreached" }, reading: reading,
+                narrative: w.name + " unreached (" + to_string(streak) + " in a row): " + seen.why + (if len(reading) > 0 { "; reading " + reading } else { "" }) };
+        }
+        let digest = integration_digest(seen.text);
+        let before = std::json::find_string_field(last, "digest");
+        if len(last) > 0 && before == digest {
+            // unmoved; a streak of failures it ends is closed by a row
+            if streak == 0 { return IntegrationAnswer { ok: true, outcome: "unchanged", narrative: w.name + " unchanged at " + short_digest(digest) }; }
+            let r = self.observed(task, w, "reached", digest, before, "", "");
+            if len(r) > 0 { return IntegrationAnswer { narrative: r }; }
+            return IntegrationAnswer { ok: true, outcome: "reached", narrative: w.name + " reached again, unchanged at " + short_digest(digest) };
+        }
+        let kept = self.receipts.store(seen.text);
+        if kept != digest { return IntegrationAnswer { narrative: "the snapshot of " + w.name + " was not kept" }; }
+        if len(last) == 0 {
+            let r = self.observed(task, w, "baseline", digest, "", "", "");
+            if len(r) > 0 { return IntegrationAnswer { narrative: r }; }
+            return IntegrationAnswer { ok: true, outcome: "baseline", narrative: w.name + " baseline at " + short_digest(digest) };
+        }
+        let unified = integration_diff(w.name, self.receipts.read(before), seen.text, before, digest);
+        // an API's receipt leads with its drift lines, the summary of the move
+        let diff = if len(seen.summary) > 0 { seen.summary + unified } else { unified };
+        let diff_digest = self.receipts.store(diff);
+        if len(diff_digest) == 0 { return IntegrationAnswer { narrative: "the diff of " + w.name + " was not kept" }; }
+        let reading = self.land_changed(task, w, before, digest, diff_digest, diff, seen.summary);
+        if len(reading) == 0 { return IntegrationAnswer { narrative: "the reading of " + w.name + " was not taken" }; }
+        let r = self.observed(task, w, "moved", digest, before, "sha256:" + diff_digest, reading);
+        if len(r) > 0 { return IntegrationAnswer { narrative: r }; }
+        return IntegrationAnswer { ok: true, outcome: "moved", reading: reading, what: integration_concern_what(w, reading, "sha256:" + diff_digest), narrative: w.name + " moved " + short_digest(before) + " -> " + short_digest(digest) + ": reading " + reading };
+    }
+    // `integration.observed`; "" when it landed, else why not.
+    fn observed(task: String, w: Integration, outcome: String, digest: String, from: String, diff: String, reading: String) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("integration", w.name);
+        b.string_field("outcome", outcome);
+        b.string_field("digest", digest);
+        b.string_field("from", from);
+        b.string_field("diff", diff);
+        b.string_field("reading", reading);
+        b.string_field("task", task);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "integration.observed", "integration:" + w.name, b.result());
+        return if x.ok { "" } else { "the record did not take the observation of " + w.name + ": " + x.error };
+    }
+    // The reading `integration.<name>.changed`, its payload naming the
+    // diff's receipt and carrying the diff; its entity, "" when not taken.
+    fn land_changed(task: String, w: Integration, from: String, to: String, diff_digest: String, diff: String, drift: String) -> String {
+        let b = std::json::Builder { };
+        integration_payload(b, task, w);
+        b.string_field("from", from);
+        b.string_field("to", to);
+        if w.source == "openapi" { b.string_field("drift", drift); }
+        b.string_field("receipt", "sha256:" + diff_digest);
+        b.string_field("diff", diff);
+        b.end_object();
+        return self.land(task, "integration." + w.name + ".changed", b.result());
+    }
+    fn land_unreachable(task: String, w: Integration, why: String, streak: Int) -> String {
+        let b = std::json::Builder { };
+        integration_payload(b, task, w);
+        b.string_field("why", why);
+        b.int_field("failures", streak);
+        b.end_object();
+        return self.land(task, "integration." + w.name + ".unreachable", b.result());
+    }
+    // A `reading.recorded` row, as the heart lands an application's event:
+    // `integrations/<event>/<id>`, the id this check's task. Landed once.
+    fn land(task: String, event: String, payload: String) -> String {
+        let id = reading_id(task);
+        let entity = INTEGRATION_APP + "/" + event + "/" + id;
+        if row_exists(self.journal, "reading.recorded", entity) { return entity; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("app", INTEGRATION_APP);
+        b.string_field("event", event);
+        b.string_field("id", id);
+        b.string_field("subject", event);
+        b.string_field("payload", payload);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "reading.recorded", entity, b.result());
+        return if x.ok { entity } else { "" };
+    }
+}
+
+// A reading's payload as far as every integration reading shares it,
+// begun in `b` and left open for the rest.
+fn integration_payload(b: std::json::Builder, task: String, w: Integration) {
+    b.begin_object();
+    b.string_field("id", reading_id(task));
+    b.string_field("integration", w.name);
+    b.string_field("source", w.source);
+    if w.source == "openapi" { b.string_field("surface", w.surface); } else { b.string_field("url", w.url); }
+    b.string_field("position", "position:" + w.position);
+    if len(w.codebase) > 0 { b.string_field("codebase", w.codebase); }
+    b.string_field("task", task);
+}
+
+// A task's id as a reading's id carries it: letters, digits and `-_.:`.
+fn reading_id(task: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(task) {
+        let c = task[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == ":";
+        out = out + (if ok { c } else { "-" });
+        i = i + 1;
+    }
+    return out;
+}
