@@ -3307,7 +3307,14 @@ pub fn summarize_within(
     summary.flow_loci = flow_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
     summary.appended_runtime_loci = runtime_loci;
-    let self_reads = resolve_self_reads(&self_scans);
+    let mut dirty_fields: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for b in &bodies {
+        if let Some(l) = &b.0.locus {
+            let params = b.10.clone();
+            dirty_fields.entry(l.clone()).or_default().extend(self_reads_of(b.1, &params).dirty);
+        }
+    }
+    let self_reads = resolve_self_reads(&self_scans, &dirty_fields);
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
@@ -3922,7 +3929,7 @@ type SelfReads = BTreeMap<(String, String), Option<BTreeSet<String>>>;
 /// parameter (it could store what it reads into an argument), or calls
 /// something of `self` that is no method of the locus (a function-valued
 /// field).
-fn resolve_self_reads(scans: &BTreeMap<(String, String), SelfScan>) -> SelfReads {
+fn resolve_self_reads(scans: &BTreeMap<(String, String), SelfScan>, dirty: &BTreeMap<String, BTreeSet<String>>) -> SelfReads {
     let mut out: SelfReads =
         scans.iter().map(|(k, sc)| (k.clone(), (!sc.top && !sc.writes_params).then(|| sc.fields.clone()))).collect();
     loop {
@@ -3944,6 +3951,14 @@ fn resolve_self_reads(scans: &BTreeMap<(String, String), SelfScan>) -> SelfReads
             }
         }
         if !changed {
+            // A field written from anything but constants may hold what
+            // another field held, the one a replace is judged against
+            // included: a method reading it carries anything.
+            for (k, v) in out.iter_mut() {
+                if v.as_ref().is_some_and(|f| dirty.get(&k.0).is_some_and(|d| f.iter().any(|x| d.contains(x)))) {
+                    *v = None;
+                }
+            }
             return out;
         }
     }
@@ -7410,10 +7425,25 @@ struct SelfScan {
     /// A parameter is written through (`p.f = ..`, `p[i] = ..`, `p.m(..)`):
     /// the callee may store what it reads into an argument.
     writes_params: bool,
+    /// A name is read (a binding, a parameter, a fn).
+    idents: bool,
+    /// The fields of `self` the body writes a value that is not built
+    /// from constants alone (a read of `self`, a binding, a parameter):
+    /// such a field may hold what another field held.
+    dirty: BTreeSet<String>,
 }
 
 /// GH #1490 (step 4): a body's reads of `self`, for the methods that call
 /// it: [`SelfScan`].
+/// Is `e` built from literals and paths alone: nothing of `self`, no name
+/// read?
+fn constant_expr(e: &Expr) -> bool {
+    let mut a = Reassigned::new(BTreeSet::new());
+    a.expr(e);
+    let sc = &a.scan;
+    !sc.top && !sc.idents && sc.fields.is_empty() && sc.calls.is_empty()
+}
+
 fn self_reads_of(body: &Block, params: &[String]) -> SelfScan {
     let mut a = Reassigned::new(params.iter().cloned().collect());
     a.block(body, Vec::new());
@@ -7476,6 +7506,9 @@ impl Reassigned {
                     if let Some(LValueSeg::Field(f)) = target.tail.first() {
                         if !matches!(op, AssignOp::Eq) {
                             self.scan.fields.insert(f.name.clone());
+                        }
+                        if !constant_expr(value) {
+                            self.scan.dirty.insert(f.name.clone());
                         }
                     }
                 }
@@ -7586,8 +7619,16 @@ impl Reassigned {
                         }
                         r => {
                             let mut root = r;
-                            while let Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } = root {
+                            let mut first = None;
+                            while let Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } = root {
+                                first = Some(name.name.clone());
                                 root = receiver;
+                            }
+                            // `self.<f>.m(x)` may store `x` into the field.
+                            if let (Expr::KwSelf(_), Some(g)) = (root, first) {
+                                if !args.iter().all(constant_expr) {
+                                    self.scan.dirty.insert(g);
+                                }
                             }
                             if matches!(root, Expr::Ident(v) if self.params.contains(&v.name)) {
                                 self.scan.writes_params = true;
@@ -7595,7 +7636,9 @@ impl Reassigned {
                         }
                     }
                 }
-                self.expr(callee);
+                if !matches!(callee.as_ref(), Expr::Ident(_)) {
+                    self.expr(callee);
+                }
                 for a in args {
                     self.expr(a);
                 }
@@ -7617,7 +7660,8 @@ impl Reassigned {
                 }
             }
             Expr::KwSelf(_) => self.scan.top = true,
-            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => {}
+            Expr::Ident(_) => self.scan.idents = true,
+            Expr::Literal(..) | Expr::Path(_) => {}
         }
     }
 }
@@ -8849,6 +8893,28 @@ mod tests {
             let leaks = field_leaks(&method_store(methods, body), "on_t");
             assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` appends to `self.log`: {leaks:?}");
         }
+    }
+
+    #[test]
+    fn a_getter_of_a_field_that_was_filled_from_the_replaced_one_is_an_append() {
+        // `tag` was written from `log` (directly, through a binding, or
+        // through a callee's parameter): reading it back into `log`
+        // grows `log` by a step per delivery.
+        let methods = "fn label() -> String { return self.tag; }
+                       fn save(s: String) { self.tag = s; }";
+        for body in [
+            "self.tag = self.log; self.log = self.label() + \"x\";",
+            "let old = self.log; self.tag = old; self.log = self.label() + \"x\";",
+            "self.save(self.log); self.log = self.label() + \"x\";",
+        ] {
+            let leaks = field_leaks(&method_store(methods, body), "on_t");
+            assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` appends to `self.log`: {leaks:?}");
+        }
+        // A field only ever given a fixed value stays independent.
+        let methods = "fn label() -> String { return self.tag; }
+                       fn reset() { self.tag = \"fixed\"; }";
+        let leaks = field_leaks(&method_store(methods, "self.reset(); self.log = self.label() + \"x\";"), "on_t");
+        assert!(leaks.is_empty(), "a constant-only field is independent: {leaks:?}");
     }
 
     #[test]
