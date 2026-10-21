@@ -49,10 +49,8 @@ const REQUIRED: [(&str, &str); 4] = [
     ("remove", "deletes"),
 ];
 
-/// A type as a state class spells it. An imported record is mangled
-/// (`__lib_store___store__Item`); its class is indexed by the name its
-/// library wrote (`reads(Item)`), since the class text is not rewritten
-/// by the import. Two imported records of one written name share a class.
+/// A record as an author wrote it, for messages: an imported record is
+/// mangled (`__lib_store___store__Item`).
 fn plain(t: &str) -> &str {
     if t.starts_with("__") {
         t.rsplit("__").next().filter(|s| !s.is_empty()).unwrap_or(t)
@@ -109,46 +107,71 @@ pub fn expand(programs: &mut [&mut Program]) {
             return;
         }
     }
-    // An imported repo's methods write `reads(Item)`, the name its library
-    // wrote; the import did not rewrite the class text. Point each at the
-    // class of the resolved, mangled record, so two imported records of one
-    // written name keep two classes.
+    // A state class names a record by the name its module wrote
+    // (`reads(Item)`); the import mangles the record and not the class
+    // text. Resolve each reference in its declaring module's scope, so the
+    // class is keyed by the mangled record: two imported records of one
+    // written name keep two classes, and a contract anywhere in a library
+    // (`@effects(none: { writes(Item) })`) names the library's own.
     let names: Vec<String> = programs[0].effect_names.clone();
-    for p in programs.iter_mut() {
-        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
-            let TopDecl::Locus(l) = d else { return };
-            let Some(full) = l.repo.as_ref().map(|r| r.ty.name.clone()) else {
-                return;
+    let repos: BTreeSet<String> = {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        repo_types(&ro)
+    };
+    let mut resolve = |classes: &mut Vec<EffectClass>, prefix: &str| {
+        for c in classes.iter_mut() {
+            let EffectClass::User(i) = c else { continue };
+            let Some(name) = names.get(*i as usize) else {
+                continue;
             };
-            let written = plain(&full).to_string();
-            if written == full {
-                return;
+            let Some((word, rest)) = name.split_once('(') else {
+                continue;
+            };
+            let target = format!("{prefix}{}", rest.trim_end_matches(')'));
+            if CLASSES.contains(&word) && repos.contains(&target) {
+                if let Some(j) = names.iter().position(|n| *n == format!("{word}({target})")) {
+                    *c = EffectClass::User(j as u16);
+                }
             }
-            for m in &mut l.members {
-                let LocusMember::Fn(f) = m else { continue };
-                for a in &mut f.effects {
-                    let EffectAssert::Carries(cs) = a else {
-                        continue;
-                    };
-                    for c in cs.iter_mut() {
-                        let EffectClass::User(i) = c else { continue };
-                        let Some(name) = names.get(*i as usize) else {
-                            continue;
-                        };
-                        let Some((word, rest)) = name.split_once('(') else {
-                            continue;
-                        };
-                        if !CLASSES.contains(&word) || rest.trim_end_matches(')') != written {
-                            continue;
-                        }
-                        if let Some(j) = names.iter().position(|n| *n == format!("{word}({full})"))
-                        {
-                            *c = EffectClass::User(j as u16);
-                        }
+        }
+    };
+    let mut fix = |f: &mut FnDecl, prefix: &str| {
+        for a in &mut f.effects {
+            match a {
+                EffectAssert::Forbid(cs)
+                | EffectAssert::Carries(cs)
+                | EffectAssert::Causes(cs)
+                | EffectAssert::Only(cs) => resolve(cs, prefix),
+                _ => {}
+            }
+        }
+    };
+    for p in programs.iter_mut() {
+        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| match d {
+            TopDecl::Locus(l) => {
+                let prefix = module_prefix(&l.name.name);
+                for m in &mut l.members {
+                    if let LocusMember::Fn(f) = m {
+                        fix(f, &prefix);
                     }
                 }
             }
+            TopDecl::Fn(f) => {
+                let prefix = module_prefix(&f.name.name);
+                fix(f, &prefix);
+            }
+            _ => {}
         });
+    }
+}
+
+/// The mangling prefix of an imported declaration's name
+/// (`__lib_store___store__` of `__lib_store___store__Items`), empty for a
+/// declaration of the root seed.
+fn module_prefix(name: &str) -> String {
+    match name.strip_prefix("__").and_then(|r| r.rfind("__")) {
+        Some(i) => name[..i + 4].to_string(),
+        None => String::new(),
     }
 }
 

@@ -189,3 +189,47 @@ fn an_imported_repo_names_its_renamed_record() {
         .collect();
     assert!(msgs.is_empty(), "{msgs:?}");
 }
+
+fn lib_with(wrapper: &str) -> String {
+    format!(
+        "{HEAD}{}\n{wrapper}\n",
+        GOOD.replace("fn main() { let i = Items { }; }\n", "")
+    )
+}
+
+fn two_modules(lib: &str, root_repo: bool) -> Vec<String> {
+    let root = if root_repo {
+        format!(
+            "{HEAD}{}",
+            GOOD.replace("fn main() { let i = Items { }; }\n", "")
+        )
+    } else {
+        String::new()
+    };
+    let main = format!(
+        "import \"./store\" as r;\n{root}\nfn main() {{ let remote = r::Items {{ }}; r::action(remote); }}\n"
+    );
+    check_files(&[("main.hl", &main), ("store/store.hl", lib)])
+        .into_iter()
+        .map(|d| d.message)
+        .collect()
+}
+
+#[test]
+fn an_imported_contract_names_the_librarys_own_record() {
+    let put = "@effects(none: { writes(Item) })\nfn action(db: Items) {\n    let got = db.put(1, Item { id: 1, n: 2 }) or Item { id: 0, n: 0 };\n}\n";
+    // the library's prohibition holds against the library's own write,
+    // whether or not the root has an unrelated `Item` repository
+    for root_repo in [false, true] {
+        let msgs = two_modules(&lib_with(put), root_repo);
+        assert!(
+            has(&msgs, "effect assertion violated"),
+            "root_repo={root_repo}: {msgs:?}"
+        );
+    }
+    let get = "@effects(none: { writes(Item) })\nfn action(db: Items) {\n    let got = db.get(1) or Item { id: 0, n: 0 };\n}\n";
+    for root_repo in [false, true] {
+        let msgs = two_modules(&lib_with(get), root_repo);
+        assert!(msgs.is_empty(), "root_repo={root_repo}: {msgs:?}");
+    }
+}
