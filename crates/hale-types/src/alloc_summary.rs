@@ -5824,6 +5824,18 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Is the place an assignment writes a String: a String binding, or
+    /// a String field of `self` or of a typed binding?
+    fn target_is_string(&self, target: &LValue) -> bool {
+        let head = &target.head;
+        match target.tail.as_slice() {
+            [] => self.is_string_expr(&Expr::Ident(head.clone())),
+            [LValueSeg::Field(f)] if head.name == "self" => self.self_field_str(&f.name) == StrTy::Str,
+            [LValueSeg::Field(f)] => self.field_str(&Expr::Ident(head.clone()), &f.name) == StrTy::Str,
+            _ => false,
+        }
+    }
+
     fn if_is_string(&self, ifs: &IfStmt) -> bool {
         ifs.then_block.tail.as_deref().is_some_and(|t| self.is_string_expr(t))
             || match ifs.else_block.as_deref() {
@@ -6535,7 +6547,7 @@ impl<'a> Walker<'a> {
                     self.bind_taint(&n.name, taint.clone());
                 }
             }
-            Stmt::Assign { target, value, id, span, .. } => {
+            Stmt::Assign { target, op, value, id, span, .. } => {
                 // GH #540: a write to a field of any place may be a write
                 // to an interface-typed slot of that name.
                 for seg in &target.tail {
@@ -6580,7 +6592,37 @@ impl<'a> Walker<'a> {
                         self.store_target = target_field;
                     }
                 }
-                self.walk_expr(value, depth, esc);
+                if matches!(op, AssignOp::PlusEq) {
+                    // GH #1490 (step 3): `s += x` is `s = s + x`: the
+                    // same concatenation, the same escape as the binding
+                    // it extends. It reads the field it extends, so it
+                    // is never a store-latest replace.
+                    if self.is_string_expr(value) || self.target_is_string(target) {
+                        let target_field = if esc == Escape::StoredToSelf {
+                            self.store_target.clone()
+                        } else {
+                            None
+                        };
+                        self.sites.push(AllocSite {
+                            kind: AllocKind::StringConcat,
+                            escape: esc,
+                            loop_depth: depth,
+                            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                            in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
+                            reclaim: ReclaimScope::EnclosingLocus,
+                            target_field,
+                            retired_store: false,
+                            in_loop: self.loops_as_written > 0,
+                            bare_stmt: false,
+                            self_replace: None,
+                            retire_if_params: None,
+                            span: *span,
+                        });
+                    }
+                    self.walk_expr(value, depth, Escape::Local);
+                } else {
+                    self.walk_expr(value, depth, esc);
+                }
                 self.store_target = prev;
                 self.self_replace = None;
                 // A reassigned local holds whichever value the run took
@@ -8362,6 +8404,11 @@ mod tests {
         ("let mut out = sep;", "out = out + (if i > 2 { sep } else { piece(i) });"),
         ("let mut out = sep;", "for s in names { out = out + s; }"),
         ("let mut out = piece(0) or sep;", "out = out + self.label;"),
+        // `+=` and an interpolation lower to the same concatenation.
+        ("let mut out = sep;", "out += sep;"),
+        ("let mut out = \"\";", "out += piece(i);"),
+        ("let mut out = \"\";", "out = f\"{out},{i}\";"),
+        ("let mut out = sep;", "out = f\"{out}{sep}\";"),
     ];
 
     fn join_concats(src: &str) -> usize {
@@ -8392,6 +8439,66 @@ mod tests {
             let leaks = join_leaks(&spelled_accumulator(init, step, "method"));
             assert!(leaks.is_empty(), "`{init} … {step}` consumed in a method: {leaks:?}");
         }
+    }
+
+    /// `store` is a statement run after the loop, in `join_n`.
+    fn stored_accumulator(step: &str, store: &str) -> String {
+        format!(
+            "locus App {{
+                 params {{ n: Int = 1000; label: String = \"x\"; }}
+                 fn join_n(k: Int, sep: String) {{
+                     let mut out = \"\";
+                     let mut i = 0;
+                     while i < k {{ {step} i = i + 1; }}
+                     {store}
+                 }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.join_n(20, \",\"); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_accumulator_stored_into_a_field_is_still_flagged() {
+        // The value outlives the call in the locus: the loop's growth
+        // stays reported, however the concatenation is spelled.
+        for step in ["out = out + sep;", "out += sep;", "out = f\"{out}{sep}\";"] {
+            let leaks = join_leaks(&stored_accumulator(step, "self.label = out;"));
+            assert!(!leaks.is_empty(), "`{step}` stored to a field must be flagged");
+        }
+        let leaks = join_leaks(&stored_accumulator("self.label += sep;", ""));
+        assert!(!leaks.is_empty(), "`self.label += sep` in a loop must be flagged");
+    }
+
+    /// A shape taken from a decorated fn of a downstream-handoff DNA
+    /// tree, identifiers renamed: an inferred-String local grown by a
+    /// call result.
+    fn dna_shaped(body: &str) -> String {
+        format!(
+            "fn tag(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; live: String = \"\"; }}
+                 fn join_n(k: Int, text: String) -> String {{
+                     {body}
+                 }}
+                 fn record(i: Int) {{ self.sink = self.sink + len(self.join_n(20, \"a\")); }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_inferred_string_grown_by_call_results_is_an_accumulator() {
+        // No literal and no declared `String` in the chain: the local's
+        // type comes from the call that initializes it.
+        let body = "let mut out = tag(text);
+             let mut i = 0;
+             while i < k { out = out + tag(text) + tag(out); i = i + 1; }
+             return out;";
+        let src = dna_shaped(body);
+        assert!(join_concats(&src) >= 1, "call-result chain recorded as a concatenation");
+        assert!(join_leaks(&src).is_empty());
     }
 
     #[test]
