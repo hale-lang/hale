@@ -144,6 +144,18 @@ locus Orders {
 }
 ```
 
+**A route.** A row of an `api` block may say where `http::Rest` serves it
+(§ The REST transport): `rpc Orders::cancel at "DELETE /orders/{order}"
+status: 204 requires: [trader];`. The text is `METHOD /path`, the method one
+of `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the path segments literals or
+whole `{name}` parameters, each naming a scalar field of the request;
+`status:` is the success status, `200` when it is left out. A route is a
+rendering of the row and no part of its contract: it does not move the
+digest, `http::Rpc`, the Unix socket, `mcp::Rpc` and `grpc::Rpc` ignore it,
+and a row without one is served by `http::Rest` where `http::Rpc` serves it,
+`POST /call/<member>`. An `@rpc` row carries none (a route is written in the
+block). The admission law judges it (laws 9 and 10 below).
+
 The block and the sugar feed one row family, `surface`
 (`spec/registry.md`), and nothing else about the locus is read: not its
 subscriptions, not its `expose` members, not its position in the tree.
@@ -219,6 +231,25 @@ before anything is served:
    openapi "…"`) holds signature rows only: "rpc \`Desk::post\`:
    \`Notes\` is an imported surface, and its rows name the operations'
    shapes, not handlers: \`rpc name(Request) -> Response;\`".
+9. **A route is well formed and binds fields of the request.** The
+   text is `METHOD /path` with a method of the five, a path that starts
+   with `/` and holds no empty segment, no trailing `/`, no `?`, and
+   parameters that are whole segments (`{name}`, at most eight, none
+   twice); `/.description` is the transport's; `status:` is a `2xx`.
+   Each parameter names a field of the row's request that a path can
+   carry (an integer, a number, a bool, a string, a time or a
+   payload-free enum): "rpc \`Orders::cancel\`: route \"GET
+   /orders/{oder}\": the parameter \`{oder}\` names no field of its
+   request (\`CancelOrder\`); did you mean \`order\`?".
+10. **The routes of a surface are unambiguous.** Two routes of one method
+    and one length meet when some path matches both. They may meet only
+    when one is the more specific: a literal where the other has a
+    parameter, and nowhere less (`GET /orders/open` beside `GET
+    /orders/{order}`). Two routes that match the same paths, or overlap
+    with neither more specific (`GET /p/{a}/x` and `GET /p/y/{b}`), are
+    refused, naming both: "rpc \`Orders::cancel\` and rpc
+    \`Orders::place\` are ambiguous routes of \`Public\`: both are served
+    at \`GET /orders/{}\`".
 
 ## The contract digest
 
@@ -828,6 +859,9 @@ admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock
 
 ### The HTTP transport
 
+(`http::Rest`, the same transport routed by method and path, is § The REST
+transport.)
+
 `http::Rpc` (`std::api::http::Rpc`, R3) serves an exposure over HTTP/1.1,
 one request to a connection (`Connection: close`: no keep-alive, no
 chunked bodies). It is written at a serve site, or held as a param and
@@ -922,6 +956,98 @@ public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", c
   arrives after the listener is closed is refused by the network. As for
   the Unix socket, a program that ends without `stop()` releases its
   listener, and a caller with a request in flight sees the connection end.
+
+### The REST transport
+
+`http::Rest` (`std::api::http::Rest`, GH #1530) serves an exposure over
+the same HTTP/1.1 connection substrate as `http::Rpc`: the listener, the
+connections, the bearer, the role source, `cors`, the digest header, the
+exposure's queue (`bound:`, `on_full: refuse`), `stop()`, and every outcome
+of § Outcomes that is not a routing outcome are the ones of § The HTTP
+transport. What differs is the request line: a request is routed by its
+method and path to a row, by the routes the surface declares (§ Surfaces
+and their rows, a route), and the reply's success status is the row's.
+
+```hale,fragment
+api Gateway {
+    rpc Probe::live at "GET /healthz";
+    rpc Chat::complete at "POST /v1/chat/completions";
+    rpc Chat::model at "GET /v1/models/{model}";
+    rpc Items::create at "POST /v1/items" status: 201;
+    rpc Items::remove at "DELETE /v1/items/{id}" status: 204;
+    rpc Ops::retire at "POST /admin/retire" requires: [operator];
+}
+// in a locus that holds the receivers
+web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, anonymous: "public", cors: "https://app.example" }, as: "web", bound: 64, on_full: refuse);
+```
+
+- **The matcher is the surface's.** The compiler writes the route table
+  into the transport literal (`routes`, a field the program does not
+  write): one line per row, the most specific route of a method first, so
+  the first match is the most specific one (law 10 leaves no other
+  answer). A row with no route is `POST /call/<member>`, as over
+  `http::Rpc`; a row with one is served only there. Matching is on the
+  query-stripped path, a trailing `/` on the request tolerated, a
+  parameter's value percent-decoded.
+- **Binding.** The call's request is one JSON object, built from the
+  request:
+  - a path parameter is the field of its name, written as the field's
+    type (an integer, a number, a bool or a string; a value that is not
+    one is `malformed`, 400, naming the parameter);
+  - the query is the same for every other scalar field of the request,
+    by key (`+` is a space; a key that names no scalar field is ignored,
+    the first of a repeated key wins, a path parameter wins over a query
+    key of its name);
+  - the body, when one is sent, is the JSON object whose members are
+    laid beside those. A body that is not an object takes no path or
+    query parameter (`malformed`); a request with neither parameters nor
+    body is `{}`, and a body is passed as it is when no parameter is
+    bound. A field the request needs and nothing supplies is the codec's
+    `missing_field`, `malformed`.
+  The object is then decoded by the row's codec like a body over
+  `http::Rpc`, so the request's shape is judged in one place.
+- **Statuses.** The routing outcomes are the transport's, with the body
+  `{"refusal": {"kind": …, "reason": …}}`:
+  - the row's success status (`200`, or the route's `status:`; a `204`
+    has no body);
+  - `404`, kind `not_found`, for a path no route serves;
+  - `405`, kind `method_not_allowed`, for a path that takes other
+    methods, with `Allow` naming them (a `GET` allows `HEAD`;
+    `OPTIONS` is always allowed);
+  - every other outcome is § Outcomes' (a handler error by its class,
+    § Error classes; `400`, `401`, `403`, `409`, `429`, `503`, `500`).
+  Routing is decided before the credential is read, so `404` and `405`
+  need none.
+- **`OPTIONS` and `HEAD`.** `OPTIONS` of a path a route serves is
+  answered by the transport, no credential read and nothing dispatched:
+  `204` with `Allow`; with `cors` set and an `Origin` that is listed, the
+  preflight's headers as `http::Rpc` states them, with
+  `Access-Control-Allow-Methods` the methods of the path rather than the
+  transport's; an `Origin` that is not listed is `403`. `HEAD` of a path
+  with a `GET` route is that route's reply with no body and the length of
+  the body it would have had; the call is made.
+- **`anonymous`.** `anonymous: String` (`""`, the default, is none) names
+  the caller of a request that sends no `Authorization` header at all: it
+  is a bearer principal of that name with no credential, the role source
+  decides what it holds, and a row that requires a role refuses it
+  `unauthorized`. A request that sends a credential is judged by
+  `principals` as ever, and one that sends a header that is not a bearer
+  is refused. Without `anonymous` such a request is refused
+  `unauthenticated` as over `http::Rpc`. It is the transport's knob and
+  never the surface's: it is how a health probe is a row (`GET /healthz`)
+  that needs no token.
+- **The description** is `GET /.description`, as over `http::Rpc`;
+  `hale api export --surface NAME` writes the OpenAPI form with each
+  routed row at its method and path (path parameters as `in: path`,
+  the other scalar fields of a `GET` or `DELETE` as `in: query`, the
+  success status as the success response, `404` and `405` beside the
+  refusals) and a row with none at `POST /call/<member>`.
+  `hale api call http://host:port 'GET /orders/5' --limit 3` calls a
+  route by its method and path (§ Driving a served program).
+- **What the route table does not do** (a later step of GH #1530, with
+  resources on a surface): derive a verb or a path from what a handler
+  does, or a status from an error class beyond § Error classes; the
+  author writes the route.
 
 ### The MCP transport
 
@@ -2488,7 +2614,8 @@ JSON, its keys in the schema's order; the fixtures are the same values
 pretty-printed, and a producer is held to them as values. The OpenAPI,
 JSON Schema and MCP forms of GH #1107 are projections of a surface's
 rows, one per surface, each carrying the digest: `hale check --api
---surface NAME --openapi` (a `POST /call/<member>` per row, `200` its
+--surface NAME --openapi` (a `POST /call/<member>` per row, or the
+method and path of a row that declares a route, `200` its
 response, `422` its handler error, `500` a `ClosureViolation` row's
 server error, the refusals by their statuses, the digest as the
 `Hale-Surface-Digest` header), `--json-schema` (every type the rows name
@@ -3098,6 +3225,15 @@ The request id is the verb's: `hale-<pid>` unless `--request-id ID` gives one, s
 JSON string. Over the Unix socket the reply's `id` must be it: a reply that
 answers another request is a transport failure, as is a connection that ends
 with no reply. (HTTP carries no id; the connection is the correlation.)
+
+**A route by its path.** Where the member is `METHOD /path` (`hale api call
+http://127.0.0.1:8080 'GET /v1/items/5' --limit 3`), the endpoint is an
+`http::Rest` listener's and the verb calls the route as written: no
+description is read, the flags are the query (`?limit=3`; a bare flag is
+`true`), `--json` is the body of a `POST`, `PUT` or `PATCH` (a `GET` or
+`DELETE` takes none: exit 5), `--bearer` and `--digest` ride as headers. A
+`2xx` is the result; a classed handler error, a refusal (the `404` of a
+path no route serves included) and the server error exit as below.
 
 **Outcomes and exit codes.** Each outcome of § Outcomes is one exit code. A
 result prints its value as JSON on stdout; every other outcome prints the wire

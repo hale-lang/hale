@@ -776,6 +776,17 @@ fn main() {
   `T::api_encode(v)` and `T::api_decode(text)` are the surface's own
   codec, as strict as a served row. JSON built with `+` is a second
   encoder, and it drifts.
+- **Routes on the rows; don't hand-roll a router.** A program that has to
+  answer `GET /healthz` and `POST /v1/chat/completions` declares them on
+  the surface, `rpc Probe::live at "GET /healthz";`, and serves it with
+  `http::Rest`, not a `std::http::Server` whose handler matches
+  `is_route` by hand. The matcher, the `404`, the `405` with `Allow`,
+  `OPTIONS`, `HEAD` and CORS are generated from the table, the
+  bearer and the roles are the rows' own, and an ambiguous pair is a
+  refused line at the check, not a first match that depends on the order
+  of an `if` chain. Name a path parameter after the request's field
+  (`{id}`), and keep the `status:` honest (`201` for a create, `204` for
+  a delete with nothing to say).
 - **Import a surface you call; don't transcribe it.** Another
   service's operations are an `api NAME from openapi "…"` (or `from mcp
   "…"`) block that `hale api import` writes from its document, committed

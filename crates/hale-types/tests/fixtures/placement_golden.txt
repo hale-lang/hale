@@ -666,7 +666,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#655203e0
+== crates/hale-stdlib/hl/api_rpc.hl#60231047
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -1488,6 +1488,19 @@ row	D@literal1.a	A	main	default
 row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	dynamic	sites in the seed #042a0a8b
+
+== crates/hale-codegen/tests/api_rest.rs#e24db5cf
+root	Svc	the entry
+domain	pool:__api_http	async_io
+row	Svc@literal1	Svc	main	default
+row	Svc@literal1.bearer	Tokens	main	default
+row	Svc@literal1.chat	Chat	main	default
+row	Svc@literal1.grants	Grants	main	default
+row	Svc@literal1.items	Items	main	default
+row	Svc@literal1.ops	Ops	main	default
+row	Svc@literal1.probe	Probe	main	default
+shared	Svc@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
 shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-codegen/tests/api_runtime.rs#9ea7cf1a

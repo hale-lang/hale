@@ -1743,6 +1743,8 @@ type __StdApiHttpOut {
     // header lines (each ending `\r\n`) a response carries besides the
     // fixed ones: the CORS headers of an `http::Rpc` with `cors` set
     headers: String = "";
+    // a reply to HEAD: the head states the body's length and sends none
+    bodyless: Bool = false;
 }
 
 /// The status a refusal kind has (spec/api.md § Outcomes).
@@ -1796,14 +1798,14 @@ locus __StdApiHttpPeer {
             }
         }
         if self.open && ((head_end < 0 && len(buf) >= 65536) || head_end > 65536) {
-            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}", "");
+            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}", "", false);
             self.open = false;
         }
         if self.open && head_end >= 0 {
             let head = std::http::parse_request(buf[0..(head_end + 4)]);
             let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
             if want > 1048576 {
-                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}", "");
+                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}", "", false);
                 self.open = false;
             } else {
                 // the body goes to a builder: what a connection holds is
@@ -1852,16 +1854,18 @@ locus __StdApiHttpPeer {
         }
         if o.kind != 0 || !self.open || self.answered { return; }
         self.answered = true;
-        self.respond(o.status, o.body, o.headers);
+        self.respond(o.status, o.body, o.headers, o.bodyless);
         self.hangup();
     }
     fn on_group(o: __StdApiHttpOut) {
         if o.kind == 1 { self.hangup(); }
     }
-    fn respond(status: Int, body: String, extra: String) {
+    fn respond(status: Int, body: String, extra: String, bodyless: Bool) {
         if self.fd < 0 { return; }
+        let mut sent = body;
+        if bodyless { sent = ""; }
         // a write that fails closes this connection, and only this one
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + sent) or { self.open = false; };
     }
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {
@@ -2190,6 +2194,379 @@ locus __StdApiHttpRpc {
     }
     // Close the listener and every connection, after the responses already
     // sent (one subscriber sees the bus in the order it was published).
+    fn stop_listening() {
+        self.stops = self.stops + 1;
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };
+    }
+}
+
+// ---- the REST transport (spec/api.md § The REST transport) ----
+//
+// `std::api::http::Rest` serves an exposure over the same HTTP/1.1
+// connection substrate as `http::Rpc` (the listener and the connections are
+// `__StdApiHttpListener` and `__StdApiHttpPeer`), but a request is routed by
+// its method and path instead of being `POST /call/<member>`. The compiler
+// writes the route table into the literal (`routes`): one line per row,
+// `METHOD|/pattern/:param|Member|status|field:kind,…`, the most specific
+// pattern of a method first. A request is matched against it, its path
+// parameters and query are bound into the request's JSON object beside the
+// body, and the call goes to the exposure as a call of the row's member, so
+// the digest, the bearer, the roles, `requires` and the queue are the ones
+// `http::Rpc` has. The statuses the table and the matcher own (404, 405,
+// the success status, `OPTIONS`, `HEAD`) are decided here; every other
+// status is the contract's (§ Outcomes).
+
+/// What a route line's field list says of a field: `i` an integer, `f` a
+/// float, `b` a bool, `s` a string (text or an enum's name); "" for a name
+/// the request has no scalar field of.
+fn __api_rest_kind(fields: String, name: String) -> String {
+    let mut rest = fields;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut one = rest;
+        if comma >= 0 {
+            one = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        let colon = std::str::index_of(one, ":");
+        if colon > 0 && one[0..colon] == name { return one[(colon + 1)..len(one)]; }
+    }
+    return "";
+}
+
+/// Cell `n` (from 0) of a route line.
+fn __api_rest_cell(line: String, n: Int) -> String {
+    let mut rest = line;
+    let mut k = 0;
+    while k < n {
+        let bar = std::str::index_of(rest, "|");
+        if bar < 0 { return ""; }
+        rest = rest[(bar + 1)..len(rest)];
+        k = k + 1;
+    }
+    let bar = std::str::index_of(rest, "|");
+    if bar < 0 { return rest; }
+    return rest[0..bar];
+}
+
+fn __api_rest_word(kind: String) -> String {
+    if kind == "i" { return "integer"; }
+    if kind == "f" { return "number"; }
+    if kind == "b" { return "boolean"; }
+    return "value";
+}
+
+/// `raw` as the JSON text of a field of `kind`; "" when it is none.
+fn __api_rest_json(kind: String, raw: String) -> String {
+    if kind == "s" { return "\"" + std::json::escape_string(raw) + "\""; }
+    if kind == "b" {
+        if raw == "true" || raw == "false" { return raw; }
+        return "";
+    }
+    if kind == "i" || kind == "f" {
+        let n = len(raw);
+        let mut digits = 0;
+        let mut i = 0;
+        while i < n {
+            let c = std::str::byte_at_unchecked(raw, i);
+            if c >= 48 && c <= 57 {
+                digits = digits + 1;
+            } else {
+                if kind == "i" && !(c == 45 && i == 0) { return ""; }
+                if kind == "f" && c != 45 && c != 43 && c != 46 && c != 101 && c != 69 { return ""; }
+            }
+            i = i + 1;
+        }
+        if digits == 0 { return ""; }
+        return raw;
+    }
+    return "";
+}
+
+/// A request bound: its JSON body, or why it could not be.
+type __StdApiRestBound {
+    ok: Bool = true;
+    body: String = "";
+    reason: String = "";
+}
+
+/// The request's JSON object: the path parameters and the query's scalar
+/// fields (a name the request has no scalar field of is ignored; a path
+/// parameter wins over a query key of its name, and a query key's first
+/// value over its later ones) laid beside the body's own members.
+fn __api_rest_bind(fields: String, pattern: String, path: String, qs: String, body: String) -> __StdApiRestBound {
+    let p = std::http::RouteParams { qs: qs };
+    let mut pairs = "";
+    let mut seen = ",";
+    if __http_match_pattern_into(pattern, path, p) {
+        let n = count(p.path_keys);
+        let mut i = 0;
+        while i < n {
+            let k = at(p.path_keys, i) or "";
+            let kind = __api_rest_kind(fields, k);
+            let json = __api_rest_json(kind, __std_url_decode(at(p.path_vals, i) or ""));
+            if len(json) == 0 {
+                return __StdApiRestBound { ok: false, reason: "the path parameter `" + k + "` is not a " + __api_rest_word(kind) };
+            }
+            pairs = pairs + "\"" + k + "\":" + json + ",";
+            seen = seen + k + ",";
+            i = i + 1;
+        }
+    }
+    let total = len(qs);
+    let mut cursor = 0;
+    while cursor < total {
+        let amp = std::str::index_of_from(qs, "&", cursor);
+        let pair_end = if amp < 0 { total } else { amp };
+        let eq = std::str::index_of_from(qs, "=", cursor);
+        let key_end = if eq < 0 || eq > pair_end { pair_end } else { eq };
+        let k = __std_url_decode_query(qs[cursor..key_end]);
+        let kind = __api_rest_kind(fields, k);
+        if len(kind) > 0 && !std::str::contains(seen, "," + k + ",") {
+            let mut raw = "";
+            if key_end < pair_end { raw = __std_url_decode_query(qs[(key_end + 1)..pair_end]); }
+            let json = __api_rest_json(kind, raw);
+            if len(json) == 0 {
+                return __StdApiRestBound { ok: false, reason: "the query parameter `" + k + "` is not a " + __api_rest_word(kind) };
+            }
+            pairs = pairs + "\"" + k + "\":" + json + ",";
+            seen = seen + k + ",";
+        }
+        cursor = pair_end + 1;
+    }
+    let t = std::str::trim(body);
+    if len(pairs) == 0 {
+        if len(t) == 0 { return __StdApiRestBound { body: "{}" }; }
+        return __StdApiRestBound { body: body };
+    }
+    let inner = pairs[0..(len(pairs) - 1)];
+    if len(t) == 0 || t == "{}" { return __StdApiRestBound { body: "{" + inner + "}" }; }
+    if t[0..1] != "{" {
+        return __StdApiRestBound { ok: false, reason: "a body that is not an object cannot take path or query parameters" };
+    }
+    return __StdApiRestBound { body: "{" + inner + "," + t[1..len(t)] };
+}
+
+/// `m` joined to the methods a path allows (a `GET` allows `HEAD`).
+fn __api_rest_allow(allow: String, m: String) -> String {
+    let mut a = allow;
+    if !std::str::contains(a, m) {
+        if len(a) > 0 { a = a + ", "; }
+        a = a + m;
+    }
+    if m == "GET" && !std::str::contains(a, "HEAD") { a = a + ", HEAD"; }
+    return a;
+}
+
+/// What the REST transport keeps of a request between `frame` and `reply`:
+/// corr, the connection (-1 for a free record); mode, 0 a call, 1 an
+/// `OPTIONS`, 2 no route for the path, 3 a route that takes no such method;
+/// status, the success status of the route; origin, the request's `Origin`
+/// when `cors` allows it, else ""; denied, an `Origin` that `cors` does not
+/// allow; head, a `HEAD`; allow, the methods the path takes.
+type __StdApiRestPending {
+    corr: Int = -1;
+    mode: Int = 0;
+    status: Int = 200;
+    origin: String = "";
+    denied: Bool = false;
+    head: Bool = false;
+    allow: String = "";
+}
+
+@form(vec)
+locus __StdApiRestTable {
+    capacity { heap items of __StdApiRestPending; }
+}
+
+/// The REST transport (`std::api::http::Rest`; `http::Rest` at a serve
+/// site). `tid` and `routes` are written by the compiler; the rest is
+/// `http::Rpc`'s.
+locus __StdApiHttpRest {
+    params {
+        bind: String;
+        principals: std::api::BearerSource;
+        roles: std::api::RoleSource = __StdApiNoRoles { };
+        cors: String = "";
+        routes: String = "";
+        // The name a request with no `Authorization` header goes by, "" for
+        // none (such a request is then refused `unauthenticated`, as over
+        // `http::Rpc`). A request that sends a credential is judged by
+        // `principals` as ever; the role source decides what the anonymous
+        // caller holds, so a row that requires a role still refuses it.
+        anonymous: String = "";
+        tid: Int = 0;
+        closed: Int = 0;
+        stops: Int = 0;
+        pending: __StdApiRestTable = __StdApiRestTable { };
+    }
+    bus {
+        subscribe __ApiHttpOutT as on_ask where key == self.tid;
+        publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
+    }
+    fn attach(exposure: Int) -> String {
+        return "http";
+    }
+    fn on_ask(o: __StdApiHttpOut) {
+        if o.kind == 4 {
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent { exposure: self.tid, rid: 0, slot: 0, kind: 7, stamp: 0, body: o.body };
+            }
+            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
+        }
+    }
+    // One record per connection, the first free one taken (`reply` and
+    // `close_connection` free it).
+    fn note(rec: __StdApiRestPending) {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiRestPending { };
+            if p.corr == -1 || p.corr == rec.corr {
+                self.pending.set(k, rec) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.pending.push(rec);
+    }
+    fn take(corr: Int) -> __StdApiRestPending {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiRestPending { };
+            if p.corr == corr {
+                self.pending.set(k, __StdApiRestPending { }) or discard;
+                return p;
+            }
+            k = k + 1;
+        }
+        return __StdApiRestPending { corr: corr };
+    }
+    fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
+        let req = std::http::parse_request(std::str::from_bytes(raw));
+        let nobody = std::api::Principal { mode: "bearer", name: "" };
+        if len(req.method) == 0 || len(req.path) == 0 {
+            self.note(__StdApiRestPending { corr: correlation });
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "not an HTTP request" };
+        }
+        let auth = std::http::header(req, "Authorization");
+        let mut token = "";
+        if std::str::starts_with(auth, "Bearer ") { token = std::str::trim(auth[7..len(auth)]); }
+        let path = std::str::replace(std::str::replace(__http_path_only(req.path), "%3A", ":"), "%3a", ":");
+        let qs = __http_query_only(req.path);
+        let origin = std::http::header(req, "Origin");
+        let mut allowed = "";
+        let mut denied = false;
+        if len(self.cors) > 0 && len(origin) > 0 {
+            if __api_cors_allows(self.cors, origin) { allowed = origin; } else { denied = true; }
+        }
+        let mut who = nobody;
+        if len(auth) == 0 && len(self.anonymous) > 0 {
+            who = std::api::Principal { mode: "bearer", name: self.anonymous, uid: 0 };
+        }
+        let head = req.method == "HEAD";
+        let mut method = req.method;
+        if head { method = "GET"; }
+        if method == "GET" && path == "/.description" {
+            self.note(__StdApiRestPending { corr: correlation, origin: allowed, head: head });
+            return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: who, reason: "" };
+        }
+        // the route: the first line of the method whose pattern matches,
+        // and every method a matching pattern takes
+        let mut found = "";
+        let mut allow = "";
+        let mut rest = self.routes;
+        let probe = std::http::RouteParams { qs: "" };
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let mut line = rest;
+            if nl >= 0 {
+                line = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+            } else {
+                rest = "";
+            }
+            if __http_match_pattern_into(__api_rest_cell(line, 1), path, probe) {
+                let m = __api_rest_cell(line, 0);
+                if m == method && len(found) == 0 { found = line; }
+                allow = __api_rest_allow(allow, m);
+            }
+        }
+        if path == "/.description" { allow = "GET, HEAD"; }
+        if req.method == "OPTIONS" && len(allow) > 0 {
+            self.note(__StdApiRestPending { corr: correlation, mode: 1, origin: allowed, denied: denied, allow: allow + ", OPTIONS" });
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "an OPTIONS request" };
+        }
+        if len(found) > 0 {
+            let status = std::str::parse_int(__api_rest_cell(found, 3)) or 200;
+            self.note(__StdApiRestPending { corr: correlation, status: status, origin: allowed, head: head });
+            let bound = __api_rest_bind(__api_rest_cell(found, 4), __api_rest_cell(found, 1), path, qs, req.body);
+            if !bound.ok {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: bound.reason };
+            }
+            return std::api::Request { kind: 0, member: __api_rest_cell(found, 2), bytes: std::bytes::from_string(bound.body), digest: std::http::header(req, "Hale-Surface-Digest"), correlation: correlation, credential: token, peer: who, reason: "" };
+        }
+        if len(allow) > 0 {
+            self.note(__StdApiRestPending { corr: correlation, mode: 3, origin: allowed, head: head, allow: allow + ", OPTIONS" });
+            return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "no route takes " + req.method + " " + path };
+        }
+        self.note(__StdApiRestPending { corr: correlation, mode: 2, origin: allowed, head: head });
+        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "no route serves " + path };
+    }
+    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
+        let p = self.take(correlation);
+        let mut status = 500;
+        let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
+        let mut class = "";
+        match outcome {
+            __StdApiOutcome::Result(b) -> { status = p.status; body = b; },
+            __StdApiOutcome::HandlerError(b, c) -> { status = __api_http_error_status(c); body = b; class = __api_error_class_word(c); },
+            __StdApiOutcome::Refusal(k, r, x) -> {
+                status = __api_http_refusal_status(k);
+                body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
+            },
+            __StdApiOutcome::ServerError -> { },
+        }
+        let mut headers = "";
+        if len(self.cors) > 0 {
+            headers = __api_cors_headers(p.origin, false);
+            if len(class) > 0 { headers = headers + "Access-Control-Expose-Headers: Hale-Error-Class\r\n"; }
+        }
+        if p.mode == 1 {
+            if p.denied {
+                status = 403;
+                body = "{\"refusal\":" + __api_refusal_object("unauthorized", "the origin is not one this exposure answers CORS for", "") + "}";
+            } else {
+                status = 204;
+                body = "";
+                headers = headers + "Allow: " + p.allow + "\r\n";
+                if len(p.origin) > 0 {
+                    headers = headers + "Access-Control-Allow-Methods: " + p.allow + "\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest\r\nAccess-Control-Max-Age: 600\r\n";
+                }
+            }
+        }
+        if p.mode == 2 {
+            status = 404;
+            body = "{\"refusal\":" + __api_refusal_object("not_found", "no route serves this path", "") + "}";
+        }
+        if p.mode == 3 {
+            status = 405;
+            body = "{\"refusal\":" + __api_refusal_object("method_not_allowed", "this path takes " + p.allow, "") + "}";
+            headers = headers + "Allow: " + p.allow + "\r\n";
+        }
+        if len(class) > 0 { headers = headers + "Hale-Error-Class: " + class + "\r\n"; }
+        if status == 204 { body = ""; }
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body, headers: headers, bodyless: p.head };
+    }
+    fn close_connection(correlation: Int) {
+        self.closed = self.closed + 1;
+        let _ = self.take(correlation);
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
+    }
     fn stop_listening() {
         self.stops = self.stops + 1;
         __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 1, status: 0, body: "" };

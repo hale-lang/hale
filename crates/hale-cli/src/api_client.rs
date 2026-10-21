@@ -446,7 +446,8 @@ pub(crate) fn outcome_of_http(r: HttpResponse) -> Result<Reply, String> {
     // its status may be a refusal's too; a refusal never carries it
     let class = r.error_class.clone();
     let (kind, shown) = match r.status {
-        200 => (Kind::Result, body.clone()),
+        // an `http::Rest` row answers its own success status (201, 204)
+        200..=299 => (Kind::Result, body.clone()),
         _ if class.is_some() => (Kind::HandlerError, body.clone()),
         422 => (Kind::HandlerError, body.clone()),
         _ => {

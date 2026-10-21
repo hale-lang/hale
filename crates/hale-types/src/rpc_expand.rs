@@ -81,6 +81,8 @@ pub(crate) struct Row {
     pub(crate) response: Option<TypeExpr>,
     pub(crate) error: Option<TypeExpr>,
     pub(crate) server_error: bool,
+    /// Where `http::Rest` serves the row (`at "METHOD /path"`).
+    pub(crate) route: Option<hale_syntax::ast::RpcRoute>,
 }
 
 /// A serve site, owned.
@@ -140,7 +142,7 @@ pub(crate) fn rows_of_surface(
             }
         }
     }
-    let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize| -> Option<Row> {
+    let row_of = |member: String, locus: &str, method: &str, requires: Vec<String>, at: usize, route: Option<hale_syntax::ast::RpcRoute>| -> Option<Row> {
         let l = loci.get(locus)?;
         let f = l.members.iter().find_map(|m| match m {
             LocusMember::Fn(f) if f.name.name == method => Some(f),
@@ -172,6 +174,7 @@ pub(crate) fn rows_of_surface(
             response,
             error: f.fallible.clone(),
             server_error,
+            route,
         })
     };
     let mut rows: Vec<Row> = Vec::new();
@@ -180,7 +183,7 @@ pub(crate) fn rows_of_surface(
             continue;
         }
         let requires = m.requires.iter().map(|(n, _)| n.clone()).collect();
-        match row_of(m.member, &m.locus, &m.method, requires, m.written_at) {
+        match row_of(m.member, &m.locus, &m.method, requires, m.written_at, m.route) {
             Some(row) => rows.push(row),
             None if m.origin == crate::surfaces::MemberOrigin::Block => return Vec::new(),
             None => {}
@@ -1182,6 +1185,8 @@ pub fn expand(
         grpc: bool,
         /// a gRPC exposure's descriptors for server reflection (see `grpc_files`).
         files: String,
+        /// an `http::Rest` exposure's route table (`rest_routes::table`).
+        routes: String,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let confer;
@@ -1398,6 +1403,15 @@ pub fn expand(
                         }
                     }
                     let files = if grpc { grpc_files(&rows, &schemas, &surface, digest) } else { String::new() };
+                    let routes = if site_literal_is(l, Some(transport), is_http_rest) {
+                        let entries: Vec<crate::rest_routes::Entry<'_>> = rows
+                            .iter()
+                            .map(|r| crate::rest_routes::Entry { member: &r.member, route: r.route.as_ref(), request: r.request.as_ref() })
+                            .collect();
+                        crate::rest_routes::table(&shapes, &entries)
+                    } else {
+                        String::new()
+                    };
                     plans.push(Plan {
                         site: Site {
                             program: pi,
@@ -1419,6 +1433,7 @@ pub fn expand(
                         revised,
                         grpc,
                         files,
+                        routes,
                     });
                 }
             }
@@ -1535,7 +1550,7 @@ pub fn expand(
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
             if let Some(t) = transport {
-                push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files));
+                push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files, &plan.routes));
                 if bound_listener.is_none() {
                     if let Some(addr) = unix_path.clone().or_else(|| http_bind.clone()) {
                         push("address", addr);
@@ -1599,7 +1614,7 @@ pub fn expand(
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
                         if let ParamInit::Value(e) = &mut p.init {
                             if matches!(e, Expr::Struct { path, .. } if is_unix_rpc(path) || is_http_rpc(path) || is_mcp_rpc(path) || is_grpc_rpc(path)) {
-                                *e = as_stdlib_unix(e, id, &site.surface, &plan.files);
+                                *e = as_stdlib_unix(e, id, &site.surface, &plan.files, &plan.routes);
                             }
                         }
                     }
@@ -1737,9 +1752,19 @@ pub(crate) fn is_unix_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
 
 /// Whether a transport literal's path is the stdlib's HTTP transport,
 /// spelled `http::Rpc` (the serve site's spelling) or `std::api::http::Rpc`.
+/// `http::Rest` is the same transport family (its listener, connections and
+/// sources), so every socket-transport question answers yes for it too;
+/// [`is_http_rest`] tells the two apart.
 pub(crate) fn is_http_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-    matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"])
+    matches!(segs.as_slice(), ["http", "Rpc"] | ["std", "api", "http", "Rpc"]) || is_http_rest(path)
+}
+
+/// Whether a transport literal's path is the stdlib's REST transport,
+/// spelled `http::Rest` or `std::api::http::Rest`.
+pub(crate) fn is_http_rest(path: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    matches!(segs.as_slice(), ["http", "Rest"] | ["std", "api", "http", "Rest"])
 }
 
 /// Whether a transport literal's path is the stdlib's MCP transport,
@@ -1762,7 +1787,7 @@ pub(crate) fn is_grpc_rpc(path: &hale_syntax::ast::QualifiedName) -> bool {
 /// HTTP transport's `codec: json` is the one codec v1 has, and is not a
 /// field of the locus (nor is the gRPC transport's). The gRPC transport
 /// also carries the name of the surface it serves, which a call's path names.
-fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str) -> Expr {
+fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str, routes: &str) -> Expr {
     let mut e = fresh(t);
     if let Expr::Struct { path, inits, span, .. } = &mut e {
         let kind = if is_unix_rpc(path) {
@@ -1778,14 +1803,20 @@ fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str) -> Expr {
         };
         if let Some(kind) = kind {
             let sp = *span;
-            path.segments = ["std", "api", kind, "Rpc"].iter().map(|n| Ident::new(*n, sp)).collect();
+            let rest = is_http_rest(path);
+            let word = if rest { "Rest" } else { "Rpc" };
+            path.segments = ["std", "api", kind, word].iter().map(|n| Ident::new(*n, sp)).collect();
             inits.retain(|i| {
                 i.name.name != "tid"
+                    && i.name.name != "routes"
                     && i.name.name != "surface"
                     && i.name.name != "files"
                     && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
             });
             inits.push(StructInit { name: Ident::new("tid", sp), value: lit_int(id, sp), span: sp });
+            if rest {
+                inits.push(StructInit { name: Ident::new("routes", sp), value: Expr::Literal(Literal::String(routes.to_string()), sp), span: sp });
+            }
             if kind == "grpc" {
                 inits.push(StructInit { name: Ident::new("surface", sp), value: Expr::Literal(Literal::String(surface.to_string()), sp), span: sp });
                 inits.push(StructInit { name: Ident::new("files", sp), value: Expr::Literal(Literal::String(files.to_string()), sp), span: sp });

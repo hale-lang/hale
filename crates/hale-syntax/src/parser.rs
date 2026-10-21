@@ -1585,13 +1585,34 @@ impl Parser {
             let method = segs.pop().expect("two segments");
             let written = segs.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
             let locus = Ident::new(written.clone(), segs[0].span.merge(segs[segs.len() - 1].span));
+            let route = if matches!(self.peek(), TokenKind::Ident(s) if s == "at") {
+                let at = self.bump();
+                let lit = self.peek_token().span;
+                let text = self.expect_string_literal("the route, `METHOD /path`")?;
+                let mut end = lit;
+                let mut status = None;
+                if matches!(self.peek(), TokenKind::Ident(s) if s == "status") {
+                    self.bump();
+                    self.expect(TokenKind::Colon, ":")?;
+                    let n = self.peek_token().clone();
+                    let TokenKind::IntLit(v) = n.kind else {
+                        return Err(Diag::parse(n.span, "`status:` takes an integer, the success status of the route"));
+                    };
+                    self.bump();
+                    end = n.span;
+                    status = Some(v as i64);
+                }
+                Some(RpcRoute { text, status, span: at.span.merge(end) })
+            } else {
+                None
+            };
             let requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
                 self.parse_requires_list()?
             } else {
                 default_requires.clone().unwrap_or_default()
             };
             let semi = self.expect(TokenKind::Semi, ";")?;
-            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span), signature: None });
+            rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span), signature: None, route });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(ApiDecl { name, rows, span: kw.span.merge(close.span), origin: None, source })
@@ -1632,6 +1653,7 @@ impl Parser {
             requires: requires.unwrap_or_else(|| default_requires.cloned().unwrap_or_default()),
             span: start.merge(semi.span),
             signature: Some(RpcSignature { request, response, wire }),
+            route: None,
         })
     }
 

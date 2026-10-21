@@ -196,7 +196,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
                 text(location, f);
             }
             for r in rows {
-                let RpcRow { locus, written: _, method, requires, span: _, signature } = r;
+                let RpcRow { locus, written: _, method, requires, span: _, signature, route: _ } = r;
                 // a signature row's locus is empty: it names no handler
                 if signature.is_none() {
                     name(locus, f);

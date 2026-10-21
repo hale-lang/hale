@@ -314,6 +314,17 @@ pub struct RpcSignature {
     pub wire: Option<String>,
 }
 
+/// The `at "METHOD /path" [status: N]` of an `rpc` row: the HTTP route
+/// `http::Rest` serves it at (spec/api.md § The REST transport).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcRoute {
+    /// `METHOD /path/{param}`, as written.
+    pub text: String,
+    /// The success status, when the row states one.
+    pub status: Option<i64>,
+    pub span: Span,
+}
+
 /// One `rpc` line of an `api` block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcRow {
@@ -332,6 +343,8 @@ pub struct RpcRow {
     /// A signature row's shape: `locus` is then empty and `method` is the
     /// row's name.
     pub signature: Option<RpcSignature>,
+    /// The route the row is served at over `http::Rest`.
+    pub route: Option<RpcRoute>,
 }
 
 /// GH #1417: `@rpc` or `@rpc(requires: [ROLE, …])` on a locus fn: the
