@@ -8535,7 +8535,7 @@ mod tests {
         assert!(leaks.is_empty(), "a returned vec built in a loop, consumed in a method: {leaks:?}");
         // A returned input is not fresh: the inserts go through the
         // caller's handle into storage it keeps.
-        let input = |bind: &str| {
+        let input = |bind: &str, v: &str| {
             format!(
                 "@form(vec) locus IntVec {{ capacity {{ heap items of Int; }} }}
                  locus App {{
@@ -8543,8 +8543,8 @@ mod tests {
                      fn join_n(out: IntVec, k: Int) -> IntVec {{
                          {bind}
                          let mut i = 0;
-                         while i < k {{ v.push(i); i = i + 1; }}
-                         return v;
+                         while i < k {{ {v}.push(i); i = i + 1; }}
+                         return {v};
                      }}
                      fn record(i: Int) {{ let got = self.join_n(self.sink, 20); }}
                      run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
@@ -8552,8 +8552,8 @@ mod tests {
                  fn main() {{ let a = App {{ }}; }}"
             )
         };
-        for bind in ["let v = out;"] {
-            let leaks = join_leaks(&input(bind));
+        for (bind, v) in [("let v = out;", "v"), ("", "out")] {
+            let leaks = join_leaks(&input(bind, v));
             assert!(!leaks.is_empty(), "a returned parameter's inserts stay flagged ({bind})");
         }
         // Not returned: the inserts stay the locus's.

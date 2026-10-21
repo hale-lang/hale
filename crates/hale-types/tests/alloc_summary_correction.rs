@@ -13,6 +13,19 @@
 //! summary (`Snapshot::demand_alloc_summary`): the program's own rows,
 //! judged over the stdlib's analysis copy and the renames.
 //!
+//! GH #1490 (step 3) moves the verdict counts of the five DNA targets
+//! below by one shape: `out = kept` (or `out.f = kept`) hands the value
+//! a loop built to the binding `out` names, and when that binding is
+//! returned the value is a returned accumulator, charged once to the
+//! frame that receives it. The same six sites in `dna/core` fns reached
+//! by `dna/api`, `dna/host`, `dna/operations` and
+//! `dna/organization_runtime` move `once-per-invocation ->
+//! per-iteration-reclaim` (+6 each: 190 -> 196, 39 -> 45, 12 -> 18,
+//! 12 -> 18); in `dna/host/verb` the same alias, reaching fns whose
+//! result lands in a `run` frame, moves 13 sites `once-per-invocation ->
+//! ACCUMULATES-UNBOUNDED` and 11 fewer `per-iteration-reclaim ->
+//! ACCUMULATES-UNBOUNDED`. No leak site is added or removed.
+//!
 //! The old answer is the same bundle summarized alone, with the stdlib
 //! bodies and the renames cleared, which is what the old summary saw.
 //! Per target the tests pin the leak sites the advisory adds (none is
