@@ -144,10 +144,15 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The file whose presence freezes the directory holding it against the walk.
+pub(crate) const FROZEN_MARKER: &str = ".hale-fmt-frozen";
+
 /// Recursively collect `.hl` files. Directories named `vendor` or
 /// starting with `.` are skipped (vendored pins are frozen — see
 /// pond's promotion banners — and formatting them would churn
-/// upstream diffs).
+/// upstream diffs). So is a directory below the walk's root that holds a
+/// `.hale-fmt-frozen` file (a recorded fixture keyed on its bytes); a
+/// file or directory named on the command line is still formatted.
 pub(crate) fn collect_hl_files(path: &Path, out: &mut Vec<PathBuf>) {
     if path.is_file() {
         if path.extension().is_some_and(|e| e == "hl") {
@@ -165,7 +170,7 @@ pub(crate) fn collect_hl_files(path: &Path, out: &mut Vec<PathBuf>) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if p.is_dir() {
-            if name == "vendor" || name.starts_with('.') {
+            if name == "vendor" || name.starts_with('.') || p.join(FROZEN_MARKER).is_file() {
                 continue;
             }
             collect_hl_files(&p, out);

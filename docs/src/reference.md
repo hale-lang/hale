@@ -50,7 +50,7 @@ diagnostic's meaning, go there.
 | `hale check` | parse + typecheck only |
 | `hale test` | run `*_test.hl` |
 | `hale fetch` | clone & pin git dependencies |
-| `hale fmt` | canonical formatter; breaks lines wider than 100 columns by their shape |
+| `hale fmt` | canonical formatter; breaks lines wider than 100 columns by their shape; the walk skips `vendor/`, dot-directories and a directory holding a `.hale-fmt-frozen` file |
 | `hale verify` | `check`, but any advisory fails too (the CI gate) |
 | `hale bench` | run `*_bench.hl` (ns/op, allocs/op) |
 | `hale doc` | API reference from `///` comments |

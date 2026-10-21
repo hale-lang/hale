@@ -122,3 +122,35 @@ fn a_wide_line_is_broken() {
     assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wrapped);
     assert_eq!(fmt_stdin(&["fmt", "--stdin"], wrapped), wrapped);
 }
+
+#[test]
+fn a_frozen_directory_is_skipped_by_the_walk_but_not_by_name() {
+    let dir = std::env::temp_dir().join(format!("hale_fmt_cli_frozen_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let frozen = dir.join("fixture");
+    std::fs::create_dir_all(&frozen).unwrap();
+    std::fs::write(
+        frozen.join(".hale-fmt-frozen"),
+        "recorded fixture: a tape is keyed on these bytes; re-record the tape to reformat\n",
+    )
+    .unwrap();
+    std::fs::write(frozen.join("a.hl"), MESSY).unwrap();
+    std::fs::write(dir.join("b.hl"), MESSY).unwrap();
+
+    // the walk formats b.hl and leaves the frozen directory's file alone
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).arg("fmt").arg(&dir).output().expect("walk");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("b.hl")).unwrap(), CANON);
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), MESSY, "frozen by the walk");
+
+    // a file named on the command line is formatted
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("fmt")
+        .arg(frozen.join("a.hl"))
+        .output()
+        .expect("named");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), CANON);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
