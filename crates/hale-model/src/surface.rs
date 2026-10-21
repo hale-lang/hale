@@ -302,7 +302,6 @@ mod tests {
             on_full: "drop_old",
             replay: false,
             requires: &operator,
-            route: None,
         }];
         assert_eq!(stream_digest_input(&fills).len(), 70);
         assert_eq!(digest_text(stream_digest(&fills)), "fnv1a64:26970854397ab154");
