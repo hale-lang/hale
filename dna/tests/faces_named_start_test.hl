@@ -45,7 +45,7 @@ fn main() {
     let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/faces/shop/.\" \"$1/\"\nsh\n" + repo + "\n" + source());
     std::test::assert_eq_int(copied.code, 0, "the fixture copied: " + copied.stderr);
     let main = std::io::fs::read_file(repo + "/main.hl") or "";
-    let fixed = std::str::replace(std::str::replace(std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""), "18801", to_string(admin_port)), "18802", to_string(product_port));
+    let fixed = std::str::replace(std::str::replace(std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""), "port: 1 }", "port: " + to_string(admin_port) + " }"), "port: 2 }", "port: " + to_string(product_port) + " }");
     std::test::assert(fixed != main, "the fixture's import and ports are rewritten");
     std::io::fs::write_file(repo + "/main.hl", fixed) or discard;
     let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m shop\nsh\n" + repo);

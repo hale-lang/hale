@@ -1,6 +1,7 @@
 // dna/tests/faces/shop — an organism that names two faces (named faces,
-// Phase 3 DNA item 6). `admin` consumes the `Orders` surface the shop
-// serves and acts as an operator; `product` consumes `Catalog` and acts as
+// Phase 3 DNA item 6). Its two ports are placeholders (1, 2) that a test
+// rewrites to ports of its own (`dna::free_port`). `admin` consumes the
+// `Orders` surface the shop serves and acts as an operator; `product` consumes `Catalog` and acts as
 // a shopper. Each is a seed of its own under faces/, started on its port.
 import "../../../core" as dna;
 
@@ -33,8 +34,8 @@ main locus Shop {
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "operator shopper" };
         office: api::Exposure = api::serve(OrdersSurface, unix::Rpc { path: "/tmp/hale-faces-fixture-orders.sock", roles: self.staff }, as: "office", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
         front: api::Exposure = api::serve(CatalogSurface, unix::Rpc { path: "/tmp/hale-faces-fixture-catalog.sock", roles: self.staff }, as: "front", receivers: { Catalog: self.catalog }, bound: 8, on_full: refuse);
-        admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "OrdersSurface", port: 18801 };
-        product: dna::Face = dna::Face { app: "faces/product", roles: "shopper", consumes: "CatalogSurface", port: 18802 };
+        admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "OrdersSurface", port: 1 };
+        product: dna::Face = dna::Face { app: "faces/product", roles: "shopper", consumes: "CatalogSurface", port: 2 };
     }
     placement { orders: cooperative(pool = work) where async_io; catalog: cooperative(pool = work) where async_io; }
     run() {
