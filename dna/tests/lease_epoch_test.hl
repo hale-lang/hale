@@ -49,7 +49,7 @@ fn migrate(dir: String, owner: String, keys: String) -> dna::RunResult {
 // owners' keys, bounded; its pid. It projects the org chart the gate
 // checks and carries out the ledger's adoption.
 fn start_spine(app: String, owner: String, keys: String) -> String {
-    let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"$4\" && nohup timeout --foreground 600 \"$3\" dna dev . --no-iris >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + owner + "\n" + toolchain() + "\n" + keys);
+    let started = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"$4\" || exit 1; nohup timeout --foreground 600 \"$3\" dna dev . --no-iris >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + app + "\n" + owner + "\n" + toolchain() + "\n" + keys);
     return dna::trim_nl(started.stdout);
 }
 

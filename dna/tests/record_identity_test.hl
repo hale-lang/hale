@@ -19,7 +19,7 @@ import "../core" as dna;
 
 // The project's hale.toml with its `[dna] record` line replaced by `line`.
 fn repin(app: String, line: String) -> Bool {
-    let r = dna::run_tool("sh\n-c\nsed -i \"s/^record = .*$/$2/\" \"$1/hale.toml\"\nsh\n" + app + "\n" + line);
+    let r = dna::run_tool("sh\n-c\nsed -i.bak \"s/^record = .*$/$2/\" \"$1/hale.toml\" && rm -f \"$1/hale.toml.bak\"\nsh\n" + app + "\n" + line);
     return r.code == 0;
 }
 
