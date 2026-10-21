@@ -598,7 +598,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
-            ("once-per-invocation -> per-iteration-reclaim", 190),
+            ("once-per-invocation -> per-iteration-reclaim", 196),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 27),
         ],
         &[
@@ -695,9 +695,9 @@ fn verdict_changes() {
             "__lib_dna__operations___task_policy__FixedTaskAuthority::authorize",
         ],
         &[
-            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 48),
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 61),
             ("once-per-invocation -> per-iteration-reclaim", 32),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1778),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1767),
         ],
         &[
             "__lib_dna__core___batch__PlannedOn::read StructLit(\"__lib_dna__core___journal__Event\") @1032417..1032533 InvokedUnboundedly",
@@ -1715,7 +1715,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 1),
-            ("once-per-invocation -> per-iteration-reclaim", 39),
+            ("once-per-invocation -> per-iteration-reclaim", 45),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1),
         ],
         &[
@@ -1745,7 +1745,7 @@ fn verdict_changes() {
             "__lib_dna__core___record__MemRecord::signer",
         ],
         &[
-            ("once-per-invocation -> per-iteration-reclaim", 12),
+            ("once-per-invocation -> per-iteration-reclaim", 18),
         ],
         &[
         ],
@@ -1772,7 +1772,7 @@ fn verdict_changes() {
             "__lib_dna__core___record__MemRecord::signer",
         ],
         &[
-            ("once-per-invocation -> per-iteration-reclaim", 12),
+            ("once-per-invocation -> per-iteration-reclaim", 18),
         ],
         &[
         ],

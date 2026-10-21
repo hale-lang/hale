@@ -3335,6 +3335,7 @@ pub fn summarize_within(
             skipped: Vec::new(),
             loops: Vec::new(),
             escaping: &escaping,
+            fresh_locals: BTreeSet::new(),
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
             starts: BTreeSet::new(),
@@ -5583,6 +5584,10 @@ struct Walker<'a> {
     skipped: Vec<Expr>,
     loops: Vec<LoopInfo>,
     escaping: &'a Escaping<'a>,
+    /// GH #1490 (step 3): the `let`s whose value is a struct literal built
+    /// in this body: storage made for the value, not a parameter's or a
+    /// field's.
+    fresh_locals: BTreeSet<SiteId>,
     enclosing_locus: Option<String>,
     known: &'a Known,
     /// The loci this body instantiates, by their declared names.
@@ -6532,6 +6537,11 @@ impl<'a> Walker<'a> {
                 };
                 let taint = self.taint_of(value);
                 let esc = self.escaping.of_let(*id);
+                if matches!(value, Expr::Struct { .. }) {
+                    if let Some(d) = self.escaping.ids.site_id(*id) {
+                        self.fresh_locals.insert(d);
+                    }
+                }
                 self.walk_let_value(value, *span, depth, esc);
                 let bound = self.bound_value(value);
                 self.bind(&name.name, bound);
@@ -7024,7 +7034,10 @@ impl<'a> Walker<'a> {
                             // collection the fn returns is the returned
                             // accumulator, charged to its receiver.
                             let esc = match receiver.as_ref() {
-                                Expr::Ident(v) if self.escaping.of_use(v.id) == Some(Escape::Returned) => {
+                                Expr::Ident(v)
+                                    if self.escaping.of_use(v.id) == Some(Escape::Returned)
+                                        && self.escaping.ids.declaration_of(v.id).is_some_and(|d| self.fresh_locals.contains(&d)) =>
+                                {
                                     Escape::Returned
                                 }
                                 _ => Escape::StoredToSelf,
@@ -8520,6 +8533,29 @@ mod tests {
                       run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
         let leaks = join_leaks(&src("return out;", method));
         assert!(leaks.is_empty(), "a returned vec built in a loop, consumed in a method: {leaks:?}");
+        // A returned input is not fresh: the inserts go through the
+        // caller's handle into storage it keeps.
+        let input = |bind: &str| {
+            format!(
+                "@form(vec) locus IntVec {{ capacity {{ heap items of Int; }} }}
+                 locus App {{
+                     params {{ n: Int = 1000; sink: IntVec = IntVec {{ }}; }}
+                     fn join_n(out: IntVec, k: Int) -> IntVec {{
+                         {bind}
+                         let mut i = 0;
+                         while i < k {{ v.push(i); i = i + 1; }}
+                         return v;
+                     }}
+                     fn record(i: Int) {{ let got = self.join_n(self.sink, 20); }}
+                     run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        for bind in ["let v = out;"] {
+            let leaks = join_leaks(&input(bind));
+            assert!(!leaks.is_empty(), "a returned parameter's inserts stay flagged ({bind})");
+        }
         // Not returned: the inserts stay the locus's.
         let kept = "fn record(i: Int) { self.join_n(20); }
                     run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
