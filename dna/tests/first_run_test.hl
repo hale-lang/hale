@@ -45,7 +45,7 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 // `argv` started in `dir` in the background, under the same environment
 // and `extra` (NAME=value lines) with stdout and stderr in `log`: its pid.
 fn started(dir: String, extra: String, argv: String, log: String) -> String {
-    let r = dna::run_tool("sh\n-c\ncd \"$1\" && log=$2 && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && nohup timeout --foreground 1500 env \"$@\" >\"$log\" 2>&1 </dev/null & echo $!\nsh\n" + dir + "\n" + log + "\n" + extra + argv);
+    let r = dna::run_tool("sh\n-c\ncd \"$1\" && log=$2 && shift 2 && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_SPINE ANTHROPIC_API_KEY OPENAI_API_KEY HALE_VAULT_ADDR COMPOSE_PROJECT_NAME && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null || exit 1; nohup timeout --foreground 1500 env \"$@\" >\"$log\" 2>&1 </dev/null & echo $!\nsh\n" + dir + "\n" + log + "\n" + extra + argv);
     return dna::trim_nl(r.stdout);
 }
 

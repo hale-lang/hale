@@ -249,34 +249,6 @@ fn sha256_file(path: String) -> String {
     return if sp < 0 { trim_nl(r.stdout) } else { r.stdout[0..sp] };
 }
 
-// What a fixture says when it waited for the organization of the project at
-// `root` and it never showed: the pid its file names, whether `kill -0`
-// reaches it, what `ps` knows of it and of the processes beside it, and the
-// tail of the organization's own log.
-fn organization_state(root: String) -> String {
-    let r = run_tool("sh\n-c\ncd \"$1/.hale/dna\" 2>/dev/null || { echo \"no .hale/dna\"; exit 0; }; ls -la; p=$(cat org.pid 2>/dev/null); echo \"org.pid=[$p] exit=[$(cat org.exit 2>/dev/null)]\"; if [ -n \"$p\" ]; then kill -0 \"$p\"; echo \"kill -0 -> $?\"; /bin/kill -0 \"$p\"; echo \"/bin/kill -0 -> $?\"; ps -p \"$p\" -o pid=,ppid=,pgid=,stat=,command= 2>&1; fi; ps -axo pid=,ppid=,pgid=,stat=,command= | grep -E \"$1|lotus|dna|timeout\" | grep -v grep | cut -c1-200 | head -30; echo \"org.log:\"; tail -c 1500 org.log 2>&1\nsh\n" + root);
-    return "\n" + r.stdout + r.stderr;
-}
-
-// `organization_up`'s wait, for the fixtures of `hale dna dev`: true once
-// the organization's pid file names a live process. A wait that has not
-// ended after 10 s and after 60 s leaves what `organization_state` sees in
-// `<root>/.hale/org-wait.txt`, for the message of the assertion that fails.
-fn organization_alive(root: String, tries: Int) -> Bool {
-    let mut n = 0;
-    while n < tries {
-        let pid = trim_nl(std::io::fs::read_file(root + "/.hale/dna/org.pid") or "");
-        if len(pid) > 0 && run_tool("kill\n-0\n" + pid).code == 0 { return true; }
-        if n == 20 || n == 120 {
-            let seen = std::io::fs::read_file(root + "/.hale/org-wait.txt") or "";
-            std::io::fs::write_file(root + "/.hale/org-wait.txt", seen + "after " + to_string(n) + " tries:" + organization_state(root)) or discard;
-        }
-        std::time::sleep(500ms);
-        n = n + 1;
-    }
-    return false;
-}
-
 // The regular files under `dir`, relative and one per line, sorted;
 // vendor, `.git` (a worktree's is a FILE, so it is named as well as
 // its tree) and `.hale` are never part of a change (GH #583 M3/M4).

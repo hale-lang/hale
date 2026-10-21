@@ -56,7 +56,7 @@ main locus App {
     }
     // A node in the background, bounded; its pid. Its output goes to `log`.
     fn start(name: String, intent: String, lead: String, ttl: Int, log: String) -> String {
-        let r = sh("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" nohup timeout --foreground 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 >\"$8\" 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl) + "\n" + log);
+        let r = sh("sh\n-c\ncd \"$1\" || exit 1; HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_SPINE=\"$2\" HALE_DNA_NODE=\"$3\" nohup timeout --foreground 120 \"$4\" \"$1\" \"$5\" \"$6\" \"$7\" 90 >\"$8\" 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + self.spine + "\n" + name + "\n" + self.bin + "\n" + intent + "\n" + lead + "\n" + to_string(ttl) + "\n" + log);
         return dna::trim_nl(r.stdout);
     }
     // Whether `log` comes to hold `text` within `secs`.
