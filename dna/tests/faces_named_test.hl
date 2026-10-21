@@ -45,11 +45,11 @@ fn make(scratch: String, name: String, admin: Int, product: Int) -> String {
     let fixed = std::str::replace(
         std::str::replace(
             std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""),
-            "port: 1 }",
-            "port: " + to_string(admin) + " }",
+            "port: 1,",
+            "port: " + to_string(admin) + ",",
         ),
-        "port: 2 }",
-        "port: " + to_string(product) + " }",
+        "port: 2,",
+        "port: " + to_string(product) + ",",
     );
     std::test::assert(fixed != main, "the fixture's import and ports are rewritten");
     std::io::fs::write_file(repo + "/main.hl", fixed) or discard;

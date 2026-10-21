@@ -68,11 +68,11 @@ fn main() {
     let fixed = std::str::replace(
         std::str::replace(
             std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""),
-            "port: 1 }",
-            "port: " + to_string(admin_port) + " }",
+            "port: 1,",
+            "port: " + to_string(admin_port) + ",",
         ),
-        "port: 2 }",
-        "port: " + to_string(product_port) + " }",
+        "port: 2,",
+        "port: " + to_string(product_port) + ",",
     );
     std::test::assert(fixed != main, "the fixture's import and ports are rewritten");
     std::io::fs::write_file(repo + "/main.hl", fixed) or discard;

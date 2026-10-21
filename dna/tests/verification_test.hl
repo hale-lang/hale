@@ -21,16 +21,47 @@ fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 const BASE: String = "effect mail;
 type Ping { n: Int = 0; }
 topic Pings { payload: Ping; subject: \"t.pings\"; }
-locus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }
+locus A {
+    params {
+        seen: Int = 0;
+    }
+    bus {
+        subscribe Pings as on_ping;
+    }
+    fn on_ping(p: Ping) {
+        self.seen = self.seen + 1;
+    }
+}
 main locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }
 fn main() { App { }; }
 ";
 const CANDIDATE: String = "effect mail;
 type Ping { n: Int = 0; }
 topic Pings { payload: Ping; subject: \"t.pings\"; }
-locus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }
+locus A {
+    params {
+        seen: Int = 0;
+    }
+    bus {
+        subscribe Pings as on_ping;
+    }
+    fn on_ping(p: Ping) {
+        self.seen = self.seen + 1;
+    }
+}
 locus Mailer { bus { subscribe Pings as on_ping; } @effects(is: { mail }) fn on_ping(p: Ping) { } }
-main locus App { params { a: A = A { }; m: Mailer = Mailer { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }
+main locus App {
+    params {
+        a: A = A { };
+        m: Mailer = Mailer { };
+    }
+    bus {
+        publish Pings;
+    }
+    run() {
+        Pings <- Ping { n: 1 };
+    }
+}
 fn main() { App { }; }
 ";
 
