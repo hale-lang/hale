@@ -45,7 +45,6 @@ use serde_json::Value;
 
 /// `hale dna head`: the head started from the toolchain, no checkout.
 pub(crate) mod habitat;
-mod face;
 mod head;
 mod pack;
 

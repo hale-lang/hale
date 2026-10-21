@@ -386,20 +386,8 @@ request to the head, which listens behind it on the loopback
 (`--head-port`, 8796). Open the face's URL, not the head's; the head has no
 page of its own, and `/app.js` or `/app/` on it is a 404.
 
-A genome names its faces in `hale.toml`, beside `needs`, and a genome that
-names none has the standard face:
-
-```toml
-[dna.faces.admin]
-application = "standard"      # the default: the toolchain's own
-consumes = ["HeadCommands"]   # the surfaces it calls
-acts_as = ["owner"]           # the roles it acts under
-url = "http://127.0.0.1:8792" # where it is reached; --port wins
-```
-
-`hale dna head <project>` starts the declared face on its url's port. A
-face filled by another application, and several faces under one
-navigation, are not built yet, and the verb says so by name.
+Naming several faces in a genome, and a face filled by another
+application, are not built yet.
 
 **The application's page.** A repository whose browser page is buildless —
 a `ui/` holding no `package.json` or other manifest — has no seed for it.

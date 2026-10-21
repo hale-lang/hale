@@ -6264,24 +6264,11 @@ is `outcome_unknown` when the verb reaches beyond this machine, never
 trusted-local and refuses an `oidc` project.
 
 **Faces (Phase 3).** A face is a role an application fills: the browser's
-door to the organism. A genome names its faces in its manifest, beside
-`needs`: one table `[dna.faces.<name>]` per face (`admin`, `product`; a
-lower-case name), with `application` (what fills the role; `standard`, the
-toolchain's own, when left out), `consumes` (the surfaces it calls, by
-name), `acts_as` (the roles it acts under) and `url` (`http://127.0.0.1:<port>`).
-A genome that names none has one unnamed face, satisfied by the **standard
-face** (`dna/face/standard`), which the toolchain ships and grafts as it
-grafts the habitat genome and the packs: its sources and the browser's
-assets are part of the head's files, built into the toolchain cache beside
-the head's seeds. Nothing is a part, an application row, an exposure or a
-knowledge row: the record keeps one application (the heart) and an
-exposure serves what a face consumes, so a face is the genome's own
-declaration of how its body is reached, read where `needs` and `fleet` are.
-A row with a key a face row does not take, a url that is not a loopback
-URL, a name that is not lower case is refused by name; `hale dna head
-<project>` starts the declared face on its url's port unless `--port`
-says otherwise, and refuses a face that names another application, or more
-than one face, until those land.
+door to the organism. This slice has one, the **standard face**
+(`dna/face/standard`), which the toolchain ships and grafts as it grafts
+the habitat genome and the packs: its sources and the browser's assets are
+part of the head's files, built into the toolchain cache beside the head's
+seeds. How a genome names several faces is not declared yet.
 
 The head serves surfaces only. The standard face stands in front of it,
 on the port the browser opens (8792; `--port`), the head on the loopback

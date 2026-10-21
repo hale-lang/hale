@@ -92,23 +92,6 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
             }
         }
     }
-    // the genome names its faces (`[dna.faces.<name>]`); one that names
-    // none has the standard face, and its row's url is the port the face
-    // listens on unless --port says otherwise
-    if let Some(p) = project.as_deref() {
-        let manifest = std::fs::read_to_string(Path::new(p).join("hale.toml")).ok();
-        match super::face::faces_of(manifest.as_deref()).and_then(|faces| super::face::startable(&faces).map(|f| f.port())) {
-            Ok(Some(port)) if !passed.iter().any(|a| a == "--port") => {
-                passed.push("--port".to_string());
-                passed.push(port.to_string());
-            }
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("hale dna head: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    }
     match launch(project.as_deref(), &passed) {
         // `launch` execs; it returns only when it could not
         Ok(never) => match never {},
