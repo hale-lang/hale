@@ -175,3 +175,17 @@ fn a_method_set_with_the_wrong_shape_is_named() {
     let msgs = with("fn put(id: Int, o: Item)", "fn put(id: Int)");
     assert!(has(&msgs, "`Items::put` of a `@repo(Item)` must be `fn put(id: Int, o: Item) -> Item fallible(E)`"), "{msgs:?}");
 }
+
+#[test]
+fn an_imported_repo_names_its_renamed_record() {
+    let lib = format!(
+        "{HEAD}{}",
+        GOOD.replace("fn main() { let i = Items { }; }\n", "")
+    );
+    let main = "import \"./store\" as r;\nfn main() { let i = r::Items { }; }\n";
+    let msgs: Vec<String> = check_files(&[("main.hl", main), ("store/store.hl", &lib)])
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(msgs.is_empty(), "{msgs:?}");
+}

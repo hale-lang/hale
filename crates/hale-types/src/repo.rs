@@ -49,12 +49,24 @@ const REQUIRED: [(&str, &str); 4] = [
     ("remove", "deletes"),
 ];
 
+/// A type as a state class spells it. An imported record is mangled
+/// (`__lib_store___store__Item`); its class is indexed by the name its
+/// library wrote (`reads(Item)`), since the class text is not rewritten
+/// by the import. Two imported records of one written name share a class.
+fn plain(t: &str) -> &str {
+    if t.starts_with("__") {
+        t.rsplit("__").next().filter(|s| !s.is_empty()).unwrap_or(t)
+    } else {
+        t
+    }
+}
+
 fn repo_types(programs: &[&Program]) -> BTreeSet<String> {
     programs
         .iter()
         .flat_map(|p| flat_decls(&p.items))
         .filter_map(|d| match d {
-            TopDecl::Locus(l) => l.repo.as_ref().map(|r| r.ty.name.clone()),
+            TopDecl::Locus(l) => l.repo.as_ref().map(|r| plain(&r.ty.name).to_string()),
             _ => None,
         })
         .collect()
@@ -152,9 +164,10 @@ fn check_repo(
     diags: &mut Vec<Diag>,
 ) {
     let Some(repo) = &l.repo else { return };
-    let t = &repo.ty.name;
+    let full = &repo.ty.name;
+    let t = plain(full);
     let lname = &l.name.name;
-    let Some(decl) = types.iter().find(|d| &d.name.name == t) else {
+    let Some(decl) = types.iter().find(|d| &d.name.name == full) else {
         diags.push(Diag::ty(
             repo.ty.span,
             format!("`@repo({t})` on `{lname}`: no record type `{t}` is declared"),
@@ -202,9 +215,9 @@ fn check_repo(
             continue;
         };
         let (params, ret): (Vec<String>, Option<&str>) = match name {
-            "get" => (vec![key_ty.clone()], Some(t)),
-            "create" => (vec![t.clone()], Some(t)),
-            "put" => (vec![key_ty.clone(), t.clone()], Some(t)),
+            "get" => (vec![key_ty.clone()], Some(full.as_str())),
+            "create" => (vec![full.clone()], Some(full.as_str())),
+            "put" => (vec![key_ty.clone(), full.clone()], Some(full.as_str())),
             _ => (vec![key_ty.clone()], None),
         };
         let shape = match name {
