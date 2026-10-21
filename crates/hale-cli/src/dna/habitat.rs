@@ -1076,6 +1076,11 @@ fn head_block(root: &Path, taken: &[u16]) -> Result<u16, String> {
     Err("no block of free loopback ports for a head".to_string())
 }
 
+/// The bases of the head blocks the habitat's grafts hold, from their rows.
+fn granted_bases(genome: &Path) -> Vec<u16> {
+    rows_of(genome).iter().filter(|r| r["kind"] == "habitat.grafted").filter_map(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).filter_map(|b| b["face"].as_str().and_then(loopback_port)).collect()
+}
+
 fn face_pid_file() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("face.pid")
 }
@@ -1105,7 +1110,7 @@ fn face_running() -> Option<String> {
 /// systemd user unit, or, with `foreground`, as a child of this process
 /// that outlives its exec. Its head's state is the habitat's `face-state`.
 fn start_face(me: &str, genome: &Path, foreground: bool) -> Result<String, String> {
-    let base = head_block(genome, &[])?;
+    let base = head_block(genome, &granted_bases(genome))?;
     if let Some(state) = face_running() {
         return Ok(format!("{:<8}up ({state}, http://127.0.0.1:{base}/)", "face"));
     }
@@ -1138,6 +1143,9 @@ fn start_face(me: &str, genome: &Path, foreground: bool) -> Result<String, Strin
         state = face_state_dir().display()
     );
     let path = unit_path().with_file_name(face_unit_name());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
     std::fs::write(&path, unit).map_err(|e| format!("write {}: {e}", path.display()))?;
     let systemctl = |args: &[&str]| Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}")).and_then(|o| if o.status.success() { Ok(()) } else { Err(format!("systemctl --user {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim())) });
     systemctl(&["daemon-reload"])?;
@@ -1704,7 +1712,7 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     } else {
         // the organism's address: its head block, taken beside every block
         // the habitat has handed out, and kept in its own `dna.head.url`
-        let mut taken: Vec<u16> = rows_of(&genome).iter().filter(|r| r["kind"] == "habitat.grafted").filter_map(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).filter_map(|b| b["face"].as_str().and_then(loopback_port)).collect();
+        let mut taken = granted_bases(&genome);
         taken.extend(head_url_at(&genome).as_deref().and_then(loopback_port));
         let base = head_block(&root, &taken)?;
         let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
