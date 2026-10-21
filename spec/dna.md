@@ -869,7 +869,9 @@ sync.
   required authority.
   **A practice's terms.** A practice's text may carry terms, words
   `<key>=<value>` (the value the rest of the word; `practice_term`,
-  `dna/core/practices.hl`): the parameters of what the practice runs. A
+  `dna/core/practices.hl`): the parameters of what the practice runs.
+  Only a document of kind `practice` runs anything: an idea or a mandate
+  whose text shows terms (an example, say) declares nothing. A
   practice whose terms name `every=` (an interval, `500ms`, `30s`, `15m`,
   `1h`, `1d`) and `step=<definition>` declares, ratified, the schedule
   whose id is its name, of that definition, every that interval,
@@ -1689,8 +1691,9 @@ practice's name, of `source-check`, convened by its position: a position
 nobody holds is `schedule.refused` with the hole, and the same terms
 again write nothing (**Schedules**). Each occurrence's inputs are
 `{practice, name}`, and its `check` step (`dna/core/source_check.hl`)
-reads its parameters from the practice's receipt. A practice that is not
-in force (never ratified, or retired) checks nothing. One whose terms do
+reads its parameters from the practice's receipt; a document that is not
+a practice is refused (result `refused`). A practice that is not in
+force (never ratified, or retired) checks nothing. One whose terms do
 not stand (no position, a kind outside the four, a source of the wrong
 shape) fails its occurrence saying why, its result `refused`.
 
@@ -1745,8 +1748,11 @@ The third in a row (`SOURCE_UNREACHABLE_AFTER`) also lands one
 `reading.recorded` `sources/<watch>.unreachable/<task>` (payload `{…,
 why, failures}`) and no concern; the failures before and after it land
 nothing, and an occurrence that reads the source again ends the run. A
-step performed again finds the reading its task landed and asks its
-concern again under the same request, which is one concern. The step
+step performed again (a restart before its outcome) that finds a reading
+its task landed answers from that reading, without reading the source
+again: a move's outcome names the snapshot the reading moved to, and its
+concern, asked again under the same request, names the reading's
+receipt, so a source that moved on since is the next occurrence's move. The step
 keeps no rows of its own: what each occurrence saw is its outcome, and
 the snapshots and diffs are receipts.
 
