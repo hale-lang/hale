@@ -1723,7 +1723,7 @@ not split and is built as any set is.
 
 ### S15. Build a long text in one buffer, never with `s = s + chunk` in a loop
 
-This rule applies on every path, hot or not. `s + chunk` makes a new
+This rule applies on every path, hot or not. `s += chunk` is `s = s + chunk`, the same site. `s + chunk` makes a new
 String as long as both and copies `s` into it. Inside a loop the old `s`
 is not freed: it lives in the method's scratch until the method returns,
 so every prefix the loop made is still held at the end. Building `n`

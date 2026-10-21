@@ -329,7 +329,8 @@ fighting the language instead of using it.
 5. Iterate. Before you finish, run `hale fmt <file-or-dir>` —
    canonical form is tool-defined (zero config), so your diff
    touches only the lines you actually changed. Never
-   hand-align columns; fmt collapses them.
+   hand-align columns; fmt collapses them, and breaks a line
+   wider than 100 columns by its shape.
 
 ## Hot-path memory patterns
 
