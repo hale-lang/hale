@@ -2066,7 +2066,8 @@ assume the others in a build:
   interpolation (`f"{out}{x}"`) lowers to the same chain, and an insert
   (`push`, `add`, `insert`) into a local growing-form collection the fn
   returns is a returned value like the concatenation: each takes the
-  escape of the binding it extends (returned, or stored to a field of
+  escape of the binding it extends, which includes a list handed on by
+  `out = kept` (returned, or stored to a field of
   `self` and flagged as before). Before, an operand counted only as a
   literal or a name declared `String`, and a declared `String` never
   matched (the type is a primitive), so a chain with no literal in it was

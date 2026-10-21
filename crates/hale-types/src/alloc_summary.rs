@@ -7783,6 +7783,14 @@ fn collect_escaping_decls(
                 aliases.push((at, d));
             }
         }
+        // GH #1490 (step 3): `out = kept` (or `out.f = kept`) hands the
+        // value to the binding `out` names: when that one is returned,
+        // so is what `kept` holds.
+        Flow::AssignAlias { assign_id, from } => {
+            if let (Some(at), Some(d)) = (ids.declaration_of(assign_id), ids.declaration_of(from.id)) {
+                aliases.push((at, d));
+            }
+        }
     });
     // Close over the aliases, one direction: when `x` is returned or
     // stored, the declaration it aliases carries the same obligation,
@@ -7833,6 +7841,7 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
 enum Flow<'e> {
     Escapes(&'e hale_syntax::ast::Ident, Escape),
     Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+    AssignAlias { assign_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
 }
 
 type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
@@ -7854,6 +7863,9 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
         Stmt::Assign { target, value, .. } if target.head.name == "self" => {
             note_escape(value, Escape::StoredToSelf, out)
+        }
+        Stmt::Assign { value: Expr::Ident(from), id, .. } => {
+            out(Flow::AssignAlias { assign_id: *id, from })
         }
         Stmt::If(if_stmt) => collect_escaping_in_if(if_stmt, out),
         Stmt::Match(m) => {
@@ -8513,6 +8525,62 @@ mod tests {
                     run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
         let leaks = join_leaks(&src("self.sink.push(0); return self.sink;", kept));
         assert!(!leaks.is_empty(), "inserts into a field stay flagged");
+    }
+
+    /// Shapes taken from decorated fns of a downstream-handoff DNA tree,
+    /// identifiers renamed: a rebuilt-list accumulator handed to the
+    /// returned binding (`out = kept`), an inferred-String local grown
+    /// by a call result, and the same handed on to a field of `self`.
+    fn dna_shaped(body: &str) -> String {
+        format!(
+            "fn tag(s: String) -> String {{ return s; }}
+             locus App {{
+                 params {{ n: Int = 1000; sink: Int = 0; live: String = \"\"; }}
+                 fn join_n(k: Int, text: String) -> String {{
+                     {body}
+                 }}
+                 fn record(i: Int) {{ self.sink = self.sink + len(self.join_n(20, \"a\")); }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_accumulator_handed_to_the_returned_binding_is_returned() {
+        let handed = "let mut out = \"\";
+             let mut r = 0;
+             while r < k {
+                 let mut kept = \"\";
+                 let mut i = 0;
+                 while i < k { kept = kept + tag(text) + \"\\n\"; i = i + 1; }
+                 out = kept;
+                 r = r + 1;
+             }
+             return out;";
+        let leaks = join_leaks(&dna_shaped(handed));
+        assert!(leaks.is_empty(), "kept handed to the returned `out`: {leaks:?}");
+        // The same list handed to a field of `self` stays reported.
+        let stored = "let mut kept = \"\";
+             let mut i = 0;
+             while i < k { kept = kept + tag(text) + \"\\n\"; i = i + 1; }
+             self.live = kept;
+             return kept;";
+        let leaks = join_leaks(&dna_shaped(stored));
+        assert!(!leaks.is_empty(), "kept stored to a field stays flagged");
+    }
+
+    #[test]
+    fn an_inferred_string_grown_by_call_results_is_an_accumulator() {
+        // No literal and no declared `String` in the chain: the local's
+        // type comes from the call that initializes it.
+        let body = "let mut out = tag(text);
+             let mut i = 0;
+             while i < k { out = out + tag(text) + tag(out); i = i + 1; }
+             return out;";
+        let src = dna_shaped(body);
+        assert!(join_concats(&src) >= 1, "call-result chain recorded as a concatenation");
+        assert!(join_leaks(&src).is_empty());
     }
 
     #[test]
