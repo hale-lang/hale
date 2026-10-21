@@ -36,8 +36,8 @@ params = { founder = "" }
 name = "standard"
 version = "1"
 path = "packs/standard.pack"
-summary = "the standard practices every organism adopts at birth, each proposed as law: first, logs are structured"
-params = {}
+summary = "the standard practices every organism adopts at birth, each proposed as law: first, logs are structured; and a template per watched upstream"
+params = { integration = "", position = "", source = "", kind = "", every = "" }
 
 [[pack]]
 name = "habitat"

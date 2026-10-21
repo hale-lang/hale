@@ -614,9 +614,15 @@ one Review, named for the pack, like any batch. A pack may open
 positions, fill them and propose the practices its people work by
 (`practice <name> | <text>` is a batch step too, and `law <name> |
 <text>` proposes a practice as law, for the Board to ratify as law or as
-advice). The toolchain's `standard` pack holds the standard practices,
-each proposed as law: its first clause is that logs are structured,
-every line a running part logs a record. A line marked `? ` is
+advice; `practice <name> for <position> | <text>` binds it to a
+position, and `idea <name> [for <position>] | <text>` proposes
+knowledge). A practice or idea already in force with the same text is
+kept rather than proposed again, so adopting a pack a second time
+proposes only what it adds. The toolchain's `standard` pack holds the
+standard practices, each proposed as law: its first clause is that logs
+are structured, every line a running part logs a record. It also holds a
+template, applied once per upstream your code depends on, that watches
+it ([Upstream watches](./senses.md#upstream-watches)). A line marked `? ` is
 left out when a blank it uses is not given, so `--set dev=ada` fills the
 dev's seat and leaving out `reviewer` leaves that seat open. Another
 nursery is named with `--from`: a directory, or a git URL with `#<rev>`
