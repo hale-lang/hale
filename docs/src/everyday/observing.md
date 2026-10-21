@@ -106,7 +106,9 @@ The probes do not serve `/metrics`. Detail:
 ```hale
 main locus App {
     params {
-        events: std::observe::Otlp = std::observe::Otlp { endpoint: "http://otel-collector:4318/v1/logs" };
+        events: std::observe::Otlp = std::observe::Otlp {
+            endpoint: "http://otel-collector:4318/v1/logs",
+        };
     }
     placement { events: pinned; }
 }

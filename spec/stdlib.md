@@ -879,9 +879,21 @@ its own, the listener stopped by name from the main locus:
 ```hale
 main locus App {
     params {
-        zero: std::io::tcp::Connections = std::io::tcp::Connections { listener: "web", shard: 0, handler: std::http::Responder { handler: Api { } } };
-        one: std::io::tcp::Connections = std::io::tcp::Connections { listener: "web", shard: 1, handler: std::http::Responder { handler: Api { } } };
-        acceptor: std::io::tcp::Acceptor = std::io::tcp::Acceptor { port: 8080, name: "web", shards: 2 };
+        zero: std::io::tcp::Connections = std::io::tcp::Connections {
+            listener: "web",
+            shard: 0,
+            handler: std::http::Responder { handler: Api { } },
+        };
+        one: std::io::tcp::Connections = std::io::tcp::Connections {
+            listener: "web",
+            shard: 1,
+            handler: std::http::Responder { handler: Api { } },
+        };
+        acceptor: std::io::tcp::Acceptor = std::io::tcp::Acceptor {
+            port: 8080,
+            name: "web",
+            shards: 2,
+        };
     }
     placement {
         zero: cooperative(pool = zero) where async_io;

@@ -159,7 +159,11 @@ import "vendor/dna" as dna;
 import "vendor/dna/legs" as legs;
 
 fn fake() -> dna::FakeModel {
-    return dna::FakeModel { name: "fake", model: "fake-1", answer: "assessment: the migration is additive and safe to ship" };
+    return dna::FakeModel {
+        name: "fake",
+        model: "fake-1",
+        answer: "assessment: the migration is additive and safe to ship",
+    };
 }
 
 fn agent_models() -> dna::ModelRouter {

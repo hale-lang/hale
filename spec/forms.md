@@ -738,7 +738,7 @@ synthesized method (override is deferred to v2).`
 ```hale
 // WRONG — `get` returns fallible(IndexError); the bare let
 // binding drops the error.
-let v = vec.get(i);  // compile error: `vec.get` can fail (IndexError) and this call says nothing about it
+let v = vec.get(i); // compile error: `vec.get` can fail (IndexError) and this call says nothing about it
 ```
 
 ```hale
