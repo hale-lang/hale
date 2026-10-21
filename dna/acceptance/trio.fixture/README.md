@@ -235,3 +235,30 @@ the only change to it. The review (`9f645a42de8b…`, was
 context was reproduced by a build that leaves `stdio` out of the
 rendering, which hit the old entry, and the two contexts differ in that
 one line. No fresh model call was made; the answer is unchanged.
+
+#1715 made `hale fmt` wrap at 100 columns, which changed the generated
+organization's text and, through a frozen seed, one file's ending. In the
+generated organization's `main.hl` five places wrap (the grant's
+`dna::Grant { … }`, `HaleVerification { … }`, the nerves consumer's
+`ConsumerSpec { … }`, the `eprintln(…)` after a failed connection and the
+`run()` loop's body), and in its `law.hl` the `positions` group and the
+`apply_only_through_the_substrate` clause. The trio's own sources are
+frozen (`.hale-fmt-frozen`: a tape is keyed on their bytes), so the
+editor's `fmt` leaves the edited `main.hl` as the recording wrote it,
+without the final newline the old `fmt` added. The organization-growth
+edit (`ac1f62d44200…`, was `de69ea6f2bcd…`) is re-keyed, and its recorded
+output carries the wrapped template and the recorded fulfilment Leader
+unchanged, and nothing else. The growth assessment (`b248cbadc924…`, was
+`2897c2dd9fe1…`) is re-keyed for the changed context alone, as are the two
+classifications of asks (`2e9fa207a709…`, was `3ae207cde943…`;
+`c788dabe931b…`, was `78b459018b60…`), which carry `law.hl`; the editor's
+cross-service edit (`0878167cb626…`, was `fe9d9e6e68f8…`), whose context
+is the edited `main.hl` without its final newline; and the review
+(`d1852fec3cfb…`, was `2f14b89f8dd0…`), whose source diff gains the
+`\ No newline at end of file` hunk and the candidate blob's new hash. Each
+old context digest was reproduced from the new context with the wraps put
+back (the edit's from its recorded output, which the old `fmt` closed with
+a newline; the review's with the hunk taken out and `index
+5980e16..efd80e8` put back), and each new key was the one the miss named.
+`rows.jsonl` did not move. No fresh model call was made; every answer,
+token and cost field is unchanged.
