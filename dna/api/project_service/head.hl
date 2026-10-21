@@ -20,10 +20,31 @@ import "../../core" as dna;
 import "../../operations" as ops;
 
 const HEAD_PREFIX: String = "/api/hale/v1/head";
+// The head's surface as the standard face's client calls it: `POST
+// <base>/call/Commands::index` under `<base>` = `/api/hale/v1/head/surface`,
+// the bearer being the visitor's own Cookie header, which the face received
+// and presents on the visitor's behalf.
+const HEAD_INDEX_CALL: String = "/api/hale/v1/head/surface/call/Commands::index";
 const APPLICATIONS_PREFIX: String = "/api/hale/v1/applications";
 const HEAD_PROFILE: String = "dna.head.v1";
 // A log page is at most this many bytes.
 const LOG_PAGE_BYTES: Int = 65536;
+// `headers` (CRLF lines) but for the lines named in `drop` (` name name `,
+// lower case, each side spaced), each remaining line kept CRLF-ended.
+fn headers_without(headers: String, drop: String) -> String {
+    let mut out = "";
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let cut = std::str::index_of(rest, "\r\n");
+        let line = if cut < 0 { rest } else { rest[0..cut] };
+        rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
+        let colon = std::str::index_of(line, ":");
+        let name = if colon < 0 { "" } else { std::str::lower(line[0..colon]) };
+        if len(line) > 0 && !std::str::contains(drop, " " + name + " ") { out = out + line + "\r\n"; }
+    }
+    return out;
+}
+
 // The API child's readiness budget (§2.1), in 100 ms steps.
 const API_READY_STEPS: Int = 150;
 
@@ -864,7 +885,35 @@ locus Head {
         return proxied_response(up);
     }
 
+    // The face's read of the record's index (`Commands::index`) for a visitor:
+    // the call reaches the API child's commands port under the visitor's own
+    // credential, a session's ID token under OIDC and the child's launch token
+    // in a trusted-local session, exactly as a proxied command does.
+    fn index_call(req: std::http::Request) -> std::http::Response {
+        let ctx = context_of(self.cfg);
+        let child = child_view(self.cfg, "api");
+        if len(ctx.active_id) == 0 || !child.alive { return self.command_error("head_detached"); }
+        let commands = commands_port_of(self.cfg);
+        if commands <= 0 { return self.error(503, "commands_unavailable", "the API child has not reported a commands port", true); }
+        let bearer = if self.cfg.principal_mode == "oidc" { self.auth.session_token(req) } else { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") };
+        if len(bearer) == 0 { return self.error(401, "unauthenticated", "sign in at /auth/login", false); }
+        let digest = std::http::header(req, "Hale-Surface-Digest");
+        let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer + "\r\n" + (if len(digest) > 0 { "Hale-Surface-Digest: " + digest + "\r\n" } else { "" }) + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+        let up = api::exchange(commands, "POST", "/call/Commands::index", headers, req.body, api::COMMAND_RELAY_TIMEOUT_NS);
+        if up.ok { self.api_ready_pid = child.pid; }
+        return proxied_response(up);
+    }
+
     fn handle(req: std::http::Request) -> std::http::Response {
+        // the face's client presents the visitor's cookies as its bearer: they
+        // become the Cookie header and the request meets the head's own gates
+        // as the visitor's, under the host the visitor used
+        if req.method == "POST" && req.path == HEAD_INDEX_CALL {
+            let mut r = req;
+            r.headers = headers_without(req.headers, " authorization host cookie ") + "Cookie: " + dna::bearer_token(std::http::header(req, "Authorization")) + "\r\nHost: 127.0.0.1:" + to_string(public_port_of(self.cfg)) + "\r\n";
+            r.path = HEAD_PREFIX + "/index-call";
+            return self.handle(r);
+        }
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
@@ -978,6 +1027,7 @@ locus Head {
             return self.lookup(raw_query);
         }
         if path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/") { return self.proxy(req); }
+        if path == HEAD_PREFIX + "/index-call" && req.method == "POST" { return self.index_call(req); }
         return self.error(404, "not_found", "no such head route", false);
     }
 }

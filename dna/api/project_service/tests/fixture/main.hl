@@ -299,7 +299,7 @@ locus HeadFixture {
         let face_bin = std::env::var("HALE_FACE_BIN");
         std::test::assert(self.face_port > 0, "a face needs a port: set face_port before the head starts");
         std::test::assert(len(face_bin) > 0 && std::io::fs::file_exists(face_bin), "build dna/face/standard and set absolute HALE_FACE_BIN");
-        let argv = "sh\n-c\nexec \"$1\" \"$2\" \"$3\" \"$4\" \"$6\" >>\"$5/face.log\" 2>&1\nsh\n" + face_bin + "\n" + to_string(self.face_port) + "\n" + self.webroot + "\n" + to_string(self.port) + "\n" + self.root + "\n" + self.state;
+        let argv = "sh\n-c\nexec \"$1\" \"$2\" \"$3\" \"$4\" >>\"$5/face.log\" 2>&1\nsh\n" + face_bin + "\n" + to_string(self.face_port) + "\n" + self.webroot + "\n" + to_string(self.port) + "\n" + self.root;
         let child = std::process::spawn(argv) or std::process::Child { };
         self.face = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;

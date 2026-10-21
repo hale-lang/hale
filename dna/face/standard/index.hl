@@ -13,11 +13,11 @@
 // response (spec/api.md, The contract digest), so the face declares the two
 // records and the one row it calls; a handler it does not serve is a stub.
 //
-// The client's bearer is the attached project's launch token
-// (`.hale/dna/head.token`), which the API child of a trusted-local session
-// knows its head by. The commands port is the one the API child reported in
-// the head's state directory the face is given (`children/api.ports`): the
-// head owns the child, and the port follows it across a restart.
+// The client's bearer is the visitor's own: the Cookie header of the request
+// the face is answering, which the face presents to the head's surface
+// (`/api/hale/v1/head/surface`), where the head reads it as the visitor's
+// session. The head relays the call to its API child under that session's
+// credential (an ID token under OIDC), so the index is the visitor's read.
 
 // What the face asks: at most `limit` entries of each section.
 type IndexAsk { limit: Int = 200; }
@@ -42,22 +42,18 @@ locus Commands {
     fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex { return RecordIndex { why: "this face serves no rows" }; }
 }
 
-// The bearer the API child's commands port knows the face by: the project's
-// launch token, read at each call.
-locus HeadBearer {
-    params { file: String = ""; }
-    fn bearer(role: String) -> String {
-        if len(self.file) == 0 { return ""; }
-        return std::str::trim(std::io::fs::read_file(self.file) or "");
-    }
+// The visitor's credential, as the head's surface reads it.
+locus VisitorBearer {
+    params { cookie: String = ""; }
+    fn bearer(role: String) -> String { return self.cookie; }
 }
 
 locus IndexReader {
     params {
-        port: Int = 0;
-        file: String = "";
-        bearer: HeadBearer = HeadBearer { file: self.file };
-        head: api::Client = api::client(HeadIndex, http::Client { base: "http://127.0.0.1:" + to_string(self.port), principals: self.bearer });
+        head_port: Int = 0;
+        cookie: String = "";
+        visitor: VisitorBearer = VisitorBearer { cookie: self.cookie };
+        head: api::Client = api::client(HeadIndex, http::Client { base: "http://127.0.0.1:" + to_string(self.head_port) + "/api/hale/v1/head/surface", principals: self.visitor });
     }
     fn read() -> RecordIndex {
         return match self.head.commands_index(IndexAsk { limit: 200 }) {
@@ -67,24 +63,6 @@ locus IndexReader {
             HeadIndexCommandsIndexOutcome::Lost(why) -> RecordIndex { why: "the head's surface did not answer: " + why },
         };
     }
-}
-
-// The port the head's API child reported for its commands, 0 when it has
-// not (yet).
-fn commands_port_in(state: String) -> Int {
-    if len(state) == 0 { return 0; }
-    let text = std::io::fs::read_file(state + "/children/api.ports") or "";
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::starts_with(line, "commands=") {
-            let n = std::str::parse_int(line[9..len(line)]) or 0;
-            return if n > 0 && n <= 65535 { n } else { 0 };
-        }
-    }
-    return 0;
 }
 
 // ---- the page ----------------------------------------------------------------

@@ -6318,13 +6318,17 @@ occurrences are the Ledger's rows, read beside the record); the
 `https://` URL in the text or source of a graph node or in the text of a
 ratified, unretired practice, with what holds it. The row writes nothing
 and adds no manifest table, record family or row kind: the sections are
-read from the rows that exist. The face reads it on the API child's
-commands port, which the child reported in the head's state directory
-(`children/api.ports`, the directory the face is given as its fourth
-argument; `dna/face/start.sh` passes the head's), presenting the attached
-project's launch token (`.hale/dna/head.token`) as the bearer. A head
-under OIDC has an API child that knows bearers as ID tokens, which the
-face does not hold; its index says the head refused the read.
+read from the rows that exist. The face's client is `http::Client` on the head's `/api/hale/v1/head/surface`
+(`POST …/call/Commands::index`), its bearer the requesting visitor's own
+`Cookie` header, which the face received and presents on the visitor's
+behalf. The head reads that bearer as the visitor's cookies, runs the
+request through its own gates (a session under OIDC, the loopback host
+check, the trusted-local session), and relays the call to the API child's
+commands port under the visitor's credential: the session's ID token under
+OIDC, the child's launch token in a trusted-local session. So the index is
+the visitor's read: a visitor who is not signed in, or whose session is
+forged, is refused as the head refuses every read (`401`), the face passing
+the refusal on.
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a

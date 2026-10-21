@@ -317,10 +317,7 @@ if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads 
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
 env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" HALE_DNA_PUBLIC_PORT="$port" "$head" "$head_port" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
-# the face reads the record's index through the head's surface: it is given the head's state directory,
-# where the API child's commands port and the launch token it is read under are kept
-head_state=${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}
-env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" "$head_state" &
+env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" &
 face_child=$!
 # either one ending ends the launch: a face with no head, or a head with no face, is no door
 # (polled with kill -0: the system Bash of macOS is 3.2, which has no `wait -n`)

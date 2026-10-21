@@ -394,9 +394,9 @@ holds as knowledge. It is a plain page, generated from the record each
 time you open it, with no script of its own. The face does not read the
 record itself: it asks the head's surface for one row, `Commands::index`
 (`hale api describe` lists it among `HeadCommands`), through an
-`api::client`. Under a sign-in (OIDC) the face does not hold the bearer
-the project's API child asks for, so its index says the head refused the
-read; a trusted-local session shows it.
+`api::client`, presenting your own session, so under a sign-in (OIDC) the
+index is yours to read once you are signed in, and refused as every read
+is before.
 
 Naming several faces in a genome, and a face filled by another
 application, are not built yet.
