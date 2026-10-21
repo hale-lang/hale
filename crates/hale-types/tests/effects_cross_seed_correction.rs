@@ -187,8 +187,8 @@ fn api() {
     // sees through the checker's types.
     pinned(
         "api",
-        394,
-        396,
+        395,
+        397,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -219,8 +219,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        537,
-        543,
+        539,
+        545,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -321,6 +321,7 @@ fn host() {
         host_main  does={syscall,env,alloc,stdio}
         include_names  does={syscall,block,env,alloc}
         input_digests  does={syscall,block,alloc}
+        kill_faces  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
@@ -370,8 +371,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        516,
-        535,
+        517,
+        536,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}

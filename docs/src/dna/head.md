@@ -418,8 +418,28 @@ record itself: it asks the head's surface for one row, `Commands::index`
 index is yours to read once you are signed in, and refused as every read
 is before.
 
-Naming several faces in a genome, and a face filled by another
-application, are not built yet.
+**Named faces.** An organism may name faces beyond the standard one
+(`admin`, `product`): each is a param of the organism's main locus, of
+type `dna::Face`, built by its literal:
+
+```hale,fragment
+admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };
+```
+
+The param's name is the face's. `app` is the seed of the application that
+fills it (static files with a generated client, or an application that
+serves a surface of its own), `roles` the roles it acts under and
+`consumes` the surfaces of the program it calls, each a space-separated
+list, and `port` the loopback port it is served on. `hale check` refuses a
+face that consumes a surface the program does not declare, acts under a
+role it does not declare, or shares a port. `hale dna dev` and `run` build
+each face's seed and start it as `<binary> <port>`, with `HALE_DNA_FACE`
+and `HALE_DNA_FACE_PORT`, holding none of the organism's credentials; a
+face that does not build is said and left, and the organism does not wait
+on it. An organism that names none gets the standard face and nothing
+else. The standard face lists the named faces in `/index`, each a link to
+its port on the host you reached the face by: a mount is navigation to the
+face, not a proxy of it.
 
 **The application's page.** A repository whose browser page is buildless —
 a `ui/` holding no `package.json` or other manifest — has no seed for it.

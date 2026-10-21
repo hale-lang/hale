@@ -1,0 +1,31 @@
+// A tiny static face: serves one page and its generated client's bytes on
+// the port it is started with, and nothing else. The client below is the
+// one `hale api client` writes for the surface the face consumes; it names
+// no other surface.
+const PAGE: String = "<!doctype html><title>product</title><script src=\"/client.js\"></script>";
+const CLIENT: String = "// consumes: CatalogSurface";
+
+locus Page {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/client.js" { return std::http::Response { status: 200, content_type: "text/javascript", body: CLIENT }; }
+        return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: PAGE };
+    }
+}
+
+main locus Face {
+    params {
+        srv: std::http::Server;
+    }
+    placement { srv: cooperative(pool = io); }
+    run() { while !self.draining { std::time::sleep(100ms); } }
+}
+
+fn serve_page(port: Int) {
+    Face { srv: std::http::Server { host: "127.0.0.1", port: port, handler: Page { } } };
+}
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "")) or 0;
+    if port < 1 { eprintln("face product: expected <port>"); std::process::exit(2); }
+    serve_page(port);
+}

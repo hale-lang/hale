@@ -11477,6 +11477,19 @@ dynamic	__lib_dna__core___workspace__LocalGit	on main
 dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/faces_named_page_test.hl
+
+== dna/tests/faces_named_start_test.hl
+shared	__lib_dna__core___memory_record__MemoryRecord@main1	__lib_dna__core___memory_record__MemoryRecord #c4e304a1
+shared	dynamic	sites in core #8e1938c5
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/faces_named_test.hl
+row	__lib_dna__operations___graph_ingest__GraphIngest@main1	__lib_dna__operations___graph_ingest__GraphIngest	main	default
+shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/tests/first_run_test.hl
 row	Clock@main1	Clock	main	default
 
@@ -16170,6 +16183,38 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/faces/shop
+root	Shop	the entry
+domain	pool:work	async_io
+domain	pool:__api_unix	async_io
+row	Shop@literal1	Shop	main	default
+row	Shop@literal1.catalog	Catalog	pool:work	entry	off owner
+row	Shop@literal1.orders	Orders	pool:work	entry	off owner
+row	Shop@literal1.staff	__StdApiStaticRoles	main	default
+shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
+shared	Shop@literal1.__rpc_u_2	__StdApiUnixListener #e8cfe0e1
+-- dynamic	sites in tests/faces/shop
+dynamic	__StdApiUnixConns	on pool:__api_unix
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no caller)|unknown (no instance)
+
+== dna/tests/faces/shop/faces/admin
+root	Face	the entry
+domain	pool:io
+row	Face@literal1	Face	main	default
+shared	Face@literal1.srv	__StdHttpServer #f0b4fa8d
+shared	dynamic	sites in the seed #08d84dd7
+
+== dna/tests/faces/shop/faces/product
+root	Face	the entry
+domain	pool:io
+row	Face@literal1	Face	main	default
+shared	Face@literal1.srv	__StdHttpServer #f0b4fa8d
+shared	dynamic	sites in the seed #08d84dd7
+
 == dna/tests/heart
 root	Heart	the entry
 domain	pinned:Heart@literal1.nerves
@@ -17745,6 +17790,15 @@ row	~.conns.handler	__StdHttpResponder	pool:io	inherited
 row	~.conns.handler.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdHttpServer #f0b4fa8d
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Page	pool:io	inherited
+row	~.handler	Page	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
 == shared __StdIoH2Listener #b0c4764c

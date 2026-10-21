@@ -296,6 +296,9 @@ locus GraphIngest {
         consumed: String = "";
         guards: String = "";
         unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
+        // the named faces the description declares: `<surface>\t<application node>`
+        // per surface a face consumes
+        faced: String = "";
         appseed: String = ""; // the application's root seed node, "" for a repository
         // the API roles a contract's surface requires (`<contract>\t<role>`
         // per line, once each), read from the description the toolchain
@@ -650,6 +653,7 @@ locus GraphIngest {
     // the positions that serve it, never an organization.
     fn surfaces_step() {
         if len(self.appseed) == 0 || len(self.description) == 0 { return; }
+        self.faces_step();
         // only what the application serves: `surfaces` lists every declared
         // api, `exposures` the ones a serve site exposes (one surface may be
         // exposed several times; it is one contract)
@@ -663,10 +667,17 @@ locus GraphIngest {
         let mut surfaces = std::json::array_first(std::json::find_field_raw(self.description, "surfaces"));
         while !surfaces.done {
             let name = std::json::find_string_field(surfaces.element, "name");
+            let faced = std::str::contains(self.faced, "\n" + name + "\t") || std::str::starts_with(self.faced, name + "\t");
+            if len(name) > 0 && !std::str::contains(served, "\n" + name + "\n") && faced {
+                // consumed by a face, served by none: the contract, its one `meets` edge carrying the consumers
+                let matched = self.stem_contract(std::str::lower(name));
+                let c = if len(matched) > 0 { matched } else { self.node("contract", "api:" + name, "", "hale check --api") };
+                self.serves(c, name, false);
+            }
             if len(name) > 0 && std::str::contains(served, "\n" + name + "\n") {
                 let matched = self.stem_contract(std::str::lower(name));
                 let c = if len(matched) > 0 { matched } else { self.node("contract", "api:" + name, "", "hale check --api") };
-                self.serves(c);
+                self.serves(c, name, true);
                 let mut members = std::json::array_first(std::json::find_field_raw(surfaces.element, "members"));
                 while !members.done {
                     self.tool(c, members.element, "hale check --api");
@@ -683,7 +694,7 @@ locus GraphIngest {
                 let topic = std::json::find_string_field(streams.element, "topic");
                 if len(topic) > 0 {
                     let c = self.node("contract", "stream:" + topic, "", "hale check --api");
-                    self.serves(c);
+                    self.serves(c, "", true);
                     self.requires(c, streams.element);
                 }
                 streams = std::json::array_next(streams);
@@ -691,18 +702,74 @@ locus GraphIngest {
             hubs = std::json::array_next(hubs);
         }
     }
-    // The application's seed serves contract `c`.
-    fn serves(c: String) {
+    // The application's seed serves contract `c` (when `serving`; else a
+    // face consumes it and the seed does not serve it), the surface `surface`
+    // of the description, and the faces that consume that surface consume it
+    // on the same edge: a contract has one `meets` edge, and the latest row
+    // says who meets there.
+    fn serves(c: String, surface: String, serving: Bool) {
         if len(c) == 0 { return; }
         let line = self.appseed + "\t" + c + "\n";
-        if std::str::contains("\n" + self.served, "\n" + line) { return; }
+        if serving && std::str::contains("\n" + self.served, "\n" + line) { return; }
         if !self.written("meets:" + c) {
             let e = GraphEdge { kind: "meets" };
             self.add(e, "contract", c);
-            self.add(e, "server", self.appseed);
+            if serving { self.add(e, "server", self.appseed); }
+            let mut rest = self.faced;
+            while len(surface) > 0 && len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let row = rest[0..nl];
+                rest = rest[(nl + 1)..len(rest)];
+                let tab = std::str::index_of(row, "\t");
+                if row[0..tab] == surface { self.add(e, "consumer", row[(tab + 1)..len(row)]); }
+            }
             self.edge(e);
         }
-        self.served = self.served + line;
+        if serving { self.served = self.served + line; }
+    }
+    // The named faces the description declares (`dna::Face` params of the
+    // application's main): each an `application` node, its app, port and
+    // roles on the row, and the surfaces it consumes, kept for the `meets`
+    // edges of those contracts. The face is a consumer of the surface, never
+    // a part: no position is proposed for it.
+    fn faces_step() {
+        let mut faces = std::json::array_first(std::json::find_field_raw(self.description, "faces"));
+        while !faces.done {
+            let name = std::json::find_string_field(faces.element, "name");
+            let app = std::json::find_string_field(faces.element, "app");
+            let port = std::json::find_int_field(faces.element, "port");
+            if len(name) > 0 && graph_text_ok(name) {
+                let id = graph_node_id("application", "face/" + name);
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("kind", "application");
+                b.string_field("name", "face/" + name);
+                b.string_field("text", "The `" + name + "` face, an application served on port " + to_string(port) + ".");
+                b.string_field("source", "hale check --api");
+                b.string_field("face", app);
+                b.int_field("port", port);
+                b.begin_array_field("roles");
+                let mut roles = std::json::array_first(std::json::find_field_raw(faces.element, "roles"));
+                while !roles.done {
+                    let e = std::str::trim(roles.element);
+                    if len(e) >= 3 && std::str::starts_with(e, "\"") { b.string_value(std::json::unescape_string(e[1..(len(e) - 1)])); }
+                    roles = std::json::array_next(roles);
+                }
+                b.end_array();
+                b.end_object();
+                if self.emit("graph.node", id, b.result()) {
+                    self.nodes = self.nodes + 1;
+                    self.kinds = self.kinds + "application\n";
+                }
+                let mut consumes = std::json::array_first(std::json::find_field_raw(faces.element, "consumes"));
+                while !consumes.done {
+                    let e = std::str::trim(consumes.element);
+                    if len(e) >= 3 && std::str::starts_with(e, "\"") { self.faced = self.faced + std::json::unescape_string(e[1..(len(e) - 1)]) + "\t" + id + "\n"; }
+                    consumes = std::json::array_next(consumes);
+                }
+            }
+            faces = std::json::array_next(faces);
+        }
     }
     // The roles `holder` (a member, or a stream) requires of its callers.
     fn requires(c: String, holder: String) {

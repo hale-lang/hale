@@ -1,0 +1,23 @@
+// dna/core/face.hl — a named face (Phase 3 DNA item 6, named faces).
+//
+// A face is a role an application fills: a door to the organism. An
+// organism names one by a param of its main locus, of this type, built by
+// the literal and recognised by the type, as `std::observe::Probes` is:
+//
+//   admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };
+//
+// The param's name is the face's. `app` is the seed of the application
+// (static files with a generated client, or an application that serves a
+// surface of its own), `roles` the roles it acts under and `consumes` the
+// surfaces of the program it calls (each a space-separated list of names, as
+// `std::api::StaticRoles.known` is), and `port` the loopback port `hale
+// dna dev` and `run` serve it on. The type carries no behaviour: the
+// compiler reads the literal into the description (`hale check --api`),
+// the record's graph holds the face as a seed that consumes those
+// contracts, and the standard face lists it in its navigation.
+type Face {
+    app: String = "";
+    roles: String = "";
+    consumes: String = "";
+    port: Int = 0;
+}
