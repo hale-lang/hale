@@ -258,6 +258,17 @@ pub struct Stream {
 }
 
 impl Row {
+    /// The route as the digest and the description write it: `METHOD
+    /// /path/:param STATUS`, or the text as written when it is malformed
+    /// (law 9 refuses it). `None` for a row with no route.
+    pub fn canonical_route(&self) -> Option<String> {
+        let r = self.route.as_ref()?;
+        Some(match crate::rest_routes::parse(r) {
+            Ok(p) => format!("{} {} {}", p.method, p.pattern(), p.status),
+            Err(_) => r.text.clone(),
+        })
+    }
+
     /// The member's digest (spec/api.md § The contract digest): its row's
     /// line alone, so adding a member leaves every other member's as it is.
     pub fn member_digest(&self) -> u64 {
@@ -272,6 +283,7 @@ impl Row {
             response: h.and_then(|h| h.response.as_ref()).map(|t| t.hash),
             error: h.and_then(|h| h.error.as_ref()).map(|t| t.hash),
             requires: &requires,
+            route: self.canonical_route().as_deref(),
         })
     }
 }
@@ -904,6 +916,8 @@ pub fn surface_rows(
     });
 
     // ---- the surfaces and their digests ----
+    let routes_of: BTreeMap<(&str, &str, usize), Option<String>> =
+        rows.iter().map(|r| ((r.surface.as_str(), r.member.as_str(), r.written_at), r.canonical_route())).collect();
     let mut surfaces: Vec<Surface> = surface_spans
         .iter()
         .map(|(name, span)| {
@@ -927,6 +941,7 @@ pub fn surface_rows(
                         response: h.and_then(|h| h.response.as_ref()).map(|t| t.hash),
                         error: h.and_then(|h| h.error.as_ref()).map(|t| t.hash),
                         requires: req,
+                        route: routes_of[&(r.surface.as_str(), r.member.as_str(), r.written_at)].as_deref(),
                     }
                 })
                 .collect();

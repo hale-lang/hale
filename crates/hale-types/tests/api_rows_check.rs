@@ -561,3 +561,27 @@ fn law_10_the_routes_of_a_surface_are_unambiguous() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert!(errs[0].contains("neither is the more specific"), "{errs:?}");
 }
+
+/// A route is part of the contract: two surfaces that differ only in a
+/// route have different digests, in the producer (`surface_rows`) and in the
+/// adapter a serve site is built from (`rpc_expand::selection`), and a
+/// surface with no route keeps the digest it had.
+#[test]
+fn a_route_moves_the_surface_digest() {
+    let digests = |api: &str| -> (u64, u64) {
+        let program = hale_syntax::parse_source(&format!("{BASE}\n{api}")).expect("parse");
+        let (_, adapter) = hale_types::rpc_expand::selection(&[&program], "Public", &[], "app");
+        let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+        let rows = snap.demand_surface_rows().ok().expect("rows");
+        (rows.surface("Public").expect("Public").digest, adapter)
+    };
+    let plain = digests("api Public { rpc Orders::cancel; }");
+    let a = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\"; }");
+    let moved = digests("api Public { rpc Orders::cancel at \"POST /orders/{order}/cancel\"; }");
+    let status = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\" status: 204; }");
+    assert_eq!(plain.0, plain.1);
+    assert_eq!(a.0, a.1, "the producer and the adapter agree");
+    assert_ne!(plain.0, a.0);
+    assert_ne!(a.0, moved.0);
+    assert_ne!(a.0, status.0);
+}

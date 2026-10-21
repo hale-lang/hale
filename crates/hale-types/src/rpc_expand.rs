@@ -220,23 +220,36 @@ pub(crate) fn member_digests(shapes: &Shapes<'_>, rows: &[Row]) -> Vec<String> {
                 response: r.response.as_ref().map(hash),
                 error: r.error.as_ref().map(hash),
                 requires: &r.requires,
+                route: canonical(r).as_deref(),
             }))
         })
         .collect()
 }
 
+/// A row's route as the digest writes it (`Row::canonical_route`).
+fn canonical(r: &Row) -> Option<String> {
+    let t = r.route.as_ref()?;
+    Some(match crate::rest_routes::parse(t) {
+        Ok(p) => format!("{} {} {}", p.method, p.pattern(), p.status),
+        Err(_) => t.text.clone(),
+    })
+}
+
 fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
     let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
     let reqs: Vec<&Vec<String>> = rows.iter().map(|r| &r.requires).collect();
+    let routes: Vec<Option<String>> = rows.iter().map(canonical).collect();
     let lines: Vec<hale_model::surface::DigestLine<'_>> = rows
         .iter()
         .zip(&reqs)
-        .map(|(r, req)| hale_model::surface::DigestLine {
+        .enumerate()
+        .map(|(i, (r, req))| hale_model::surface::DigestLine {
             member: &r.member,
             request: r.request.as_ref().map(hash),
             response: r.response.as_ref().map(hash),
             error: r.error.as_ref().map(hash),
             requires: req,
+            route: routes[i].as_deref(),
         })
         .collect();
     hale_model::surface::surface_digest(&lines)
@@ -2363,8 +2376,10 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, digests
         let response = ty(&r.response);
         let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
         let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
+        // a routed row states its route (`METHOD /path/:param STATUS`)
+        let route = canonical(r).map_or(String::new(), |c| format!(",\"route\":{}", jstr(&c)));
         docs.push(format!(
-            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]}}",
+            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]{route}}}",
             jstr(&r.member),
             jstr(digest),
             req.join(",")

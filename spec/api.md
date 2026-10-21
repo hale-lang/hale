@@ -149,9 +149,12 @@ locus Orders {
 status: 204 requires: [trader];`. The text is `METHOD /path`, the method one
 of `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the path segments literals or
 whole `{name}` parameters, each naming a scalar field of the request;
-`status:` is the success status, `200` when it is left out. A route is a
-rendering of the row and no part of its contract: it does not move the
-digest, `http::Rpc`, the Unix socket, `mcp::Rpc` and `grpc::Rpc` ignore it,
+`status:` is the success status, `200` when it is left out. A route is
+part of the row's contract: a routed row's digest line carries a sixth
+field, the route canonical (`DELETE /orders/:order 204`), so it moves the
+member's digest and the surface's, and the description states it (`route`
+on the member). A surface with no route keeps the digest it had.
+`http::Rpc`, the Unix socket, `mcp::Rpc` and `grpc::Rpc` ignore it,
 and a row without one is served by `http::Rest` where `http::Rpc` serves it,
 `POST /call/<member>`. An `@rpc` row carries none (a route is written in the
 block). The admission law judges it (laws 9 and 10 below).

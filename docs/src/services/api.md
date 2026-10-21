@@ -804,9 +804,10 @@ A row with no route is served at `POST /call/<member>`, as ever. The OpenAPI
 form (`hale api export --surface Gateway`) lists each routed row at its
 method and path, and `hale api call http://127.0.0.1:8080 'GET
 /v1/items/42'` calls one by it (flags are the query, `--json` the body of a
-`POST`, `PUT` or `PATCH`). A route is a rendering of the row, not part of
-its contract: it does not move the digest, and `http::Rpc` or the Unix
-socket serve the same surface by member.
+`POST`, `PUT` or `PATCH`). A route is part of the row's contract: it is in the member's and the
+surface's digest and in the description, so a client whose digest matches
+never meets a path that moved. A surface without routes keeps its digest;
+`http::Rpc` and the Unix socket serve a routed surface by member.
 
 ### Serving to an MCP host
 
