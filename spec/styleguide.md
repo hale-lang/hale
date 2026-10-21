@@ -803,6 +803,41 @@ fn main() {
   (`client(NAME)`), so a claim can keep it out of the loci that must not
   reach the network.
 
+### 2.12 Repository — `@repo(T)`, one class per method
+
+State that matters (an order, a ledger row) lives behind a repo: a locus
+marked `@repo(T)` that the compiler holds to the whole method set over
+the key the `db` tag names, with one state class on each method and, on
+every write, whether repeating it is safe. Hand-write the driver; keep
+validation in a wrapper that calls inward, not in the driver.
+
+```hale
+type Item { id: Int `db:"id,key"`; n: Int; }
+type ItemError = enum { @not_found Missing };
+
+@repo(Item)
+locus Items {
+    @effects(is: { reads(Item) })
+    fn get(id: Int) -> Item fallible(ItemError) { fail ItemError::Missing; }
+    @effects(is: { creates(Item) }) @idempotent
+    fn create(o: Item) -> Item fallible(ItemError) { return o; }
+    @effects(is: { writes(Item) }) @not_idempotent
+    fn put(id: Int, o: Item) -> Item fallible(ItemError) { return o; }
+    @effects(is: { deletes(Item) }) @idempotent
+    fn remove(id: Int) fallible(ItemError) { }
+}
+
+fn main() { let i = Items { }; }
+```
+
+- **Answer the idempotency question at every write.** There is no
+  default: a write without `@idempotent` or `@not_idempotent` is refused,
+  and a `reads` with either is. **[error]**
+- **An extra method needs a class.** `find_by_customer` is fine; a method
+  with no class is refused. **[error]**
+- **Atomicity is one repo call.** A `get` then a `put` is two operations.
+  (`crates/hale-types/tests/repo_check.rs` pins the refusals.)
+
 ### Naming conventions
 
 | Construct | Convention | Example |
@@ -847,7 +882,7 @@ Two gates now run in the normal suite:
   (`hale-types/tests/styleguide_snippets.rs`)
 - **Claims.** §7's assertions about what the language does *not* do
   are pinned as tests, and so are the refusals and measurements the
-  shapes and rules elsewhere rest on (2.9, 2.10, 2.11, C9, S15,
+  shapes and rules elsewhere rest on (2.9, 2.10, 2.11, 2.12, C9, S15,
   S16). Absence is the thing nobody re-tests, so when a gap closes
   the prose keeps saying it is open. If one of these changes, the
   test fails and names the entry to update.

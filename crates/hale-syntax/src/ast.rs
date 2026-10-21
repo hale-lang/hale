@@ -1135,6 +1135,12 @@ pub struct LocusDecl {
     /// ordinary configuration without buying a guarantee — the value
     /// is already in the parent's hands either way.
     pub sealed: bool,
+    /// GH #1530 (fourth pass, section 3): `@repo(T) locus L { … }` —
+    /// the locus is where `T`'s important state lives. The checker
+    /// (`hale-types::repo_check`) holds it to the method set and the
+    /// state classes; the effect family `reads(T)` … is declared by
+    /// `repo_expand`.
+    pub repo: Option<RepoAnnotation>,
     pub members: Vec<LocusMember>,
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
@@ -1198,6 +1204,13 @@ pub struct FfiAnnotation {
 pub struct FormArg {
     pub name: Ident,
     pub value: Expr,
+    pub span: Span,
+}
+
+/// `@repo(T)` on a locus: the type whose state it holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoAnnotation {
+    pub ty: Ident,
     pub span: Span,
 }
 

@@ -1066,6 +1066,8 @@ They attach to the declaration that follows.
 | `@effects(causes: {…})` | fn | effect classes this fn may cause via bus edges |
 | `@supervised` | locus | every locus in the subtree has a failure policy |
 | `@sealed` | locus | this locus's `params` are readable only from inside it |
+| `@repo(T)` | locus | the locus is where `T`'s state lives; held to the method set and the state classes (spec/api.md § Repositories) |
+| `@idempotent` / `@not_idempotent` | fn | a `@repo` method's marker: repeating the write is, or is not, safe |
 | `@secret` | fn param | **lint**: flags a value reaching a publish or log/file sink in the same body |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |

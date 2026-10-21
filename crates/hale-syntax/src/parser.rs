@@ -788,6 +788,8 @@ impl Parser {
         let mut supervised_locus = false;
         // GH #436: `@sealed locus` — params readable only from inside.
         let mut sealed_locus = false;
+        // GH #1530: `@repo(T) locus …` — the locus is the place T's state lives.
+        let mut repo_locus: Option<RepoAnnotation> = None;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -814,6 +816,8 @@ impl Parser {
             // GH #436: `@sealed locus` — state confinement.
             let is_sealed = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "sealed");
+            let is_repo = matches!(&kind_tok,
+                TokenKind::Ident(s) if s == "repo");
             // GH #723: the fn-level CONTRACT decorators — `@unbounded`,
             // `@hot`, `@budget(...)`, and the effect assertions
             // (`@no_syscall` … and the general `@effects(...)`). They
@@ -895,6 +899,23 @@ impl Parser {
                 leading_span = Some(match leading_span {
                     Some(s) => s.merge(at.span),
                     None => at.span,
+                });
+                continue;
+            }
+            if is_repo {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump(); // `repo`
+                if repo_locus.is_some() {
+                    return Err(Diag::parse(at.span, "a locus takes one `@repo(T)`"));
+                }
+                self.expect(TokenKind::LParen, "(")?;
+                let ty = self.expect_ident("the type the repo holds")?;
+                let close = self.expect(TokenKind::RParen, ")")?;
+                let span = at.span.merge(close.span);
+                repo_locus = Some(RepoAnnotation { ty, span });
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(span),
+                    None => span,
                 });
                 continue;
             }
@@ -1051,6 +1072,7 @@ impl Parser {
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
             || phase_effects.is_some() || supervised_locus || depends.is_some()
             || sealed_locus
+            || repo_locus.is_some()
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -1078,6 +1100,7 @@ impl Parser {
             locus.depends = depends;
             locus.supervised = supervised_locus;
             locus.sealed = sealed_locus;
+            locus.repo = repo_locus;
             return Ok(TopDecl::Locus(locus));
         }
         // #382 phase 3: `domain wing = { delta, gamma };` — a
@@ -3347,6 +3370,8 @@ impl Parser {
             || name == "budget"
             || name == "gated"
             || name == "rpc"
+            || name == "idempotent"
+            || name == "not_idempotent"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3432,6 +3457,9 @@ impl Parser {
             match name.as_str() {
                 "unbounded" => out.unbounded = true,
                 "hot" => out.hot = true,
+                // GH #1530: the repo method's idempotency marker. Kept
+                // as the decorator's name; `repo_check` reads it.
+                "idempotent" | "not_idempotent" => {}
                 _ => out.effects.push(
                     Self::effect_assert_for(&name)
                         .expect("is_fn_decorator admitted this name"),
@@ -3870,6 +3898,7 @@ impl Parser {
             depends: None,
             supervised: false,
             sealed: false,
+            repo: None,
             name,
             is_main,
             export: false,

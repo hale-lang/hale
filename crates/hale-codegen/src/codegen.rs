@@ -12780,6 +12780,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             depends: None,
             supervised: false,
             sealed: false,
+            repo: None,
             name: Ident::new(mangled_name, template.name.span.clone()),
             is_main: template.is_main,
             export: template.export,

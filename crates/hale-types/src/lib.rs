@@ -91,6 +91,7 @@ pub mod observe_expand;
 pub mod rest_routes;
 pub mod rpc_expand;
 pub mod client_expand;
+pub mod repo;
 pub mod seam_expand;
 pub mod surfaces;
 pub(crate) mod listener_window;

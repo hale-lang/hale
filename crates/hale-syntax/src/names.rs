@@ -307,11 +307,15 @@ fn locus<'a>(l: &'a LocusDecl, f: &mut Visit<'_, 'a>) {
         depends,
         supervised: _,
         sealed: _,
+        repo,
         members,
         span: _,
         id: _,
     } = l;
     name(n, f);
+    if let Some(r) = repo {
+        name(&r.ty, f);
+    }
     opt_text(display, f);
     generics(gs, f);
     names(serves, f);
