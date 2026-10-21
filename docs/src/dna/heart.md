@@ -59,8 +59,11 @@ locus ConcernJson {
     }
     fn decode(b: Bytes) -> Concern fallible(CodecError) {
         let t = std::str::from_bytes(b);
-        return Concern { id: std::json::find_string_field(t, "id"), source: std::json::find_string_field(t, "source"),
-                what: std::json::find_string_field(t, "what"), severity: std::json::find_int_field(t, "severity") };
+        return Concern {
+            id: std::json::find_string_field(t, "id"),
+            source: std::json::find_string_field(t, "source"),
+            what: std::json::find_string_field(t, "what"),
+            severity: std::json::find_int_field(t, "severity") };
     }
 }
 
@@ -78,7 +81,12 @@ main locus Demo {
     bus { publish ConcernRaised; }
     bindings { ConcernRaised: nats::NatsAdapter { } codec(ConcernJson { }); }
     run() {
-        ConcernRaised <- Concern { id: "c-0001", source: "demo/checkout", what: "payment retries above 5%", severity: 2 };
+        ConcernRaised <- Concern {
+            id: "c-0001",
+            source: "demo/checkout",
+            what: "payment retries above 5%",
+            severity: 2,
+        };
     }
 }
 

@@ -174,9 +174,23 @@ import "vendor/dna" as dna;
 fn own_workflows(catalog: dna::WorkflowCatalog) -> String {
     let d = catalog.define("close-month", 1, "record record", "close the month");
     if len(d) > 0 { return d; }
-    let a = catalog.leaf("close-month", 1, 0, "reconcile", dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" }, 2);
+    let a = catalog.leaf(
+        "close-month",
+        1,
+        0,
+        "reconcile",
+        dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" },
+        2,
+    );
     if len(a) > 0 { return a; }
-    let b = catalog.leaf("close-month", 1, 1, "post", dna::WorkRequest { objective: "post the journal entries", requires: "human" }, 1);
+    let b = catalog.leaf(
+        "close-month",
+        1,
+        1,
+        "post",
+        dna::WorkRequest { objective: "post the journal entries", requires: "human" },
+        1,
+    );
     if len(b) > 0 { return b; }
     return catalog.occurs("close-month", 1, "skip", "period");
 }

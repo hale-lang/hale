@@ -4174,7 +4174,12 @@ of a locus, beside `bus`, in one of two shapes:
 
 ```hale
 locus Gateway {
-    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
+    params {
+        feed: Feed = Feed { };
+        wire: Wire = Wire { };
+        desk: Desk = Desk { };
+        log: Log = Log { };
+    }
     seam {
         self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
         or end;

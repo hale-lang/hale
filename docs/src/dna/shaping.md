@@ -320,7 +320,12 @@ fn trusted_policy() -> dna::PostReviewRefactors {
 fn trusted_boundary() -> dna::AutonomyBoundary {
     return dna::AutonomyBoundary {
         child: "refproj",
-        grant: dna::Grant { child: "refproj", classes: "refactor", max_magnitude: 12, review: "post" }
+        grant: dna::Grant {
+            child: "refproj",
+            classes: "refactor",
+            max_magnitude: 12,
+            review: "post",
+        }
     };
 }
 ```

@@ -13,7 +13,7 @@ This needs nothing running. It is not the organism of [the next part](./parts/or
 
 ```hale
 type Order { id: Int; cents: Int; }
-topic Orders  { payload: Order; }
+topic Orders { payload: Order; }
 topic Settled { payload: Order; }
 
 locus Storefront {
@@ -42,7 +42,11 @@ constitution Shop {
 }
 
 main locus App {
-    params { front: Storefront = Storefront { }; pay: Payments = Payments { }; books: Books = Books { }; }
+    params {
+        front: Storefront = Storefront { };
+        pay: Payments = Payments { };
+        books: Books = Books { };
+    }
     claims { adopt Shop; }
     run() { self.front.take(Order { id: 1, cents: 1250 }); }
 }

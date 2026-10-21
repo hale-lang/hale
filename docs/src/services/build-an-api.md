@@ -39,7 +39,9 @@ locus Shop {
         }
         self.stock.on_hand = self.stock.on_hand - req.qty;
         self.stock.orders = self.stock.orders + 1;
-        println("order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item);
+        println(
+            "order " + to_string(self.stock.orders) + ": " + to_string(req.qty) + " " + req.item,
+        );
         Shipments <- Shipment { order_id: self.stock.orders, item: req.item, qty: req.qty };
         return OrderResponse { order_id: self.stock.orders, on_hand: self.stock.on_hand };
     }
