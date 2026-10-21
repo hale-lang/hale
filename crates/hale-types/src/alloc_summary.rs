@@ -5824,6 +5824,18 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Is the place an assignment writes a String: a String binding, or
+    /// a String field of `self` or of a typed binding?
+    fn target_is_string(&self, target: &LValue) -> bool {
+        let head = &target.head;
+        match target.tail.as_slice() {
+            [] => self.is_string_expr(&Expr::Ident(head.clone())),
+            [LValueSeg::Field(f)] if head.name == "self" => self.self_field_str(&f.name) == StrTy::Str,
+            [LValueSeg::Field(f)] => self.field_str(&Expr::Ident(head.clone()), &f.name) == StrTy::Str,
+            _ => false,
+        }
+    }
+
     fn if_is_string(&self, ifs: &IfStmt) -> bool {
         ifs.then_block.tail.as_deref().is_some_and(|t| self.is_string_expr(t))
             || match ifs.else_block.as_deref() {
@@ -6088,10 +6100,10 @@ impl<'a> Walker<'a> {
     /// persists into the collection (reclaim at the owner's dissolve), so
     /// in an unbounded context it accumulates — same verdict path as a
     /// `StoredToSelf` value alloc.
-    fn push_collection_insert(&mut self, form: String, depth: u32, span: Span) {
+    fn push_collection_insert(&mut self, form: String, depth: u32, escape: Escape, span: Span) {
         self.sites.push(AllocSite {
             kind: AllocKind::CollectionInsert(form),
-            escape: Escape::StoredToSelf,
+            escape,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
@@ -6535,7 +6547,7 @@ impl<'a> Walker<'a> {
                     self.bind_taint(&n.name, taint.clone());
                 }
             }
-            Stmt::Assign { target, value, id, span, .. } => {
+            Stmt::Assign { target, op, value, id, span, .. } => {
                 // GH #540: a write to a field of any place may be a write
                 // to an interface-typed slot of that name.
                 for seg in &target.tail {
@@ -6580,7 +6592,37 @@ impl<'a> Walker<'a> {
                         self.store_target = target_field;
                     }
                 }
-                self.walk_expr(value, depth, esc);
+                if matches!(op, AssignOp::PlusEq) {
+                    // GH #1490 (step 3): `s += x` is `s = s + x`: the
+                    // same concatenation, the same escape as the binding
+                    // it extends. It reads the field it extends, so it
+                    // is never a store-latest replace.
+                    if self.is_string_expr(value) || self.target_is_string(target) {
+                        let target_field = if esc == Escape::StoredToSelf {
+                            self.store_target.clone()
+                        } else {
+                            None
+                        };
+                        self.sites.push(AllocSite {
+                            kind: AllocKind::StringConcat,
+                            escape: esc,
+                            loop_depth: depth,
+                            in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                            in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
+                            reclaim: ReclaimScope::EnclosingLocus,
+                            target_field,
+                            retired_store: false,
+                            in_loop: self.loops_as_written > 0,
+                            bare_stmt: false,
+                            self_replace: None,
+                            retire_if_params: None,
+                            span: *span,
+                        });
+                    }
+                    self.walk_expr(value, depth, Escape::Local);
+                } else {
+                    self.walk_expr(value, depth, esc);
+                }
                 self.store_target = prev;
                 self.self_replace = None;
                 // A reassigned local holds whichever value the run took
@@ -6978,7 +7020,16 @@ impl<'a> Walker<'a> {
                             .growing_form_of_receiver(receiver)
                             .filter(|f| is_growing_insert(f, &name.name))
                         {
-                            self.push_collection_insert(form, depth, *span);
+                            // GH #1490 (step 3): an insert into a local
+                            // collection the fn returns is the returned
+                            // accumulator, charged to its receiver.
+                            let esc = match receiver.as_ref() {
+                                Expr::Ident(v) if self.escaping.of_use(v.id) == Some(Escape::Returned) => {
+                                    Escape::Returned
+                                }
+                                _ => Escape::StoredToSelf,
+                            };
+                            self.push_collection_insert(form, depth, esc, *span);
                         }
                     }
                 }
@@ -7687,6 +7738,13 @@ impl Escaping<'_> {
             .unwrap_or(Escape::Local)
     }
 
+    /// How the binding the identifier use `use_id` names escapes: a
+    /// `v.push(x)` on a returned local lands in the collection the
+    /// function returns.
+    fn of_use(&self, use_id: hale_syntax::ast::NodeId) -> Option<Escape> {
+        self.ids.declaration_of(use_id).and_then(|d| self.map.get(&d).copied())
+    }
+
     /// How the value of the `=` whose statement is `assign_id` escapes:
     /// as the binding its head names does.
     fn of_assign(&self, assign_id: hale_syntax::ast::NodeId) -> Escape {
@@ -8362,6 +8420,11 @@ mod tests {
         ("let mut out = sep;", "out = out + (if i > 2 { sep } else { piece(i) });"),
         ("let mut out = sep;", "for s in names { out = out + s; }"),
         ("let mut out = piece(0) or sep;", "out = out + self.label;"),
+        // `+=` and an interpolation lower to the same concatenation.
+        ("let mut out = sep;", "out += sep;"),
+        ("let mut out = \"\";", "out += piece(i);"),
+        ("let mut out = \"\";", "out = f\"{out},{i}\";"),
+        ("let mut out = sep;", "out = f\"{out}{sep}\";"),
     ];
 
     fn join_concats(src: &str) -> usize {
@@ -8392,6 +8455,64 @@ mod tests {
             let leaks = join_leaks(&spelled_accumulator(init, step, "method"));
             assert!(leaks.is_empty(), "`{init} … {step}` consumed in a method: {leaks:?}");
         }
+    }
+
+    /// `store` is a statement run after the loop, in `join_n`.
+    fn stored_accumulator(step: &str, store: &str) -> String {
+        format!(
+            "locus App {{
+                 params {{ n: Int = 1000; label: String = \"x\"; }}
+                 fn join_n(k: Int, sep: String) {{
+                     let mut out = \"\";
+                     let mut i = 0;
+                     while i < k {{ {step} i = i + 1; }}
+                     {store}
+                 }}
+                 run() {{ let mut i = 0; while i < self.n {{ self.join_n(20, \",\"); i = i + 1; }} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn an_accumulator_stored_into_a_field_is_still_flagged() {
+        // The value outlives the call in the locus: the loop's growth
+        // stays reported, however the concatenation is spelled.
+        for step in ["out = out + sep;", "out += sep;", "out = f\"{out}{sep}\";"] {
+            let leaks = join_leaks(&stored_accumulator(step, "self.label = out;"));
+            assert!(!leaks.is_empty(), "`{step}` stored to a field must be flagged");
+        }
+        let leaks = join_leaks(&stored_accumulator("self.label += sep;", ""));
+        assert!(!leaks.is_empty(), "`self.label += sep` in a loop must be flagged");
+    }
+
+    #[test]
+    fn a_returned_collection_push_is_one_value_per_call() {
+        let src = |ret: &str, consumer: &str| {
+            format!(
+                "@form(vec) locus IntVec {{ capacity {{ heap items of Int; }} }}
+                 locus App {{
+                     params {{ n: Int = 1000; sink: IntVec = IntVec {{ }}; }}
+                     fn join_n(k: Int) -> IntVec {{
+                         let out = IntVec {{ }};
+                         let mut i = 0;
+                         while i < k {{ out.push(i); i = i + 1; }}
+                         {ret}
+                     }}
+                     {consumer}
+                 }}
+                 fn main() {{ let a = App {{ }}; }}"
+            )
+        };
+        let method = "fn record(i: Int) { let v = self.join_n(20); }
+                      run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
+        let leaks = join_leaks(&src("return out;", method));
+        assert!(leaks.is_empty(), "a returned vec built in a loop, consumed in a method: {leaks:?}");
+        // Not returned: the inserts stay the locus's.
+        let kept = "fn record(i: Int) { self.join_n(20); }
+                    run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
+        let leaks = join_leaks(&src("self.sink.push(0); return self.sink;", kept));
+        assert!(!leaks.is_empty(), "inserts into a field stay flagged");
     }
 
     #[test]
