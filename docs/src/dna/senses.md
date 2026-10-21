@@ -368,6 +368,43 @@ team edited the leg's branch before merging, the task is still delivered
 and the diff between the leg's last commit and the merge commit is a
 receipt: what the organism learns from your edits.
 
+### The loop, end to end
+
+`dna/tests/sdlc_exit_test.hl` runs the whole of it on a grafted organism
+and is the gate for the loop: one change upstream, a delivered answer
+downstream, no person filing anything in between. Its foreign codebase is
+a small Go module (`dna/tests/sdlc_exit_repo`) with a client package and an
+architecture note for each of two invented services, one that publishes a
+changelog page and one that publishes an OpenAPI document. The fixture
+serves both upstreams as files and moves them, and checks that
+
+- each move is a reading, a concern and a task, none authored by a person;
+- a canned leg answers the OpenAPI task with a pull request that changes
+  the client and passes `gofmt -l`, `go vet` and `go test`, with receipts
+  for the note, every file it read and the upstream's diff;
+- the changelog task is answered with a `NO IMPACT:` brief with the same
+  receipts, and the Board's approval of the brief settles the task;
+- the team edits and merges the pull request, and the forge's word comes
+  back as `task.delivered` with the edit's diff and the review's comments
+  as receipts.
+
+The fixture skips on a machine with no Go on `PATH`, and refuses to skip on
+CI. For a real codebase the same loop is these commands, once:
+
+```sh
+hale dna codebase attach client-go --repo https://forge.example/acme/client-go.git \
+    --build "go build ./..." --test "go test ./..." --toolchain go
+hale api import ./pay.yaml --as Pay --out integrations/pay.hl   # commit it
+hale dna pack apply standard --set integration=pay --set position=payments/dev \
+    --set source=integrations/pay.hl --set kind=openapi --set every=1h \
+    --set codebase=client-go --as ada
+```
+
+After the Board ratifies the practice, the check runs on its cadence; the
+first one takes the baseline, and a move after it files the task. The team
+reviews the leg's pull request on the forge and merges it, and the
+organism's sync records the verdict.
+
 ## How it breaks
 
 | symptom | cause | what to do |
