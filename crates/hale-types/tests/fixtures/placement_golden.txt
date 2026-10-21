@@ -11219,7 +11219,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/codebase_attach_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `hc::Outcome`	in core/legs
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___forge__MemForge	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
@@ -11231,7 +11230,7 @@ dynamic	__lib_dna__core__legs___hands__Hands	on main
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
-shared	dynamic	sites in core/legs #1be56334
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___forge__MemForge	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
@@ -11314,7 +11313,6 @@ dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/dogfood_voice_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `hc::Outcome`	in dna/core/legs
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in dna/operations
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main	in dna/organization_runtime
 shared	App@main1	App #14ce0a6f
@@ -11657,7 +11655,6 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/hands_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `hc::Outcome`	in core/legs
 dynamic	__lib_dna__core___journal__MemJournal	on main	in tests
 
 == dna/tests/harness_test.hl
@@ -11824,7 +11821,7 @@ shared	App@literal1.forge	__lib_dna__core___forge__MemForge #6b5090a1
 shared	__lib_dna__core___memory_record__RecordJournal@main1	__lib_dna__core___memory_record__RecordJournal #8053e680
 shared	__lib_dna__operations___memory_tail__MemoryProjection@main2	__lib_dna__operations___memory_tail__MemoryProjection #92e5fe40
 shared	dynamic	sites in core #fef121de
-shared	dynamic	sites in core/legs #1be56334
+shared	dynamic	sites in core/legs #df5504df
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in operations #bbf7cafe
 -- dynamic	sites in tests
@@ -12092,7 +12089,6 @@ dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/legs_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `hc::Outcome`	in dna/core/legs
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main	in dna/organization_runtime
 shared	App@main1	App #14ce0a6f
 shared	__lib_dna__core___memory_record__MemoryRecord@main2	__lib_dna__core___memory_record__MemoryRecord #c4e304a1
@@ -12152,7 +12148,7 @@ row	App@literal1	App	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
-shared	dynamic	sites in core/legs #1be56334
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
@@ -13501,7 +13497,7 @@ shared	App@literal1.forge	__lib_dna__core___forge__MemForge #6b5090a1
 shared	__lib_dna__core___memory_record__RecordJournal@main1	__lib_dna__core___memory_record__RecordJournal #8053e680
 shared	__lib_dna__operations___memory_tail__MemoryProjection@main2	__lib_dna__operations___memory_tail__MemoryProjection #92e5fe40
 shared	dynamic	sites in core #fef121de
-shared	dynamic	sites in core/legs #1be56334
+shared	dynamic	sites in core/legs #df5504df
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in operations #bbf7cafe
 -- dynamic	sites in tests
@@ -13591,7 +13587,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
-shared	dynamic	sites in core/legs #1be56334
+shared	dynamic	sites in core/legs #df5504df
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
@@ -19507,8 +19503,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
-== shared sites in core/legs #1be56334
-dynamic	<hole>	on main|unresolved declaration `hc::Outcome`
+== shared sites in core/legs #df5504df
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
 dynamic	__lib_dna__core__legs___codebase__CodebaseWork	on main
