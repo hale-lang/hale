@@ -45,6 +45,7 @@
 - [Designing an API's messages](./services/api-messages.md)
 - [Composition patterns](./services/patterns.md)
 - [Seams](./services/seams.md)
+- [Repositories](./services/repositories.md)
 - [The model](./the-model.md)
 
 # Saying what must hold

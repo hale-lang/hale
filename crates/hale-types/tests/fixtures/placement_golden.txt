@@ -8578,6 +8578,11 @@ row	__StdRandRng@main5	__StdRandRng	main	default
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
 
+== tests/hale/repo_memory_test.hl
+-- Desk@main1	Desk
+row	~	Desk	main	default
+row	~.orders	MemOrders	main	inherited
+
 == tests/hale/restart_birth_check_test.hl
 root	App	the entry
 domain	pool:a

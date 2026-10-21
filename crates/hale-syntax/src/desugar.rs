@@ -170,6 +170,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         depends: None,
             supervised: false,
             sealed: false,
+            repo: None,
         name: Ident::new("__Main", main_span),
         is_main: false,
         export: true,

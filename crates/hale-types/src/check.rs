@@ -1549,6 +1549,7 @@ pub fn check_bundle_rules(
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
     check_decorator_stacks(bundle, &mut diags);
+    diags.extend(crate::repo::laws(&bundle.programs.values().copied().collect::<Vec<_>>()));
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, flows, &mut diags);

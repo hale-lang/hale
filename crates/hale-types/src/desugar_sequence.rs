@@ -82,6 +82,8 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // row (`client_expand`), before the serve expansion, whose codec pass
     // gives the rows' types the api codecs those methods call.
     crate::client_expand::expand(programs, seq.import_renames, seq.default_surface);
+    // GH #1530: the state classes a `@repo(T)` locus declares (`repo`).
+    crate::repo::expand(programs);
     crate::rpc_expand::expand(programs, seq.import_renames, seq.default_surface);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does

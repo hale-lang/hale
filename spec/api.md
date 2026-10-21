@@ -3258,6 +3258,70 @@ exposure refused to describe (the wire refusal on stderr), 4 when nothing
 answered (a refused connection, no listener, a connection that closed) or what
 did answer is not a Hale exposure (the message says which), and 5 for usage.
 
+## Repositories
+
+`@repo(T)` on a locus tells the compiler that the locus is where `T`'s
+important state lives (RFC #1530). Local field writes, caches and counters
+are not important; writes through a repo are. It is a checker: the driver
+(in memory, SQL, a file) is written by hand, and the compiler holds it to
+the shape below. `T` is a record with exactly one field tagged
+`` `db:"name,key"` `` (the key tag is the one piece of the `db` tag system in
+scope; the other tags and generated drivers wait).
+
+```hale
+type Order { id: OrderId `db:"id,key"`; customer: Int; total: Int; }
+type OrderError = enum { @not_found Missing, @conflict Exists };
+
+@repo(Order)
+locus Orders {
+    @effects(is: { reads(Order) })
+    fn get(id: OrderId) -> Order fallible(OrderError) { … }
+    @effects(is: { creates(Order) }) @idempotent
+    fn create(o: Order) -> Order fallible(OrderError) { … }
+    @effects(is: { writes(Order) }) @idempotent
+    fn put(id: OrderId, o: Order) -> Order fallible(OrderError) { … }
+    @effects(is: { deletes(Order) }) @idempotent
+    fn remove(id: OrderId) fallible(OrderError) { … }
+}
+```
+
+**The method set.** `get(id: K) -> T`, `create(o: T) -> T`, `put(id: K, o:
+T) -> T` and `remove(id: K)`, `K` the key field's type, each `fallible(E)`
+with one `E` for the repo. A missing method, or one of another shape, is
+named.
+
+**The state class.** Each method declares exactly one class of the family
+`reads(T) | writes(T) | creates(T) | deletes(T) | mutates(T)`, an
+ordinary indexed effect family (§ Calling a surface's `client(S)` is
+another) that `@repo` declares over the types the program's repos hold, so
+the classes propagate through calls and a claim names them
+(`forbid reaches(Public, effects(writes(Order)))`). The four methods above
+carry `reads`, `creates`, `writes` and `deletes`; `mutates` is for a
+method whose result depends on the arguments and the prior state
+(increment, append, a guarded transition). A repo declares no class of
+another type. The family's five words are the program's effect names while
+a `@repo` is in it: an `effect reads(…)` of its own collides.
+
+**The idempotency marker.** Every class but `reads` carries exactly one of
+`@idempotent` and `@not_idempotent`, and `reads` carries neither: there is
+no default, so the question is asked at every write. `creates` is honestly
+idempotent only when the caller supplies the key. The spelling of the
+markers is a placeholder.
+
+**Extra methods.** A method beyond the four (`find_by_customer`) is allowed
+and carries a class like any other; a transport cannot render it from its
+shape alone.
+
+**What is promised.** Atomicity is per repo operation: a `get` then a
+`put` in one handler is two operations, and nothing across two repos is
+promised. A handler that holds the repo inherits the classes through its
+calls, so "read-only" is a fact about the effect row, not a purity proof.
+The class at the leaf is trusted, as every frontier claim is, so the
+hand-written driver is where the audit lives. Reaching a leaf's class from
+a wrapper (a validating repo that calls inward), the derived change feed
+and `@evented` are the later steps of the RFC; the check today is of the
+repo itself.
+
 ## What this replaced
 
 Before R4 a program's API was a structural fact: one entry, `bindings {

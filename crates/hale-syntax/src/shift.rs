@@ -300,10 +300,12 @@ shift_struct!(LocusDecl {
     depends,
     supervised,
     sealed,
+    repo,
     members,
     span,
     id,
 });
+shift_struct!(RepoAnnotation { ty, span });
 shift_struct!(FormAnnotation { name, args, span });
 shift_struct!(LocalityAnnotation { tier, span });
 shift_unit_enum!(LocalityTier { L1, L2, L3, Any });
