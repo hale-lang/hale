@@ -868,10 +868,6 @@ impl<'a> QualifiedRenameApplier<'a> {
                 for sv in &mut l.serves {
                     self.rewrite_joined_ident(sv);
                 }
-                // GH #1530: `@repo(T)` names the record the library renamed.
-                if let Some(r) = &mut l.repo {
-                    self.rewrite_joined_ident(&mut r.ty);
-                }
                 for m in &mut l.members {
                     self.walk_locus_member(m);
                 }
@@ -1753,9 +1749,6 @@ impl<'a> Mangler<'a> {
         // perspective once imported.
         for sv in &mut l.serves {
             self.rewrite_ident(&mut sv.name);
-        }
-        if let Some(r) = &mut l.repo {
-            self.rewrite_ident(&mut r.ty.name);
         }
         for g in &l.generics {
             self.bind(&g.name.name);

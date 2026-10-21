@@ -64,7 +64,7 @@ fn repo_types(programs: &[&Program]) -> BTreeSet<String> {
         .iter()
         .flat_map(|p| flat_decls(&p.items))
         .filter_map(|d| match d {
-            TopDecl::Locus(l) => l.repo.as_ref().map(|r| r.ty.name.clone()),
+            TopDecl::Locus(l) if !l.imported => l.repo.as_ref().map(|r| r.ty.name.clone()),
             _ => None,
         })
         .collect()
@@ -338,6 +338,17 @@ pub fn laws(programs: &[&Program]) -> Vec<Diag> {
     for p in programs {
         for d in flat_decls(&p.items) {
             match d {
+                TopDecl::Locus(l) if l.repo.is_some() && l.imported => {
+                    let r = l.repo.as_ref().expect("guarded");
+                    let shown = l.display.as_deref().unwrap_or(&l.name.name);
+                    diags.push(Diag::ty(
+                        l.name.span,
+                        format!(
+                            "`@repo({})` on `{shown}` is declared in an imported module; a repository is declared in the program that uses it (imported repositories arrive with generated drivers, GH #1530)",
+                            plain(&r.ty.name)
+                        ),
+                    ));
+                }
                 TopDecl::Locus(l) if l.repo.is_some() => check_repo(l, &types, names, &mut diags),
                 // the markers belong to a repo's methods
                 TopDecl::Locus(l) => {
@@ -367,109 +378,4 @@ fn stray_markers(f: &FnDecl, diags: &mut Vec<Diag>) {
             ));
         }
     }
-}
-
-fn intern(effects: &mut hale_syntax::ast::EffectClasses, name: String) -> u16 {
-    if let Some(i) = effects.names.iter().position(|n| *n == name) {
-        return i as u16;
-    }
-    effects.names.push(name);
-    effects.defs.push(None);
-    (effects.names.len() - 1) as u16
-}
-
-/// Rename the state classes an imported seed's file references, as the
-/// import renames its records. A class names a record by the name its
-/// seed wrote (`reads(Item)`); `renames` is the seed's one rename map
-/// (written name to mangled name) and `types` the seed's record and
-/// type names, so the class argument resolves to the record's identity
-/// whichever file of the seed declares it or refers to it, in a method's
-/// contract, a locus claim or a top-level claim. The class is then
-/// `reads(<mangled record>)`: two imported records of one written name
-/// keep two classes. Called by the import loader, with the load's one
-/// class table, after the file is mangled.
-pub fn rename_imported_classes(
-    prog: &mut Program,
-    renames: &std::collections::HashMap<String, String>,
-    types: &std::collections::HashSet<String>,
-    effects: &mut hale_syntax::ast::EffectClasses,
-) {
-    use hale_syntax::ast::{ClaimForm, ClaimSet, ClaimsBlock};
-    // the class a reference becomes, with its text
-    let mut retarget = |c: &mut EffectClass, text: Option<&mut String>| {
-        let EffectClass::User(i) = *c else { return };
-        let Some(name) = effects.names.get(i as usize).cloned() else {
-            return;
-        };
-        let Some((word, rest)) = name.split_once('(') else {
-            return;
-        };
-        let written = rest.trim_end_matches(')');
-        if !CLASSES.contains(&word) || !types.contains(written) {
-            return;
-        }
-        let Some(target) = renames.get(written) else {
-            return;
-        };
-        let new = format!("{word}({target})");
-        *c = EffectClass::User(intern(effects, new.clone()));
-        if let Some(t) = text {
-            *t = new;
-        }
-    };
-    let mut fix_fn =
-        |f: &mut FnDecl, retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>)| {
-            for a in &mut f.effects {
-                match a {
-                    EffectAssert::Forbid(cs)
-                    | EffectAssert::Carries(cs)
-                    | EffectAssert::Causes(cs)
-                    | EffectAssert::Only(cs) => cs.iter_mut().for_each(|c| retarget(c, None)),
-                    _ => {}
-                }
-            }
-        };
-    let fix_claims =
-        |cb: &mut ClaimsBlock, retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>)| {
-            for e in &mut cb.entries {
-                fix_claim(&mut e.form, retarget);
-            }
-        };
-    fn fix_claim(
-        form: &mut hale_syntax::ast::ClaimForm,
-        retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>),
-    ) {
-        match form {
-            ClaimForm::ForbidReaches { src, dst, .. } => {
-                for set in [src, dst] {
-                    if let ClaimSet::Effects { class, name, .. } = set {
-                        retarget(class, Some(name));
-                    }
-                }
-            }
-            ClaimForm::Bound {
-                class, class_name, ..
-            } => retarget(class, Some(class_name)),
-            _ => {}
-        }
-    }
-    hale_syntax::ast::for_each_decl_mut(&mut prog.items, &mut |d| match d {
-        TopDecl::Locus(l) => {
-            for m in &mut l.members {
-                match m {
-                    LocusMember::Fn(f) => fix_fn(f, &mut retarget),
-                    LocusMember::Claims(cb) => fix_claims(cb, &mut retarget),
-                    _ => {}
-                }
-            }
-        }
-        TopDecl::Fn(f) => fix_fn(f, &mut retarget),
-        TopDecl::Claims(cb) => fix_claims(cb, &mut retarget),
-        TopDecl::Constitution(cd) => {
-            for e in &mut cd.entries {
-                fix_claim(&mut e.form, &mut retarget);
-            }
-        }
-        _ => {}
-    });
 }

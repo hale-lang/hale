@@ -177,99 +177,31 @@ fn a_method_set_with_the_wrong_shape_is_named() {
 }
 
 #[test]
-fn an_imported_repo_names_its_renamed_record() {
+fn an_imported_repo_is_refused() {
     let lib = format!(
         "{HEAD}{}",
         GOOD.replace("fn main() { let i = Items { }; }\n", "")
     );
-    let main = "import \"./store\" as r;\nfn main() { let i = r::Items { }; }\n";
+    let main = "import \"./store\" as r;\nfn main() { let remote = r::Items { }; }\n";
     let msgs: Vec<String> = check_files(&[("main.hl", main), ("store/store.hl", &lib)])
         .into_iter()
         .map(|d| d.message)
         .collect();
-    assert!(msgs.is_empty(), "{msgs:?}");
-}
-
-fn lib_with(wrapper: &str) -> String {
-    format!(
-        "{HEAD}{}\n{wrapper}\n",
-        GOOD.replace("fn main() { let i = Items { }; }\n", "")
-    )
-}
-
-fn two_modules(lib: &str, root_repo: bool) -> Vec<String> {
-    let root = if root_repo {
-        format!(
-            "{HEAD}{}",
-            GOOD.replace("fn main() { let i = Items { }; }\n", "")
-        )
-    } else {
-        String::new()
-    };
-    let main = format!(
-        "import \"./store\" as r;\n{root}\nfn main() {{ let remote = r::Items {{ }}; r::action(remote); }}\n"
+    assert!(
+        has(&msgs, "`@repo(Item)` on `r::Items` is declared in an imported module; a repository is declared in the program that uses it"),
+        "{msgs:?}"
     );
-    check_files(&[("main.hl", &main), ("store/store.hl", lib)])
+}
+
+#[test]
+fn a_library_with_classes_and_no_repo_checks_as_before() {
+    let lib = "domain wing = { delta, gamma };\neffect reads(wing);\n\
+        locus Probe {\n    @effects(is: { reads(delta) })\n    fn look() -> Int { return 1; }\n}\n\
+        @effects(none: { reads(gamma) })\nfn safe(p: Probe) -> Int { return p.look(); }\n";
+    let main = "import \"./lib\" as l;\nfn main() { let p = l::Probe { }; let n = l::safe(p); }\n";
+    let msgs: Vec<String> = check_files(&[("main.hl", main), ("lib/lib.hl", lib)])
         .into_iter()
         .map(|d| d.message)
-        .collect()
-}
-
-#[test]
-fn an_imported_contract_names_the_librarys_own_record() {
-    let put = "@effects(none: { writes(Item) })\nfn action(db: Items) {\n    let got = db.put(1, Item { id: 1, n: 2 }) or Item { id: 0, n: 0 };\n}\n";
-    // the library's prohibition holds against the library's own write,
-    // whether or not the root has an unrelated `Item` repository
-    for root_repo in [false, true] {
-        let msgs = two_modules(&lib_with(put), root_repo);
-        assert!(
-            has(&msgs, "effect assertion violated"),
-            "root_repo={root_repo}: {msgs:?}"
-        );
-    }
-    let get = "@effects(none: { writes(Item) })\nfn action(db: Items) {\n    let got = db.get(1) or Item { id: 0, n: 0 };\n}\n";
-    for root_repo in [false, true] {
-        let msgs = two_modules(&lib_with(get), root_repo);
-        assert!(msgs.is_empty(), "root_repo={root_repo}: {msgs:?}");
-    }
-}
-
-#[test]
-fn a_record_and_its_repo_in_different_library_files() {
-    let types = HEAD;
-    let repos = GOOD.replace("fn main() { let i = Items { }; }\n", "");
-    let main = "import \"./store\" as r;\nfn main() { let remote = r::Items { }; }\n";
-    let msgs: Vec<String> = check_files(&[
-        ("main.hl", main),
-        ("store/types.hl", types),
-        ("store/repos.hl", &repos),
-    ])
-    .into_iter()
-    .map(|d| d.message)
-    .collect();
+        .collect();
     assert!(msgs.is_empty(), "{msgs:?}");
-}
-
-#[test]
-fn an_imported_group_claim_names_the_librarys_own_record() {
-    let claim = "group repo_group = { Items };\nclaims { c: forbid reaches(repo_group, effects(writes(Item))); }\n";
-    // the claim holds against the library's own `put` with or without an
-    // unrelated `Item` repository in the root; the witness is at `put`
-    let lib = lib_with(claim);
-    for root_repo in [false, true] {
-        let main = if root_repo {
-            format!("import \"./store\" as r;\n{HEAD}{}\nfn main() {{ let remote = r::Items {{ }}; }}\n", GOOD.replace("fn main() { let i = Items { }; }\n", ""))
-        } else {
-            "import \"./store\" as r;\nfn main() { let remote = r::Items { }; }\n".to_string()
-        };
-        let msgs: Vec<String> = check_files(&[("main.hl", &main), ("store/store.hl", &lib)])
-            .into_iter()
-            .map(|d| d.message)
-            .collect();
-        assert!(has(&msgs, "Items::put"), "root_repo={root_repo}: {msgs:?}");
-        assert!(
-            !has(&msgs, "never declared"),
-            "root_repo={root_repo}: {msgs:?}"
-        );
-    }
 }

@@ -8,6 +8,10 @@ from a write there without proving anything about purity.
 You write the driver by hand (in memory, SQL, a file). The compiler checks
 its shape and tracks what its methods do to `T`.
 
+A repository is declared in the program that uses it. A library or imported
+module that declares an `@repo` is refused at the check; imported
+repositories wait for generated drivers.
+
 ## The type and its key
 
 `T` is a record with one field tagged as the key:

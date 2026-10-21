@@ -3285,6 +3285,12 @@ locus Orders {
 }
 ```
 
+**Where it is declared.** `@repo(T)` is accepted only in the program's own
+source. A library or imported module that declares one is refused at the
+check, naming the locus ("`@repo(Item)` on `r::Items` is declared in an
+imported module; a repository is declared in the program that uses it");
+imported repositories arrive with generated drivers (GH #1530).
+
 **The method set.** `get(id: K) -> T`, `create(o: T) -> T`, `put(id: K, o:
 T) -> T` and `remove(id: K)`, `K` the key field's type, each `fallible(E)`
 with one `E` for the repo. A missing method, or one of another shape, is
