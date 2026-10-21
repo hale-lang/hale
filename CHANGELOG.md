@@ -8,6 +8,88 @@ behavior.
 
 ## Unreleased
 
+## v0.28.0 — an upstream change worked to a merged pull request (2026-10-21)
+
+An organism now keeps an outside codebase current with the systems it calls. When a watched upstream moves, the organism files the task itself. A leg answers with a pull request or a no-impact brief, each with receipts, and the team's merge on the forge comes back as the verdict. On the language side, a program imports the surfaces it calls, calls them through a typed client, serves REST by route, and says which locus holds a record's state.
+
+**Calling other systems.** `hale api import <openapi|mcp> --as <Surface>` writes the surface a program consumes from an OpenAPI document (JSON or YAML) or an MCP endpoint. `hale api drift` reports when the source has moved (#1696, #1700). `api::client(Surface, http::Client { base, principals })` is a param whose methods are the surface's rows. Each call answers the row's outcome enum and carries the effect `client(Surface)`, so a claim can keep calls out of a group (#1699).
+
+**Serving and storing.** `http::Rest` serves a surface by method and path. A row declares its route (`at "GET /v1/items/{id}"`), and the transport generates the matcher, `404`, `405`, `OPTIONS`, `HEAD` and CORS from the table (#1706). `@repo(T)` marks the locus where a record's state lives. It carries `get`, `create`, `put` and `remove` over the record's key, and each method states its state class and idempotence (#1710).
+
+**A codebase worked from upstream to merge.** `hale dna codebase attach --repo --build --test --toolchain go` attaches a repository without an application. A leg working it clones it, verifies with its build and test commands, and opens a pull request. A Go codebase's leg also gets `go vet`, `go test` and `gofmt` (#1697, #1701). A watched upstream is a practice the Board ratifies, `standard/upstream-watched/<name>`. Its `source-check` step lands a reading and a concern when the source moves (#1705). When the practice names a codebase, it also files a task. Merged is `task.delivered`, closed is `task.refused`, and review comments are receipts (#1703). `sdlc_exit_test` runs the whole loop (#1708).
+
+**Faces.** The standard face ships with the toolchain. It serves the browser shell and the project's `ui/`, and passes everything else to the head (#1709). Its `/index` lists the record: positions and holders, codebases, watched upstreams, contracts (#1712). `hale habitat up` starts the habitat's own face (#1713). An organism names further faces as `dna::Face` params of its main locus (#1714).
+
+**Writing code.** `hale fmt` wraps lines at 100 columns by default, and the tree is reflowed; a directory holding `.hale-fmt-frozen` is left as written (#1715). The allocation survey treats `s += x` as `s = s + x` (#1707). The DNA suite runs green on macOS (#1704).
+
+**Breaking changes, measured against v0.27.0:** `hale fmt` now wraps by default and `--wrap` is gone, so a checkout needs one `hale fmt .` to reach canonical form (#1715). The DNA head serves surfaces only. Its static files and `/app/` moved to the standard face, and `hale dna head` takes `--port` for the face and `--head-port` for the head, with no webroot argument (#1709).
+
+The item-level notes follow, one entry per change with every PR reference.
+
+
+- `hale deploy render` reads a probe port written as `self.<param>` as that param's literal default, so a program whose probes port can be overridden still renders its healthcheck and probes.
+
+### Imported surfaces
+
+- `hale api import <openapi-url-or-file | mcp-url> --as <Surface>` writes the surface a program consumes: an `api Surface from openapi|mcp "..."` block whose signature rows (`rpc name(Request) -> Response wire: "...";`) are the document's operations or the endpoint's tools, and the records they name; what the api codec cannot carry is `std::json::Value` with a comment saying why. The checker admits the block, the description lists it, and a serve site of it is refused (spec/api.md § Imported surfaces, law 8).
+- `hale api drift` re-reads each imported surface's source and prints one line per row added, removed or changed (`drift Surface changed row response`), exiting 1 on drift; `hale check --api` runs the same check.
+
+### A foreign codebase attached with no application
+
+- `hale dna codebase attach <name> --repo URL --build CMD --test CMD` (also `detach` and `list`) states a codebase in the record (`codebase.attached` / `codebase.detached`) with no application row. A leg working it (`legs::CodebaseWork`) clones the codebase's repository onto its own branch, verifies with the codebase's build and test commands in that worktree, pushes the branch there and opens the review through the forge hand. `GitHand` gains `branch` and `push`; `GhForge` takes `repo` and `base`; `ForgeBridge` puts the core `Forge` behind the hand. Binding a task to a codebase at the head follows.
+
+- `hale dna task create --to position:<name> --codebase <name>` binds a task to an attached codebase: the Work's hat carries the codebase, and a leg's `hand` and `submit --from-worktree` then work a clone of that repository on `leg/<codebase>/<task>`, verify with its build and test commands, push the branch there and open the review through the forge hand; the outcome is `review:<ref>` and the organism makes no Mutation of its own genome.
+
+- **A program calls another system through a client.** `shelf: api::Client = api::client(Shelf, http::Client { base, principals })` (or `mcp::Client { url, principals }`) is a param whose methods are the surface's rows, each answering the row's outcome enum as the served side maps it: a Hale surface's handler error decodes as its own error enum, an imported OpenAPI row's status as `std::api::Failure` with its error class. `std::api::VaultPrincipals` presents a vault slot's bearer per role. Each call carries the effect `client(Shelf)`, so `forbid reaches(g, effects(client(Shelf)))` keeps calls out of a group. `hale api export --surface S --tools-for ROLES` prints the tools those roles are given, one per admitted row, named `S.<row>` (spec/api.md § Calling a surface).
+
+- `hale api import` and `hale api drift` read an OpenAPI document written as YAML (by content, a `.yaml`/`.yml` name, or a YAML content type), with no conversion step; anchors, aliases, merge keys, tags, complex keys and multi-document streams are refused with their line.
+
+### A codebase declares its toolchain
+
+- `hale dna codebase attach --toolchain go|hale|none` records the codebase's toolchain on `codebase.attached` (default `none`). A `go` codebase's leg gets a Go hand beside the hale one: `go_vet`, `go_test` (a package pattern, default `./...`) and `gofmt_check` (`gofmt -l`), each run in its worktree with bounded output, and plain words when `go` is not on PATH. The verify step runs gofmt, vet and test after the build and refuses to push on failure, saying which.
+
+- DNA: a watched upstream whose practice names an attached codebase (`codebase=<name>`, `--set codebase=<name>` on the standard pack's upstream-watched template) now files a task for each moved reading under the practice's position, derived from the reading and concern `source-check` lands and the practice that convened it: the reading, its diff and the architecture note (`<watch>.md` in the codebase's knowledge directory, `--knowledge` on `hale dna codebase attach`, proposed as a knowledge node bound to the position and again, as a fresh proposal on the same node, when it changes) are in the leg's brief. The leg answers with a pull request or a `NO IMPACT` brief, both with receipts of what it read. The forge's word on the review becomes the task's verdict: merged is delivered (an edited merge also records the edit's diff), closed is refused, comments are receipts on the verdict row, and a brief is reviewed in the organism. No row kind is added beyond `task.delivered` and `task.refused`.
+
+### Fixed
+
+- The macOS DNA suite runs green: ssh record signatures are encoded without GNU `base64 -w0`, `hale dna iris` launches no longer hold the caller's pipe open under bash 3.2, and the fixtures use portable `sed -i`, physical scratch paths and backgrounded starts.
+
+- DNA: a watched upstream is a practice. The standard pack's template, `hale dna pack apply standard --set integration=<name> --set position=<owner> --set source=<url or imported surface> --set kind=changelog|docs|feed|openapi --set every=<cadence>`, proposes `standard/upstream-watched/<name>` bound to the owning position, and the source as an idea bound to the same position. Once the Board ratifies it, its `source-check` step runs on that cadence. The first check is the baseline. A moved source lands a `sources/<name>.changed` reading with the unified diff as its receipt, and a concern routed to the position. Three failed reads in a row land one `sources/<name>.unreachable` reading. `hale api drift --document` prints an imported surface's source document, canonical, which is what an OpenAPI watch compares.
+- DNA: a practice's text can carry its terms, words `key=value`. A practice that names `every=` and `step=<definition>` declares that schedule when ratified, convened by the position it is bound to. Every scheduled practice's occurrences name the practice, so its step reads its parameters from the practice's text. A pack's practices declare their schedules when the pack is ratified.
+- DNA: the batch language takes `practice <name> for <position> | <text>` (and `law … for …`) to bind a practice to a position, and `idea <name> [for <position>] | <text>`. A practice or idea already in force with the same text is kept rather than proposed again, so adopting a pack a second time proposes only what it adds.
+
+### API
+
+- `http::Rest` serves a surface by method and path. A row declares its route, `rpc Items::get at "GET /v1/items/{id}" status: 200;`, and the transport generates the matcher, `404`, `405` with `Allow`, `OPTIONS`, `HEAD` and CORS from the table; path parameters and the query bind into the request beside the JSON body. Ambiguous routes are refused at the check. `anonymous:` on the transport names the caller of a request with no `Authorization` header, so a health probe is a row. `hale api export` writes OpenAPI at the routes and `hale api call <endpoint> 'GET /path'` calls one.
+
+### Survey
+
+- The allocation survey treats `s += x` as the concatenation `s = s + x`: an accumulator returned from a loop is charged once per call to the frame that receives it, however it is spelled. One stored into a field is still reported.
+
+### DNA
+
+- The phase 3 exit fixture, `dna/tests/sdlc_exit_test.hl`, runs the whole loop on a grafted organism over an invented Go repository: a moved changelog page or OpenAPI document becomes a reading, a concern and a task with no person filing it; a leg answers with a pull request that passes the Go hand or a no-impact brief, with receipts; the team's merge comes back as `task.delivered` with the edit diff and comment receipts. `docs/src/dna/senses.md` gains "The loop, end to end".
+
+### DNA faces
+
+- The standard face, which the toolchain ships, serves the browser shell and the attached project's `ui/` under `/app/` and passes every other request to the head, which now serves surfaces only: its static files and `/app/` are gone. `hale dna head` and `dna/face/start.sh` start the face on `--port` (8792) with the head behind it on `--head-port` (8796); the head takes no webroot argument.
+
+### Repositories
+
+- `@repo(T)` on a locus marks it as where `T`'s state lives (RFC #1530). `T` is a record with one `` `db:"name,key"` `` field; the locus carries `get`, `create`, `put` and `remove` over that key, every method declares one state class (`reads`, `writes`, `creates`, `deletes`, `mutates` of `T`), and every class but `reads` says `@idempotent` or `@not_idempotent`, with no default. The classes are an effect family, so they propagate through calls and a claim can name them. The driver stays hand-written.
+
+- The standard face serves the record's index at `/index`: the purpose, the parts and positions with their holders, the attached codebases, the watched upstreams with their last reading, the contracts and every outside link the record holds as knowledge. The face reads it through an `api::client` of the head's surface, one new read row, `Commands::index`.
+
+- `hale habitat up` starts the habitat's face, the standard face over its own head, and `hale habitat status` prints its address; the index lists the organisms grafted from it with their state and the addresses of their faces and heads. A graft gives each organism a block of loopback ports, kept in its `dna.head.url`, and `hale dna head <organism>` serves there.
+
+### DNA
+
+- An organism names faces beyond the standard one as `dna::Face` params of its main locus (`admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };`). `hale check --api` carries them in a `faces` array and refuses a face that consumes an undeclared surface, acts under an undeclared role or shares a port; the record states each as a consumer of its surfaces' contracts; the standard face's `/index` lists them as links; `hale dna dev` and `run` start each face's application on its own port.
+
+### Writing code
+
+- `hale fmt`, `hale fmt --check` and the LSP's formatting now break every line wider than 100 columns by default; the opt-in `--wrap` flag from #1678 is gone, and the tree is reflowed to match. A checkout needs one `hale fmt .` to reach canonical form.
+
 ## v0.27.0 — a program observed and placed, every organism grafted (2026-10-20)
 
 A program now says how it is watched and where it runs as params of its main locus, and the toolchain turns that into probes, a scrape, an event export and deployment manifests. A program that declares none of it pays nothing. On the DNA side, every organism is born by a graft from the habitat, the first run is a fixture, and the logging law the standard pack proposes is enforced on a Hale heart.
