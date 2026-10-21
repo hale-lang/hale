@@ -33,7 +33,11 @@ main locus App {
         std::test::assert_eq_int(a, 42, "a call that does not violate returns its value");
 
         let b = self.p.pick(true) or 7;
-        std::test::assert_eq_int(b, 7, "a violating call is the call's failure: the fallback is the value");
+        std::test::assert_eq_int(
+            b,
+            7,
+            "a violating call is the call's failure: the fallback is the value",
+        );
         std::test::assert_eq_int(self.seen, 1, "the parent's on_failure ran");
 
         let c = self.p.pick(true) or self.note(err);
@@ -41,7 +45,11 @@ main locus App {
         std::test::assert_eq_int(self.seen_at_or, 2, "on_failure ran before the caller's or");
         std::test::assert_eq_str(self.named, "bad_pick", "err is the ClosureViolation");
 
-        std::test::assert_eq_int(self.p.tails, 1, "the method's tail ran only for the call that did not violate");
+        std::test::assert_eq_int(
+            self.p.tails,
+            1,
+            "the method's tail ran only for the call that did not violate",
+        );
     }
 }
 

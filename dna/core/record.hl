@@ -89,7 +89,13 @@ interface Record {
     // Many rows on top of `at`, made visible together: the same rows as
     // that many `append`s, every one or none (`refused`). `id` is the last
     // row's.
-    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended;
+    fn append_batch(
+        chain: String,
+        at: String,
+        rows: RowBatch,
+        sign: Bool,
+        note: String
+    ) -> Appended;
     // ---- bodies
     fn keep(text: String) -> String;
     // Every text kept as `keep` keeps it, in one pass.
@@ -126,8 +132,15 @@ interface Record {
 fn row_admissible(r: Record, e: Event, trust: String) -> String {
     if trust != "signed" { return ""; }
     let s = r.signer(e.digest);
-    if !s.signed { return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity + ") is not signed, and this record admits signed rows alone"; }
-    if !s.verified { return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity + ") is signed with " + (if len(s.key) > 0 { "key " + s.key } else { "a key" }) + " this record's trust does not know"; }
+    if !s.signed {
+        return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity
+            + ") is not signed, and this record admits signed rows alone";
+    }
+    if !s.verified {
+        return "row " + to_string(e.seq) + " (" + e.kind + " " + e.entity + ") is signed with "
+            + (if len(s.key) > 0 { "key " + s.key } else { "a key" })
+            + " this record's trust does not know";
+    }
     return "";
 }
 
@@ -148,7 +161,9 @@ fn record_json_quote(value: String) -> String {
         else if c == 13 { b.append_str("\\r"); }
         else if c == 9 { b.append_str("\\t"); }
         else if c < 32 {
-            b.append_str("\\u00"); b.append_u8(std::str::byte_at_unchecked(digits, c / 16)); b.append_u8(std::str::byte_at_unchecked(digits, c % 16));
+            b.append_str("\\u00");
+            b.append_u8(std::str::byte_at_unchecked(digits, c / 16));
+            b.append_u8(std::str::byte_at_unchecked(digits, c % 16));
         } else { b.append_u8(c); }
         i = i + 1;
     }
@@ -399,10 +414,29 @@ locus MemRecord {
         let id = "mem" + to_string(self.next_id);
         self.next_id = self.next_id + 1;
         let author = if len(row.author) > 0 { row.author } else { "host" };
-        self.rows.push(MemRow { chain: chain, parent: at, row: Row { seq: self.count(chain), kind: row.kind, entity: row.entity, body: row.body, author: author, id: id } });
+        self.rows.push(
+            MemRow {
+                chain: chain,
+                parent: at,
+                row: Row {
+                    seq: self.count(chain),
+                    kind: row.kind,
+                    entity: row.entity,
+                    body: row.body,
+                    author: author,
+                    id: id,
+                },
+            },
+        );
         return Appended { ok: true, id: id };
     }
-    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
+    fn append_batch(
+        chain: String,
+        at: String,
+        rows: RowBatch,
+        sign: Bool,
+        note: String
+    ) -> Appended {
         let mut cur = at;
         let mut i = 0;
         while i < rows.len() {

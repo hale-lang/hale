@@ -97,9 +97,21 @@ interface ModelSelection {
     fn select(req: ModelRequest, quick_ok: Bool, deep_ok: Bool, private_ok: Bool) -> String;
 }
 
-fn fake_answer(name: String, model: String, req: ModelRequest, max_bytes: Int, price: Int) -> ModelResult {
+fn fake_answer(
+    name: String,
+    model: String,
+    req: ModelRequest,
+    max_bytes: Int,
+    price: Int
+) -> ModelResult {
     if req.context_bytes > max_bytes {
-        return ModelResult { ok: false, backend: name, model: model, refused: "context too large", made: false };
+        return ModelResult {
+            ok: false,
+            backend: name,
+            model: model,
+            refused: "context too large",
+            made: false,
+        };
     }
     return ModelResult {
         ok: true,
@@ -160,7 +172,9 @@ locus FakeModel {
     // Journal reads like a real one, minus the wire.
     bus { publish ModelCalled; }
     birth() {
-        if len(self.answer_file) > 0 { self.answer = std::io::fs::read_file(self.answer_file) or ""; }
+        if len(self.answer_file) > 0 {
+            self.answer = std::io::fs::read_file(self.answer_file) or "";
+        }
         if len(self.rules_file) > 0 { self.rules = std::io::fs::read_file(self.rules_file) or ""; }
     }
     // The answer the first matching rule gives ("" when none matches).
@@ -203,7 +217,10 @@ locus FakeModel {
         if len(self.answers_dir) == 0 || len(req.target) == 0 || req.role != "edit" { return ""; }
         let a = std::str::index_of(req.attempt_id, "/a");
         if a >= 0 {
-            let by_try = std::io::fs::read_file(self.answers_dir + "/" + req.target + "@" + req.attempt_id[(a + 1)..len(req.attempt_id)]) or "";
+            let by_try = std::io::fs::read_file(
+                self.answers_dir + "/" + req.target + "@"
+                    + req.attempt_id[(a + 1)..len(req.attempt_id)],
+            ) or "";
             if len(by_try) > 0 { return by_try; }
         }
         return std::io::fs::read_file(self.answers_dir + "/" + req.target) or "";
@@ -214,9 +231,16 @@ locus FakeModel {
         self.last_prompt = req.prompt;
         self.last_context = req.context;
         let mut ev = ModelEvidence {
-            attempt_id: req.attempt_id, adapter: "fake", backend: self.name, endpoint: "fake://" + self.name,
+            attempt_id: req.attempt_id,
+            adapter: "fake",
+            backend: self.name,
+            endpoint: "fake://" + self.name,
             requested_model: self.model, reported_model: self.model,
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
@@ -224,17 +248,38 @@ locus FakeModel {
         if !self.allows(req.data_class) {
             ev.refused = "data class " + req.data_class;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model,
+                refused: ev.refused,
+                made: false,
+            };
         }
         if self.fail_after > 0 && self.calls > self.fail_after {
             ev.refused = "scripted failure after " + to_string(self.fail_after) + " call(s)";
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model,
+                refused: ev.refused,
+                made: false,
+            };
         }
         if len(self.turns_dir) > 0 && len(std::str::trim(req.tools)) > 2 {
             let t = scripted_turn(self.turns_dir, req.messages);
             if t.found {
-                let out = ModelResult { ok: true, backend: self.name, model: self.model, output: t.content, tool_calls: t.tool_calls, tokens: (len(t.content) + len(t.tool_calls)) / 4, output_tokens: (len(t.content) + len(t.tool_calls)) / 4, cost_micros: self.price_micros };
+                let out = ModelResult {
+                    ok: true,
+                    backend: self.name,
+                    model: self.model,
+                    output: t.content,
+                    tool_calls: t.tool_calls,
+                    tokens: (len(t.content) + len(t.tool_calls)) / 4,
+                    output_tokens: (len(t.content) + len(t.tool_calls)) / 4,
+                    cost_micros: self.price_micros,
+                };
                 ev.ok = true;
                 ev.output_tokens = out.output_tokens;
                 ev.cost_micros = out.cost_micros;
@@ -246,9 +291,25 @@ locus FakeModel {
         let found = self.scripted_for(req);
         let scripted = if len(found) > 0 { found } else { self.ruled_for(req) };
         let r = if len(scripted) > 0 {
-            ModelResult { ok: true, backend: self.name, model: self.model, output: scripted, tokens: len(scripted) / 4, output_tokens: len(scripted) / 4, cost_micros: self.price_micros }
+            ModelResult {
+                ok: true,
+                backend: self.name,
+                model: self.model,
+                output: scripted,
+                tokens: len(scripted) / 4,
+                output_tokens: len(scripted) / 4,
+                cost_micros: self.price_micros,
+            }
         } else if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {
-            ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, output_tokens: len(self.answer) / 4, cost_micros: self.price_micros }
+            ModelResult {
+                ok: true,
+                backend: self.name,
+                model: self.model,
+                output: self.answer,
+                tokens: len(self.answer) / 4,
+                output_tokens: len(self.answer) / 4,
+                cost_micros: self.price_micros,
+            }
         } else {
             fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros)
         };
@@ -310,14 +371,25 @@ fn temperature_param(milli: Int) -> String {
     return "temperature=" + to_string(milli / 1000) + "." + pad3(milli % 1000);
 }
 
-fn openai_chat_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
+fn openai_chat_body(
+    model: String,
+    req: ModelRequest,
+    temperature_milli: Int,
+    max_tokens: Int
+) -> String {
     return openai_chat_body_with(model, req, temperature_milli, max_tokens, false);
 }
 
 // The chat body, with the request's `metadata` when the endpoint takes it:
 // a gateway stores it untouched; a provider may refuse it unless it stores
 // the call, so a backend says whether to send it (`send_metadata`).
-fn openai_chat_body_with(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int, metadata: Bool) -> String {
+fn openai_chat_body_with(
+    model: String,
+    req: ModelRequest,
+    temperature_milli: Int,
+    max_tokens: Int,
+    metadata: Bool
+) -> String {
     let mut b = "{\"model\": " + jq(model) + ", \"messages\": [";
     if len(req.context) > 0 {
         b = b + "{\"role\": \"system\", \"content\": " + jq(req.context) + "}, ";
@@ -330,7 +402,10 @@ fn openai_chat_body_with(model: String, req: ModelRequest, temperature_milli: In
     if len(std::str::trim(req.tools)) > 2 { b = b + ", \"tools\": " + req.tools; }
     // a provider's default when none is set: some models refuse the
     // parameter outright (GH #566 F7), and the evidence says which it was
-    if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
+    if temperature_milli >= 0 {
+        b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "."
+            + pad3(temperature_milli % 1000);
+    }
     if max_tokens > 0 { b = b + ", \"max_tokens\": " + to_string(max_tokens); }
     if metadata && len(req.metadata) > 0 { b = b + ", \"metadata\": " + req.metadata; }
     return b + "}";
@@ -372,7 +447,10 @@ fn openai_tool_calls(body: String) -> String {
     if len(choices) == 0 { return ""; }
     let first = std::json::array_first_span(choices);
     if first.done { return ""; }
-    let calls = std::json::find_field_raw(std::json::find_field_raw(std::json::iter_substring(first, choices), "message"), "tool_calls");
+    let calls = std::json::find_field_raw(
+        std::json::find_field_raw(std::json::iter_substring(first, choices), "message"),
+        "tool_calls",
+    );
     if len(calls) < 2 { return ""; }
     let b = std::json::Builder { };
     b.begin_array();
@@ -439,7 +517,11 @@ fn scripted_turn(dir: String, messages: String) -> ScriptedTurn {
         b.end_array();
         calls = b.result();
     }
-    return ScriptedTurn { found: true, content: std::json::find_string_field(text, "content"), tool_calls: calls };
+    return ScriptedTurn {
+        found: true,
+        content: std::json::find_string_field(text, "content"),
+        tool_calls: calls,
+    };
 }
 
 type ChatOutcome {
@@ -460,7 +542,9 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
     }
     let text = openai_text(body);
     let calls = openai_tool_calls(body);
-    if len(text) == 0 && len(calls) == 0 { return ChatOutcome { status: status, refused: "no completion in the response" }; }
+    if len(text) == 0 && len(calls) == 0 {
+        return ChatOutcome { status: status, refused: "no completion in the response" };
+    }
     let usage = std::json::find_field_raw(body, "usage");
     return ChatOutcome {
         ok: true, status: status, text: text, tool_calls: calls,
@@ -499,13 +583,23 @@ fn model_key_slot(key: String) -> String { return "model-" + key; }
     // The header line is the wire write: the credential is revealed in the
     // one statement that sends the request (spec/semantics.md § "@sealed").
     @effects(is: { secret_use, external_model })
-    fn post_json(url: String, body: String, extra: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn post_json(
+        url: String,
+        body: String,
+        extra: String
+    ) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = std::http::parse_url(url) or raise;
         return std::http::request(std::http::ClientRequest {
             method: "POST",
             url: u,
             headers: "Content-Type: application/json\r\n" + extra
-                + (if self.scheme == "x-api-key" { "x-api-key: " } else { "Authorization: Bearer " })
+                + (
+                    if self.scheme == "x-api-key" {
+                        "x-api-key: "
+                    } else {
+                        "Authorization: Bearer "
+                    }
+                )
                 + std::secret::Credential { vault: self.slot() }.reveal_text(),
             body: std::bytes::from_string(body)
         }) or raise;
@@ -538,7 +632,9 @@ locus OpenAiChat {
     // A hosted model never sees customer data, and a backend without a
     // credential is not a permitted backend — the router refuses
     // cleanly instead of the wire failing.
-    fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.credential.ready(); }
+    fn allows(data_class: String) -> Bool {
+        return !protected_class(data_class) && self.credential.ready();
+    }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
@@ -548,22 +644,51 @@ locus OpenAiChat {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.endpoint, credential: self.credential.fingerprint(),
             requested_model: if len(req.model) > 0 { req.model } else { self.model },
-            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            params: temperature_param(self.temperature_milli) + " max_tokens="
+                + to_string(self.max_tokens),
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
         if !self.allows(req.data_class) {
-            ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
+            ev.refused = if self.credential.ready() {
+                "data class " + req.data_class
+            } else {
+                "credential not present"
+            };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: ev.requested_model, refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: ev.requested_model,
+                refused: ev.refused,
+                made: false,
+            };
         }
-        let body = openai_chat_body_with(ev.requested_model, req, self.temperature_milli, self.max_tokens, self.send_metadata);
+        let body = openai_chat_body_with(
+            ev.requested_model,
+            req,
+            self.temperature_milli,
+            self.max_tokens,
+            self.send_metadata,
+        );
         let t0 = std::time::monotonic();
-        let extra = if len(req.idempotency_key) > 0 { "Idempotency-Key: " + req.idempotency_key + "\r\n" } else { "" };
-        let resp = self.credential.post_json(self.endpoint, body, extra) or self.transport_failed(err);
+        let extra = if len(req.idempotency_key) > 0 {
+            "Idempotency-Key: " + req.idempotency_key + "\r\n"
+        } else {
+            ""
+        };
+        let resp = self.credential.post_json(
+            self.endpoint,
+            body,
+            extra,
+        ) or self.transport_failed(err);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
@@ -572,23 +697,46 @@ locus OpenAiChat {
         ev.input_tokens = out.input_tokens;
         ev.output_tokens = out.output_tokens;
         ev.response_digest = digest_of(out.text);
-        ev.cost_micros = (out.input_tokens * self.input_micros_per_1k + out.output_tokens * self.output_micros_per_1k) / 1000;
+        ev.cost_micros = (
+            out.input_tokens * self.input_micros_per_1k
+                + out.output_tokens * self.output_micros_per_1k
+        ) / 1000;
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: ev.requested_model, refused: out.refused, made: made_by_status(resp.status) };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: ev.requested_model,
+                refused: out.refused,
+                made: made_by_status(resp.status),
+            };
         }
         return ModelResult {
-            ok: true, backend: self.name, model: out.reported_model, output: out.text, tool_calls: out.tool_calls,
-            tokens: out.input_tokens + out.output_tokens, input_tokens: out.input_tokens, output_tokens: out.output_tokens, cost_micros: ev.cost_micros
+            ok: true,
+            backend: self.name,
+            model: out.reported_model,
+            output: out.text,
+            tool_calls: out.tool_calls,
+            tokens: out.input_tokens + out.output_tokens,
+            input_tokens: out.input_tokens,
+            output_tokens: out.output_tokens,
+            cost_micros: ev.cost_micros
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
         // never opened (`connect_failed`, a bad url or scheme): status -1, the
         // call was not made; anything after the request went out is 0, and
         // may have been acted on
-        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
-        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        let never = e.kind == "connect_failed"
+            || e.kind == "bad_url"
+            || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse {
+            status: if never { -1 } else { 0 },
+            body: std::bytes::from_string(
+                "{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}",
+            ),
+        };
     }
 }
 
@@ -600,10 +748,19 @@ locus OpenAiChat {
 // credential as OpenAiChat — the credential's scheme is the only
 // thing that knows how the key travels.
 
-fn anthropic_messages_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
-    let mut b = "{\"model\": " + jq(model) + ", \"max_tokens\": " + to_string(if max_tokens > 0 { max_tokens } else { 4096 });
+fn anthropic_messages_body(
+    model: String,
+    req: ModelRequest,
+    temperature_milli: Int,
+    max_tokens: Int
+) -> String {
+    let mut b = "{\"model\": " + jq(model) + ", \"max_tokens\": "
+        + to_string(if max_tokens > 0 { max_tokens } else { 4096 });
     if len(req.context) > 0 { b = b + ", \"system\": " + jq(req.context); }
-    if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
+    if temperature_milli >= 0 {
+        b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "."
+            + pad3(temperature_milli % 1000);
+    }
     return b + ", \"messages\": [{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}]}";
 }
 
@@ -628,7 +785,9 @@ fn parse_messages(status: Int, body: String) -> ChatOutcome {
         return ChatOutcome { status: status, refused: "http " + to_string(status) + " " + why };
     }
     let text = anthropic_text(body);
-    if len(text) == 0 { return ChatOutcome { status: status, refused: "no message in the response" }; }
+    if len(text) == 0 {
+        return ChatOutcome { status: status, refused: "no message in the response" };
+    }
     let usage = std::json::find_field_raw(body, "usage");
     return ChatOutcome {
         ok: true, status: status, text: text,
@@ -645,7 +804,10 @@ locus AnthropicMessages {
         endpoint: String = "https://api.anthropic.com/v1/messages";
         version: String = "2023-06-01"; // the `anthropic-version` header
         model: String = "claude-sonnet-5";
-        credential: HostedCredential = HostedCredential { key: "ANTHROPIC_API_KEY", scheme: "x-api-key" };
+        credential: HostedCredential = HostedCredential {
+            key: "ANTHROPIC_API_KEY",
+            scheme: "x-api-key",
+        };
         max_bytes: Int = 800000;
         temperature_milli: Int = -1; // < 0: the provider's default; 0..1000 sent as 0.000..1.000
         max_tokens: Int = 4096; // required by the API; a whole-file rewrite needs room
@@ -660,7 +822,9 @@ locus AnthropicMessages {
     fn adapter() -> String { return self.adapter; }
     fn price_micros(req: ModelRequest) -> Int { return -1; }
     fn model_name() -> String { return self.model; }
-    fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.credential.ready(); }
+    fn allows(data_class: String) -> Bool {
+        return !protected_class(data_class) && self.credential.ready();
+    }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
@@ -670,21 +834,45 @@ locus AnthropicMessages {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.endpoint, credential: self.credential.fingerprint(),
             requested_model: self.model,
-            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(if self.max_tokens > 0 { self.max_tokens } else { 4096 }),
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            params: temperature_param(self.temperature_milli) + " max_tokens="
+                + to_string(if self.max_tokens > 0 { self.max_tokens } else { 4096 }),
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
         if !self.allows(req.data_class) {
-            ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
+            ev.refused = if self.credential.ready() {
+                "data class " + req.data_class
+            } else {
+                "credential not present"
+            };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model,
+                refused: ev.refused,
+                made: false,
+            };
         }
-        let body = anthropic_messages_body(self.model, req, self.temperature_milli, self.max_tokens);
+        let body = anthropic_messages_body(
+            self.model,
+            req,
+            self.temperature_milli,
+            self.max_tokens,
+        );
         let t0 = std::time::monotonic();
-        let resp = self.credential.post_json(self.endpoint, body, "anthropic-version: " + self.version + "\r\n") or self.transport_failed(err);
+        let resp = self.credential.post_json(
+            self.endpoint,
+            body,
+            "anthropic-version: " + self.version + "\r\n",
+        ) or self.transport_failed(err);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_messages(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
@@ -693,23 +881,42 @@ locus AnthropicMessages {
         ev.input_tokens = out.input_tokens;
         ev.output_tokens = out.output_tokens;
         ev.response_digest = digest_of(out.text);
-        ev.cost_micros = (out.input_tokens * self.input_micros_per_1k + out.output_tokens * self.output_micros_per_1k) / 1000;
+        ev.cost_micros = (
+            out.input_tokens * self.input_micros_per_1k
+                + out.output_tokens * self.output_micros_per_1k
+        ) / 1000;
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model,
+                refused: out.refused,
+                made: made_by_status(resp.status),
+            };
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,
-            tokens: out.input_tokens + out.output_tokens, input_tokens: out.input_tokens, output_tokens: out.output_tokens, cost_micros: ev.cost_micros
+            tokens: out.input_tokens + out.output_tokens,
+            input_tokens: out.input_tokens,
+            output_tokens: out.output_tokens,
+            cost_micros: ev.cost_micros
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
         // never opened (`connect_failed`, a bad url or scheme): status -1, the
         // call was not made; anything after the request went out is 0, and
         // may have been acted on
-        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
-        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        let never = e.kind == "connect_failed"
+            || e.kind == "bad_url"
+            || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse {
+            status: if never { -1 } else { 0 },
+            body: std::bytes::from_string(
+                "{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}",
+            ),
+        };
     }
 }
 
@@ -741,15 +948,24 @@ locus LocalModel {
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: "local", backend: self.name,
             endpoint: self.endpoint, requested_model: self.model,
-            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            params: temperature_param(self.temperature_milli) + " max_tokens="
+                + to_string(self.max_tokens),
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
         let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
         let t0 = std::time::monotonic();
-        let resp = std::http::post(self.endpoint, std::bytes::from_string(body), "application/json") or self.transport_failed(err);
+        let resp = std::http::post(
+            self.endpoint,
+            std::bytes::from_string(body),
+            "application/json",
+        ) or self.transport_failed(err);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
@@ -761,16 +977,35 @@ locus LocalModel {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model,
+                refused: out.refused,
+                made: made_by_status(resp.status),
+            };
         }
-        return ModelResult { ok: true, backend: self.name, model: out.reported_model, output: out.text, tokens: out.input_tokens + out.output_tokens };
+        return ModelResult {
+            ok: true,
+            backend: self.name,
+            model: out.reported_model,
+            output: out.text,
+            tokens: out.input_tokens + out.output_tokens,
+        };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
         // never opened (`connect_failed`, a bad url or scheme): status -1, the
         // call was not made; anything after the request went out is 0, and
         // may have been acted on
-        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
-        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        let never = e.kind == "connect_failed"
+            || e.kind == "bad_url"
+            || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse {
+            status: if never { -1 } else { 0 },
+            body: std::bytes::from_string(
+                "{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}",
+            ),
+        };
     }
 }
 
@@ -833,9 +1068,12 @@ locus ModelRouter {
     // Whether the backend this request would go to works in place (a
     // harness): the editor asks before it exports a worktree.
     fn in_place(req: ModelRequest) -> Bool {
-        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
-        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
-        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let quick_ok = self.quick.allows(req.data_class)
+            && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class)
+            && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class)
+            && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
         if cls == "deep" { return self.deep.works_in_place(); }
         if cls == "private" { return self.private.works_in_place(); }
@@ -846,9 +1084,12 @@ locus ModelRouter {
     // would go to knows before sending (GH #1131); -1 when the cost is
     // learned only from the answer, or no backend is permitted.
     fn price_micros(req: ModelRequest) -> Int {
-        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
-        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
-        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let quick_ok = self.quick.allows(req.data_class)
+            && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class)
+            && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class)
+            && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
         if cls == "deep" { return self.deep.price_micros(req); }
         if cls == "private" { return self.private.price_micros(req); }
@@ -857,17 +1098,32 @@ locus ModelRouter {
     }
     // The router returns DATA. Which backend answered is recorded, not hidden.
     fn ask(req: ModelRequest) -> ModelResult {
-        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
-        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
-        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let quick_ok = self.quick.allows(req.data_class)
+            && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class)
+            && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class)
+            && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
         // what answered is this call's, never the last one's
         self.last_backend = "";
         self.last_adapter = "";
-        if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class, made: false }; }
+        if cls == "" {
+            return ModelResult {
+                ok: false,
+                refused: "no permitted backend for " + req.data_class,
+                made: false,
+            };
+        }
         self.calls = self.calls + 1;
         self.last_backend = cls;
-        self.last_adapter = if cls == "deep" { self.deep.adapter() } else if cls == "private" { self.private.adapter() } else { self.quick.adapter() };
+        self.last_adapter = if cls == "deep" {
+            self.deep.adapter()
+        } else if cls == "private" {
+            self.private.adapter()
+        } else {
+            self.quick.adapter()
+        };
         let r = if cls == "deep" { self.deep.complete(req) }
         else if cls == "private" { self.private.complete(req) }
         else { self.quick.complete(req) };
@@ -990,8 +1246,17 @@ fn parse_harness(output: String, code: Int, stdout: String, stderr: String) -> H
         input_tokens: std::json::find_int_field(usage, "input_tokens"),
         output_tokens: std::json::find_int_field(usage, "output_tokens")
     };
-    if std::json::find_bool_field(stdout, "is_error") { return HarnessOutcome { refused: "harness error: " + first_line(text), cost_micros: out.cost_micros }; }
-    if len(text) == 0 && len(std::json::find_field_raw(stdout, "result")) == 0 { return HarnessOutcome { refused: "no result object in the harness's output: " + first_line(trim_nl(stdout)) }; }
+    if std::json::find_bool_field(stdout, "is_error") {
+        return HarnessOutcome {
+            refused: "harness error: " + first_line(text),
+            cost_micros: out.cost_micros,
+        };
+    }
+    if len(text) == 0 && len(std::json::find_field_raw(stdout, "result")) == 0 {
+        return HarnessOutcome {
+            refused: "no result object in the harness's output: " + first_line(trim_nl(stdout)),
+        };
+    }
     return out;
 }
 
@@ -1029,7 +1294,10 @@ locus HarnessModel {
     birth() {
         let r = run_tool("sh\n-c\ncommand -v \"$0\"\n" + self.command);
         self.present = r.code == 0;
-        if len(self.genome) == 0 && len(self.genome_env) > 0 && std::env::var_exists(self.genome_env) {
+        if len(self.genome) == 0
+            && len(self.genome_env) > 0
+            && std::env::var_exists(self.genome_env)
+        {
             self.genome = std::env::var(self.genome_env);
         }
     }
@@ -1043,7 +1311,9 @@ locus HarnessModel {
     fn identity() -> String { return self.name; }
     fn adapter() -> String { return self.adapter; }
     fn price_micros(req: ModelRequest) -> Int { return -1; }
-    fn model_name() -> String { return if len(self.model) > 0 { self.command + " " + self.model } else { self.command }; }
+    fn model_name() -> String {
+        return if len(self.model) > 0 { self.command + " " + self.model } else { self.command };
+    }
     // A harness sends the prompt and whatever it reads to its own
     // hosted model: customer data never; and nothing without the binary.
     fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.present; }
@@ -1058,38 +1328,71 @@ locus HarnessModel {
     @effects(is: { external_model, harness_run })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
-        let kind = if self.confinement.kind() != "none" && self.confinement.available() { self.confinement.kind() } else { "none" };
+        let kind = if self.confinement.kind() != "none" && self.confinement.available() {
+            self.confinement.kind()
+        } else {
+            "none"
+        };
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.command, requested_model: self.model_name(),
-            params: "confinement=" + kind + " masked=" + to_string(path_count(self.effective_mask(req.mask))) + " output=" + self.output,
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            params: "confinement=" + kind + " masked="
+                + to_string(path_count(self.effective_mask(req.mask))) + " output=" + self.output,
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings,
             tool_grant: if len(req.workspace) > 0 { "harness @export" } else { "harness" },
             retry_of: req.retry_of, data_class: req.data_class
         };
         if !self.allows(req.data_class) {
-            ev.refused = if self.present { "data class " + req.data_class } else { "harness `" + self.command + "` not on PATH" };
+            ev.refused = if self.present {
+                "data class " + req.data_class
+            } else {
+                "harness `" + self.command + "` not on PATH"
+            };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model_name(),
+                refused: ev.refused,
+                made: false,
+            };
         }
         let mask = self.effective_mask(req.mask);
         // A confinement with nothing to mask is not a boundary. Refuse
         // rather than run and record `confinement=<kind>` over a process
         // that could read the genome by absolute path (finding 1).
         if kind != "none" && len(mask) == 0 {
-            ev.refused = "no genome to mask: set " + self.genome_env + " (or the org chart's `genome`) before a harness may claim a boundary";
+            ev.refused = "no genome to mask: set " + self.genome_env
+                + " (or the org chart's `genome`) before a harness may claim a boundary";
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model_name(),
+                refused: ev.refused,
+                made: false,
+            };
         }
         if !self.confined() {
-            ev.refused = "unconfined harness not allowed (" + self.confinement.kind() + " unavailable; `allow_unconfined` is the org chart's word)";
+            ev.refused = "unconfined harness not allowed (" + self.confinement.kind()
+                + " unavailable; `allow_unconfined` is the org chart's word)";
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model_name(),
+                refused: ev.refused,
+                made: false,
+            };
         }
         // an answer-only request runs in an empty directory of its own:
         // the harness's tools have nothing to reach there either
@@ -1100,7 +1403,11 @@ locus HarnessModel {
             scratch = trim_nl(t.stdout);
             cwd = scratch;
         }
-        let prompt = if len(req.context) > 0 { req.context + "\n\n" + req.prompt } else { req.prompt };
+        let prompt = if len(req.context) > 0 {
+            req.context + "\n\n" + req.prompt
+        } else {
+            req.prompt
+        };
         // The prompt goes on STDIN through a file this process owns,
         // outside the workspace so an import never sees it: argv cannot
         // carry a newline, and every real prompt has them (finding 5).
@@ -1111,7 +1418,13 @@ locus HarnessModel {
             if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model_name(),
+                refused: ev.refused,
+                made: false,
+            };
         }
         std::io::fs::write_file(prompt_file, prompt) or discard;
         let mut argv = self.command + "\n" + self.argv;
@@ -1119,7 +1432,8 @@ locus HarnessModel {
         // no boundary available and the org chart allows it: the harness
         // runs plainly in the workspace, and the evidence says `none`
         let inner = if kind == "none" { argv } else { self.confinement.wrap(argv, cwd, mask) };
-        let wrapped = "sh\n-c\ncd \"$1\" && p=\"$2\"; shift 2; exec \"$@\" < \"$p\"\nsh\n" + cwd + "\n" + prompt_file + "\n" + inner;
+        let wrapped = "sh\n-c\ncd \"$1\" && p=\"$2\"; shift 2; exec \"$@\" < \"$p\"\nsh\n" + cwd
+            + "\n" + prompt_file + "\n" + inner;
         let t0 = std::time::monotonic();
         let r = run_tool(wrapped);
         ev.elapsed = to_string(std::time::monotonic() - t0);
@@ -1136,7 +1450,13 @@ locus HarnessModel {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: out.refused, cost_micros: out.cost_micros };
+            return ModelResult {
+                ok: false,
+                backend: self.name,
+                model: self.model_name(),
+                refused: out.refused,
+                cost_micros: out.cost_micros,
+            };
         }
         return ModelResult {
             ok: true, backend: self.name, model: self.model_name(), output: out.text,
@@ -1154,7 +1474,8 @@ locus HarnessModel {
 // `ModelCalled` evidence as any call; nothing journals it because a
 // probe is nobody's Attempt.
 fn probe(name: String, b: ModelBackend) -> String {
-    let head = pad_right(name, 10) + "  " + pad_right(b.identity(), 8) + "  " + pad_right(b.model_name(), 28) + "  ";
+    let head = pad_right(name, 10) + "  " + pad_right(b.identity(), 8) + "  "
+        + pad_right(b.model_name(), 28) + "  ";
     if !b.allows("internal") { return head + "not permitted (no credential present)\n"; }
     let t0 = std::time::monotonic();
     let r = b.complete(ModelRequest {
@@ -1163,7 +1484,8 @@ fn probe(name: String, b: ModelBackend) -> String {
     });
     let elapsed = to_string(std::time::monotonic() - t0);
     if !r.ok { return head + "refused: " + r.refused + "\n"; }
-    return head + "ok  " + elapsed + "  " + to_string(r.cost_micros) + " micro-dollars  " + jq(first_line(r.output)) + "\n";
+    return head + "ok  " + elapsed + "  " + to_string(r.cost_micros) + " micro-dollars  "
+        + jq(first_line(r.output)) + "\n";
 }
 
 fn first_line(s: String) -> String {

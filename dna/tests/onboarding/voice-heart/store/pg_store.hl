@@ -77,7 +77,12 @@ locus PgStore {
     /// the first one is gone; inside a `hold`, no retry (it would run
     /// outside the transaction), and a failure ends the hold.
     fn rows(sql: String, a: db::Args) -> String fallible(StoreError) {
-        if !self.open() { fail StoreError { message: "Postgres unreachable at " + self.conn.host + ":" + to_string(self.conn.port) }; }
+        if !self.open() {
+            fail StoreError {
+                message: "Postgres unreachable at " + self.conn.host + ":"
+                    + to_string(self.conn.port),
+            };
+        }
         let mut r = self.conn.query_params(sql, a);
         if !r.ok && self.held {
             self.held = false;
@@ -120,7 +125,12 @@ locus PgStore {
     fn begin() fallible(StoreError) {
         // a write after `hold` goes on in its transaction
         if self.held { return; }
-        if !self.open() { fail StoreError { message: "Postgres unreachable at " + self.conn.host + ":" + to_string(self.conn.port) }; }
+        if !self.open() {
+            fail StoreError {
+                message: "Postgres unreachable at " + self.conn.host + ":"
+                    + to_string(self.conn.port),
+            };
+        }
         let mut st = self.conn.begin();
         if !st.ok && st.err.kind == "io" && self.redial() { st = self.conn.begin(); }
         if !st.ok { fail StoreError { message: "begin: " + st.err.detail }; }
@@ -177,7 +187,10 @@ locus PgStore {
         a.add(change.target);
         add_json(a, change.before);
         add_json(a, change.after);
-        self.step("INSERT INTO change (at, principal, action, target, before, after) VALUES ($1::timestamptz, NULL, $2, $3, $4::jsonb, $5::jsonb)", a) or raise;
+        self.step(
+            "INSERT INTO change (at, principal, action, target, before, after) VALUES ($1::timestamptz, NULL, $2, $3, $4::jsonb, $5::jsonb)",
+            a,
+        ) or raise;
     }
 
     fn rollback() {
@@ -190,13 +203,19 @@ locus PgStore {
     fn model(id: String) -> ModelRow fallible(StoreError) {
         let a = db::Args { };
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + MODEL_COLUMNS + " WHERE id = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + MODEL_COLUMNS + " WHERE id = $1) t",
+            a,
+        ) or raise;
         return model_row(j);
     }
 
     fn models() -> ModelRows fallible(StoreError) {
         let a = db::Args { };
-        let all = self.rows("SELECT row_to_json(t) FROM (" + MODEL_COLUMNS + " ORDER BY created_at, id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + MODEL_COLUMNS + " ORDER BY created_at, id) t",
+            a,
+        ) or raise;
         let mut out = ModelRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -211,9 +230,17 @@ locus PgStore {
 
     fn insert_model(row: ModelRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM catalog_model", db::Args { }, 256, "the catalog holds at most 256 models") or raise;
+        self.room(
+            "SELECT count(*) FROM catalog_model",
+            db::Args { },
+            256,
+            "the catalog holds at most 256 models",
+        ) or raise;
         let a = model_args(row);
-        let n = self.step("INSERT INTO catalog_model (id, owned_by, kind, context_length, max_output_tokens, price, created_at, removed_at) VALUES ($1, $2, $3, $4::int, $5::int, $6::jsonb, $7::timestamptz, $8::timestamptz) ON CONFLICT (id) DO NOTHING", a) or raise;
+        let n = self.step(
+            "INSERT INTO catalog_model (id, owned_by, kind, context_length, max_output_tokens, price, created_at, removed_at) VALUES ($1, $2, $3, $4::int, $5::int, $6::jsonb, $7::timestamptz, $8::timestamptz) ON CONFLICT (id) DO NOTHING",
+            a,
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -225,7 +252,10 @@ locus PgStore {
     fn update_model(row: ModelRow, change: ChangeRow) fallible(StoreError) {
         self.begin() or raise;
         let a = model_args(row);
-        self.step("UPDATE catalog_model SET owned_by = $2, kind = $3, context_length = $4::int, max_output_tokens = $5::int, price = $6::jsonb, created_at = $7::timestamptz, removed_at = $8::timestamptz WHERE id = $1", a) or raise;
+        self.step(
+            "UPDATE catalog_model SET owned_by = $2, kind = $3, context_length = $4::int, max_output_tokens = $5::int, price = $6::jsonb, created_at = $7::timestamptz, removed_at = $8::timestamptz WHERE id = $1",
+            a,
+        ) or raise;
         self.commit_with(change) or raise;
     }
 
@@ -234,13 +264,19 @@ locus PgStore {
     fn project(id: String) -> ProjectRow fallible(StoreError) {
         let a = db::Args { };
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + PROJECT_COLUMNS + " WHERE p.id = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + PROJECT_COLUMNS + " WHERE p.id = $1) t",
+            a,
+        ) or raise;
         return project_row(j);
     }
 
     fn projects() -> ProjectRows fallible(StoreError) {
         let a = db::Args { };
-        let all = self.rows("SELECT row_to_json(t) FROM (" + PROJECT_COLUMNS + " ORDER BY p.created_at, p.id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + PROJECT_COLUMNS + " ORDER BY p.created_at, p.id) t",
+            a,
+        ) or raise;
         let mut out = ProjectRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -255,8 +291,19 @@ locus PgStore {
 
     fn insert_project(row: ProjectRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM project", db::Args { }, 64, "voice holds at most 64 projects") or raise;
-        let n = self.step("INSERT INTO project (id, name, status, owners, data_classes, models, accounts, position, created_at, archived_at) VALUES ($1, $2, $3, " + names_param(4) + ", " + names_param(5) + ", " + restriction_param(6) + ", " + restriction_param(7) + ", $8, $9::timestamptz, $10::timestamptz) ON CONFLICT (id) DO NOTHING", project_args(row)) or raise;
+        self.room(
+            "SELECT count(*) FROM project",
+            db::Args { },
+            64,
+            "voice holds at most 64 projects",
+        ) or raise;
+        let n = self.step(
+            "INSERT INTO project (id, name, status, owners, data_classes, models, accounts, position, created_at, archived_at) VALUES ($1, $2, $3, "
+                + names_param(4) + ", " + names_param(5) + ", " + restriction_param(6) + ", "
+                + restriction_param(7)
+                + ", $8, $9::timestamptz, $10::timestamptz) ON CONFLICT (id) DO NOTHING",
+            project_args(row),
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -268,19 +315,38 @@ locus PgStore {
 
     fn update_project(row: ProjectRow, change: ChangeRow) fallible(StoreError) {
         self.begin() or raise;
-        self.step("UPDATE project SET name = $2, status = $3, owners = " + names_param(4) + ", data_classes = " + names_param(5) + ", models = " + restriction_param(6) + ", accounts = " + restriction_param(7) + ", position = $8, created_at = $9::timestamptz, archived_at = $10::timestamptz WHERE id = $1", project_args(row)) or raise;
+        self.step(
+            "UPDATE project SET name = $2, status = $3, owners = " + names_param(4)
+                + ", data_classes = " + names_param(5) + ", models = " + restriction_param(6)
+                + ", accounts = " + restriction_param(7)
+                + ", position = $8, created_at = $9::timestamptz, archived_at = $10::timestamptz WHERE id = $1",
+            project_args(row),
+        ) or raise;
         self.project_parts(row) or raise;
         self.commit_with(change) or raise;
     }
 
-    fn archive_project(row: ProjectRow, change: ChangeRow, revoked: Revocations) fallible(StoreError) {
+    fn archive_project(
+        row: ProjectRow,
+        change: ChangeRow,
+        revoked: Revocations
+    ) fallible(StoreError) {
         self.begin() or raise;
-        self.step("UPDATE project SET name = $2, status = $3, owners = " + names_param(4) + ", data_classes = " + names_param(5) + ", models = " + restriction_param(6) + ", accounts = " + restriction_param(7) + ", position = $8, created_at = $9::timestamptz, archived_at = $10::timestamptz WHERE id = $1", project_args(row)) or raise;
+        self.step(
+            "UPDATE project SET name = $2, status = $3, owners = " + names_param(4)
+                + ", data_classes = " + names_param(5) + ", models = " + restriction_param(6)
+                + ", accounts = " + restriction_param(7)
+                + ", position = $8, created_at = $9::timestamptz, archived_at = $10::timestamptz WHERE id = $1",
+            project_args(row),
+        ) or raise;
         for k in revoked.keys {
             let a = db::Args { };
             a.add(k.id);
             a.add(std::time::iso8601(k.revoked_at));
-            self.step("UPDATE api_key SET status = 'revoked', revoked_at = $2::timestamptz WHERE id = $1", a) or raise;
+            self.step(
+                "UPDATE api_key SET status = 'revoked', revoked_at = $2::timestamptz WHERE id = $1",
+                a,
+            ) or raise;
         }
         for c in revoked.changes {
             self.record(c) or raise;
@@ -301,11 +367,17 @@ locus PgStore {
             b.add(row.budget.currency);
             b.add(period_name(row.budget.period));
             b.add(std::time::iso8601(row.budget.period_anchor));
-            self.step("INSERT INTO budget (project, allowance_micros, currency, period, period_anchor) VALUES ($1, $2::bigint, $3, $4, $5::timestamptz)", b) or raise;
+            self.step(
+                "INSERT INTO budget (project, allowance_micros, currency, period, period_anchor) VALUES ($1, $2::bigint, $3, $4, $5::timestamptz)",
+                b,
+            ) or raise;
         }
         let d = db::Args { };
         d.add(row.id);
-        self.step("DELETE FROM \"limit\" WHERE project = $1 AND key IS NULL AND scope IN ('project', 'model')", d) or raise;
+        self.step(
+            "DELETE FROM \"limit\" WHERE project = $1 AND key IS NULL AND scope IN ('project', 'model')",
+            d,
+        ) or raise;
         for l in row.limits.items {
             self.step(INSERT_LIMIT, limit_args(l, row.id, "", "")) or raise;
         }
@@ -316,21 +388,32 @@ locus PgStore {
     fn key(id: String) -> KeyRow fallible(StoreError) {
         let a = db::Args { };
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + KEY_COLUMNS + " WHERE k.id = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + KEY_COLUMNS + " WHERE k.id = $1) t",
+            a,
+        ) or raise;
         return key_row(j);
     }
 
     fn key_by_digest(digest: String) -> KeyRow fallible(StoreError) {
         let a = db::Args { };
         a.add(digest);
-        let j = self.row("SELECT row_to_json(t) FROM (" + KEY_COLUMNS + " WHERE k.secret_digest = decode($1, 'hex')) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + KEY_COLUMNS
+                + " WHERE k.secret_digest = decode($1, 'hex')) t",
+            a,
+        ) or raise;
         return key_row(j);
     }
 
     fn keys(project: String) -> KeyRows fallible(StoreError) {
         let a = db::Args { };
         a.add(project);
-        let all = self.rows("SELECT row_to_json(t) FROM (" + KEY_COLUMNS + " WHERE k.project = $1 ORDER BY k.created_at, k.id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + KEY_COLUMNS
+                + " WHERE k.project = $1 ORDER BY k.created_at, k.id) t",
+            a,
+        ) or raise;
         let mut out = KeyRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -345,8 +428,18 @@ locus PgStore {
 
     fn insert_key(row: KeyRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM api_key WHERE project = $1", single_value(row.project), 64, "a project holds at most 64 keys") or raise;
-        let n = self.step("INSERT INTO api_key (id, project, name, prefix, secret_digest, models, accounts, status, created_at, expires_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, decode($5, 'hex'), " + restriction_param(6) + ", " + restriction_param(7) + ", $8, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::timestamptz) ON CONFLICT (id) DO NOTHING", key_args(row)) or raise;
+        self.room(
+            "SELECT count(*) FROM api_key WHERE project = $1",
+            single_value(row.project),
+            64,
+            "a project holds at most 64 keys",
+        ) or raise;
+        let n = self.step(
+            "INSERT INTO api_key (id, project, name, prefix, secret_digest, models, accounts, status, created_at, expires_at, last_used_at, revoked_at) VALUES ($1, $2, $3, $4, decode($5, 'hex'), "
+                + restriction_param(6) + ", " + restriction_param(7)
+                + ", $8, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::timestamptz) ON CONFLICT (id) DO NOTHING",
+            key_args(row),
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -358,7 +451,12 @@ locus PgStore {
 
     fn update_key(row: KeyRow, change: ChangeRow) fallible(StoreError) {
         self.begin() or raise;
-        self.step("UPDATE api_key SET project = $2, name = $3, prefix = $4, secret_digest = decode($5, 'hex'), models = " + restriction_param(6) + ", accounts = " + restriction_param(7) + ", status = $8, created_at = $9::timestamptz, expires_at = $10::timestamptz, last_used_at = $11::timestamptz, revoked_at = $12::timestamptz WHERE id = $1", key_args(row)) or raise;
+        self.step(
+            "UPDATE api_key SET project = $2, name = $3, prefix = $4, secret_digest = decode($5, 'hex'), models = "
+                + restriction_param(6) + ", accounts = " + restriction_param(7)
+                + ", status = $8, created_at = $9::timestamptz, expires_at = $10::timestamptz, last_used_at = $11::timestamptz, revoked_at = $12::timestamptz WHERE id = $1",
+            key_args(row),
+        ) or raise;
         self.key_limits(row) or raise;
         self.commit_with(change) or raise;
     }
@@ -384,13 +482,19 @@ locus PgStore {
     fn account(id: String) -> AccountRow fallible(StoreError) {
         let a = db::Args { };
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + ACCOUNT_COLUMNS + " WHERE a.id = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + ACCOUNT_COLUMNS + " WHERE a.id = $1) t",
+            a,
+        ) or raise;
         return account_row(j);
     }
 
     fn accounts() -> AccountRows fallible(StoreError) {
         let a = db::Args { };
-        let all = self.rows("SELECT row_to_json(t) FROM (" + ACCOUNT_COLUMNS + " ORDER BY a.created_at, a.id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + ACCOUNT_COLUMNS + " ORDER BY a.created_at, a.id) t",
+            a,
+        ) or raise;
         let mut out = AccountRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -405,8 +509,16 @@ locus PgStore {
 
     fn insert_account(row: AccountRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM account", db::Args { }, 64, "voice holds at most 64 accounts") or raise;
-        let n = self.step("INSERT INTO account (id, name, provider, billing, status, created_at, archived_at) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz) ON CONFLICT (id) DO NOTHING", account_args(row)) or raise;
+        self.room(
+            "SELECT count(*) FROM account",
+            db::Args { },
+            64,
+            "voice holds at most 64 accounts",
+        ) or raise;
+        let n = self.step(
+            "INSERT INTO account (id, name, provider, billing, status, created_at, archived_at) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz) ON CONFLICT (id) DO NOTHING",
+            account_args(row),
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -418,7 +530,10 @@ locus PgStore {
 
     fn update_account(row: AccountRow, change: ChangeRow) fallible(StoreError) {
         self.begin() or raise;
-        self.step("UPDATE account SET name = $2, provider = $3, billing = $4, status = $5, created_at = $6::timestamptz, archived_at = $7::timestamptz WHERE id = $1", account_args(row)) or raise;
+        self.step(
+            "UPDATE account SET name = $2, provider = $3, billing = $4, status = $5, created_at = $6::timestamptz, archived_at = $7::timestamptz WHERE id = $1",
+            account_args(row),
+        ) or raise;
         self.account_limits(row) or raise;
         self.commit_with(change) or raise;
     }
@@ -437,13 +552,19 @@ locus PgStore {
     fn node(id: String) -> NodeRow fallible(StoreError) {
         let a = db::Args { };
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + NODE_COLUMNS + " WHERE id = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + NODE_COLUMNS + " WHERE id = $1) t",
+            a,
+        ) or raise;
         return node_row(j);
     }
 
     fn nodes() -> NodeRows fallible(StoreError) {
         let a = db::Args { };
-        let all = self.rows("SELECT row_to_json(t) FROM (" + NODE_COLUMNS + " ORDER BY created_at, id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + NODE_COLUMNS + " ORDER BY created_at, id) t",
+            a,
+        ) or raise;
         let mut out = NodeRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -458,10 +579,18 @@ locus PgStore {
 
     fn insert_node(row: NodeRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM node", db::Args { }, 64, "voice holds at most 64 nodes") or raise;
+        self.room(
+            "SELECT count(*) FROM node",
+            db::Args { },
+            64,
+            "voice holds at most 64 nodes",
+        ) or raise;
         let mut r = row;
         r.assignment_version = 1;
-        let n = self.step("INSERT INTO node (id, name, token_digest, max_in_flight, status, assignment_version, created_at, revoked_at) VALUES ($1, $2, decode($3, 'hex'), $4::int, $5, $6::int, $7::timestamptz, $8::timestamptz) ON CONFLICT (id) DO NOTHING", node_args(r)) or raise;
+        let n = self.step(
+            "INSERT INTO node (id, name, token_digest, max_in_flight, status, assignment_version, created_at, revoked_at) VALUES ($1, $2, decode($3, 'hex'), $4::int, $5, $6::int, $7::timestamptz, $8::timestamptz) ON CONFLICT (id) DO NOTHING",
+            node_args(r),
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -474,7 +603,10 @@ locus PgStore {
         self.begin() or raise;
         // the version moves on in SQL: a seat written meanwhile moved it too;
         // the brain's up and down stay as they are
-        self.step("UPDATE node SET name = $2, token_digest = decode($3, 'hex'), max_in_flight = $4::int, status = CASE WHEN $5 = 'revoked' OR status = 'revoked' THEN 'revoked' ELSE status END, assignment_version = assignment_version + 1, created_at = $6::timestamptz, revoked_at = $7::timestamptz WHERE id = $1", node_update_args(row)) or raise;
+        self.step(
+            "UPDATE node SET name = $2, token_digest = decode($3, 'hex'), max_in_flight = $4::int, status = CASE WHEN $5 = 'revoked' OR status = 'revoked' THEN 'revoked' ELSE status END, assignment_version = assignment_version + 1, created_at = $6::timestamptz, revoked_at = $7::timestamptz WHERE id = $1",
+            node_update_args(row),
+        ) or raise;
         self.commit_with(change) or raise;
     }
 
@@ -482,13 +614,19 @@ locus PgStore {
         let a = db::Args { };
         a.add(node);
         a.add(id);
-        let j = self.row("SELECT row_to_json(t) FROM (" + SEAT_COLUMNS + " WHERE node = $1 AND id = $2) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (" + SEAT_COLUMNS + " WHERE node = $1 AND id = $2) t",
+            a,
+        ) or raise;
         return seat_row(j);
     }
 
     fn seats() -> SeatRows fallible(StoreError) {
         let a = db::Args { };
-        let all = self.rows("SELECT row_to_json(t) FROM (" + SEAT_COLUMNS + " ORDER BY node, id) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (" + SEAT_COLUMNS + " ORDER BY node, id) t",
+            a,
+        ) or raise;
         let mut out = SeatRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -503,8 +641,18 @@ locus PgStore {
 
     fn insert_seat(row: SeatRow, change: ChangeRow) -> Bool fallible(StoreError) {
         self.begin() or raise;
-        self.room("SELECT count(*) FROM seat", db::Args { }, 256, "voice holds at most 256 seats") or raise;
-        let n = self.step("INSERT INTO seat (node, id, engine, account, serves, data_classes, concurrency, enabled, config) VALUES ($1, $2, $3, $4, $5::jsonb, " + names_param(6) + ", $7::int, $8::boolean, $9::jsonb) ON CONFLICT (node, id) DO NOTHING", seat_args(row)) or raise;
+        self.room(
+            "SELECT count(*) FROM seat",
+            db::Args { },
+            256,
+            "voice holds at most 256 seats",
+        ) or raise;
+        let n = self.step(
+            "INSERT INTO seat (node, id, engine, account, serves, data_classes, concurrency, enabled, config) VALUES ($1, $2, $3, $4, $5::jsonb, "
+                + names_param(6)
+                + ", $7::int, $8::boolean, $9::jsonb) ON CONFLICT (node, id) DO NOTHING",
+            seat_args(row),
+        ) or raise;
         if n == 0 {
             self.rollback();
             return false;
@@ -516,7 +664,12 @@ locus PgStore {
 
     fn update_seat(row: SeatRow, change: ChangeRow) fallible(StoreError) {
         self.begin() or raise;
-        self.step("UPDATE seat SET engine = $3, account = $4, serves = $5::jsonb, data_classes = " + names_param(6) + ", concurrency = $7::int, enabled = $8::boolean, config = $9::jsonb WHERE node = $1 AND id = $2", seat_args(row)) or raise;
+        self.step(
+            "UPDATE seat SET engine = $3, account = $4, serves = $5::jsonb, data_classes = "
+                + names_param(6)
+                + ", concurrency = $7::int, enabled = $8::boolean, config = $9::jsonb WHERE node = $1 AND id = $2",
+            seat_args(row),
+        ) or raise;
         self.bump(row.node) or raise;
         self.commit_with(change) or raise;
     }
@@ -537,13 +690,19 @@ locus PgStore {
     fn bump(node: String) fallible(StoreError) {
         let a = db::Args { };
         a.add(node);
-        self.step("UPDATE node SET assignment_version = assignment_version + 1 WHERE id = $1", a) or raise;
+        self.step(
+            "UPDATE node SET assignment_version = assignment_version + 1 WHERE id = $1",
+            a,
+        ) or raise;
     }
 
     // ---- the change log
 
     fn route_table() -> String fallible(StoreError) {
-        return self.row("SELECT (jsonb_build_object('version', version, 'at', to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')) || body)::text FROM route_table", db::Args { }) or raise;
+        return self.row(
+            "SELECT (jsonb_build_object('version', version, 'at', to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')) || body)::text FROM route_table",
+            db::Args { },
+        ) or raise;
     }
 
     fn changes(q: ChangeQuery) -> ChangeRows fallible(StoreError) {
@@ -552,16 +711,30 @@ locus PgStore {
         a.add(q.target);
         if q.has_from { a.add(std::time::iso8601(q.from)); } else { a.add_null(); }
         if q.has_to { a.add(std::time::iso8601(q.to)); } else { a.add_null(); }
-        let cursor = if std::str::starts_with(q.cursor, "chg_") { std::str::parse_int(q.cursor[4..len(q.cursor)]) or 0 } else { 0 };
+        let cursor = if std::str::starts_with(q.cursor, "chg_") {
+            std::str::parse_int(q.cursor[4..len(q.cursor)]) or 0
+        } else {
+            0
+        };
         if len(q.cursor) > 0 {
             let c = db::Args { };
             c.add(to_string(cursor));
-            let known = if cursor > 0 { self.row("SELECT row_to_json(t) FROM (SELECT id FROM change WHERE id = $1::bigint) t", c) or raise } else { "" };
+            let known = if cursor > 0 {
+                self.row(
+                    "SELECT row_to_json(t) FROM (SELECT id FROM change WHERE id = $1::bigint) t",
+                    c,
+                ) or raise
+            } else {
+                ""
+            };
             if len(known) == 0 { return ChangeRows { cursor_known: false }; }
         }
         a.add(to_string(cursor));
         a.add(to_string(limit + 1));
-        let all = self.rows("SELECT row_to_json(t) FROM (SELECT id, at, action, target, before, after FROM change WHERE ($1 = '' OR target = $1 OR starts_with(target, $1 || '/')) AND ($2::timestamptz IS NULL OR at >= $2::timestamptz) AND ($3::timestamptz IS NULL OR at <= $3::timestamptz) AND ($4::bigint = 0 OR id < $4::bigint) ORDER BY id DESC LIMIT $5::int) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (SELECT id, at, action, target, before, after FROM change WHERE ($1 = '' OR target = $1 OR starts_with(target, $1 || '/')) AND ($2::timestamptz IS NULL OR at >= $2::timestamptz) AND ($3::timestamptz IS NULL OR at <= $3::timestamptz) AND ($4::bigint = 0 OR id < $4::bigint) ORDER BY id DESC LIMIT $5::int) t",
+            a,
+        ) or raise;
         let mut out = ChangeRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -593,7 +766,10 @@ locus PgStore {
     fn fleet(node: String) -> FleetRow fallible(StoreError) {
         let a = db::Args { };
         a.add(node);
-        let j = self.row("SELECT row_to_json(t) FROM (SELECT node, version, capabilities, local, registered_at, applied_version, draining FROM node_state WHERE node = $1) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (SELECT node, version, capabilities, local, registered_at, applied_version, draining FROM node_state WHERE node = $1) t",
+            a,
+        ) or raise;
         if len(j) == 0 { return FleetRow { }; }
         return FleetRow {
             node: pg_text(j, "node"),
@@ -601,7 +777,11 @@ locus PgStore {
             capabilities: raw_or_empty(j, "capabilities"),
             local: raw_or_empty(j, "local"),
             registered_at: pg_time(pg_text(j, "registered_at")),
-            applied_version: if std::json::string_field(j, "applied_version").kind == "number" { std::json::find_int_field(j, "applied_version") } else { -1 },
+            applied_version: if std::json::string_field(j, "applied_version").kind == "number" {
+                std::json::find_int_field(j, "applied_version")
+            } else {
+                    -1
+            },
             draining: std::json::find_bool_field(j, "draining"),
             present: true
         };
@@ -614,17 +794,31 @@ locus PgStore {
         a.add(row.capabilities);
         a.add(row.local);
         a.add(std::time::iso8601(row.registered_at));
-        if row.applied_version >= 0 { a.add(to_string(row.applied_version)); } else { a.add_null(); }
+        if row.applied_version >= 0 {
+            a.add(to_string(row.applied_version));
+        } else {
+            a.add_null();
+        }
         a.add(if row.draining { "true" } else { "false" });
-        self.write("INSERT INTO node_state (node, version, capabilities, local, registered_at, applied_version, draining) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::timestamptz, $6::int, $7::boolean) ON CONFLICT (node) DO UPDATE SET version = excluded.version, capabilities = excluded.capabilities, local = excluded.local, registered_at = excluded.registered_at, applied_version = excluded.applied_version, draining = excluded.draining", a) or raise;
+        self.write(
+            "INSERT INTO node_state (node, version, capabilities, local, registered_at, applied_version, draining) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::timestamptz, $6::int, $7::boolean) ON CONFLICT (node) DO UPDATE SET version = excluded.version, capabilities = excluded.capabilities, local = excluded.local, registered_at = excluded.registered_at, applied_version = excluded.applied_version, draining = excluded.draining",
+            a,
+        ) or raise;
     }
 
     fn beat(node: String) -> Beat fallible(StoreError) {
         let a = db::Args { };
         a.add(node);
-        let j = self.row("SELECT row_to_json(t) FROM (SELECT last_heartbeat_at, in_flight FROM node_state WHERE node = $1 AND last_heartbeat_at IS NOT NULL) t", a) or raise;
+        let j = self.row(
+            "SELECT row_to_json(t) FROM (SELECT last_heartbeat_at, in_flight FROM node_state WHERE node = $1 AND last_heartbeat_at IS NOT NULL) t",
+            a,
+        ) or raise;
         if len(j) == 0 { return Beat { }; }
-        return Beat { at: pg_time(pg_text(j, "last_heartbeat_at")), in_flight: std::json::find_int_field(j, "in_flight"), present: true };
+        return Beat {
+            at: pg_time(pg_text(j, "last_heartbeat_at")),
+            in_flight: std::json::find_int_field(j, "in_flight"),
+            present: true,
+        };
     }
 
     fn put_beat(node: String, when: Time, in_flight: Int) fallible(StoreError) {
@@ -633,13 +827,19 @@ locus PgStore {
         let a = db::Args { };
         a.add(node);
         a.add(to_string(in_flight));
-        self.write("UPDATE node_state SET last_heartbeat_at = now(), in_flight = $2::int WHERE node = $1", a) or raise;
+        self.write(
+            "UPDATE node_state SET last_heartbeat_at = now(), in_flight = $2::int WHERE node = $1",
+            a,
+        ) or raise;
     }
 
     fn seat_states(node: String) -> SeatStateRows fallible(StoreError) {
         let a = db::Args { };
         a.add(node);
-        let all = self.rows("SELECT row_to_json(t) FROM (SELECT node, seat, status, reason, in_flight FROM seat_state WHERE node = $1 ORDER BY seat) t", a) or raise;
+        let all = self.rows(
+            "SELECT row_to_json(t) FROM (SELECT node, seat, status, reason, in_flight FROM seat_state WHERE node = $1 ORDER BY seat) t",
+            a,
+        ) or raise;
         let mut out = SeatStateRows { };
         let v = std::str::bytes_view(all);
         let mut start = 0;
@@ -669,13 +869,19 @@ locus PgStore {
         a.add(row.status);
         if len(row.reason) > 0 { a.add(row.reason); } else { a.add_null(); }
         a.add(to_string(row.in_flight));
-        self.write("INSERT INTO seat_state (node, seat, status, reason, in_flight, reported_at) VALUES ($1, $2, $3, $4, $5::int, now()) ON CONFLICT (node, seat) DO UPDATE SET status = excluded.status, reason = excluded.reason, in_flight = excluded.in_flight, reported_at = excluded.reported_at", a) or raise;
+        self.write(
+            "INSERT INTO seat_state (node, seat, status, reason, in_flight, reported_at) VALUES ($1, $2, $3, $4, $5::int, now()) ON CONFLICT (node, seat) DO UPDATE SET status = excluded.status, reason = excluded.reason, in_flight = excluded.in_flight, reported_at = excluded.reported_at",
+            a,
+        ) or raise;
     }
 
     fn windows(account: String) -> String fallible(StoreError) {
         let a = db::Args { };
         a.add(account);
-        let j = self.row("SELECT jsonb_agg(jsonb_build_object('name', name, 'used_percent', used_percent, 'resets_at', resets_at, 'observed_at', observed_at) || CASE WHEN seat IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('seat', seat) END ORDER BY name) FROM quota_window WHERE account = $1", a) or raise;
+        let j = self.row(
+            "SELECT jsonb_agg(jsonb_build_object('name', name, 'used_percent', used_percent, 'resets_at', resets_at, 'observed_at', observed_at) || CASE WHEN seat IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('seat', seat) END ORDER BY name) FROM quota_window WHERE account = $1",
+            a,
+        ) or raise;
         return if std::str::starts_with(j, "[") { j } else { "" };
     }
 
@@ -687,7 +893,10 @@ locus PgStore {
         let b = db::Args { };
         b.add(account);
         b.add(json);
-        self.step("INSERT INTO quota_window (account, name, used_percent, resets_at, observed_at, seat) SELECT $1, w->>'name', (w->>'used_percent')::numeric, (w->>'resets_at')::timestamptz, (w->>'observed_at')::timestamptz, w->>'seat' FROM jsonb_array_elements($2::jsonb) w", b) or raise;
+        self.step(
+            "INSERT INTO quota_window (account, name, used_percent, resets_at, observed_at, seat) SELECT $1, w->>'name', (w->>'used_percent')::numeric, (w->>'resets_at')::timestamptz, (w->>'observed_at')::timestamptz, w->>'seat' FROM jsonb_array_elements($2::jsonb) w",
+            b,
+        ) or raise;
         let st = self.conn.commit();
         if !st.ok {
             self.conn.rollback();
@@ -698,7 +907,12 @@ locus PgStore {
     /// One statement on its own, over a fresh connection once when the
     /// first one is gone.
     fn write(sql: String, a: db::Args) fallible(StoreError) {
-        if !self.open() { fail StoreError { message: "Postgres unreachable at " + self.conn.host + ":" + to_string(self.conn.port) }; }
+        if !self.open() {
+            fail StoreError {
+                message: "Postgres unreachable at " + self.conn.host + ":"
+                    + to_string(self.conn.port),
+            };
+        }
         let mut r = self.conn.exec_params(sql, a);
         if !r.ok && r.err.kind == "io" && self.redial() { r = self.conn.exec_params(sql, a); }
         if !r.ok { fail StoreError { message: r.err.kind + ": " + r.err.detail }; }
@@ -710,7 +924,16 @@ locus PgStore {
 /// A DSN's parts; `problem` says what is wrong with it, "" when nothing is.
 /// `vault` names the `std::secret` vault entry that holds the password,
 /// when the DSN carries none (the habitat's, below).
-type Dsn { host: String = "127.0.0.1"; port: Int = 5432; user: String = "postgres"; password: String = ""; vault: String = ""; database: String = "postgres"; sslmode: String = "prefer"; problem: String = ""; }
+type Dsn {
+    host: String = "127.0.0.1";
+    port: Int = 5432;
+    user: String = "postgres";
+    password: String = "";
+    vault: String = "";
+    database: String = "postgres";
+    sslmode: String = "prefer";
+    problem: String = "";
+}
 
 /// `postgres://user[:password]@host[:port]/database[?sslmode=MODE][&vault=ENTRY]`.
 /// The credentials end at the last `@`, so a password may hold one, and
@@ -751,11 +974,15 @@ fn parse_dsn(url: String) -> Dsn {
     if pc >= 0 {
         d.host = rest[0..pc];
         d.port = std::str::parse_int(rest[(pc + 1)..len(rest)]) or - 1;
-        if d.port < 1 || d.port > 65535 { d.problem = "the database URL's port is not a port number"; }
+        if d.port < 1 || d.port > 65535 {
+            d.problem = "the database URL's port is not a port number";
+        }
     } else if len(rest) > 0 {
         d.host = rest;
     }
-    if len(d.vault) > 0 && len(d.password) > 0 { d.problem = "the database URL names both a password and a vault entry for it"; }
+    if len(d.vault) > 0 && len(d.password) > 0 {
+        d.problem = "the database URL names both a password and a vault entry for it";
+    }
     return d;
 }
 
@@ -769,13 +996,21 @@ const HABITAT_DATABASE_ENV: String = "HALE_DNA_DATABASE_DSN";
 /// grafted, else "" (the store in memory).
 fn database_or_habitat(given: String) -> String {
     if len(given) > 0 { return given; }
-    return if std::env::var_exists(HABITAT_DATABASE_ENV) { std::env::var(HABITAT_DATABASE_ENV) } else { "" };
+    return if std::env::var_exists(HABITAT_DATABASE_ENV) {
+        std::env::var(HABITAT_DATABASE_ENV)
+    } else {
+        ""
+    };
 }
 
 /// The value of `name` in a URL's query, `otherwise` without it.
 fn query_value(query: String, name: String, otherwise: String) -> String {
     let key = name + "=";
-    let at = if std::str::starts_with(query, key) { 0 } else { std::str::index_of(query, "&" + key) };
+    let at = if std::str::starts_with(query, key) {
+        0
+    } else {
+        std::str::index_of(query, "&" + key)
+    };
     if at < 0 { return otherwise; }
     let v = query[(at + (if at == 0 { 0 } else { 1 }) + len(key))..len(query)];
     let amp = std::str::index_of(v, "&");
@@ -841,12 +1076,14 @@ fn single_value(v: String) -> db::Args {
 
 /// A `text[]` from the JSON array in parameter `$n`; `{}` for none.
 fn names_param(n: Int) -> String {
-    return "coalesce((SELECT array_agg(x) FROM jsonb_array_elements_text($" + to_string(n) + "::jsonb) x), '{}')";
+    return "coalesce((SELECT array_agg(x) FROM jsonb_array_elements_text($" + to_string(n)
+        + "::jsonb) x), '{}')";
 }
 
 /// A nullable `text[]` from the JSON array or `null` in parameter `$n`.
 fn restriction_param(n: Int) -> String {
-    return "CASE WHEN $" + to_string(n) + "::jsonb IS NULL THEN NULL ELSE " + names_param(n) + " END";
+    return "CASE WHEN $" + to_string(n) + "::jsonb IS NULL THEN NULL ELSE " + names_param(n)
+        + " END";
 }
 
 const MODEL_COLUMNS: String = "SELECT id, owned_by, kind, context_length, max_output_tokens, price, created_at, removed_at FROM catalog_model";
@@ -889,7 +1126,9 @@ fn pg_names(raw: String) -> Names {
     let mut it = std::json::array_first(raw);
     while !it.done {
         let e = std::str::trim(it.element);
-        if len(e) >= 2 && std::str::starts_with(e, "\"") { push(out.items, std::json::unescape_string(e[1..(len(e) - 1)])) or discard; }
+        if len(e) >= 2 && std::str::starts_with(e, "\"") {
+            push(out.items, std::json::unescape_string(e[1..(len(e) - 1)])) or discard;
+        }
         it = std::json::array_next(it);
     }
     return out;
@@ -904,7 +1143,11 @@ fn pg_restriction(json: String, name: String) -> Restriction {
 
 /// A count that may be `null`, -1 for `null`.
 fn pg_count(json: String, name: String) -> Int {
-    return if std::json::string_field(json, name).kind == "number" { std::json::find_int_field(json, name) } else { -1 };
+    return if std::json::string_field(json, name).kind == "number" {
+        std::json::find_int_field(json, name)
+    } else {
+            -1
+    };
 }
 
 /// The limits a row's `limits` column holds.
@@ -937,10 +1180,26 @@ fn model_row(j: String) -> ModelRow {
         id: pg_text(j, "id"),
         owned_by: pg_text(j, "owned_by"),
         kind: pg_text(j, "kind"),
-        context_length: if pg_count(j, "context_length") > 0 { pg_count(j, "context_length") } else { 0 },
-        max_output_tokens: if pg_count(j, "max_output_tokens") > 0 { pg_count(j, "max_output_tokens") } else { 0 },
+        context_length: if pg_count(j, "context_length") > 0 {
+            pg_count(j, "context_length")
+        } else {
+            0
+        },
+        max_output_tokens: if pg_count(j, "max_output_tokens") > 0 {
+            pg_count(j, "max_output_tokens")
+        } else {
+            0
+        },
         priced: priced,
-        price: if priced { ModelPrice { input_per_mtok_micros: std::json::find_int_field(price, "input_per_mtok_micros"), output_per_mtok_micros: std::json::find_int_field(price, "output_per_mtok_micros"), currency: pg_text(price, "currency") } } else { ModelPrice { } },
+        price: if priced {
+            ModelPrice {
+                input_per_mtok_micros: std::json::find_int_field(price, "input_per_mtok_micros"),
+                output_per_mtok_micros: std::json::find_int_field(price, "output_per_mtok_micros"),
+                currency: pg_text(price, "currency"),
+            }
+        } else {
+            ModelPrice { }
+        },
         created_at: pg_time(pg_text(j, "created_at")),
         removed: removed,
         removed_at: pg_time(pg_text(j, "removed_at")),
@@ -973,7 +1232,16 @@ fn project_row(j: String) -> ProjectRow {
         models: pg_restriction(j, "models"),
         accounts: pg_restriction(j, "accounts"),
         budgeted: budgeted,
-        budget: if budgeted { BudgetSet { allowance_micros: std::json::find_int_field(b, "allowance_micros"), currency: pg_text(b, "currency"), period: period_of(pg_text(b, "period")), period_anchor: pg_time(pg_text(b, "period_anchor")) } } else { BudgetSet { period: Period::month } },
+        budget: if budgeted {
+            BudgetSet {
+                allowance_micros: std::json::find_int_field(b, "allowance_micros"),
+                currency: pg_text(b, "currency"),
+                period: period_of(pg_text(b, "period")),
+                period_anchor: pg_time(pg_text(b, "period_anchor")),
+            }
+        } else {
+            BudgetSet { period: Period::month }
+        },
         limits: pg_limits(j),
         position: pg_text(j, "position"),
         created_at: pg_time(pg_text(j, "created_at")),
@@ -1135,7 +1403,14 @@ fn seat_row(j: String) -> SeatRow {
     let mut it = std::json::array_first(std::json::find_field_raw(j, "serves"));
     while !it.done {
         let engine_name = pg_text(it.element, "as");
-        push(serves.items, SeatModel { model: pg_text(it.element, "model"), has_engine_name: len(engine_name) > 0, engine_name: engine_name }) or discard;
+        push(
+            serves.items,
+            SeatModel {
+                model: pg_text(it.element, "model"),
+                has_engine_name: len(engine_name) > 0,
+                engine_name: engine_name,
+            },
+        ) or discard;
         it = std::json::array_next(it);
     }
     return SeatRow {

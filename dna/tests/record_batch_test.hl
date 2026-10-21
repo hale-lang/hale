@@ -11,14 +11,26 @@ import "../core" as dna;
 
 fn fresh(name: String) -> String {
     let dir = dna::scratch_root(name);
-    let mk = dna::run_tool("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + dir);
+    let mk = dna::run_tool(
+        "sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n"
+            + dir,
+    );
     std::test::assert(mk.code == 0, name + ": a repository");
-    std::test::assert_eq_str(dna::memory_fixture(dir), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(dir),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     return dir;
 }
 
 fn row(k: Int) -> dna::Row {
-    return dna::Row { kind: "idea.proposed", entity: "e" + to_string(k), body: "{\"n\":" + to_string(k) + ",\"text\":\"é \\\"quoted\\\" ü\"}", author: if k % 2 == 0 { "riley" } else { "" } };
+    return dna::Row {
+        kind: "idea.proposed",
+        entity: "e" + to_string(k),
+        body: "{\"n\":" + to_string(k) + ",\"text\":\"é \\\"quoted\\\" ü\"}",
+        author: if k % 2 == 0 { "riley" } else { "" },
+    };
 }
 
 fn text_of(k: Int) -> String { return "receipt number " + to_string(k) + " é"; }
@@ -56,26 +68,51 @@ main locus App {
         k = 1;
         while k <= 6 { rows.push(row(k)); k = k + 1; }
         let b0 = b.head("journal").id;
-        let stale = b.append_batch("journal", "0000000000000000000000000000000000000000000000000000000000000001", rows, false, "");
-        std::test::assert(!stale.ok && stale.error == "stale", "a batch at a head the record is not at is stale: " + stale.error);
+        let stale = b.append_batch(
+            "journal",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            rows,
+            false,
+            "",
+        );
+        std::test::assert(
+            !stale.ok && stale.error == "stale",
+            "a batch at a head the record is not at is stale: " + stale.error,
+        );
         std::test::assert_eq_str(b.head("journal").id, b0, "and moved nothing");
         let landed = b.append_batch("journal", b0, rows, false, "");
         std::test::assert(landed.ok, "the batch lands: " + landed.error);
-        std::test::assert_eq_str(b.head("journal").id, landed.id, "the record is at the batch's last row");
+        std::test::assert_eq_str(
+            b.head("journal").id,
+            landed.id,
+            "the record is at the batch's last row",
+        );
         std::test::assert_eq_int(b.count("journal"), born + 6, "six rows past its birth");
         let ja = dna::RecordJournal { repo: single };
         let jb = dna::RecordJournal { repo: batch };
-        std::test::assert_eq_str(shape(jb, born), shape(ja, born), "the rows a single append writes, with their authors");
+        std::test::assert_eq_str(
+            shape(jb, born),
+            shape(ja, born),
+            "the rows a single append writes, with their authors",
+        );
         std::test::assert(jb.verify_chain() && ja.verify_chain(), "both chains verify");
 
         // a batch memory refuses lands nothing
         let before = b.head("journal").id;
-        std::test::assert_eq_str(dna::fixture_record_refuses(batch, true), "", "memory refuses appends for a while");
+        std::test::assert_eq_str(
+            dna::fixture_record_refuses(batch, true),
+            "",
+            "memory refuses appends for a while",
+        );
         let more = dna::RowBatch { };
         more.push(row(7));
         more.push(row(8));
         let refused = b.append_batch("journal", before, more, false, "");
-        std::test::assert_eq_str(dna::fixture_record_refuses(batch, false), "", "and takes them again");
+        std::test::assert_eq_str(
+            dna::fixture_record_refuses(batch, false),
+            "",
+            "and takes them again",
+        );
         std::test::assert(!refused.ok, "the batch is refused");
         std::test::assert_eq_str(b.head("journal").id, before, "and the record is where it was");
         std::test::assert_eq_int(b.count("journal"), born + 6, "none of it landed");
@@ -83,9 +120,15 @@ main locus App {
         // the journal's batch: at the revision held, else stale
         let at = jb.revision();
         let jr = jb.append_batch(at, more);
-        std::test::assert(jr.ok && jr.revision == at + 2 && jb.verify_chain(), "the journal's batch lands two rows: " + jr.error);
+        std::test::assert(
+            jr.ok && jr.revision == at + 2 && jb.verify_chain(),
+            "the journal's batch lands two rows: " + jr.error,
+        );
         let late = jb.append_batch(at, more);
-        std::test::assert(!late.ok && late.error == "stale_revision", "a batch at a revision the journal left is stale");
+        std::test::assert(
+            !late.ok && late.error == "stale_revision",
+            "a batch at a revision the journal left is stale",
+        );
 
         // receipts: kept as a batch, read back as kept one by one
         let ka = dna::MemoryRecord { repo: single };
@@ -101,7 +144,10 @@ main locus App {
         k = 0;
         while k < 9 {
             let d = dna::hex_digest(text_of(k));
-            std::test::assert(kb.body(d).text == text_of(k) && ka.body(d).text == text_of(k), "receipt " + to_string(k) + " reads back alike");
+            std::test::assert(
+                kb.body(d).text == text_of(k) && ka.body(d).text == text_of(k),
+                "receipt " + to_string(k) + " reads back alike",
+            );
             k = k + 1;
         }
         std::test::assert(kb.body(early).present, "the one kept before");
@@ -114,7 +160,10 @@ main locus App {
         std::test::assert(mr.ok && m.count("journal") == 6, "in process: six rows");
         let mj = dna::MemJournal { };
         let mja = mj.append_batch(0, rows);
-        std::test::assert(mja.ok && mja.revision == 6 && mj.verify_chain(), "the in-process journal: a loop, and its chain verifies");
+        std::test::assert(
+            mja.ok && mja.revision == 6 && mj.verify_chain(),
+            "the in-process journal: a loop, and its chain verifies",
+        );
 
         dna::scratch_done(single);
         dna::scratch_done(batch);

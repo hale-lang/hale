@@ -26,19 +26,45 @@
 // naming `hale habitat migrate`.
 fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     let id = record_identity(root);
-    if len(id) == 0 { return fail("nerves migrate: the record has no identity yet (`hale habitat graft` first)"); }
+    if len(id) == 0 {
+        return fail("nerves migrate: the record has no identity yet (`hale habitat graft` first)");
+    }
     let org = dna::schema_for(id);
     let missing = dna::nerves_missing(org);
-    if len(missing) > 0 { return fail("nerves migrate: the vault holds no credential for the nerves' " + missing + " (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)"); }
-    let mut server = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+    if len(missing) > 0 {
+        return fail(
+            "nerves migrate: the vault holds no credential for the nerves' " + missing
+                + " (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)",
+        );
+    }
+    let mut server = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) {
+        std::env::var(dna::NATS_OWNER_URL_ENV)
+    } else {
+        ""
+    };
     if len(server) == 0 {
         // compose's server reads the passwords from the include
-        if derive && !std::io::fs::file_exists(nats_secrets_path(root)) { return answer("none: the organism's nerves allocation in the local habitat is not provisioned (`hale habitat migrate " + root + "` provisions it and brings it up)\n"); }
-        if !std::io::fs::file_exists(nats_secrets_path(root)) { return fail("nerves migrate: the nerves allocation's secrets (" + nats_secrets_path(root) + ") are not written (`hale dna upgrade` writes them from the vault's provisioning)"); }
+        if derive && !std::io::fs::file_exists(nats_secrets_path(root)) {
+            return answer(
+                "none: the organism's nerves allocation in the local habitat is not provisioned (`hale habitat migrate "
+                    + root + "` provisions it and brings it up)\n",
+            );
+        }
+        if !std::io::fs::file_exists(nats_secrets_path(root)) {
+            return fail(
+                "nerves migrate: the nerves allocation's secrets (" + nats_secrets_path(root)
+                    + ") are not written (`hale dna upgrade` writes them from the vault's provisioning)",
+            );
+        }
         let infra = ReferenceInfrastructure { root: root };
         if derive {
             server = infra.nerves_if_up();
-            if len(server) == 0 { return answer("none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate " + root + "` brings it up and creates the stream)\n"); }
+            if len(server) == 0 {
+                return answer(
+                    "none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate "
+                        + root + "` brings it up and creates the stream)\n",
+                );
+            }
         } else {
             let up = infra.nerves_server(root);
             if !up.present { return answer("none: " + up.why + "\n"); }
@@ -47,7 +73,13 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     }
     let url = dna::nerves_server_url(server);
     if derive { return answer(nerves_urls(root, org, url)); }
-    let c = nats::NatsClient { url: url, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "dna-owner", timeout: 2s };
+    let c = nats::NatsClient {
+        url: url,
+        user: "owner",
+        credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
+        name: "dna-owner",
+        timeout: 2s,
+    };
     // a server compose has just started takes a moment to listen
     let mut tries = 0;
     let mut open = c.open();
@@ -57,7 +89,10 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
         tries = tries + 1;
     }
     if !open { return fail("nerves migrate: " + c.last_error); }
-    if !c.jetstream { c.close(); return fail("nerves migrate: the server does not run JetStream (start it with -js)"); }
+    if !c.jetstream {
+        c.close();
+        return fail("nerves migrate: the server does not run JetStream (start it with -js)");
+    }
     let m = nerves_migrate(c, org);
     // GH #1590: the exchange's stream, its inbox consumer and the card
     let x = if m.ok { exchange_migrate(c, root, id, org) } else { "" };
@@ -70,17 +105,25 @@ fn nerves_migrate_verb(root: String, derive: Bool) -> Answer {
     let mut roles = dna::NERVES_ROLES + " ";
     while len(roles) > 0 {
         let sp = std::str::index_of(roles, " ");
-        if sp > 0 { slots = slots + (if len(slots) > 0 { " " } else { "" }) + dna::nerves_vault_name(org, roles[0..sp]); }
+        if sp > 0 {
+            slots = slots + (if len(slots) > 0 { " " } else { "" })
+                + dna::nerves_vault_name(org, roles[0..sp]);
+        }
         roles = roles[(sp + 1)..len(roles)];
     }
-    return answer(nerves_urls(root, org, url) + "allocation.schema_version=" + to_string(dna::NERVES_STREAM_VERSION) + "\nallocation.vault_slots=" + slots + "\n");
+    return answer(
+        nerves_urls(root, org, url) + "allocation.schema_version="
+            + to_string(dna::NERVES_STREAM_VERSION) + "\nallocation.vault_slots=" + slots + "\n",
+    );
 
 }
 
 // GH #1653: the nerves allocation's configuration and its secrets live with
 // the organism's allocations in the local habitat, never in a checkout.
 fn nats_conf_path(root: String) -> String { return allocation_files(root) + "/nats.conf"; }
-fn nats_secrets_path(root: String) -> String { return allocation_files(root) + "/nats.secrets.conf"; }
+fn nats_secrets_path(root: String) -> String {
+    return allocation_files(root) + "/nats.secrets.conf";
+}
 
 // What `nerves_migrate` did: the stream exists as this toolchain wants it.
 type NervesMigration {
@@ -97,7 +140,9 @@ fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
     let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
     if len(made) > 0 { return NervesMigration { ok: true, stream: stream }; }
     // already there with another configuration (err_code 10058): update it
-    if !std::str::contains(c.last_error, "10058") { return NervesMigration { why: c.last_error, stream: stream }; }
+    if !std::str::contains(c.last_error, "10058") {
+        return NervesMigration { why: c.last_error, stream: stream };
+    }
     let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
     if len(updated) == 0 { return NervesMigration { why: c.last_error, stream: stream }; }
     return NervesMigration { ok: true, stream: stream };
@@ -109,7 +154,10 @@ fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
 // a peer that reads it can pin that key. "" when done, else why not.
 fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) -> String {
     let key = dna::ExchangeKey { vault: dna::exchange_key_vault(org) };
-    if !key.ready() { return "the vault holds no exchange key (`" + dna::exchange_key_vault(org) + "`; `hale dna upgrade` provisions it)"; }
+    if !key.ready() {
+        return "the vault holds no exchange key (`" + dna::exchange_key_vault(org)
+            + "`; `hale dna upgrade` provisions it)";
+    }
     let stream = dna::exchange_stream(org);
     let config = dna::exchange_stream_config(org, dna::exchange_per_sender());
     let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
@@ -119,14 +167,32 @@ fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) 
         if len(updated) == 0 { return c.last_error; }
     }
     let mut consumer_why = "";
-    nats::js_consumer_create(c, stream, nats::ConsumerSpec { durable: dna::EXCHANGE_DURABLE, filter: dna::exchange_inbox_filter(org), deliver: "all" }) or { consumer_why = c.last_error; };
+    nats::js_consumer_create(
+        c,
+        stream,
+        nats::ConsumerSpec {
+            durable: dna::EXCHANGE_DURABLE,
+            filter: dna::exchange_inbox_filter(org),
+            deliver: "all",
+        },
+    ) or {
+        consumer_why = c.last_error;
+    };
     if len(consumer_why) > 0 { return "its inbox consumer: " + consumer_why; }
     let card = key.card(id, genome_root(root));
     if len(card) == 0 { return "the card could not be signed"; }
     // one card: the one before goes, so a bounded subject never fills with them
-    let purged = nats::js_call(c, "$JS.API.STREAM.PURGE." + stream, "{\"filter\":\"" + dna::exchange_card_subject(org) + "\"}") or "";
+    let purged = nats::js_call(
+        c,
+        "$JS.API.STREAM.PURGE." + stream,
+        "{\"filter\":\"" + dna::exchange_card_subject(org) + "\"}",
+    ) or "";
     if len(purged) == 0 { return "the old card could not be purged: " + c.last_error; }
-    let ack = nats::js_publish(c, dna::exchange_card_subject(org), std::bytes::from_string(card)) or nats::PubAck { };
+    let ack = nats::js_publish(
+        c,
+        dna::exchange_card_subject(org),
+        std::bytes::from_string(card),
+    ) or nats::PubAck { };
     if ack.seq == 0 { return "the card could not be published: " + c.last_error; }
     return "";
 }
@@ -139,7 +205,8 @@ fn nerves_listening(c: nats::NatsClient, org: String, owner: String) -> String {
     let info = nats::js_call(c, dna::nerves_info_subject_of(org, owner), "") or "";
     if len(info) == 0 { return c.last_error; }
     if std::json::find_int_field(info, "num_waiting") > 0 { return ""; }
-    return "no pull outstanding on " + dna::nerves_stream(org) + "." + dna::nerves_durable_of(owner);
+    return "no pull outstanding on " + dna::nerves_stream(org) + "."
+        + dna::nerves_durable_of(owner);
 }
 
 // The owner this host's body is, for the subjects it publishes under: the
@@ -154,16 +221,39 @@ fn host_owner() -> String { return owner_here(std::env::arg_or(2, ".")); }
 // there is no server.
 fn nerves_drop_verb(root: String) -> Answer {
     let org = dna::schema_for(record_identity(root));
-    let owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
-    if len(owner) == 0 { return answer("none: no " + dna::NATS_OWNER_URL_ENV + "; the stream is dropped with the owner's URL\n"); }
-    if std::str::contains(" " + dna::nerves_missing(org) + " ", " owner ") { return fail("nerves drop: the vault holds no credential for the nerves' owner (`hale dna secrets` lists it)"); }
-    let c = nats::NatsClient { url: dna::nerves_server_url(owner), user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "dna-owner", timeout: 2s };
+    let owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) {
+        std::env::var(dna::NATS_OWNER_URL_ENV)
+    } else {
+        ""
+    };
+    if len(owner) == 0 {
+        return answer(
+            "none: no " + dna::NATS_OWNER_URL_ENV
+                + "; the stream is dropped with the owner's URL\n",
+        );
+    }
+    if std::str::contains(" " + dna::nerves_missing(org) + " ", " owner ") {
+        return fail(
+            "nerves drop: the vault holds no credential for the nerves' owner (`hale dna secrets` lists it)",
+        );
+    }
+    let c = nats::NatsClient {
+        url: dna::nerves_server_url(owner),
+        user: "owner",
+        credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") },
+        name: "dna-owner",
+        timeout: 2s,
+    };
     if !c.open() { return fail("nerves drop: " + c.last_error); }
     let stream = dna::nerves_stream(org);
     let gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + stream, "") or "";
     let why = c.last_error;
     // GH #1590: the exchange's stream goes with it (absent is not an error)
-    let inbox_gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + dna::exchange_stream(org), "") or "";
+    let inbox_gone = nats::js_call(
+        c,
+        "$JS.API.STREAM.DELETE." + dna::exchange_stream(org),
+        "",
+    ) or "";
     c.close();
     if len(gone) > 0 { return answer("dropped " + stream + "\n"); }
     // err_code 10059: stream not found

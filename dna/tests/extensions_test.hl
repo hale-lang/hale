@@ -53,7 +53,9 @@ main locus App {
             i = i + 1;
         }
     }
-    fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
+    fn head() -> String {
+        return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
+    }
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
         let mut i = 0;
@@ -74,7 +76,13 @@ main locus App {
         return n;
     }
     fn verdict(id: String, digest: String, v: String) {
-        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: v, reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: id,
+            subject_digest: digest,
+            verdict: v,
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(150ms);
     }
     run() {
@@ -87,17 +95,34 @@ main locus App {
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
-        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let base = self.head();
         self.dna = dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             gateway: dna::MutationGateway {
-                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: repo,
+                    root: repo + "/.hale/dna/worktrees",
+                },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: repo },
+                scratch: repo + "/.hale/dna/scratch",
+                repo: repo,
+            },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: COMMENTED, answer_role: "edit" },
@@ -110,32 +135,77 @@ main locus App {
             initiative: false, // scenario 4 asserts the proposal alone; growth is dna_org_evolves (Rust)
             boundary: dna::AutonomyBoundary {
                 child: "app",
-                grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 12, review: "post" }
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 12,
+                    review: "post",
+                }
             }
         };
 
         // ---- 0. intent -> an admitted workflow -> its edit leaf, the assembly's editor -> Review
-        dna::IntentOffered <- dna::IntentOffer { intent_id: "i1", outcome: "document locus A in main.hl", from: "test" };
+        dna::IntentOffered <- dna::IntentOffer {
+            intent_id: "i1",
+            outcome: "document locus A in main.hl",
+            from: "test",
+        };
         self.until_rows("workflow.settled", "t1", 1);
         std::time::sleep(100ms);
-        std::test::assert(std::str::contains(self.last("workflow.admitted", "t1"), "\"request\": \"i1\""), "t1 admitted for i1: " + self.last("workflow.admitted", "t1"));
-        std::test::assert(std::str::contains(self.last("task.born", "t1"), "i1: "), "and listed: " + self.last("task.born", "t1"));
-        std::test::assert(std::str::contains(self.last("mutation.proposed", "m1"), "task t1 application:"), "m1 proposed for t1: " + self.last("mutation.proposed", "m1"));
-        std::test::assert(std::str::contains(self.last("mutation.located", "m1"), "main.hl under read edit fmt check @"), "the Attempt located the file under its grant: " + self.last("mutation.located", "m1"));
+        std::test::assert(
+            std::str::contains(self.last("workflow.admitted", "t1"), "\"request\": \"i1\""),
+            "t1 admitted for i1: " + self.last("workflow.admitted", "t1"),
+        );
+        std::test::assert(
+            std::str::contains(self.last("task.born", "t1"), "i1: "),
+            "and listed: " + self.last("task.born", "t1"),
+        );
+        std::test::assert(
+            std::str::contains(self.last("mutation.proposed", "m1"), "task t1 application:"),
+            "m1 proposed for t1: " + self.last("mutation.proposed", "m1"),
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last("mutation.located", "m1"),
+                "main.hl under read edit fmt check @",
+            ),
+            "the Attempt located the file under its grant: " + self.last("mutation.located", "m1"),
+        );
         let cand1 = self.last("mutation.candidate", "m1");
         std::test::assert_eq_int(len(cand1), 40, "a candidate");
         // `application` is outside the grant (refactor): escalate — and still a blocking Review in Phase 2
-        std::test::assert_eq_str(std::json::find_string_field(self.last("review.requested", "review:m1"), "disposition"), "escalate", "outside the grant: escalate, reviewed");
-        std::test::assert(std::str::contains(self.last("workflow.settled", "t1"), "\"disposition\": \"done\""), "the root settled through the engine once the candidate was in review: " + self.last("workflow.settled", "t1"));
+        std::test::assert_eq_str(
+            std::json::find_string_field(self.last("review.requested", "review:m1"), "disposition"),
+            "escalate",
+            "outside the grant: escalate, reviewed",
+        );
+        std::test::assert(
+            std::str::contains(self.last("workflow.settled", "t1"), "\"disposition\": \"done\""),
+            "the root settled through the engine once the candidate was in review: "
+                + self.last("workflow.settled", "t1"),
+        );
         std::test::assert_eq_str(self.last("task.done", "t1"), "", "no legacy settlement row");
 
         // apply m1 so the lineage has an accepted Mutation (novelty drops)
         self.verdict("m1", cand1, "approve");
         std::test::assert_eq_str(self.head(), cand1, "m1 applied");
-        dna::ExpressionObserved <- dna::Observation { mutation_id: "m1", outcome: "healthy", model_hash: "shape:1" };
+        dna::ExpressionObserved <- dna::Observation {
+            mutation_id: "m1",
+            outcome: "healthy",
+            model_hash: "shape:1",
+        };
         std::time::sleep(150ms);
-        std::test::assert(std::str::contains(self.last("pressure.remeasured", "m1"), "task t1 fitness readability +: healthy"), "the originating pressure is re-measured: " + self.last("pressure.remeasured", "m1"));
-        std::test::assert(std::str::contains(self.last("mutation.retained", "m1"), "shape:1"), "retained");
+        std::test::assert(
+            std::str::contains(
+                self.last("pressure.remeasured", "m1"),
+                "task t1 fitness readability +: healthy",
+            ),
+            "the originating pressure is re-measured: " + self.last("pressure.remeasured", "m1"),
+        );
+        std::test::assert(
+            std::str::contains(self.last("mutation.retained", "m1"), "shape:1"),
+            "retained",
+        );
 
         // ---- 2. post-review autonomy: a reversible internal refactor
         // (the same documented program again: a refactor inside the grant,
@@ -144,17 +214,33 @@ main locus App {
         let out4 = self.dna.mutate("t4", "refactor", "document locus A again", "main.hl", 400);
         std::test::assert_eq_str(out4, "m2: release", "released under the post grant: " + out4);
         let cand4 = self.last("mutation.candidate", "m2");
-        std::test::assert_eq_str(self.last("mutation.applied", "m2"), cand4, "applied under the grant, before any verdict");
+        std::test::assert_eq_str(
+            self.last("mutation.applied", "m2"),
+            cand4,
+            "applied under the grant, before any verdict",
+        );
         std::test::assert_eq_str(self.head(), cand4, "HEAD is m2");
         let req4 = self.last("review.requested", "review:m2");
-        std::test::assert(std::str::contains(std::json::find_string_field(req4, "question"), "post-review: applied m2"), "the Review follows: " + req4);
-        std::test::assert_eq_str(std::json::find_string_field(req4, "required_authority"), "reviewer", "a reviewer suffices for a refactor");
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(req4, "question"),
+                "post-review: applied m2",
+            ),
+            "the Review follows: " + req4,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(req4, "required_authority"),
+            "reviewer",
+            "a reviewer suffices for a refactor",
+        );
         // the audit: the boundary's own record of the decision
         let mut released = 0;
         let mut i = 0;
         while i < self.dna.boundary.audit.len() {
             let row = self.dna.boundary.audit.get(i) or dna::AuditRow { };
-            if row.disposition == "release" && row.change_class == "refactor" { released = released + 1; }
+            if row.disposition == "release" && row.change_class == "refactor" {
+                released = released + 1;
+            }
             i = i + 1;
         }
         std::test::assert_eq_int(released, 1, "the audit shows one release");
@@ -162,44 +248,140 @@ main locus App {
         self.verdict("m2", cand4, "reject");
         std::test::assert_eq_str(self.head(), cand1, "rolled back to m2's base");
         let rb = self.last("expression.restart_requested", "m2");
-        std::test::assert(std::str::contains(rb, "rollback " + cand1) && std::str::contains(rb, "after review reject"), rb);
+        std::test::assert(
+            std::str::contains(rb, "rollback " + cand1)
+                && std::str::contains(rb, "after review reject"),
+            rb,
+        );
 
         // ---- 3. widening effects crosses a hard boundary; the child cannot self-authorize
         // (a candidate the repository holds: a change whose paths git cannot
         // name opens no Review at all, GH #1089)
         let widened = self.dna.review_mutation(
-            dna::Mutation { id: "m9", task_id: "t9", worktree: self.repo, base_commit: cand1, candidate_commit: cand4, change_class: "refactor", rationale: "reach outbound mail" },
-            dna::VerificationReport { candidate: cand4, evidence: dna::Evidence { check_clean: true, verify_clean: true, rollback_rehearsed: true }, magnitude: dna::Magnitude { loci: 1, effects_widened: true, external_blast: 2, novelty: 1 } },
+            dna::Mutation {
+                id: "m9",
+                task_id: "t9",
+                worktree: self.repo,
+                base_commit: cand1,
+                candidate_commit: cand4,
+                change_class: "refactor",
+                rationale: "reach outbound mail",
+            },
+            dna::VerificationReport {
+                candidate: cand4,
+                evidence: dna::Evidence {
+                    check_clean: true,
+                    verify_clean: true,
+                    rollback_rehearsed: true,
+                },
+                magnitude: dna::Magnitude {
+                    loci: 1,
+                    effects_widened: true,
+                    external_blast: 2,
+                    novelty: 1,
+                },
+            },
             "editor");
-        std::test::assert_eq_str(widened, "review", "a hard boundary blocks even under the post grant");
-        std::test::assert(std::str::contains(self.last("mutation.review", "m9"), "refactor"), "journaled as review, never release: " + self.last("mutation.review", "m9"));
+        std::test::assert_eq_str(
+            widened,
+            "review",
+            "a hard boundary blocks even under the post grant",
+        );
+        std::test::assert(
+            std::str::contains(self.last("mutation.review", "m9"), "refactor"),
+            "journaled as review, never release: " + self.last("mutation.review", "m9"),
+        );
         std::test::assert_eq_str(self.last("mutation.applied", "m9"), "", "nothing applied");
         // with no memory the route is the fallback, recorded with why
-        std::test::assert(std::str::contains(self.last("review.routed", "m9"), "\"why\": \"no memory is named\""), "the Review's fallback is a row: " + self.last("review.routed", "m9"));
+        std::test::assert(
+            std::str::contains(self.last("review.routed", "m9"), "\"why\": \"no memory is named\""),
+            "the Review's fallback is a row: " + self.last("review.routed", "m9"),
+        );
         // a candidate git cannot diff opens no Review
         let unknown = self.dna.review_mutation(
-            dna::Mutation { id: "m10", task_id: "t10", worktree: self.repo, base_commit: cand1, candidate_commit: "9999999999999999999999999999999999999999", change_class: "refactor", rationale: "a candidate nobody committed" },
-            dna::VerificationReport { candidate: "9999999999999999999999999999999999999999", evidence: dna::Evidence { check_clean: true, verify_clean: true, rollback_rehearsed: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } },
+            dna::Mutation {
+                id: "m10",
+                task_id: "t10",
+                worktree: self.repo,
+                base_commit: cand1,
+                candidate_commit: "9999999999999999999999999999999999999999",
+                change_class: "refactor",
+                rationale: "a candidate nobody committed",
+            },
+            dna::VerificationReport {
+                candidate: "9999999999999999999999999999999999999999",
+                evidence: dna::Evidence {
+                    check_clean: true,
+                    verify_clean: true,
+                    rollback_rehearsed: true,
+                },
+                magnitude: dna::Magnitude { loci: 1, novelty: 1 },
+            },
             "editor");
-        std::test::assert(std::str::starts_with(unknown, "failed: the candidate's changed paths are unknown"), "its paths unknown, it is not routed as touching nothing: " + unknown);
-        std::test::assert_eq_str(self.last("review.requested", "review:m10") + self.last("review.routed", "m10") + self.last("mutation.applied", "m10"), "", "no Review, no route, nothing applied");
-        std::test::assert(!self.dna.boundary.expand("app", "app", 50, "deploy"), "the child cannot expand its own grant");
+        std::test::assert(
+            std::str::starts_with(unknown, "failed: the candidate's changed paths are unknown"),
+            "its paths unknown, it is not routed as touching nothing: " + unknown,
+        );
+        std::test::assert_eq_str(
+            self.last("review.requested", "review:m10") + self.last("review.routed", "m10")
+                + self.last("mutation.applied", "m10"),
+            "",
+            "no Review, no route, nothing applied",
+        );
+        std::test::assert(
+            !self.dna.boundary.expand("app", "app", 50, "deploy"),
+            "the child cannot expand its own grant",
+        );
         std::test::assert_eq_int(self.dna.boundary.expansions_refused, 1, "refused and audited");
-        std::test::assert(!self.dna.boundary.current_grant().may_expand_self, "may_expand_self stays false");
+        std::test::assert(
+            !self.dna.boundary.current_grant().may_expand_self,
+            "may_expand_self stays false",
+        );
 
         // ---- 4. a second persistent pressure proposes an organ; nothing is grown
         let mutations_before = self.dna.mutations_minted;
-        dna::PressureRaised <- dna::Pressure { source: "billing", what: "invoices queue behind support", count: 1 };
-        dna::PressureRaised <- dna::Pressure { source: "billing", what: "invoices queue behind support", count: 2 };
+        dna::PressureRaised <- dna::Pressure {
+            source: "billing",
+            what: "invoices queue behind support",
+            count: 1,
+        };
+        dna::PressureRaised <- dna::Pressure {
+            source: "billing",
+            what: "invoices queue behind support",
+            count: 2,
+        };
         std::time::sleep(100ms);
-        std::test::assert_eq_str(self.last("appendage.proposed", "billing"), "", "twice is not persistent yet");
-        dna::PressureRaised <- dna::Pressure { source: "billing", what: "invoices queue behind support", count: 3 };
-        dna::PressureRaised <- dna::Pressure { source: "billing", what: "invoices queue behind support", count: 4 };
+        std::test::assert_eq_str(
+            self.last("appendage.proposed", "billing"),
+            "",
+            "twice is not persistent yet",
+        );
+        dna::PressureRaised <- dna::Pressure {
+            source: "billing",
+            what: "invoices queue behind support",
+            count: 3,
+        };
+        dna::PressureRaised <- dna::Pressure {
+            source: "billing",
+            what: "invoices queue behind support",
+            count: 4,
+        };
         std::time::sleep(100ms);
         std::test::assert_eq_int(self.count("pressure.raised"), 4, "every raise is journaled");
-        std::test::assert(std::str::contains(self.last("appendage.proposed", "billing"), "proposed, not created"), "an organ is proposed: " + self.last("appendage.proposed", "billing"));
-        std::test::assert_eq_int(self.count("appendage.proposed"), 1, "proposed once, not on every raise");
-        std::test::assert_eq_int(self.dna.mutations_minted, mutations_before, "nothing was grown or mutated");
+        std::test::assert(
+            std::str::contains(self.last("appendage.proposed", "billing"), "proposed, not created"),
+            "an organ is proposed: " + self.last("appendage.proposed", "billing"),
+        );
+        std::test::assert_eq_int(
+            self.count("appendage.proposed"),
+            1,
+            "proposed once, not on every raise",
+        );
+        std::test::assert_eq_int(
+            self.dna.mutations_minted,
+            mutations_before,
+            "nothing was grown or mutated",
+        );
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
         dna::scratch_done(repo);
     }

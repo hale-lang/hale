@@ -4,25 +4,80 @@
 import ".." as api;
 
 fn main() {
-    let kept = api::NodeUpdate::api_decode("{\"node\": \"n\", \"name\": \"x\"}") or api::NodeUpdate { node: "refused" };
-    std::test::assert(kept.node == "n" && !kept.has_max_in_flight && !kept.clear_max_in_flight, "left out: kept");
-    let cleared = api::NodeUpdate::api_decode("{\"node\": \"n\", \"max_in_flight\": null}") or api::NodeUpdate { node: "refused" };
+    let kept = api::NodeUpdate::api_decode(
+        "{\"node\": \"n\", \"name\": \"x\"}",
+    ) or api::NodeUpdate { node: "refused" };
+    std::test::assert(
+        kept.node == "n" && !kept.has_max_in_flight && !kept.clear_max_in_flight,
+        "left out: kept",
+    );
+    let cleared = api::NodeUpdate::api_decode(
+        "{\"node\": \"n\", \"max_in_flight\": null}",
+    ) or api::NodeUpdate { node: "refused" };
     std::test::assert(cleared.clear_max_in_flight && !cleared.has_max_in_flight, "null: cleared");
-    let set = api::NodeUpdate::api_decode("{\"node\": \"n\", \"max_in_flight\": 3}") or api::NodeUpdate { node: "refused" };
-    std::test::assert(set.has_max_in_flight && !set.clear_max_in_flight && set.max_in_flight == 3, "a value: set");
-    std::test::assert(std::str::contains(api::NodeUpdate::api_encode(cleared), "\"max_in_flight\":null") || std::str::contains(api::NodeUpdate::api_encode(cleared), "\"max_in_flight\": null"), "and written back as null: " + api::NodeUpdate::api_encode(cleared));
-    std::test::assert(!std::str::contains(api::NodeUpdate::api_encode(kept), "max_in_flight"), "a field left out is written out of the object");
+    let set = api::NodeUpdate::api_decode(
+        "{\"node\": \"n\", \"max_in_flight\": 3}",
+    ) or api::NodeUpdate { node: "refused" };
+    std::test::assert(
+        set.has_max_in_flight && !set.clear_max_in_flight && set.max_in_flight == 3,
+        "a value: set",
+    );
+    std::test::assert(
+        std::str::contains(api::NodeUpdate::api_encode(cleared), "\"max_in_flight\":null")
+            || std::str::contains(api::NodeUpdate::api_encode(cleared), "\"max_in_flight\": null"),
+        "and written back as null: " + api::NodeUpdate::api_encode(cleared),
+    );
+    std::test::assert(
+        !std::str::contains(api::NodeUpdate::api_encode(kept), "max_in_flight"),
+        "a field left out is written out of the object",
+    );
 
-    let key = api::KeyUpdate::api_decode("{\"project\": \"p\", \"key\": \"k\", \"models\": null, \"accounts\": [\"a\"], \"expires_at\": null}") or api::KeyUpdate { project: "refused", key: "" };
-    std::test::assert(key.clear_models && !key.has_models && key.has_accounts && count(key.accounts) == 1 && key.clear_expires_at && !key.has_expires_at, "a list cleared, a list set, an expiry cleared");
+    let key = api::KeyUpdate::api_decode(
+        "{\"project\": \"p\", \"key\": \"k\", \"models\": null, \"accounts\": [\"a\"], \"expires_at\": null}",
+    ) or api::KeyUpdate { project: "refused", key: "" };
+    std::test::assert(
+        key.clear_models
+            && !key.has_models
+            && key.has_accounts
+            && count(key.accounts) == 1
+            && key.clear_expires_at
+            && !key.has_expires_at,
+        "a list cleared, a list set, an expiry cleared",
+    );
 
     // the REST reader says the same
-    let rest = api::read_key_update("{\"models\": null, \"accounts\": [\"a\"], \"expires_at\": null}", "p", "k") or api::KeyUpdate { project: "refused", key: "" };
-    std::test::assert(rest.clear_models && !rest.has_models && rest.has_accounts && rest.clear_expires_at && !rest.has_expires_at, "the reader: a list cleared, a list set, an expiry cleared");
-    let rest_kept = api::read_key_update("{\"name\": \"n\"}", "p", "k") or api::KeyUpdate { project: "refused", key: "" };
-    std::test::assert(!rest_kept.has_models && !rest_kept.clear_models && !rest_kept.has_expires_at && !rest_kept.clear_expires_at, "the reader: left out, kept");
-    let price = api::read_model_update("{\"price\": null}", "m") or api::CatalogModelUpdate { model: "refused" };
+    let rest = api::read_key_update(
+        "{\"models\": null, \"accounts\": [\"a\"], \"expires_at\": null}",
+        "p",
+        "k",
+    ) or api::KeyUpdate { project: "refused", key: "" };
+    std::test::assert(
+        rest.clear_models
+            && !rest.has_models
+            && rest.has_accounts
+            && rest.clear_expires_at
+            && !rest.has_expires_at,
+        "the reader: a list cleared, a list set, an expiry cleared",
+    );
+    let rest_kept = api::read_key_update("{\"name\": \"n\"}", "p", "k") or api::KeyUpdate {
+        project: "refused",
+        key: "",
+    };
+    std::test::assert(
+        !rest_kept.has_models
+            && !rest_kept.clear_models
+            && !rest_kept.has_expires_at
+            && !rest_kept.clear_expires_at,
+        "the reader: left out, kept",
+    );
+    let price = api::read_model_update(
+        "{\"price\": null}",
+        "m",
+    ) or api::CatalogModelUpdate { model: "refused" };
     std::test::assert(price.clear_price && !price.has_price, "a price cleared");
-    let provider = api::read_account_update("{\"provider\": null}", "a") or api::AccountUpdate { account: "refused" };
+    let provider = api::read_account_update(
+        "{\"provider\": null}",
+        "a",
+    ) or api::AccountUpdate { account: "refused" };
     std::test::assert(provider.clear_provider && !provider.has_provider, "a provider cleared");
 }

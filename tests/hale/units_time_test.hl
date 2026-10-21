@@ -46,11 +46,19 @@ fn main() {
     std::test::assert_eq_str(to_string(d), "3500000000ns", "a Duration, printed in nanoseconds");
     std::test::assert(d == 3500ms, "3s + 500ms is 3500ms");
     let whole = d.in(s) or 0; // q = 1000: narrowing, fallible, substitute
-    std::test::assert_eq_str(to_string(whole), "0s", "3.5 seconds is no whole number of them: the substitute");
+    std::test::assert_eq_str(
+        to_string(whole),
+        "0s",
+        "3.5 seconds is no whole number of them: the substitute",
+    );
     let named = d.in(s) or divisor(err);
     std::test::assert(named == 0s, "the handler's value");
     let secs = d.in(s) or floor; // policy: total, loss named
-    std::test::assert_eq_str(to_string(secs), "3s", "the policy says what becomes of the remainder");
+    std::test::assert_eq_str(
+        to_string(secs),
+        "3s",
+        "the policy says what becomes of the remainder",
+    );
     let (sec, rem) = d.split(s); // exact quotient and residue, no policy
     std::test::assert_eq_int(sec, 3, "the whole seconds");
     std::test::assert_eq_int(rem / 1ms, 500, "and the rest, exact");
@@ -64,7 +72,11 @@ fn main() {
     let ok = hop < 50us; // literal folded, no cast
     std::test::assert(!ok, "56.789us is not under 50us: compared exactly, at nanoseconds");
     let out: WireStamp = a; // ns -> us narrows; the type says how
-    std::test::assert_eq_str(to_string(out), "1700000000123456", "the instant in whole microseconds, floored");
+    std::test::assert_eq_str(
+        to_string(out),
+        "1700000000123456",
+        "the instant in whole microseconds, floored",
+    );
     std::test::assert(out == Time(1_700_000_000_123_456us), "WireStamp's floor");
 
     // The boundary type: a `Duration` stored into a `Bucket` is counted in

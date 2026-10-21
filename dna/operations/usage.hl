@@ -147,7 +147,8 @@ fn usage_line(lines: String, index: Int) -> UsageLine {
 }
 
 fn usage_line_text(l: UsageLine) -> String {
-    return l.key + " " + to_string(l.calls) + " " + to_string(l.input_tokens) + " " + to_string(l.output_tokens) + " " + to_string(l.cost_micros);
+    return l.key + " " + to_string(l.calls) + " " + to_string(l.input_tokens) + " "
+        + to_string(l.output_tokens) + " " + to_string(l.cost_micros);
 }
 
 // `lines` with one call added under `key`: its line grown, or a new
@@ -170,7 +171,15 @@ fn usage_bump(lines: String, key: String, input: Int, output: Int, cost: Int) ->
         i = i + 1;
     }
     if found { return out; }
-    let fresh = usage_line_text(UsageLine { key: key, calls: 1, input_tokens: input, output_tokens: output, cost_micros: cost });
+    let fresh = usage_line_text(
+        UsageLine {
+            key: key,
+            calls: 1,
+            input_tokens: input,
+            output_tokens: output,
+            cost_micros: cost,
+        },
+    );
     return if n == 0 { fresh } else { out + "\n" + fresh };
 }
 
@@ -212,7 +221,8 @@ fn usage_json(t: UsageTotals) -> String {
 }
 
 fn usage_counts_text(calls: Int, input: Int, output: Int, cost: Int) -> String {
-    return to_string(calls) + " call(s) · " + to_string(input) + " in · " + to_string(output) + " out · " + to_string(cost) + " µ$";
+    return to_string(calls) + " call(s) · " + to_string(input) + " in · " + to_string(output)
+        + " out · " + to_string(cost) + " µ$";
 }
 
 // One breakdown for the terminal: `<key> <counts>`, joined by `; `.
@@ -223,7 +233,8 @@ fn usage_lines_text(lines: String) -> String {
     let mut i = 0;
     while i < n {
         let l = usage_line(lines, i);
-        out = out + (if i > 0 { "; " } else { "" }) + l.key + " " + usage_counts_text(l.calls, l.input_tokens, l.output_tokens, l.cost_micros);
+        out = out + (if i > 0 { "; " } else { "" }) + l.key + " "
+            + usage_counts_text(l.calls, l.input_tokens, l.output_tokens, l.cost_micros);
         i = i + 1;
     }
     return out;
@@ -235,7 +246,8 @@ fn usage_lines_text(lines: String) -> String {
 fn usage_text(label: String, t: UsageTotals) -> String {
     if t.calls == 0 { return ""; }
     let pad = "       ";
-    return label + ": " + usage_counts_text(t.calls, t.input_tokens, t.output_tokens, t.cost_micros) + "\n"
+    return label + ": " + usage_counts_text(t.calls, t.input_tokens, t.output_tokens, t.cost_micros)
+        + "\n"
         + pad + "by position: " + usage_lines_text(t.by_position) + "\n"
         + pad + "by backend: " + usage_lines_text(t.by_backend) + "\n";
 }
@@ -250,7 +262,9 @@ locus Usage {
         let mut i = 0;
         while i < n {
             let e = self.j.read(i);
-            if e.kind == "task.born" && std::str::starts_with(e.body, ask + ": ") { return e.entity; }
+            if e.kind == "task.born" && std::str::starts_with(e.body, ask + ": ") {
+                return e.entity;
+            }
             i = i + 1;
         }
         return "";
@@ -266,7 +280,10 @@ locus Usage {
                 let t = std::json::find_string_field(e.body, "task_id");
                 if len(t) > 0 { return t; }
             }
-            if e.entity == m && e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task ") {
+            if e.entity == m
+                && e.kind == "mutation.proposed"
+                && std::str::starts_with(e.body, "task ")
+            {
                 let rest = e.body[5..len(e.body)];
                 let sp = std::str::index_of(rest, " ");
                 if sp > 0 { return rest[0..sp]; }
@@ -300,7 +317,8 @@ locus Usage {
         while i < n {
             let e = self.j.read(i);
             if e.kind == "attempt.admitted" && e.entity == attempt {
-                return std::json::find_string_field(e.body, "task_id") + " " + std::json::find_string_field(e.body, "performer_kind");
+                return std::json::find_string_field(e.body, "task_id") + " "
+                    + std::json::find_string_field(e.body, "performer_kind");
             }
             i = i + 1;
         }
@@ -312,7 +330,9 @@ locus Usage {
         let mut i = 0;
         while i < n {
             let e = self.j.read(i);
-            if e.kind == "workflow.admitted" && e.entity == task { return std::json::find_string_field(e.body, "parent_task"); }
+            if e.kind == "workflow.admitted" && e.entity == task {
+                return std::json::find_string_field(e.body, "parent_task");
+            }
             i = i + 1;
         }
         return "";
@@ -332,14 +352,29 @@ locus Usage {
     fn owner_of(attempt: String) -> UsageOwner {
         if std::str::ends_with(attempt, "/plan") {
             let ask = attempt[0..(len(attempt) - 5)];
-            return UsageOwner { attempt: attempt, owner: ask, task: self.task_of_ask(ask), position: "position:leader" };
+            return UsageOwner {
+                attempt: attempt,
+                owner: ask,
+                task: self.task_of_ask(ask),
+                position: "position:leader",
+            };
         }
         if std::str::ends_with(attempt, "/review") {
             let r = attempt[0..(len(attempt) - 7)];
-            return UsageOwner { attempt: attempt, owner: r, task: self.task_of_review(r), position: "position:leader" };
+            return UsageOwner {
+                attempt: attempt,
+                owner: r,
+                task: self.task_of_review(r),
+                position: "position:leader",
+            };
         }
         if std::str::starts_with(attempt, "optimize/") {
-            return UsageOwner { attempt: attempt, owner: "org", task: "org", position: "position:leader" };
+            return UsageOwner {
+                attempt: attempt,
+                owner: "org",
+                task: "org",
+                position: "position:leader",
+            };
         }
         let work = usage_work_of(attempt);
         if len(work) > 0 {
@@ -347,10 +382,20 @@ locus Usage {
             if len(admitted) > 0 {
                 let sp = std::str::index_of(admitted, " ");
                 let kind = admitted[(sp + 1)..len(admitted)];
-                return UsageOwner { attempt: attempt, owner: work, task: admitted[0..sp], position: if len(kind) > 0 { dna::hat_position_of(kind) } else { "" } };
+                return UsageOwner {
+                    attempt: attempt,
+                    owner: work,
+                    task: admitted[0..sp],
+                    position: if len(kind) > 0 { dna::hat_position_of(kind) } else { "" },
+                };
             }
             let task = self.task_of_mutation(work);
-            return UsageOwner { attempt: attempt, owner: work, task: task, position: if len(task) > 0 { "position:editor" } else { "" } };
+            return UsageOwner {
+                attempt: attempt,
+                owner: work,
+                task: task,
+                position: if len(task) > 0 { "position:editor" } else { "" },
+            };
         }
         return UsageOwner { attempt: attempt, owner: attempt };
     }
@@ -378,9 +423,21 @@ locus Usage {
                     t.input_tokens = t.input_tokens + input;
                     t.output_tokens = t.output_tokens + output;
                     t.cost_micros = t.cost_micros + cost;
-                    t.by_position = usage_bump(t.by_position, usage_key(o.position), input, output, cost);
+                    t.by_position = usage_bump(
+                        t.by_position,
+                        usage_key(o.position),
+                        input,
+                        output,
+                        cost,
+                    );
                     let model = std::json::find_string_field(e.body, "requested_model");
-                    t.by_backend = usage_bump(t.by_backend, usage_key(std::json::find_string_field(e.body, "backend") + "/" + model), input, output, cost);
+                    t.by_backend = usage_bump(
+                        t.by_backend,
+                        usage_key(std::json::find_string_field(e.body, "backend") + "/" + model),
+                        input,
+                        output,
+                        cost,
+                    );
                 }
             }
             i = i + 1;

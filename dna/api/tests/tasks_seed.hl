@@ -6,8 +6,19 @@ locus TaskApiPlanner {
     params { }
     bus { subscribe dna::PlanRequested as plan where key == "task-api"; publish dna::TaskPlanned; }
     fn plan(r: dna::PlanRequest) {
-        dna::TaskPlanned <- dna::Plan { org: r.org, task_id: r.task_id, work_id: r.work_id, kind: "person", change_class: "none", target: "none", count: 1,
-            assignee: "alex", obligation: "review", narrative: "A person's open responsibility", by: "task-api-planner", parsed: true };
+        dna::TaskPlanned <- dna::Plan {
+            org: r.org,
+            task_id: r.task_id,
+            work_id: r.work_id,
+            kind: "person",
+            change_class: "none",
+            target: "none",
+            count: 1,
+            assignee: "alex",
+            obligation: "review",
+            narrative: "A person's open responsibility",
+            by: "task-api-planner",
+            parsed: true };
     }
 }
 // One organization over its own record, as a single-organization node runs:
@@ -16,8 +27,15 @@ locus TaskApiPlanner {
 // says it owns, and the graph is the projection a node runs beside it
 // (GH #1123), which this seed does not.
 locus TaskApiWork {
-    params { body: dna::Dna = dna::Dna { planned: true, org_id: "task-api", initiative: false }; planner: TaskApiPlanner = TaskApiPlanner { }; }
-    fn ask(id: String, outcome: String) -> String { return self.body.ask(dna::Intent { id: id, from: "requester", to: "org", outcome: outcome }); }
+    params {
+        body: dna::Dna = dna::Dna { planned: true, org_id: "task-api", initiative: false };
+        planner: TaskApiPlanner = TaskApiPlanner { };
+    }
+    fn ask(id: String, outcome: String) -> String {
+        return self.body.ask(
+            dna::Intent { id: id, from: "requester", to: "org", outcome: outcome },
+        );
+    }
 }
 locus TaskApiSeed {
     params { }
@@ -30,29 +48,106 @@ locus TaskApiSeed {
         let mut tries = 0;
         while tries < 250 { let refreshed = j.refresh(); let mut i = 0;
             while i < j.revision() { let e = j.read(i);
-                if len(task) == 0 && e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { task = e.entity; }
-                if len(task) > 0 && e.kind == "task.handed" && std::str::starts_with(e.entity, task + ".") { return e; }
+                if len(task) == 0
+                    && e.kind == "workflow.admitted"
+                    && std::json::find_string_field(e.body, "request") == intent
+                {
+                    task = e.entity;
+                }
+                if len(task) > 0
+                    && e.kind == "task.handed"
+                    && std::str::starts_with(e.entity, task + ".")
+                {
+                    return e;
+                }
                 i = i + 1; }
             std::time::sleep(20ms); tries = tries + 1;
         }
-        std::test::assert(false, "actual native handoff of " + intent + " (admitted as `" + task + "`)"); return dna::Event { };
+        std::test::assert(
+            false,
+            "actual native handoff of " + intent + " (admitted as `" + task + "`)",
+        );
+        return dna::Event { };
     }
     fn seed(root: String, evidence: String, browser: Bool) {
         // the record is memory's (GH #1590): born there first, and the Ledger
         // written as its owner, as the harness runs this seed
         std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory");
         let record = dna::MemoryRecord { repo: root };
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        std::test::assert(
+            record.append(
+                "journal",
+                record.head("journal").id,
+                dna::Row {
+                    kind: "application.observed",
+                    entity: "org",
+                    body: "{}",
+                    author: "test",
+                },
+                false,
+                "",
+            ).ok,
+            "fresh application identity",
+        );
         // Eligibility input only, not proof of the person retirement command.
-        if browser { std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
-        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } }; let receipts = dna::MemoryReceipts { repo: root };
+        if browser {
+            std::test::assert(
+                record.append(
+                    "journal",
+                    record.head("journal").id,
+                    dna::Row {
+                        kind: "person.retired",
+                        entity: "retired",
+                        body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}",
+                        author: "fixture",
+                    },
+                    false,
+                    "",
+                ).ok,
+                "explicit recipient-retirement eligibility fixture",
+            );
+        }
+        let journal = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" },
+        };
+        let receipts = dna::MemoryReceipts { repo: root };
         // born over its record: birth hands the journal to the body's engine
         // and its parts, so one set after birth reaches none of them
-        let work = TaskApiWork { body: dna::Dna { planned: true, org_id: "task-api", initiative: false, journal: journal, verification: dna::HaleVerification { receipts: receipts, repo: root } } };
-        let first = self.handed(journal, "task-api-first", work.ask("task-api-first", "Human review\r\nΔ <literal & markup>")); let first_id = first.entity;
-        let second = self.handed(journal, "task-api-second", work.ask("task-api-second", "Another person's responsibility")); let second_id = second.entity;
-        let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", record.identity()); b.string_field("first_id", first_id); b.string_field("second_id", second_id); b.string_field("first_handoff", first.digest); b.string_field("second_handoff", second.digest); b.end_object();
-        std::io::fs::write_file(evidence + "/task-fixture.json", b.result()) or raise; println("READY actual native Task handoffs");
+        let work = TaskApiWork {
+            body: dna::Dna {
+                planned: true,
+                org_id: "task-api",
+                initiative: false,
+                journal: journal,
+                verification: dna::HaleVerification { receipts: receipts, repo: root },
+            },
+        };
+        let first = self.handed(
+            journal,
+            "task-api-first",
+            work.ask("task-api-first", "Human review\r\nΔ <literal & markup>"),
+        );
+        let first_id = first.entity;
+        let second = self.handed(
+            journal,
+            "task-api-second",
+            work.ask("task-api-second", "Another person's responsibility"),
+        );
+        let second_id = second.entity;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("application_id", record.identity());
+        b.string_field("first_id", first_id);
+        b.string_field("second_id", second_id);
+        b.string_field("first_handoff", first.digest);
+        b.string_field("second_handoff", second.digest);
+        b.end_object();
+        std::io::fs::write_file(evidence + "/task-fixture.json", b.result()) or raise;
+        println("READY actual native Task handoffs");
     }
 }
-fn main() { let seed = TaskApiSeed { }; seed.seed(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "") == "seed"); }
+fn main() {
+    let seed = TaskApiSeed { };
+    seed.seed(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "") == "seed");
+}

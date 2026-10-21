@@ -33,22 +33,46 @@ fn forwarded(req: std::http::Request, name: String) -> String {
 // The header block a proxied request carries: the whitelist, the
 // body's real length, and `Origin` rewritten to the child's origin
 // exactly when the browser sent the head's own.
-fn proxied_headers(req: std::http::Request, api_port: Int, head_origin: String, child_token: String, bearer: String) -> String {
+fn proxied_headers(
+    req: std::http::Request,
+    api_port: Int,
+    head_origin: String,
+    child_token: String,
+    bearer: String
+) -> String {
     let wire = api::CommandWire { };
-    let mut headers = forwarded(req, "Accept") + forwarded(req, "Content-Type") + forwarded(req, "X-Hale-Command");
+    let mut headers = forwarded(req, "Accept") + forwarded(req, "Content-Type")
+        + forwarded(req, "X-Hale-Command");
     // a fixture's child's launch token, the head's to hand over: never the browser's
     if len(child_token) > 0 { headers = headers + "X-Hale-Token: " + child_token + "\r\n"; }
     // GH #989: the session's ID token, which the child verifies itself
     if len(bearer) > 0 { headers = headers + "Authorization: Bearer " + bearer + "\r\n"; }
-    if req.method == "POST" || len(req.body) > 0 { headers = headers + "Content-Length: " + to_string(len(req.body)) + "\r\n"; }
+    if req.method == "POST" || len(req.body) > 0 {
+        headers = headers + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    }
     let origin = wire.header(req.headers, "Origin");
-    if origin.valid && origin.count == 1 && origin.value == head_origin { headers = headers + "Origin: http://127.0.0.1:" + to_string(api_port) + "\r\n"; }
+    if origin.valid && origin.count == 1 && origin.value == head_origin {
+        headers = headers + "Origin: http://127.0.0.1:" + to_string(api_port) + "\r\n";
+    }
     return headers;
 }
 
 // Forwards `req` to the API child on `api_port`.
-fn proxy_exchange(req: std::http::Request, api_port: Int, head_origin: String, child_token: String, bearer: String) -> api::Upstream {
-    return api::exchange(api_port, req.method, req.path, proxied_headers(req, api_port, head_origin, child_token, bearer), req.body, api::UPSTREAM_TIMEOUT_NS);
+fn proxy_exchange(
+    req: std::http::Request,
+    api_port: Int,
+    head_origin: String,
+    child_token: String,
+    bearer: String
+) -> api::Upstream {
+    return api::exchange(
+        api_port,
+        req.method,
+        req.path,
+        proxied_headers(req, api_port, head_origin, child_token, bearer),
+        req.body,
+        api::UPSTREAM_TIMEOUT_NS,
+    );
 }
 
 // The browser's answer for an exchange: the child's status, content
@@ -58,16 +82,36 @@ fn proxy_exchange(req: std::http::Request, api_port: Int, head_origin: String, c
 fn proxied_response(up: api::Upstream) -> std::http::Response {
     let http = api::Http { };
     if !up.ok {
-        if up.code == "timeout" { return http.error(504, "upstream_timeout", "the project's API did not answer within the head's deadline", true); }
-        return http.error(503, "head_api_unavailable", "the project's API child is not answering; the head will report it down", true);
+        if up.code == "timeout" {
+            return http.error(
+                504,
+                "upstream_timeout",
+                "the project's API did not answer within the head's deadline",
+                true,
+            );
+        }
+        return http.error(
+            503,
+            "head_api_unavailable",
+            "the project's API child is not answering; the head will report it down",
+            true,
+        );
     }
     let content_type = api::upstream_header(up.headers, "Content-Type");
     let mut extra = "";
     let cache = api::upstream_header(up.headers, "Cache-Control");
     if len(cache) > 0 { extra = extra + "Cache-Control: " + cache; }
     let sniff = api::upstream_header(up.headers, "X-Content-Type-Options");
-    if len(sniff) > 0 { extra = extra + (if len(extra) > 0 { "\r\n" } else { "" }) + "X-Content-Type-Options: " + sniff; }
-    return std::http::Response { status: up.status, content_type: if len(content_type) > 0 { content_type } else { "application/octet-stream" }, headers: extra, body: up.body };
+    if len(sniff) > 0 {
+        extra = extra + (if len(extra) > 0 { "\r\n" } else { "" }) + "X-Content-Type-Options: "
+            + sniff;
+    }
+    return std::http::Response {
+        status: up.status,
+        content_type: if len(content_type) > 0 { content_type } else { "application/octet-stream" },
+        headers: extra,
+        body: up.body,
+    };
 }
 
 // The API child's readiness (§2.1): `GET /api/hale/v1/applications`
@@ -79,7 +123,11 @@ fn api_ready(api_port: Int, identity: String, proof: String) -> Bool {
     // readiness, and it is the head's own child only when the refusal
     // carries the digest of the proof the head gave it: a process
     // squatting on the port is never handed a person's token
-    if len(proof) > 0 { return up.ok && up.status == 401 && api::upstream_header(up.headers, "X-Hale-Child") == dna::digest_of(proof); }
+    if len(proof) > 0 {
+        return up.ok
+            && up.status == 401
+            && api::upstream_header(up.headers, "X-Hale-Child") == dna::digest_of(proof);
+    }
     if !up.ok || up.status != 200 { return false; }
     let source = std::json::find_field_raw(up.body, "source");
     return std::json::find_string_field(source, "record_id") == identity;

@@ -63,7 +63,10 @@ main locus ChatServer {
         ada: Participant = Participant { name: "ada", room: 0 };
     }
     claims {
-        guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;
+        guests_sign_only_via_rooms: forbid reaches(
+            participants,
+            effects(secret_use)
+        ) avoiding rooms;
     }
     run() {
         std::time::sleep(10ms);

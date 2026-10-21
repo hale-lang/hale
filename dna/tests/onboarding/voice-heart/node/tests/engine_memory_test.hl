@@ -20,9 +20,21 @@ fn main() {
     std::test::assert_eq_str(c.problem, "", "a valid config");
     let before = peak_kb();
     std::test::assert(before > 0, "the peak is readable from /proc/self/status");
-    let run = node::run_static("resp_long", "echo-1", "echo", "{\"model\": \"echo-1\", \"input\": \"hi\"}", c);
+    let run = node::run_static(
+        "resp_long",
+        "echo-1",
+        "echo",
+        "{\"model\": \"echo-1\", \"input\": \"hi\"}",
+        c,
+    );
     let after = peak_kb();
     std::test::assert_eq_str(run.outcome, "served", "served");
-    std::test::assert(len(run.script) > 4096 * 100, "every chunk an event: " + to_string(len(run.script)));
-    std::test::assert(after - before < 65536, "scripting grew the peak by " + to_string(after - before) + " kB; under 64 MB is linear");
+    std::test::assert(
+        len(run.script) > 4096 * 100,
+        "every chunk an event: " + to_string(len(run.script)),
+    );
+    std::test::assert(
+        after - before < 65536,
+        "scripting grew the peak by " + to_string(after - before) + " kB; under 64 MB is linear",
+    );
 }

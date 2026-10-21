@@ -62,7 +62,11 @@ fn main() {
     app.pub.go();
 
     std::test::assert_eq_int(app.pub.hits(), 5, "every intra-locus publish is delivered");
-    std::test::assert_eq_int(app.pub.sum(), 10, "Int payload fields survive the reclaim (0+1+2+3+4)");
+    std::test::assert_eq_int(
+        app.pub.sum(),
+        10,
+        "Int payload fields survive the reclaim (0+1+2+3+4)",
+    );
     std::test::assert(
         app.pub.joined() == "ababababab",
         "String payload fields survive the reclaim and store correctly");

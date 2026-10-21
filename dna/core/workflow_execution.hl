@@ -65,7 +65,11 @@ fn fence_holds(j: Journal, f: Fence, rev: Int) -> Bool {
 fn fenced(j: Journal, f: Fence, what: String) -> Executed {
     let cur = lease_at(j, f.key, j.revision());
     let who = if cur.present && cur.expires > f.now { cur.holder } else { "nobody" };
-    return Executed { fenced: true, why: "fenced: " + what + " is not committed by " + f.holder + ", whose lease on " + f.key + " is not live as of this reading (held by " + who + ")" };
+    return Executed {
+        fenced: true,
+        why: "fenced: " + what + " is not committed by " + f.holder + ", whose lease on " + f.key
+            + " is not live as of this reading (held by " + who + ")",
+    };
 }
 
 fn execution_key(attempt_id: String) -> String {
@@ -86,7 +90,9 @@ fn recorded_attempt_outcome(j: Journal, attempt_id: String, rev: Int) -> Decoded
     let mut i = 0;
     while i < rev {
         let e = j.read(i);
-        if e.kind == "attempt.outcome" && e.entity == attempt_id { return decode_attempt_outcome(e.body); }
+        if e.kind == "attempt.outcome" && e.entity == attempt_id {
+            return decode_attempt_outcome(e.body);
+        }
         i = i + 1;
     }
     return DecodedAttemptOutcome { };
@@ -120,11 +126,19 @@ fn attempt_claimed(j: Journal, attempt_id: String, rev: Int) -> Bool {
 // it is: the same Work, step, task and performer kind, and the same
 // request in every field.
 fn attempt_admission_gap(v: AdmittedAttempt, a: AdmittedAttempt) -> String {
-    if v.work_id != a.work_id || v.step_id != a.step_id || v.task_id != a.task_id || v.performer_kind != a.performer_kind {
-        return "attempt " + a.attempt_id + " was admitted as " + v.performer_kind + " work on " + v.work_id + " of step " + v.step_id + ", not as this request says";
+    if v.work_id != a.work_id
+        || v.step_id != a.step_id
+        || v.task_id != a.task_id
+        || v.performer_kind != a.performer_kind
+    {
+        return "attempt " + a.attempt_id + " was admitted as " + v.performer_kind + " work on "
+            + v.work_id + " of step " + v.step_id + ", not as this request says";
     }
     let departs = request_difference_of(v.request, a.request);
-    if len(departs) > 0 { return "attempt " + a.attempt_id + " was admitted with another " + departs + " than this request carries"; }
+    if len(departs) > 0 {
+        return "attempt " + a.attempt_id + " was admitted with another " + departs
+            + " than this request carries";
+    }
     return "";
 }
 
@@ -135,11 +149,13 @@ fn attempt_admission_gap(v: AdmittedAttempt, a: AdmittedAttempt) -> String {
 // pending answer either.
 fn reply_identity_gap(work: Performing, v: AdmittedAttempt, r: WorkResult) -> String {
     if len(r.attempt_id) > 0 && r.attempt_id != v.attempt_id {
-        return "the reply is for attempt " + r.attempt_id + ", not " + v.attempt_id + "; not this attempt's";
+        return "the reply is for attempt " + r.attempt_id + ", not " + v.attempt_id
+            + "; not this attempt's";
     }
     let expected = work.identity_of(v.performer_kind);
     if len(r.performer) > 0 && len(expected) > 0 && r.performer != expected {
-        return "the reply names performer " + r.performer + ", not the " + v.performer_kind + " performer " + expected + " that was selected; not this attempt's";
+        return "the reply names performer " + r.performer + ", not the " + v.performer_kind
+            + " performer " + expected + " that was selected; not this attempt's";
     }
     return "";
 }
@@ -147,8 +163,13 @@ fn reply_identity_gap(work: Performing, v: AdmittedAttempt, r: WorkResult) -> St
 // Why a terminal reply cannot be recorded, "" when it can: it says
 // something the outcome contract carries.
 fn reply_disposition_gap(r: WorkResult) -> String {
-    if r.disposition != "done" && r.disposition != "failed" && r.disposition != "declined" && r.disposition != "timeout" {
-        return "an attempt is done, failed, declined or timeout, not `" + r.disposition + "`; not recorded";
+    if r.disposition != "done"
+        && r.disposition != "failed"
+        && r.disposition != "declined"
+        && r.disposition != "timeout"
+    {
+        return "an attempt is done, failed, declined or timeout, not `" + r.disposition
+            + "`; not recorded";
     }
     return "";
 }
@@ -162,8 +183,16 @@ fn reply_outstanding(r: WorkResult) -> Bool {
 fn attach_attempt(j: Journal, attempt_id: String, why: String, f: Fence) -> Executed {
     let settled = recorded_attempt_outcome(j, attempt_id, j.revision());
     if settled.ok {
-        if !claim_closed(j, attempt_id, settled.value.disposition, f) { return close_refused(attempt_id); }
-        return Executed { ok: true, attached: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+        if !claim_closed(j, attempt_id, settled.value.disposition, f) {
+            return close_refused(attempt_id);
+        }
+        return Executed {
+            ok: true,
+            attached: true,
+            reused: true,
+            disposition: settled.value.disposition,
+            outcome: settled.value,
+        };
     }
     return Executed { ok: true, attached: true, why: why };
 }
@@ -185,7 +214,10 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
     let mut hops = 0;
     while len(task) > 0 {
         hops = hops + 1;
-        if hops > rev + 1 { return "task " + task_id + " sits under an ancestry that does not resolve (it loops above " + task + ")"; }
+        if hops > rev + 1 {
+            return "task " + task_id
+                + " sits under an ancestry that does not resolve (it loops above " + task + ")";
+        }
         let mut parent = "";
         let mut admitted = false;
         let mut i = 0;
@@ -193,7 +225,9 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
             let e = j.read(i);
             if e.kind == "workflow.settled" && e.entity == task {
                 let o = decode_workflow_outcome(e.body);
-                if o.ok && o.value.disposition == "cancelled" { return "task " + task + " was cancelled"; }
+                if o.ok && o.value.disposition == "cancelled" {
+                    return "task " + task + " was cancelled";
+                }
             }
             if e.kind == "workflow.admitted" && e.entity == task {
                 let ad = decode_admission(e.body);
@@ -207,10 +241,19 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
     return "";
 }
 
-fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, f: Fence) -> Executed {
+fn execute_attempt(
+    j: Journal,
+    work: Performing,
+    scope: String,
+    a: AdmittedAttempt,
+    f: Fence
+) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
-        return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
+        return Executed {
+            why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of "
+                + a.work_id,
+        };
     }
     let key = execution_key(id);
     let mut v = AdmittedAttempt { };
@@ -222,7 +265,10 @@ fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttem
         let rev = j.revision();
         let admitted = recorded_attempt_admission(j, id, rev);
         if !admitted.ok {
-            return Executed { why: "attempt " + id + " was never admitted; nothing runs before its admission is in the record" };
+            return Executed {
+                why: "attempt " + id
+                    + " was never admitted; nothing runs before its admission is in the record",
+            };
         }
         v = admitted.value;
         let gap = attempt_admission_gap(v, a);
@@ -232,10 +278,20 @@ fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttem
             // an outcome recorded meanwhile — by another hand — is the
             // answer, once the claim under it is closed
             if !claim_closed(j, id, settled.value.disposition, f) { return close_refused(id); }
-            return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+            return Executed {
+                ok: true,
+                reused: true,
+                disposition: settled.value.disposition,
+                outcome: settled.value,
+            };
         }
         if attempt_claimed(j, id, rev) {
-            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome", f);
+            return attach_attempt(
+                j,
+                id,
+                "attempt " + id + " is already running; attached to its outcome",
+                f,
+            );
         }
         // the fence, at the same reading the claim is exact at (§5): an
         // attempt not yet claimed under a cancelled execution starts no
@@ -243,19 +299,32 @@ fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttem
         // its outcome
         let fence = recorded_fence(j, v.task_id, rev);
         if len(fence) > 0 {
-            return Executed { why: fence + " before attempt " + id + " was claimed; it does not run" };
+            return Executed {
+                why: fence + " before attempt " + id + " was claimed; it does not run",
+            };
         }
         // the fence, as of the same reading the claim is exact at
         if !fence_holds(j, f, rev) { return fenced(j, f, "the claim on attempt " + id); }
-        let w = j.append_exact(rev, "effect.requested", key, "attempt " + id + " by " + v.performer_kind);
+        let w = j.append_exact(
+            rev,
+            "effect.requested",
+            key,
+            "attempt " + id + " by " + v.performer_kind,
+        );
         if w.ok { ours = true; }
         else if w.error != "stale_revision" && w.error != "claimed" {
-            return Executed { why: "the record would not take the claim on attempt " + id + " (" + w.error + "); nothing ran" };
+            return Executed {
+                why: "the record would not take the claim on attempt " + id + " (" + w.error
+                    + "); nothing ran",
+            };
         }
         // the record moved under the decision: it is taken again
     }
     if !ours {
-        return Executed { why: "the record moved under the claim on attempt " + id + " " + to_string(tries) + " times; nothing ran" };
+        return Executed {
+            why: "the record moved under the claim on attempt " + id + " " + to_string(tries)
+                + " times; nothing ran",
+        };
     }
     // ---- the admitted performer runs, once
     return perform_attempt(j, work, scope, v, false, f);
@@ -264,7 +333,14 @@ fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttem
 // The admitted performer runs, and its reply is judged and recorded as
 // card 08 has it. `redelivered` marks a dispatch issued again for a claim
 // an earlier incarnation took and never answered (card 12a).
-fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttempt, redelivered: Bool, f: Fence) -> Executed {
+fn perform_attempt(
+    j: Journal,
+    work: Performing,
+    scope: String,
+    v: AdmittedAttempt,
+    redelivered: Bool,
+    f: Fence
+) -> Executed {
     let id = v.attempt_id;
     let req = attempt_request(v);
     let r = work.perform_as(v.performer_kind, req);
@@ -273,9 +349,23 @@ fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttem
     if reply_outstanding(r) {
         if r.leg_relayed {
             let marked = mark_relayed(j, id, r.performer, f);
-            if len(marked) > 0 { return Executed { ok: true, ran: true, redelivered: redelivered, unmarked: true, why: "attempt " + id + " is outstanding, and no leg is handed it yet: " + marked }; }
+            if len(marked) > 0 {
+                return Executed {
+                    ok: true,
+                    ran: true,
+                    redelivered: redelivered,
+                    unmarked: true,
+                    why: "attempt " + id + " is outstanding, and no leg is handed it yet: "
+                        + marked,
+                };
+            }
         }
-        return Executed { ok: true, ran: true, redelivered: redelivered, why: "attempt " + id + " is outstanding: the performer will answer later" };
+        return Executed {
+            ok: true,
+            ran: true,
+            redelivered: redelivered,
+            why: "attempt " + id + " is outstanding: the performer will answer later",
+        };
     }
     let bad = reply_disposition_gap(r);
     if len(bad) > 0 { return Executed { ran: true, redelivered: redelivered, why: bad }; }
@@ -300,13 +390,27 @@ fn mark_relayed(j: Journal, attempt_id: String, relay: String, f: Fence) -> Stri
         let moved = j.refresh();
         let rev = j.revision();
         let mut i = 0;
-        while i < rev { let e = j.read(i); if e.kind == "effect.relayed" && e.entity == key { return ""; } i = i + 1; }
-        if !fence_holds(j, f, rev) { return fenced(j, f, "the relay of attempt " + attempt_id).why; }
-        let w = j.append_exact(rev, "effect.relayed", key, "attempt " + attempt_id + " relayed to legs by " + relay);
+        while i < rev {
+            let e = j.read(i);
+            if e.kind == "effect.relayed" && e.entity == key { return ""; } i = i + 1;
+        }
+        if !fence_holds(j, f, rev) {
+            return fenced(j, f, "the relay of attempt " + attempt_id).why;
+        }
+        let w = j.append_exact(
+            rev,
+            "effect.relayed",
+            key,
+            "attempt " + attempt_id + " relayed to legs by " + relay,
+        );
         if w.ok { return ""; }
-        if w.error != "stale_revision" { return "the record would not take the relay of attempt " + attempt_id + " (" + w.error + ")"; }
+        if w.error != "stale_revision" {
+            return "the record would not take the relay of attempt " + attempt_id + " (" + w.error
+                + ")";
+        }
     }
-    return "the record moved under the relay of attempt " + attempt_id + " " + to_string(tries) + " times";
+    return "the record moved under the relay of attempt " + attempt_id + " " + to_string(tries)
+        + " times";
 }
 
 // The claim on an attempt is closed under its recorded outcome, durably,
@@ -325,7 +429,12 @@ fn claim_closed(j: Journal, attempt_id: String, disposition: String, f: Fence) -
         // closed already, by whichever hand: closed
         if !st.requested || st.done { return true; }
         if !fence_holds(j, f, rev) { return false; }
-        let w = j.append_exact(rev, "effect.result", key, if disposition == "done" { "ok" } else { "failed" });
+        let w = j.append_exact(
+            rev,
+            "effect.result",
+            key,
+            if disposition == "done" { "ok" } else { "failed" },
+        );
         if w.ok { return true; }
         if w.error != "stale_revision" && w.error != "claimed" { return false; }
         // the record moved: a close another hand landed is found above
@@ -334,7 +443,10 @@ fn claim_closed(j: Journal, attempt_id: String, disposition: String, f: Fence) -
 }
 
 fn close_refused(attempt_id: String) -> Executed {
-    return Executed { why: "the outcome of attempt " + attempt_id + " is recorded, and the record would not close its claim; the Work keeps its responsibility" };
+    return Executed {
+        why: "the outcome of attempt " + attempt_id
+            + " is recorded, and the record would not close its claim; the Work keeps its responsibility",
+    };
 }
 
 // Every request for an admitted attempt comes here (card 12a): the
@@ -356,10 +468,21 @@ fn close_refused(attempt_id: String) -> Executed {
 // outcome, no fence and the claim: the redelivery is a row appended at
 // that revision, and an outcome or a cancellation landing meanwhile
 // makes it stale and the decision is taken again.
-fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool, f: Fence) -> Executed {
+fn dispatch_attempt(
+    j: Journal,
+    work: Performing,
+    scope: String,
+    a: AdmittedAttempt,
+    claimed_here: Bool,
+    redelivered_here: Bool,
+    f: Fence
+) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
-        return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
+        return Executed {
+            why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of "
+                + a.work_id,
+        };
     }
     let key = execution_key(id);
     let mut tries = 0;
@@ -369,7 +492,10 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         let rev = j.revision();
         let admitted = recorded_attempt_admission(j, id, rev);
         if !admitted.ok {
-            return Executed { why: "attempt " + id + " was never admitted; nothing runs before its admission is in the record" };
+            return Executed {
+                why: "attempt " + id
+                    + " was never admitted; nothing runs before its admission is in the record",
+            };
         }
         let v = admitted.value;
         let gap = attempt_admission_gap(v, a);
@@ -377,12 +503,21 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         let settled = recorded_attempt_outcome(j, id, rev);
         if settled.ok {
             if !claim_closed(j, id, settled.value.disposition, f) { return close_refused(id); }
-            return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+            return Executed {
+                ok: true,
+                reused: true,
+                disposition: settled.value.disposition,
+                outcome: settled.value,
+            };
         }
         if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a, f); }
         let st = effect_status(j, key);
         if st.done && st.unknown {
-            return Executed { unresolved: true, why: "attempt " + id + " resulted unknown: what its invocation did before its incarnation died is unresolved, and nothing runs on it until a person resolves it" };
+            return Executed {
+                unresolved: true,
+                why: "attempt " + id
+                    + " resulted unknown: what its invocation did before its incarnation died is unresolved, and nothing runs on it until a person resolves it",
+            };
         }
         if st.done {
             // a person resolved the claim (`hale dna effect resolve`): the
@@ -398,10 +533,17 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
             return x;
         }
         if claimed_here || redelivered_here {
-            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome", f);
+            return attach_attempt(
+                j,
+                id,
+                "attempt " + id + " is already running; attached to its outcome",
+                f,
+            );
         }
         let fence = recorded_fence(j, v.task_id, rev);
-        if len(fence) > 0 { return Executed { why: fence + "; attempt " + id + " is not redelivered" }; }
+        if len(fence) > 0 {
+            return Executed { why: fence + "; attempt " + id + " is not redelivered" };
+        }
         if !fence_holds(j, f, rev) { return fenced(j, f, "the redelivery of attempt " + id); }
         // GH #946 hardening: an attempt a leg holds is left to its claim.
         // The owner asks nothing of it while the lease is live — the leg
@@ -416,22 +558,48 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         // incarnation that died with its effect unreconciled does.
         let leg = recorded_leg_claim(j, id, rev);
         if leg.present && leg.effect_class == "uncertain" && leg.expires <= std::time::now() {
-            let u = j.append_exact(rev, "effect.result", key, "unknown (the lease " + leg.holder + " took at token " + to_string(leg.token) + " as an uncertain performer ended with no outcome; whether it acted is a person's to say: `hale dna effect resolve " + key + " --outcome ok|failed`)");
+            let u = j.append_exact(
+                rev,
+                "effect.result",
+                key,
+                "unknown (the lease " + leg.holder + " took at token " + to_string(leg.token)
+                    + " as an uncertain performer ended with no outcome; whether it acted is a person's to say: `hale dna effect resolve "
+                    + key + " --outcome ok|failed`)",
+            );
             if u.ok {
-                return Executed { unresolved: true, why: "attempt " + id + " was " + leg.holder + "'s as an uncertain performer and its lease ended with no outcome; it waits, unresolved, for a person: `hale dna effect resolve " + key + " --outcome ok|failed`" };
+                return Executed {
+                    unresolved: true,
+                    why: "attempt " + id + " was " + leg.holder
+                        + "'s as an uncertain performer and its lease ended with no outcome; it waits, unresolved, for a person: `hale dna effect resolve "
+                        + key + " --outcome ok|failed`",
+                };
             }
             if u.error != "stale_revision" && u.error != "claimed" {
-                return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+                return Executed {
+                    why: "the record would not take the unknown result of attempt " + id + " ("
+                        + u.error + "); nothing ran",
+                };
             }
             continue;
         }
         if leg.present && leg.expires > std::time::now() {
-            return Executed { ok: true, attached: true, why: "attempt " + id + " is " + leg.holder + "'s under a lease until " + to_string(leg.expires) + "; it waits for the leg's outcome, and is asked again when the lease expires" };
+            return Executed {
+                ok: true,
+                attached: true,
+                why: "attempt " + id + " is " + leg.holder + "'s under a lease until "
+                    + to_string(leg.expires)
+                    + "; it waits for the leg's outcome, and is asked again when the lease expires",
+            };
         }
         // asked again once per lease: a lease that expired and was already
         // redelivered awaits a leg, and an owner restart asks nothing more
         if leg.present && redelivered_since_claim(j, id, rev) {
-            return Executed { ok: true, attached: true, why: "attempt " + id + " was asked of a leg again after " + leg.holder + "'s lease expired; it awaits a leg" };
+            return Executed {
+                ok: true,
+                attached: true,
+                why: "attempt " + id + " was asked of a leg again after " + leg.holder
+                    + "'s lease expired; it awaits a leg",
+            };
         }
         // the claim was an incarnation's that died, and the invocation may
         // have acted before the outcome was saved: recovery reconciles
@@ -446,7 +614,11 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
         // nothing about this attempt, and its documented idempotence is
         // not this performer's
         if rc.kind != v.performer_kind || rc.identity != work.identity_of(v.performer_kind) {
-            rc = Reconciliation { why: "the evidence offered is " + rc.kind + " " + rc.identity + "'s, not the " + v.performer_kind + " performer " + work.identity_of(v.performer_kind) + "'s that attempt " + id + " was admitted to" };
+            rc = Reconciliation {
+                why: "the evidence offered is " + rc.kind + " " + rc.identity + "'s, not the "
+                    + v.performer_kind + " performer " + work.identity_of(v.performer_kind)
+                    + "'s that attempt " + id + " was admitted to",
+            };
         }
         if rc.established && rc.performed {
             // the adapter's record, as it recorded it: judged for whose it
@@ -454,20 +626,44 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
             // attempt it names if it names one — and never relabelled
             let r = rc.result;
             let whose = reply_identity_gap(work, v, r);
-            if len(whose) > 0 { return Executed { why: "the adapter's record of attempt " + id + " is not this attempt's: " + whose }; }
+            if len(whose) > 0 {
+                return Executed {
+                    why: "the adapter's record of attempt " + id + " is not this attempt's: "
+                        + whose,
+                };
+            }
             let bad = reply_disposition_gap(r);
-            if len(bad) > 0 { return Executed { why: "the adapter's record of attempt " + id + " carries no outcome: " + bad }; }
+            if len(bad) > 0 {
+                return Executed {
+                    why: "the adapter's record of attempt " + id + " carries no outcome: " + bad,
+                };
+            }
             let mut x = record_attempt(j, scope, v, r, false, f);
             x.reconciled = true;
             return x;
         }
         if !rc.established && !rc.idempotent {
-            let u = j.append_exact(rev, "effect.result", key, "unknown (reconciled after a restart: " + rc.why + ")");
+            let u = j.append_exact(
+                rev,
+                "effect.result",
+                key,
+                "unknown (reconciled after a restart: " + rc.why + ")",
+            );
             if u.ok {
-                return Executed { unresolved: true, why: "attempt " + id + " may have acted before its incarnation died and nothing can say whether it did (" + rc.why + "); it waits, unresolved, for a person: `hale dna effect resolve " + key + " --outcome ok|failed`" };
+                return Executed {
+                    unresolved: true,
+                    why: "attempt " + id
+                        + " may have acted before its incarnation died and nothing can say whether it did ("
+                        + rc.why
+                        + "); it waits, unresolved, for a person: `hale dna effect resolve " + key
+                        + " --outcome ok|failed`",
+                };
             }
             if u.error != "stale_revision" && u.error != "claimed" {
-                return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+                return Executed {
+                    why: "the record would not take the unknown result of attempt " + id + " ("
+                        + u.error + "); nothing ran",
+                };
             }
             // the record moved under the decision: it is taken again — an
             // outcome, a resolution or a takeover landed, or something
@@ -475,14 +671,32 @@ fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAtte
             // reading
             continue;
         }
-        let w = j.append_exact(rev, "effect.redelivered", key, "attempt " + id + " redelivered" + (if rc.idempotent { " (documented idempotent)" } else { " (the adapter says it never acted)" }));
+        let w = j.append_exact(
+            rev,
+            "effect.redelivered",
+            key,
+            "attempt " + id + " redelivered"
+                + (
+                    if rc.idempotent {
+                        " (documented idempotent)"
+                    } else {
+                        " (the adapter says it never acted)"
+                    }
+                ),
+        );
         if w.ok { return perform_attempt(j, work, scope, v, true, f); }
         if w.error != "stale_revision" && w.error != "claimed" {
-            return Executed { why: "the record would not take the redelivery of attempt " + id + " (" + w.error + "); nothing ran" };
+            return Executed {
+                why: "the record would not take the redelivery of attempt " + id + " (" + w.error
+                    + "); nothing ran",
+            };
         }
         // the record moved under the decision: it is taken again
     }
-    return Executed { why: "the record moved under the redelivery of attempt " + id + " " + to_string(tries) + " times; nothing ran" };
+    return Executed {
+        why: "the record moved under the redelivery of attempt " + id + " " + to_string(tries)
+            + " times; nothing ran",
+    };
 }
 
 // A leg's claim on an attempt as the record holds it (GH #946): the
@@ -506,14 +720,29 @@ fn recorded_leg_claim(j: Journal, attempt_id: String, rev: Int) -> LegClaim {
         let e = j.read(i);
         if e.kind == "attempt.claimed" && e.entity == attempt_id {
             out = LegClaim {
-                present: true, holder: std::json::find_string_field(e.body, "holder"), token: std::json::find_int_field(e.body, "token"), expires: std::json::find_int_field(e.body, "until"),
-                principal_mode: std::json::find_string_field(e.body, "principal_mode"), principal_name: std::json::find_string_field(e.body, "principal_name"),
+                present: true,
+                holder: std::json::find_string_field(e.body, "holder"),
+                token: std::json::find_int_field(e.body, "token"),
+                expires: std::json::find_int_field(e.body, "until"),
+                principal_mode: std::json::find_string_field(e.body, "principal_mode"),
+                principal_name: std::json::find_string_field(e.body, "principal_name"),
                 effect_class: std::json::find_string_field(e.body, "effect_class")
             };
         }
         // given back by its holder at that token (`dna.attempt.release`): nobody's again
-        if e.kind == "attempt.released" && e.entity == attempt_id && out.present && std::json::find_string_field(e.body, "holder") == out.holder && std::json::find_int_field(e.body, "token") == out.token {
-            out = LegClaim { holder: out.holder, token: out.token, principal_mode: out.principal_mode, principal_name: out.principal_name, effect_class: out.effect_class };
+        if e.kind == "attempt.released"
+            && e.entity == attempt_id
+            && out.present
+            && std::json::find_string_field(e.body, "holder") == out.holder
+            && std::json::find_int_field(e.body, "token") == out.token
+        {
+            out = LegClaim {
+                holder: out.holder,
+                token: out.token,
+                principal_mode: out.principal_mode,
+                principal_name: out.principal_name,
+                effect_class: out.effect_class,
+            };
         }
         i = i + 1;
     }
@@ -539,11 +768,22 @@ fn redelivered_since_claim(j: Journal, attempt_id: String, rev: Int) -> Bool {
 // A reply that arrives later, for an attempt that ran and was left
 // outstanding: checked by the same rules and persisted the same way. A
 // reply for an attempt whose outcome is recorded changes nothing.
-fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: String, r: WorkResult, f: Fence) -> Executed {
+fn settle_attempt(
+    j: Journal,
+    work: Performing,
+    scope: String,
+    attempt_id: String,
+    r: WorkResult,
+    f: Fence
+) -> Executed {
     let moved = j.refresh();
     let rev = j.revision();
     let admitted = recorded_attempt_admission(j, attempt_id, rev);
-    if !admitted.ok { return Executed { why: "attempt " + attempt_id + " was never admitted; its reply is nobody's" }; }
+    if !admitted.ok {
+        return Executed {
+            why: "attempt " + attempt_id + " was never admitted; its reply is nobody's",
+        };
+    }
     if !attempt_claimed(j, attempt_id, rev) {
         return Executed { why: "attempt " + attempt_id + " never ran; a reply for it is nobody's" };
     }
@@ -554,8 +794,16 @@ fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: Strin
     }
     let settled = recorded_attempt_outcome(j, attempt_id, rev);
     if settled.ok {
-        if !claim_closed(j, attempt_id, settled.value.disposition, f) { return close_refused(attempt_id); }
-        return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value, why: "attempt " + attempt_id + " was already settled; this reply changes nothing" };
+        if !claim_closed(j, attempt_id, settled.value.disposition, f) {
+            return close_refused(attempt_id);
+        }
+        return Executed {
+            ok: true,
+            reused: true,
+            disposition: settled.value.disposition,
+            outcome: settled.value,
+            why: "attempt " + attempt_id + " was already settled; this reply changes nothing",
+        };
     }
     let bad = reply_disposition_gap(r);
     if len(bad) > 0 { return Executed { why: bad }; }
@@ -566,18 +814,43 @@ fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: Strin
 // When the record moved, read again: an outcome recorded meanwhile — the
 // same reply delivered twice, or another invocation's — is the accepted
 // one, and this reply changes nothing.
-fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, ran: Bool, f: Fence) -> Executed {
+fn record_attempt(
+    j: Journal,
+    scope: String,
+    v: AdmittedAttempt,
+    r: WorkResult,
+    ran: Bool,
+    f: Fence
+) -> Executed {
     let outcome = AttemptOutcome {
         attempt_id: v.attempt_id, work_id: v.work_id, disposition: r.disposition,
-        performer: r.performer, result: r.result, result_ref: r.result_ref, evidence_ref: r.evidence,
+        performer: r.performer,
+        result: r.result,
+        result_ref: r.result_ref,
+        evidence_ref: r.evidence,
         narrative: r.narrative,
-        request: r.request, hat_digest: r.hat_digest, hat_head: r.hat_head, hat_watermark: r.hat_watermark, prompt_digest: r.prompt_digest, renderer: r.renderer,
-        transition: TransitionRef { scope: scope, key: v.attempt_id, proposal_id: transition_id(v.attempt_id, "outcome") }
+        request: r.request,
+        hat_digest: r.hat_digest,
+        hat_head: r.hat_head,
+        hat_watermark: r.hat_watermark,
+        prompt_digest: r.prompt_digest,
+        renderer: r.renderer,
+        transition: TransitionRef {
+            scope: scope,
+            key: v.attempt_id,
+            proposal_id: transition_id(v.attempt_id, "outcome"),
+        }
     };
     let body = encode_attempt_outcome(outcome);
     // what is written has to read back as an outcome, or it is not one
     let readable = decode_attempt_outcome(body);
-    if !readable.ok { return Executed { ran: ran, why: "the reply is not an outcome the record can carry: " + readable.why + "; not recorded" }; }
+    if !readable.ok {
+        return Executed {
+            ran: ran,
+            why: "the reply is not an outcome the record can carry: " + readable.why
+                + "; not recorded",
+        };
+    }
     let mut tries = 0;
     while tries < 6 {
         tries = tries + 1;
@@ -585,10 +858,22 @@ fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, 
         let rev = j.revision();
         let already = recorded_attempt_outcome(j, v.attempt_id, rev);
         if already.ok {
-            if !claim_closed(j, v.attempt_id, already.value.disposition, f) { return close_refused(v.attempt_id); }
-            return Executed { ok: true, ran: ran, reused: true, disposition: already.value.disposition, outcome: already.value, why: "attempt " + v.attempt_id + " was already settled; this reply changes nothing" };
+            if !claim_closed(j, v.attempt_id, already.value.disposition, f) {
+                return close_refused(v.attempt_id);
+            }
+            return Executed {
+                ok: true,
+                ran: ran,
+                reused: true,
+                disposition: already.value.disposition,
+                outcome: already.value,
+                why: "attempt " + v.attempt_id + " was already settled; this reply changes nothing",
+            };
         }
-        if !fence_holds(j, f, rev) { let x = fenced(j, f, "the outcome of attempt " + v.attempt_id); return Executed { ran: ran, fenced: true, why: x.why }; }
+        if !fence_holds(j, f, rev) {
+            let x = fenced(j, f, "the outcome of attempt " + v.attempt_id);
+            return Executed { ran: ran, fenced: true, why: x.why };
+        }
         let w = j.append_exact(rev, "attempt.outcome", v.attempt_id, body);
         if w.ok {
             if !claim_closed(j, v.attempt_id, r.disposition, f) {
@@ -598,10 +883,18 @@ fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, 
             return Executed { ok: true, ran: ran, disposition: r.disposition, outcome: outcome };
         }
         if w.error != "stale_revision" && w.error != "claimed" {
-            return Executed { ran: ran, why: "the record would not take the outcome of attempt " + v.attempt_id + " (" + w.error + "); it is unrecorded, and nothing advances" };
+            return Executed {
+                ran: ran,
+                why: "the record would not take the outcome of attempt " + v.attempt_id + " ("
+                    + w.error + "); it is unrecorded, and nothing advances",
+            };
         }
     }
-    return Executed { ran: ran, why: "the record moved under the outcome of attempt " + v.attempt_id + " " + to_string(tries) + " times; it is unrecorded, and nothing advances" };
+    return Executed {
+        ran: ran,
+        why: "the record moved under the outcome of attempt " + v.attempt_id + " "
+            + to_string(tries) + " times; it is unrecorded, and nothing advances",
+    };
 }
 
 // The same path, bound to a journal of its own.
@@ -611,8 +904,12 @@ locus AttemptExecutor {
         work: Performing = NoPerformers { };
         scope: String = "org";
     }
-    fn execute(a: AdmittedAttempt) -> Executed { return execute_attempt(self.journal, self.work, self.scope, a, Fence { }); }
-    fn settle(attempt_id: String, r: WorkResult) -> Executed { return settle_attempt(self.journal, self.work, self.scope, attempt_id, r, Fence { }); }
+    fn execute(a: AdmittedAttempt) -> Executed {
+        return execute_attempt(self.journal, self.work, self.scope, a, Fence { });
+    }
+    fn settle(attempt_id: String, r: WorkResult) -> Executed {
+        return settle_attempt(self.journal, self.work, self.scope, attempt_id, r, Fence { });
+    }
 }
 
 // The first field in which two requests for one Work differ in content,

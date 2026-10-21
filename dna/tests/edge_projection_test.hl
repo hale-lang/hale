@@ -45,7 +45,11 @@ locus VisibleEdges { params { } fn visible(id: String) -> Bool { return true; } 
 // LEFT. Storage order is not a Postgres property; the set is.
 fn projected_edges(store: dna::Pq) -> EdgeCapture {
     let capture = EdgeCapture { };
-    let page = store.read_graph(dna::GraphQuery { kind: "edges", id: LEFT, limit: 25 }, VisibleEdges { }, capture);
+    let page = store.read_graph(
+        dna::GraphQuery { kind: "edges", id: LEFT, limit: 25 },
+        VisibleEdges { },
+        capture,
+    );
     std::test::assert(page.ok && !page.has_more, "projected edges read completely: " + page.error);
     return capture;
 }
@@ -57,9 +61,19 @@ locus EdgeProjectionCases {
         std::test::assert(r.ok, "native Record append: " + r.error);
     }
     fn context(j: dna::Journal) -> ops::GovernanceContext {
-        return ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "graph-editor" };
+        return ops::GovernanceContext {
+            application_id: j.read(0).digest,
+            principal_mode: "local",
+            principal_name: "graph-editor",
+        };
     }
-    fn command(j: dna::Journal, request_id: String, from_id: String, to_id: String, rel: String) -> ops::KnowledgeCommand {
+    fn command(
+        j: dna::Journal,
+        request_id: String,
+        from_id: String,
+        to_id: String,
+        rel: String
+    ) -> ops::KnowledgeCommand {
         return ops::KnowledgeCommand {
             request_id: request_id, application_id: j.read(0).digest,
             target_id: from_id, record_head: j.head(), from_id: from_id, to_id: to_id,
@@ -68,23 +82,51 @@ locus EdgeProjectionCases {
     }
     fn body(context: ops::GovernanceContext, c: ops::KnowledgeCommand) -> String {
         let codec = ops::KnowledgeCommandCodec { };
-        let body = codec.fact(context, c, ops::KnowledgeGrant { allowed: true, mode: "direct", authority: "graph-editor", basis: "fixed native projection-test grant" });
+        let body = codec.fact(
+            context,
+            c,
+            ops::KnowledgeGrant {
+                allowed: true,
+                mode: "direct",
+                authority: "graph-editor",
+                basis: "fixed native projection-test grant",
+            },
+        );
         std::test::assert(len(body) > 0, "fixture is a complete native command fact");
         return body;
     }
     fn link(j: dna::Journal, request_id: String, from_id: String, to_id: String, rel: String) {
         let codec = ops::KnowledgeCommandCodec { };
         let c = self.command(j, request_id, from_id, to_id, rel);
-        self.append(j, "knowledge.edge.linked", codec.edge_id(from_id, to_id, rel), self.body(self.context(j), c));
-        std::test::assert(codec.decode_fact(j.read(j.revision() - 1)).valid, "stored native edge fact validates");
+        self.append(
+            j,
+            "knowledge.edge.linked",
+            codec.edge_id(from_id, to_id, rel),
+            self.body(self.context(j), c),
+        );
+        std::test::assert(
+            codec.decode_fact(j.read(j.revision() - 1)).valid,
+            "stored native edge fact validates",
+        );
     }
     fn edge(capture: EdgeCapture, from_id: String, to_id: String, rel: String) {
-        std::test::assert(capture.has(from_id, to_id, rel), "projected source, destination and relationship text are exact: " + rel);
+        std::test::assert(
+            capture.has(from_id, to_id, rel),
+            "projected source, destination and relationship text are exact: " + rel,
+        );
     }
     fn assert_graph(store: dna::Pq) {
-        std::test::assert_eq_int(store.count("edges"), 4, "ordered, parallel and self relationships remain distinct");
+        std::test::assert_eq_int(
+            store.count("edges"),
+            4,
+            "ordered, parallel and self relationships remain distinct",
+        );
         let capture = projected_edges(store);
-        std::test::assert_eq_int(capture.rows.len(), 4, "the graph reads exactly the four projected edges");
+        std::test::assert_eq_int(
+            capture.rows.len(),
+            4,
+            "the graph reads exactly the four projected edges",
+        );
         self.edge(capture, LEFT, RIGHT, LABEL);
         self.edge(capture, RIGHT, LEFT, LABEL);
         self.edge(capture, LEFT, LEFT, "self reference 🧭");
@@ -95,8 +137,15 @@ locus EdgeProjectionCases {
         std::io::fs::mkdir(root) or discard;
         let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "temporary native Git Record");
-        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
-        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
         self.append(j, "application.started", "org", "{}");
         self.link(j, "edge/forward", LEFT, RIGHT, LABEL);
         self.link(j, "edge/reverse", RIGHT, LEFT, LABEL);
@@ -105,43 +154,86 @@ locus EdgeProjectionCases {
         self.link(j, "edge/same-effect-new-command", LEFT, RIGHT, LABEL);
         let receipts = NoEdgeReceipts { };
         let id = "edgeprojection" + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let dsn = dna::migrated(owner, id);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), "the store opens: " + store.last_error());
         let applied = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(applied.error, "", "durable command facts project");
-        std::test::assert_eq_int(applied.watermark, j.revision(), "only successful projection advances to Record head");
+        std::test::assert_eq_int(
+            applied.watermark,
+            j.revision(),
+            "only successful projection advances to Record head",
+        );
         self.assert_graph(store);
         let generation = store.graph_generation();
         let idle = ops::apply_record(store, j, receipts);
         std::test::assert_eq_int(idle.rows, 0, "up-to-date projection reads no rows");
-        std::test::assert_eq_int(store.graph_generation(), generation, "idle tail does not mutate graph");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation,
+            "idle tail does not mutate graph",
+        );
 
         // Set the stamp back to row 0 and replay every row into the same
         // graph: the store's link owns tuple idempotence. (GH #1026: a row
         // lands with its stamp, so the stamp is set back whole, in SQL, as
         // the record's spine role.)
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '' WHERE key = 'graph_projection_head'").ok && store.watermark() == 0, "set the stamp back to row 0");
+        std::test::assert(
+            store.conn.exec(
+                "UPDATE knowledge_meta SET value = '0' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '' WHERE key = 'graph_projection_head'",
+            ).ok
+                && store.watermark() == 0,
+            "set the stamp back to row 0",
+        );
         let replay = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(replay.error, "", "watermark-loss replay succeeds");
         std::test::assert_eq_int(replay.watermark, j.revision(), "replayed checkpoint catches up");
-        std::test::assert_eq_int(store.graph_generation(), generation, "replay never rewrites an existing exact edge");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation,
+            "replay never rewrites an existing exact edge",
+        );
         self.assert_graph(store);
 
         // Reopen the actual durable Record and build entirely new memory.
-        let restarted = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
+        let restarted = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
         let rebuilt_id = id + "rebuilt";
-        let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
+        let rebuilt_dsn = dna::migrated(owner, rebuilt_id);
+        std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
         let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };
         std::test::assert(rebuilt.open(), "the fresh store opens: " + rebuilt.last_error());
         let recovered = ops::apply_record(rebuilt, restarted, receipts);
-        std::test::assert_eq_str(recovered.error, "", "fresh memory recovers from reopened Git Record");
-        std::test::assert_eq_int(recovered.watermark, restarted.revision(), "fresh memory reaches exact durable head");
+        std::test::assert_eq_str(
+            recovered.error,
+            "",
+            "fresh memory recovers from reopened Git Record",
+        );
+        std::test::assert_eq_int(
+            recovered.watermark,
+            restarted.revision(),
+            "fresh memory reaches exact durable head",
+        );
         self.assert_graph(rebuilt);
-        std::test::assert_eq_int(receipts.reads, 0, "edge projection does not disclose or fetch endpoint receipts");
+        std::test::assert_eq_int(
+            receipts.reads,
+            0,
+            "edge projection does not disclose or fetch endpoint receipts",
+        );
         store.close(); rebuilt.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, id), "", "record's schema and roles dropped");
-        std::test::assert_eq_str(dna::unmigrate(owner, rebuilt_id), "", "rebuilt record's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, id),
+            "",
+            "record's schema and roles dropped",
+        );
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, rebuilt_id),
+            "",
+            "rebuilt record's schema and roles dropped",
+        );
         let removed = dna::run_tool("rm\n-rf\n" + root);
     }
     fn rejects(owner: String, mode: String) {
@@ -151,24 +243,46 @@ locus EdgeProjectionCases {
         let codec = ops::KnowledgeCommandCodec { };
         let mut c = self.command(j, "edge/invalid", RIGHT, LEFT, LABEL);
         let mut context = self.context(j);
-        if mode == "foreign-application" { context.application_id = "another-native-record"; c.application_id = context.application_id; }
+        if mode == "foreign-application" {
+            context.application_id = "another-native-record";
+            c.application_id = context.application_id;
+        }
         let body = self.body(context, c);
         let mut entity = codec.edge_id(c.from_id, c.to_id, c.rel);
         if mode == "wrong-edge" { entity = codec.edge_id(LEFT, LEFT, LABEL); }
         if mode == "stale-predecessor" { self.append(j, "application.observed", "org", "{}"); }
         let before = j.revision();
-        self.append(j, "knowledge.edge.linked", entity, if mode == "malformed" { "{\"format\":" } else { body });
+        self.append(
+            j,
+            "knowledge.edge.linked",
+            entity,
+            if mode == "malformed" { "{\"format\":" } else { body },
+        );
         self.link(j, "edge/after-invalid", LEFT, LEFT, "must not pass invalid row");
         let receipts = NoEdgeReceipts { };
-        let id = "edgeprojection" + std::str::replace(mode, "-", "") + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let id = "edgeprojection" + std::str::replace(mode, "-", "")
+            + to_string(std::process::pid());
+        let dsn = dna::migrated(owner, id);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), mode + " store opens: " + store.last_error());
         let stopped = ops::apply_record(store, j, receipts);
         std::test::assert(len(stopped.error) > 0, mode + " returns a projection error");
-        std::test::assert_eq_int(stopped.watermark, before, mode + " reports last successful watermark");
-        std::test::assert_eq_int(store.watermark(), before, mode + " cannot checkpoint the invalid fact");
-        std::test::assert_eq_int(store.count("edges"), 1, mode + " has no partial edge effect and blocks later rows");
+        std::test::assert_eq_int(
+            stopped.watermark,
+            before,
+            mode + " reports last successful watermark",
+        );
+        std::test::assert_eq_int(
+            store.watermark(),
+            before,
+            mode + " cannot checkpoint the invalid fact",
+        );
+        std::test::assert_eq_int(
+            store.count("edges"),
+            1,
+            mode + " has no partial edge effect and blocks later rows",
+        );
         let kept = projected_edges(store);
         std::test::assert_eq_int(kept.rows.len(), 1, mode + " the graph reads only the good edge");
         self.edge(kept, LEFT, RIGHT, LABEL);
@@ -177,7 +291,12 @@ locus EdgeProjectionCases {
         std::test::assert_eq_int(again.rows, 1, mode + " retries the offending fact first");
         std::test::assert_eq_int(store.watermark(), before, mode + " retry preserves checkpoint");
         std::test::assert_eq_int(store.count("edges"), 1, mode + " retry adds no graph row");
-        store.close(); std::test::assert_eq_str(dna::unmigrate(owner, id), "", mode + " record's schema and roles dropped");
+        store.close();
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, id),
+            "",
+            mode + " record's schema and roles dropped",
+        );
     }
     fn check(owner: String) {
         self.durable_replay(owner);
@@ -190,9 +309,15 @@ locus EdgeProjectionCases {
 
 main locus App {
     run() {
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
         if len(owner) > 0 { EdgeProjectionCases { }.check(owner); }
-        else { eprintln("edge_projection_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); }
+        else {
+            eprintln("edge_projection_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+        }
     }
 }
 fn main() { App { }; }

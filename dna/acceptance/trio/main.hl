@@ -32,7 +32,13 @@ main locus TrioGateway {
     run() {
         self.gateway.on_order(1, 10);
         std::time::sleep(100ms);
-        println("gateway: ", self.gateway.taken, " order(s) taken, ", self.ledger.seen, " in the ledger");
+        println(
+            "gateway: ",
+            self.gateway.taken,
+            " order(s) taken, ",
+            self.ledger.seen,
+            " in the ledger",
+        );
         if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
         while true { std::time::sleep(100ms); }
     }

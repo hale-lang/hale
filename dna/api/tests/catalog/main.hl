@@ -10,35 +10,86 @@ fn populate(catalog: dna::WorkflowCatalog, updated: Bool) {
     let b = catalog.define("close", 2, "record", "New closing procedure");
     let c = catalog.define("collect", 9007199254740993, "record", "Collect evidence");
     let d = catalog.child("close", 1, 0, "gather", "collect", 9007199254740993);
-    let e = catalog.leaf("close", 1, 1, "publish", dna::WorkRequest { objective: "Publish after evidence collection", output_contract: "MonthlyReport", target: "org/finance" }, 1);
-    let f = catalog.leaf("close", 2, 0, "reconcile", dna::WorkRequest { objective: "Use the new procedure" }, 1);
+    let e = catalog.leaf(
+        "close",
+        1,
+        1,
+        "publish",
+        dna::WorkRequest {
+            objective: "Publish after evidence collection",
+            output_contract: "MonthlyReport",
+            target: "org/finance",
+        },
+        1,
+    );
+    let f = catalog.leaf(
+        "close",
+        2,
+        0,
+        "reconcile",
+        dna::WorkRequest { objective: "Use the new procedure" },
+        1,
+    );
     let g = catalog.leaf("collect", 9007199254740993, 0, "human", dna::WorkRequest {
         objective: "Ask a human\nfor evidence — ✓\n<img src=x onerror=\"window.__injected=true\">",
-        context_digest: "sha256:context-for-this-definition", knowledge_bindings: "opaque exact binding specification",
-        output_contract: "Evidence", data_class: "internal", requires: "judgment", target: "org/finance",
+        context_digest: "sha256:context-for-this-definition",
+        knowledge_bindings: "opaque exact binding specification",
+        output_contract: "Evidence",
+        data_class: "internal",
+        requires: "judgment",
+        target: "org/finance",
         cost_ceiling: 9223372036854775807
     }, 2);
     let mut i = 0;
     while i < 26 {
         let id = "procedure-" + to_string(i);
         let added = catalog.define(id, 1, "record", "Procedure " + to_string(i));
-        let member = catalog.leaf(id, 1, 0, "perform", dna::WorkRequest { objective: "Do procedure " + to_string(i) }, 1);
+        let member = catalog.leaf(
+            id,
+            1,
+            0,
+            "perform",
+            dna::WorkRequest { objective: "Do procedure " + to_string(i) },
+            1,
+        );
         i = i + 1;
     }
     if updated {
         let h = catalog.define("close", 3, "record", "Latest procedure");
-        let j = catalog.leaf("close", 3, 0, "next", dna::WorkRequest { objective: "A later publication" }, 1);
+        let j = catalog.leaf(
+            "close",
+            3,
+            0,
+            "next",
+            dna::WorkRequest { objective: "A later publication" },
+            1,
+        );
     }
 }
 
 locus FixtureProvider {
-    params { root: String = ""; original: ops::DeclaredWorkflowCatalog; updated: ops::DeclaredWorkflowCatalog; }
+    params {
+        root: String = "";
+        original: ops::DeclaredWorkflowCatalog;
+        updated: ops::DeclaredWorkflowCatalog;
+    }
     fn supported() -> Bool { return true; }
     fn snapshot() -> ops::DefinitionSnapshot {
         let mode = std::io::fs::read_file(self.root + "/catalog-mode") or "original";
-        if mode == "unavailable" { return ops::DefinitionSnapshot { supported: true, error: "The application's catalog is temporarily unavailable" }; }
+        if mode == "unavailable" {
+            return ops::DefinitionSnapshot {
+                supported: true,
+                error: "The application's catalog is temporarily unavailable",
+            };
+        }
         if mode == "invalid" {
-            return ops::DefinitionSnapshot { supported: true, available: true, document: "{}", digest: dna::digest_of("{}"), provenance: self.original.provenance };
+            return ops::DefinitionSnapshot {
+                supported: true,
+                available: true,
+                document: "{}",
+                digest: dna::digest_of("{}"),
+                provenance: self.original.provenance,
+            };
         }
         return if mode == "updated" { self.updated.snapshot() } else { self.original.snapshot() };
     }
@@ -57,12 +108,31 @@ main locus FixtureHead {
         commands: api::Commands = api::Commands { };
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
-        local: api::Exposure = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "fixture", bound: 64, on_full: refuse);
-        remote: api::Exposure = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "fixture-commands", bound: 64, on_full: refuse);
+        local: api::Exposure = api::serve(
+            HeadCommands,
+            unix::Rpc { path: self.served, roles: self.roles },
+            as: "fixture",
+            bound: 64,
+            on_full: refuse
+        );
+        remote: api::Exposure = api::serve(
+            HeadCommands,
+            http::Rpc {
+                bind: "127.0.0.1:" + to_string(self.http_port),
+                codec: json,
+                principals: self.bearer,
+                roles: self.roles,
+            },
+            as: "fixture-commands",
+            bound: 64,
+            on_full: refuse
+        );
     }
     placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
     run() {
-        if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
+        if self.http_port > 0 {
+            println("hale dna api: commands http://127.0.0.1:", self.http_port, "/");
+        }
         std::api::run_until_stopped(self.local);
         self.local.stop();
         self.remote.stop();
@@ -71,7 +141,13 @@ main locus FixtureHead {
 
 // The fixture's head, trusted-local: the launch token names the head's own
 // account (the lanes set HALE_DNA_TRUSTED_LOCAL).
-fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::WorkflowCatalogProvider, provider: api::CommandProvider) {
+fn head_up(
+    root: String,
+    port: Int,
+    web: api::WebAssets,
+    definitions: ops::WorkflowCatalogProvider,
+    provider: api::CommandProvider
+) {
     if !dna::trusted_local_fixture() {
         eprintln("hale dna api: ", dna::TRUSTED_LOCAL_REFUSED);
         std::process::exit(2);
@@ -79,15 +155,48 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
     let user = api::local_person(root);
     let token = api::launch_token(root + "/.hale/dna");
     let socket = api::head_socket(root);
-    println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
+    println(
+        "hale dna api: http://127.0.0.1:",
+        port,
+        "/?token=",
+        token,
+        "  (trusted local; composed command provider; the token is in ",
+        root,
+        "/.hale/dna/head.token)",
+    );
     FixtureHead {
-        root: root, socket: socket, served: api::served_socket(socket), roles: dna::RecordRoles { root: root },
+        root: root,
+        socket: socket,
+        served: api::served_socket(socket),
+        roles: dna::RecordRoles { root: root },
         http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
-        commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: provider }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: api::LocalKnowledgeCommands { root: root } } },
+        commands: api::Commands {
+            admission: api::CommandAdmission {
+                root: root,
+                roles: dna::RecordRoles { root: root },
+                provider: provider,
+            },
+            knowledge: api::KnowledgeAdmission {
+                root: root,
+                roles: dna::RecordRoles { root: root },
+                provider: api::LocalKnowledgeCommands { root: root },
+            },
+        },
         srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
-            root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
+            root: root,
+            web: web,
+            organization: orgsource::OrganizationSource {
+                root: root,
+                allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1",
+            },
             definitions: definitions, knowledge: api::LocalKnowledge { root: root },
-            people: api::NoPeople { }, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: ops::NoGovernanceAuthority { } }, organization_runtime: api::NoOrganizationRuntime { },
+            people: api::NoPeople { },
+            socket: socket,
+            commands_port: api::commands_port(),
+            organization_candidates: api::OrganizationCandidateWire {
+                authority: ops::NoGovernanceAuthority { },
+            },
+            organization_runtime: api::NoOrganizationRuntime { },
             command_origin: "http://127.0.0.1:" + to_string(port), local_name: user, token: token
         } }
     };
@@ -102,12 +211,20 @@ fn main() {
     let updated = dna::WorkflowCatalog { };
     populate(original, false); populate(updated, true);
     let host = FixtureProvider { root: root,
-        original: ops::DeclaredWorkflowCatalog { catalog: original, provenance: ops::DefinitionProvenance {
-            source_revision: "fixture-catalog-v1", source_path: "app/workflows.hl", dependency_digest: "fixture-dependencies-v1"
-        } },
-        updated: ops::DeclaredWorkflowCatalog { catalog: updated, provenance: ops::DefinitionProvenance {
-            source_revision: "fixture-catalog-v2", source_path: "app/workflows.hl", dependency_digest: "fixture-dependencies-v1"
-        } }
+        original: ops::DeclaredWorkflowCatalog {
+            catalog: original,
+            provenance: ops::DefinitionProvenance {
+                source_revision: "fixture-catalog-v1",
+                source_path: "app/workflows.hl",
+                dependency_digest: "fixture-dependencies-v1"
+            } },
+        updated: ops::DeclaredWorkflowCatalog {
+            catalog: updated,
+            provenance: ops::DefinitionProvenance {
+                source_revision: "fixture-catalog-v2",
+                source_path: "app/workflows.hl",
+                dependency_digest: "fixture-dependencies-v1"
+            } }
     };
     head_up(root, port, web, host, api::NoCommands { });
 }

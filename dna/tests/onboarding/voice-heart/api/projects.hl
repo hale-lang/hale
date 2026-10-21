@@ -25,7 +25,12 @@ locus Projects {
 
     /// `createProject`, with its budget and limits when the body sets them.
     fn create(c: ProjectCreate) -> Project fallible(ApiError) {
-        if !is_slug(c.id) { fail invalid("`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63", "id"); }
+        if !is_slug(c.id) {
+            fail invalid(
+                "`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63",
+                "id"
+            );
+        }
         check_name(c.name) or raise;
         check_limits(c.limits, "project,model", "limits") or raise;
         let mut row = st::ProjectRow {
@@ -39,14 +44,25 @@ locus Projects {
         row.data_classes.items = c.data_classes;
         row.limits.items = c.limits;
         if c.has_budget {
-            let set = budget_set_of(c.budget.allowance_micros, c.budget.currency, c.budget.period, c.budget.has_period_anchor, c.budget.period_anchor);
+            let set = budget_set_of(
+                c.budget.allowance_micros,
+                c.budget.currency,
+                c.budget.period,
+                c.budget.has_period_anchor,
+                c.budget.period_anchor,
+            );
             check_budget(set) or raise;
             row.budgeted = true;
             row.budget = set;
         }
-        if count(row.data_classes.items) == 0 { push(row.data_classes.items, "internal") or discard; }
+        if count(row.data_classes.items) == 0 {
+            push(row.data_classes.items, "internal") or discard;
+        }
         let v = self.view(row) or raise;
-        let added = self.store.insert_project(row, change("create", "projects/" + c.id, "", project_json(v))) or fail store_failed(err);
+        let added = self.store.insert_project(
+            row,
+            change("create", "projects/" + c.id, "", project_json(v)),
+        ) or fail store_failed(err);
         if !added { fail conflict("project " + c.id + " exists; a project id is never reused"); }
         return v;
     }
@@ -79,10 +95,15 @@ locus Projects {
         if u.has_owners { row.owners.items = u.owners; }
         if u.has_data_classes { row.data_classes.items = u.data_classes; }
         if u.has_models || u.clear_models { row.models = restriction_of(u.has_models, u.models); }
-        if u.has_accounts || u.clear_accounts { row.accounts = restriction_of(u.has_accounts, u.accounts); }
+        if u.has_accounts || u.clear_accounts {
+            row.accounts = restriction_of(u.has_accounts, u.accounts);
+        }
         self.keys_within(row) or raise;
         let after = self.view(row) or raise;
-        self.store.update_project(row, change("update", "projects/" + row.id, project_json(before), project_json(after))) or fail store_failed(err);
+        self.store.update_project(
+            row,
+            change("update", "projects/" + row.id, project_json(before), project_json(after)),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -114,11 +135,23 @@ locus Projects {
                 let mut gone = k;
                 gone.revoked = true;
                 gone.revoked_at = row.archived_at;
-                push(revoked.changes, change("revoke", key_target(gone), key_json(was), key_json(key_view(gone, row.archived_at)))) or discard;
+                push(
+                    revoked.changes,
+                    change(
+                        "revoke",
+                        key_target(gone),
+                        key_json(was),
+                        key_json(key_view(gone, row.archived_at)),
+                    ),
+                ) or discard;
                 push(revoked.keys, gone) or discard;
             }
         }
-        self.store.archive_project(row, change("archive", "projects/" + row.id, project_json(before), project_json(after)), revoked) or fail store_failed(err);
+        self.store.archive_project(
+            row,
+            change("archive", "projects/" + row.id, project_json(before), project_json(after)),
+            revoked,
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -144,14 +177,28 @@ locus Projects {
     /// `set_budget`, holding the resource from its read to its write.
     fn set_budget_held(b: BudgetRequest) -> Budget fallible(ApiError) {
         let mut row = self.known(b.project) or raise;
-        let set = budget_set_of(b.allowance_micros, b.currency, b.period, b.has_period_anchor, b.period_anchor);
+        let set = budget_set_of(
+            b.allowance_micros,
+            b.currency,
+            b.period,
+            b.has_period_anchor,
+            b.period_anchor,
+        );
         check_budget(set) or raise;
         let now = now_seconds();
         let before = if row.budgeted { budget_json(budget_view(row.budget, now)) } else { "" };
         row.budgeted = true;
         row.budget = set;
         let after = budget_view(row.budget, now);
-        self.store.update_project(row, change(if len(before) > 0 { "update" } else { "create" }, "projects/" + row.id + "/budget", before, budget_json(after))) or fail store_failed(err);
+        self.store.update_project(
+            row,
+            change(
+                if len(before) > 0 { "update" } else { "create" },
+                "projects/" + row.id + "/budget",
+                before,
+                budget_json(after),
+            ),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -165,7 +212,12 @@ locus Projects {
 
     /// `setLimits`: replaces them.
     fn set_limits(l: LimitsRequest) -> LimitSet fallible(ApiError) {
-        if self.governed { fail conflict("limits are the organization's practice: propose `operating/limits/" + l.project + "` and the Board decides it"); }
+        if self.governed {
+            fail conflict(
+                "limits are the organization's practice: propose `operating/limits/" + l.project
+                    + "` and the Board decides it"
+            );
+        }
         self.store.hold("projects/" + l.project) or fail store_failed(err);
         let out = self.set_limits_held(l) or {
             self.store.let_go();
@@ -181,7 +233,15 @@ locus Projects {
         check_limits(l.limits, "project,model", "limits") or raise;
         let before = limits_json(row.limits.items);
         row.limits.items = l.limits;
-        self.store.update_project(row, change("update", "projects/" + row.id + "/limits", "{\"limits\": " + before + "}", "{\"limits\": " + limits_json(row.limits.items) + "}")) or fail store_failed(err);
+        self.store.update_project(
+            row,
+            change(
+                "update",
+                "projects/" + row.id + "/limits",
+                "{\"limits\": " + before + "}",
+                "{\"limits\": " + limits_json(row.limits.items) + "}",
+            ),
+        ) or fail store_failed(err);
         let mut out = LimitSet { };
         out.limits = row.limits.items;
         return out;
@@ -208,8 +268,20 @@ locus Projects {
                 if !a { accounts = if len(accounts) == 0 { k.id } else { accounts + ", " + k.id }; }
             }
         }
-        if len(models) > 0 { fail invalid("`models` would leave out models that keys " + models + " name; narrow those keys first", "models"); }
-        if len(accounts) > 0 { fail invalid("`accounts` would leave out accounts that keys " + accounts + " name; narrow those keys first", "accounts"); }
+        if len(models) > 0 {
+            fail invalid(
+                "`models` would leave out models that keys " + models
+                    + " name; narrow those keys first",
+                "models"
+            );
+        }
+        if len(accounts) > 0 {
+            fail invalid(
+                "`accounts` would leave out accounts that keys " + accounts
+                    + " name; narrow those keys first",
+                "accounts"
+            );
+        }
         return true;
     }
 
@@ -269,7 +341,12 @@ locus Keys {
     /// `create`, holding the resource from its read to its write.
     fn create_held(c: KeyCreate) -> Key fallible(ApiError) {
         let p = self.project_of(c.project) or raise;
-        if p.archived { fail invalid("project " + c.project + " is archived, and an archived project takes no key", ""); }
+        if p.archived {
+            fail invalid(
+                "project " + c.project + " is archived, and an archived project takes no key",
+                ""
+            );
+        }
         check_name(c.name) or raise;
         let models = restriction_of(c.has_models, c.models);
         let accounts = restriction_of(c.has_accounts, c.accounts);
@@ -277,7 +354,9 @@ locus Keys {
         within(p.accounts, accounts, "accounts") or raise;
         check_limits(c.limits, "key", "limits") or raise;
         let now = now_seconds();
-        if c.has_expires_at && std::time::unix(c.expires_at) <= std::time::unix(now) { fail invalid("`expires_at` is in the past", "expires_at"); }
+        if c.has_expires_at && std::time::unix(c.expires_at) <= std::time::unix(now) {
+            fail invalid("`expires_at` is in the past", "expires_at");
+        }
         let secret_hex = random_hex(20) or fail entropy_failed(err.message);
         let id_hex = random_hex(8) or fail entropy_failed(err.message);
         let secret = "vk-" + secret_hex;
@@ -296,7 +375,10 @@ locus Keys {
         };
         row.limits.items = c.limits;
         let mut v = key_view(row, now);
-        let added = self.store.insert_key(row, change("create", key_target(row), "", key_json(v))) or fail store_failed(err);
+        let added = self.store.insert_key(
+            row,
+            change("create", key_target(row), "", key_json(v)),
+        ) or fail store_failed(err);
         if !added { fail entropy_failed("key id " + id + " was drawn twice; ask again"); }
         v.secret = secret;
         return v;
@@ -348,7 +430,10 @@ locus Keys {
             k.expires_at = u.expires_at;
         }
         let after = key_view(k, now);
-        self.store.update_key(k, change("update", key_target(k), key_json(before), key_json(after))) or fail store_failed(err);
+        self.store.update_key(
+            k,
+            change("update", key_target(k), key_json(before), key_json(after)),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -372,7 +457,10 @@ locus Keys {
         k.revoked = true;
         k.revoked_at = now;
         let after = key_view(k, now);
-        self.store.update_key(k, change("revoke", key_target(k), key_json(before), key_json(after))) or fail store_failed(err);
+        self.store.update_key(
+            k,
+            change("revoke", key_target(k), key_json(before), key_json(after)),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -386,7 +474,9 @@ locus Keys {
     fn known(project: String, id: String) -> st::KeyRow fallible(ApiError) {
         self.project_of(project) or raise;
         let k = self.store.key(id) or fail store_failed(err);
-        if !k.present || k.project != project { fail not_found("no key " + id + " in project " + project); }
+        if !k.present || k.project != project {
+            fail not_found("no key " + id + " in project " + project);
+        }
         return k;
     }
 }
@@ -402,7 +492,9 @@ locus KeyBearer {
     /// written as it is used, at most once a minute, so a key making many
     /// requests does not write on each.
     fn context(authorization: String) -> std::api::Context fallible(ApiError) {
-        if len(authorization) < 7 || std::str::lower(authorization[0..7]) != "bearer " { fail invalid_key(); }
+        if len(authorization) < 7 || std::str::lower(authorization[0..7]) != "bearer " {
+            fail invalid_key();
+        }
         let token = std::str::trim(authorization[7..len(authorization)]);
         if len(token) == 0 { fail invalid_key(); }
         let k = self.store.key_by_digest(secret_digest(token)) or fail metering_failed(err);
@@ -426,7 +518,9 @@ fn key_target(k: st::KeyRow) -> String {
 
 fn key_status(k: st::KeyRow, now: Time) -> KeyStatus {
     if k.revoked { return KeyStatus::revoked; }
-    if k.expires && std::time::unix(k.expires_at) <= std::time::unix(now) { return KeyStatus::expired; }
+    if k.expires && std::time::unix(k.expires_at) <= std::time::unix(now) {
+        return KeyStatus::expired;
+    }
     return KeyStatus::active;
 }
 
@@ -455,12 +549,19 @@ fn key_view(k: st::KeyRow, now: Time) -> Key {
 
 /// A key's restriction must sit within its project's: a project that is
 /// restricted to some names admits a key that names only those.
-fn within(project: st::Restriction, key: st::Restriction, field: String) -> Bool fallible(ApiError) {
+fn within(
+    project: st::Restriction,
+    key: st::Restriction,
+    field: String
+) -> Bool fallible(ApiError) {
     if project.any { return true; }
     if key.any { return true; }
     for n in key.names.items {
         if !has_name(project.names.items, n) {
-            fail invalid("`" + field + "` names " + n + ", which the project does not allow", field);
+            fail invalid(
+                "`" + field + "` names " + n + ", which the project does not allow",
+                field
+            );
         }
     }
     return true;
@@ -502,5 +603,10 @@ fn random_hex(n: Int) -> String fallible(EntropyError) {
 
 /// A failure inside the api itself.
 fn entropy_failed(message: String) -> ApiError {
-    return ApiError { status: 500, kind: "server_error", code: ErrorCode::internal_error, message: message };
+    return ApiError {
+        status: 500,
+        kind: "server_error",
+        code: ErrorCode::internal_error,
+        message: message,
+    };
 }

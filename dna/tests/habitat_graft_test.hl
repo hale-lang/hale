@@ -23,11 +23,25 @@ fn main() {
     let parent = dna::record_scope(habitat + "/genome");
     std::test::assert_eq_int(len(parent), 64, "a born one, with a record");
     let one = dna::grafted(scratch, "one\n--no-library");
-    std::test::assert(one.code == 0 && std::str::contains(one.stdout, "as the habitat's child (parent " + parent[0..12]), "the first organism is grafted: " + one.stdout + one.stderr);
+    std::test::assert(
+        one.code == 0
+            && std::str::contains(one.stdout, "as the habitat's child (parent " + parent[0..12]),
+        "the first organism is grafted: " + one.stdout + one.stderr,
+    );
     let two = dna::grafted(scratch, "two\n--no-library");
     std::test::assert(two.code == 0, "and the second: " + two.stdout + two.stderr);
-    let rows = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_HABITAT=\"$2\" exec \"$3\" dna record-rows .\nsh\n" + scratch + "/two\n" + habitat + "\n" + toolchain()).stdout;
-    std::test::assert(std::str::contains(rows, "\"kind\": \"record.genesis\"") && std::str::contains(rows, "\\\"parent\\\":\\\"" + parent + "\\\""), "each genesis names the habitat's record: " + rows);
-    std::test::assert(dna::record_scope(scratch + "/one") != dna::record_scope(scratch + "/two"), "two organisms, two identities");
+    let rows = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && HALE_DNA_HABITAT=\"$2\" exec \"$3\" dna record-rows .\nsh\n" + scratch
+            + "/two\n" + habitat + "\n" + toolchain(),
+    ).stdout;
+    std::test::assert(
+        std::str::contains(rows, "\"kind\": \"record.genesis\"")
+            && std::str::contains(rows, "\\\"parent\\\":\\\"" + parent + "\\\""),
+        "each genesis names the habitat's record: " + rows,
+    );
+    std::test::assert(
+        dna::record_scope(scratch + "/one") != dna::record_scope(scratch + "/two"),
+        "two organisms, two identities",
+    );
     dna::scratch_done(scratch);
 }

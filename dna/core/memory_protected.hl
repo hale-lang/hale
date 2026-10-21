@@ -66,7 +66,9 @@ type ProtectedRow {
     // when it knows where memory is; one that holds no key says so when a
     // body is filed or read.
     fn ready() -> Bool { return len(self.dsn_env) > 0 || len(self.conn.user) > 0; }
-    fn why_not() -> String { return "no memory named (HALE_DNA_MEMORY_DSN_SPINE / HALE_DNA_MEMORY_DSN_HEAD)"; }
+    fn why_not() -> String {
+        return "no memory named (HALE_DNA_MEMORY_DSN_SPINE / HALE_DNA_MEMORY_DSN_HEAD)";
+    }
     fn scope(record: String) {
         if record == self.record_id { return; }
         self.record_id = record;
@@ -83,7 +85,10 @@ type ProtectedRow {
         // checked here
         let sch = schema_for(self.record_id);
         let ns = self.conn.exec("SET search_path TO " + sch + ", public");
-        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        if !ns.ok {
+            self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail;
+            return false;
+        }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
         self.opened = true;
@@ -139,7 +144,8 @@ type ProtectedRow {
             self.error = "erase: " + again.err.kind + " " + again.err.detail;
             return false;
         }
-        self.error = "erase: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
+        self.error = "erase: " + r.err.kind + " " + r.err.detail + "; dialling again: "
+            + self.error;
         return false;
     }
     // Read as JSON built by the server: a body is an ordinary paragraph,
@@ -159,9 +165,15 @@ type ProtectedRow {
         let mut rows = self.conn.query_params("SELECT receipt_read($1)", a);
         if !rows.ok {
             let first = "get: " + rows.err.kind + " " + rows.err.detail;
-            if !self.redial() { self.error = first + "; dialling again: " + self.error; return Protected { }; }
+            if !self.redial() {
+                self.error = first + "; dialling again: " + self.error;
+                return Protected { };
+            }
             rows = self.conn.query_params("SELECT receipt_read($1)", a);
-            if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
+            if !rows.ok {
+                self.error = "get: " + rows.err.kind + " " + rows.err.detail;
+                return Protected { };
+            }
             self.error = "";
         }
         if rows.n == 0 { return Protected { }; }

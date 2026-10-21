@@ -20,12 +20,22 @@ main locus App {
         // 20 micro-dollars for the record's lifetime: one judgment task
         // (classify on quick = 5, synthesize on deep = 50) spends it
         core: dna::Dna = dna::Dna {
-            budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 } }
+            budget: dna::Budget {
+                policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 },
+            }
         };
-        again: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 } };
-        daily: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "day", allowance_micros: 100 } };
-        gate: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 100 } };
-        unmetered: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 0 } };
+        again: dna::Budget = dna::Budget {
+            policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 },
+        };
+        daily: dna::Budget = dna::Budget {
+            policy: dna::BudgetPolicy { window: "day", allowance_micros: 100 },
+        };
+        gate: dna::Budget = dna::Budget {
+            policy: dna::BudgetPolicy { window: "none", allowance_micros: 100 },
+        };
+        unmetered: dna::Budget = dna::Budget {
+            policy: dna::BudgetPolicy { window: "none", allowance_micros: 0 },
+        };
     }
     fn last_of(kind: String, entity: String) -> String {
         let mut out = "";
@@ -60,27 +70,72 @@ main locus App {
         // 1. one judgment task — an authored definition, one agent leaf (card
         //    18: ordinary non-edit work enters through a definition): two
         //    model calls, both accounted at their time
-        std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
-        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment" }, 1), "", "j");
-        let t1 = self.core.run_workflow(dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" });
+        std::test::assert_eq_str(
+            self.core.catalog.define("judge", 1, "record", "one judgment"),
+            "",
+            "judge",
+        );
+        std::test::assert_eq_str(
+            self.core.catalog.leaf(
+                "judge",
+                1,
+                0,
+                "j",
+                dna::WorkRequest {
+                    objective: "assess the storage migration",
+                    requires: "judgment",
+                },
+                1,
+            ),
+            "",
+            "j",
+        );
+        let t1 = self.core.run_workflow(
+            dna::WorkflowAsk { id: "i1", definition: "judge", revision: 1, from: "test" },
+        );
         std::test::assert_eq_str(t1, "t1", "admitted: " + t1);
         let mut tries = 0;
-        while tries < 300 && self.count("workflow.settled") == 0 { std::time::sleep(20ms); tries = tries + 1; }
+        while tries < 300 && self.count("workflow.settled") == 0 {
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
         std::test::assert_eq_int(self.count("model.called"), 2, "two calls journaled");
-        std::test::assert(std::str::contains(self.last_body("model.called"), "\"at\": "), "the evidence says when: " + self.last_body("model.called"));
-        std::test::assert_eq_int(self.core.budget.spent_micros, 55, "5 + 50 accounted by the substrate");
+        std::test::assert(
+            std::str::contains(self.last_body("model.called"), "\"at\": "),
+            "the evidence says when: " + self.last_body("model.called"),
+        );
+        std::test::assert_eq_int(
+            self.core.budget.spent_micros,
+            55,
+            "5 + 50 accounted by the substrate",
+        );
         std::test::assert_eq_int(self.core.budget.calls, 2, "two calls counted");
         std::test::assert(self.core.budget.exhausted(1), "55 >= 20: the allowance is spent");
 
         // 2. further intent is refused with the reason; announced once
-        let r = self.core.ask(dna::Intent { id: "i2", outcome: "decide the rollout", from: "test" });
-        std::test::assert(std::str::starts_with(r, "refused: budget exhausted"), "refused for want of budget: " + r);
-        std::test::assert(std::str::contains(r, "spent 55 of 20 micro-dollars for the record"), "the reason names the spend: " + r);
+        let r = self.core.ask(
+            dna::Intent { id: "i2", outcome: "decide the rollout", from: "test" },
+        );
+        std::test::assert(
+            std::str::starts_with(r, "refused: budget exhausted"),
+            "refused for want of budget: " + r,
+        );
+        std::test::assert(
+            std::str::contains(r, "spent 55 of 20 micro-dollars for the record"),
+            "the reason names the spend: " + r,
+        );
         let r2 = self.core.ask(dna::Intent { id: "i3", outcome: "and again", from: "test" });
         std::test::assert_eq_int(self.count("budget.exhausted"), 1, "announced once per window");
-        std::test::assert_eq_int(self.count("intent.refused"), 2, "both asks refused in the record");
+        std::test::assert_eq_int(
+            self.count("intent.refused"),
+            2,
+            "both asks refused in the record",
+        );
         std::test::assert_eq_int(self.count("task.born"), 1, "no Task born on an exhausted budget");
-        std::test::assert(std::str::contains(self.last_body("budget.exhausted"), "\"allowance_micros\": 20"), self.last_body("budget.exhausted"));
+        std::test::assert(
+            std::str::contains(self.last_body("budget.exhausted"), "\"allowance_micros\": 20"),
+            self.last_body("budget.exhausted"),
+        );
 
         // 3. a Budget rehydrated from the same record: the same spend,
         //    the announcement remembered
@@ -98,58 +153,162 @@ main locus App {
         std::test::assert(!self.daily.exhausted(86400 + 5), "a new day: the counters roll");
         std::test::assert_eq_int(self.daily.spent_micros, 0, "rolled");
         self.daily.account(30, 50);
-        std::test::assert_eq_int(self.daily.spent_micros, 0, "yesterday's row does not count today");
-        std::test::assert_eq_int(self.daily.remaining_micros(86400 + 5), 100, "the whole allowance remains");
-        std::test::assert_eq_str(self.daily.describe(86400 + 5), "spent 0 of 100 micro-dollars this day in 0 call(s)", self.daily.describe(86400 + 5));
+        std::test::assert_eq_int(
+            self.daily.spent_micros,
+            0,
+            "yesterday's row does not count today",
+        );
+        std::test::assert_eq_int(
+            self.daily.remaining_micros(86400 + 5),
+            100,
+            "the whole allowance remains",
+        );
+        std::test::assert_eq_str(
+            self.daily.describe(86400 + 5),
+            "spent 0 of 100 micro-dollars this day in 0 call(s)",
+            self.daily.describe(86400 + 5),
+        );
 
         // 5. the one gate (GH #1131): the smaller of the ceiling and what is left
-        std::test::assert_eq_int(self.gate.admit(30, 1).allowance_micros, 30, "a ceiling under the remainder bounds the allowance");
-        std::test::assert_eq_int(self.gate.admit(0, 1).allowance_micros, 100, "no ceiling: what the window has left");
+        std::test::assert_eq_int(
+            self.gate.admit(30, 1).allowance_micros,
+            30,
+            "a ceiling under the remainder bounds the allowance",
+        );
+        std::test::assert_eq_int(
+            self.gate.admit(0, 1).allowance_micros,
+            100,
+            "no ceiling: what the window has left",
+        );
         self.gate.account(80, 1);
-        std::test::assert_eq_int(self.gate.admit(30, 1).allowance_micros, 20, "the remainder under the ceiling bounds it");
+        std::test::assert_eq_int(
+            self.gate.admit(30, 1).allowance_micros,
+            20,
+            "the remainder under the ceiling bounds it",
+        );
         self.gate.account(20, 1);
         let spent = self.gate.admit(30, 1);
-        std::test::assert(!spent.ok && std::str::starts_with(spent.why, "budget exhausted (spent 100 of 100"), "an exhausted window admits nothing: " + spent.why);
-        std::test::assert_eq_int(self.unmetered.admit(0, 1).allowance_micros, -1, "unmetered and no ceiling: nothing bounds it");
-        std::test::assert_eq_int(self.unmetered.admit(40, 1).allowance_micros, 40, "unmetered: the ceiling alone");
+        std::test::assert(
+            !spent.ok && std::str::starts_with(spent.why, "budget exhausted (spent 100 of 100"),
+            "an exhausted window admits nothing: " + spent.why,
+        );
+        std::test::assert_eq_int(
+            self.unmetered.admit(0, 1).allowance_micros,
+                -1,
+            "unmetered and no ceiling: nothing bounds it",
+        );
+        std::test::assert_eq_int(
+            self.unmetered.admit(40, 1).allowance_micros,
+            40,
+            "unmetered: the ceiling alone",
+        );
 
         // 6. the editor goes through the gate: on the exhausted window of 1,
         //    its attempt edits nothing and the refusal is the leg's row
         let before = self.count("mutation.requested");
-        self.core.on_edit_requested(dna::EditAsk { scope: self.core.org_id, attempt_id: "t9/wf1/s0/e/a0", performer: "editor", request: dna::WorkRequest { work_id: "t9/wf1/s0/e", task_id: "t9", objective: "document main.hl", cost_ceiling: 10 } });
+        self.core.on_edit_requested(
+            dna::EditAsk {
+                scope: self.core.org_id,
+                attempt_id: "t9/wf1/s0/e/a0",
+                performer: "editor",
+                request: dna::WorkRequest {
+                    work_id: "t9/wf1/s0/e",
+                    task_id: "t9",
+                    objective: "document main.hl",
+                    cost_ceiling: 10,
+                },
+            },
+        );
         let edit = self.last_of("attempt.allowance_refused", "t9/wf1/s0/e/a0");
-        std::test::assert(std::str::contains(edit, "\"why\": \"budget exhausted (spent 55 of 20") && std::str::contains(edit, "\"ceiling_micros\": 10"), "the editor's attempt is refused by the gate, as a row: " + edit);
+        std::test::assert(
+            std::str::contains(edit, "\"why\": \"budget exhausted (spent 55 of 20")
+                && std::str::contains(edit, "\"ceiling_micros\": 10"),
+            "the editor's attempt is refused by the gate, as a row: " + edit,
+        );
         std::test::assert_eq_int(self.count("mutation.requested"), before, "nothing was edited");
 
         // 7. the leader goes through it too: a Review is opened for the Board,
         //    and the leader is not asked; the refusal is the same row
         let repo = dna::scratch_root("budget-review");
-        let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m base && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m candidate\nsh\n" + repo);
-        std::test::assert_eq_int(made.code, 0, "a repository with a base and a candidate: " + made.stderr);
+        let made = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && git init -q && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m base && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m candidate\nsh\n"
+                + repo,
+        );
+        std::test::assert_eq_int(
+            made.code,
+            0,
+            "a repository with a base and a candidate: " + made.stderr,
+        );
         let base = dna::trim_nl(dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD~1").stdout);
         let cand = dna::trim_nl(dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
-        let asked = self.core.review_mutation(dna::Mutation { id: "m9", task_id: "t9", worktree: repo, base_commit: base, candidate_commit: cand, change_class: "application", rationale: "a change" },
-            dna::VerificationReport { candidate: cand, evidence: dna::Evidence { check_clean: true, verify_clean: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } }, "editor");
-        std::test::assert(len(self.last_of("review.requested", "review:m9")) > 0, "the Review is opened, for the Board: " + asked);
+        let asked = self.core.review_mutation(
+            dna::Mutation {
+                id: "m9",
+                task_id: "t9",
+                worktree: repo,
+                base_commit: base,
+                candidate_commit: cand,
+                change_class: "application",
+                rationale: "a change",
+            },
+            dna::VerificationReport {
+                candidate: cand,
+                evidence: dna::Evidence { check_clean: true, verify_clean: true },
+                magnitude: dna::Magnitude { loci: 1, novelty: 1 },
+            },
+            "editor");
+        std::test::assert(
+            len(self.last_of("review.requested", "review:m9")) > 0,
+            "the Review is opened, for the Board: " + asked,
+        );
         let review = self.last_of("attempt.allowance_refused", "review:m9");
-        std::test::assert(std::str::contains(review, "\"why\": \"budget exhausted (spent 55 of 20"), "the leader's decision is refused by the same gate, as the same row: " + review);
+        std::test::assert(
+            std::str::contains(review, "\"why\": \"budget exhausted (spent 55 of 20"),
+            "the leader's decision is refused by the same gate, as the same row: " + review,
+        );
         // routed again on the same spent window, the Review is refused by the
         // row it has: one refusal a window for what it was for
-        let again = self.core.review_mutation(dna::Mutation { id: "m9", task_id: "t9", worktree: repo, base_commit: base, candidate_commit: cand, change_class: "application", rationale: "a change" },
-            dna::VerificationReport { candidate: cand, evidence: dna::Evidence { check_clean: true, verify_clean: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } }, "editor");
+        let again = self.core.review_mutation(
+            dna::Mutation {
+                id: "m9",
+                task_id: "t9",
+                worktree: repo,
+                base_commit: base,
+                candidate_commit: cand,
+                change_class: "application",
+                rationale: "a change",
+            },
+            dna::VerificationReport {
+                candidate: cand,
+                evidence: dna::Evidence { check_clean: true, verify_clean: true },
+                magnitude: dna::Magnitude { loci: 1, novelty: 1 },
+            },
+            "editor");
         let mut refusals = 0;
         let mut k = 0;
         while k < self.core.journal.revision() {
             let e = self.core.journal.read(k);
-            if e.kind == "attempt.allowance_refused" && e.entity == "review:m9" { refusals = refusals + 1; }
+            if e.kind == "attempt.allowance_refused" && e.entity == "review:m9" {
+                refusals = refusals + 1;
+            }
             k = k + 1;
         }
-        std::test::assert_eq_int(refusals, 1, "one refusal a window, however often it is routed: " + again);
+        std::test::assert_eq_int(
+            refusals,
+            1,
+            "one refusal a window, however often it is routed: " + again,
+        );
 
         // 8. what a leg's calls spent, as the owner reads it at settle: a wait
         //    row (`adapter: legs`) is no call, and costs nothing
-        let spent = dna::spend_of("[{\"adapter\": \"fake\", \"cost_micros\": 5}, {\"adapter\": \"legs\", \"cost_micros\": 0, \"waited_ms\": 100}, {\"adapter\": \"fake\", \"cost_micros\": 7}]");
-        std::test::assert(spent.calls == 2 && spent.cost_micros == 12, "two calls, 12 micro-dollars: " + to_string(spent.calls) + " " + to_string(spent.cost_micros));
+        let spent = dna::spend_of(
+            "[{\"adapter\": \"fake\", \"cost_micros\": 5}, {\"adapter\": \"legs\", \"cost_micros\": 0, \"waited_ms\": 100}, {\"adapter\": \"fake\", \"cost_micros\": 7}]",
+        );
+        std::test::assert(
+            spent.calls == 2 && spent.cost_micros == 12,
+            "two calls, 12 micro-dollars: " + to_string(spent.calls) + " "
+                + to_string(spent.cost_micros),
+        );
         dna::scratch_done(repo);
     }
 }

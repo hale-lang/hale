@@ -25,7 +25,10 @@ main locus Projector {
     // another), or -1 with `failed` saying why.
     fn pass() -> Int {
         let r = self.tail.apply();
-        if len(r.error) > 0 { self.failed = r.error + " (" + self.tail.last_error + ")"; return -1; }
+        if len(r.error) > 0 {
+            self.failed = r.error + " (" + self.tail.last_error + ")";
+            return -1;
+        }
         return r.rows;
     }
     run() {
@@ -40,14 +43,35 @@ main locus Projector {
             done = self.tail.store.watermark() >= self.tail.j.revision();
         }
         if len(self.failed) > 0 { println("projector: failed: ", self.failed); return; }
-        println("projector: applied ", to_string(applied), " passes ", to_string(passes), " watermark ", to_string(self.tail.store.watermark()), " of ", to_string(self.tail.j.revision()));
+        println(
+            "projector: applied ",
+            to_string(applied),
+            " passes ",
+            to_string(passes),
+            " watermark ",
+            to_string(self.tail.store.watermark()),
+            " of ",
+            to_string(self.tail.j.revision()),
+        );
     }
 }
 
 fn main() {
     let repo = std::env::arg_or(1, ".");
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let deadline = std::str::parse_int(std::env::arg_or(2, "60")) or 60;
     // the journal and the receipts read the repository they are born with
-    Projector { repo: repo, deadline: deadline, tail: ops::MemoryProjection { root: repo, j: dna::RecordJournal { repo: repo, author: "spine" }, receipts: dna::MemoryReceipts { repo: repo } } };
+    Projector {
+        repo: repo,
+        deadline: deadline,
+        tail: ops::MemoryProjection {
+            root: repo,
+            j: dna::RecordJournal { repo: repo, author: "spine" },
+            receipts: dna::MemoryReceipts { repo: repo },
+        },
+    };
 }

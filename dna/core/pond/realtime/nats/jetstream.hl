@@ -20,7 +20,11 @@ fn no_responder_is(c: NatsClient, e: NatsError, what: String) -> NatsError {
 }
 
 fn js_call(c: NatsClient, api: String, body: String) -> String fallible(NatsError) {
-    let reply = c.request(api, std::bytes::from_string(body), c.timeout) or fail no_responder_is(c, err, "JetStream is not enabled on the server (" + api + ")");
+    let reply = c.request(api, std::bytes::from_string(body), c.timeout) or fail no_responder_is(
+        c,
+        err,
+        "JetStream is not enabled on the server (" + api + ")"
+    );
     let text = std::str::from_bytes(reply.data);
     let refused = js_error_of(text);
     if len(refused) > 0 { fail c.fail_with("jetstream", refused); }
@@ -74,7 +78,11 @@ fn js_consumer_create(c: NatsClient, stream: String, spec: ConsumerSpec) fallibl
     if spec.max_ack_pending > 0 { b.int_field("max_ack_pending", spec.max_ack_pending); }
     b.end_object();
     b.end_object();
-    let r = js_call(c, "$JS.API.CONSUMER.CREATE." + stream + "." + spec.durable, b.result()) or raise;
+    let r = js_call(
+        c,
+        "$JS.API.CONSUMER.CREATE." + stream + "." + spec.durable,
+        b.result(),
+    ) or raise;
 }
 
 /// Publish `data` on `subject` and wait for the stream to store it.
@@ -87,9 +95,18 @@ fn js_publish(c: NatsClient, subject: String, data: Bytes) -> PubAck fallible(Na
 /// a second publish of the same id is not stored again, and its PubAck
 /// says `duplicate` (with the first one's sequence). "" publishes
 /// without one.
-fn js_publish_id(c: NatsClient, subject: String, id: String, data: Bytes) -> PubAck fallible(NatsError) {
+fn js_publish_id(
+    c: NatsClient,
+    subject: String,
+    id: String,
+    data: Bytes
+) -> PubAck fallible(NatsError) {
     let headers = if len(id) > 0 { msg_id_headers(id) } else { "" };
-    let reply = c.request_with(subject, headers, data, c.timeout) or fail no_responder_is(c, err, "no stream takes " + subject);
+    let reply = c.request_with(subject, headers, data, c.timeout) or fail no_responder_is(
+        c,
+        err,
+        "no stream takes " + subject
+    );
     let text = std::str::from_bytes(reply.data);
     let refused = js_error_of(text);
     if len(refused) > 0 { fail c.fail_with("jetstream", refused); }
@@ -104,9 +121,18 @@ fn js_publish_id(c: NatsClient, subject: String, id: String, data: Bytes) -> Pub
 /// up to `wait_ms` for one to arrive. Fails with kind "no_messages"
 /// when none did; the message stays unacknowledged until `js_ack`, and
 /// comes again after the consumer's ack wait if it never is.
-fn js_next(c: NatsClient, stream: String, consumer: String, wait_ms: Int) -> NatsMsg fallible(NatsError) {
+fn js_next(
+    c: NatsClient,
+    stream: String,
+    consumer: String,
+    wait_ms: Int
+) -> NatsMsg fallible(NatsError) {
     let body = "{\"batch\":1,\"expires\":" + to_string(wait_ms * 1000000) + "}";
-    let msg = c.request("$JS.API.CONSUMER.MSG.NEXT." + stream + "." + consumer, std::bytes::from_string(body), (wait_ms + 1000) * 1ms) or raise;
+    let msg = c.request(
+        "$JS.API.CONSUMER.MSG.NEXT." + stream + "." + consumer,
+        std::bytes::from_string(body),
+        (wait_ms + 1000) * 1ms,
+    ) or raise;
     let status = header_status(msg.headers);
     if std::str::starts_with(status, "404") || std::str::starts_with(status, "408") {
         fail c.fail_with("no_messages", status);
@@ -118,6 +144,8 @@ fn js_next(c: NatsClient, stream: String, consumer: String, wait_ms: Int) -> Nat
 /// Acknowledge a message `js_next` returned: the consumer will not
 /// deliver it again.
 fn js_ack(c: NatsClient, m: NatsMsg) fallible(NatsError) {
-    if len(m.reply) == 0 { fail c.fail_with("jetstream", "not a JetStream message (no reply subject to ack on)"); }
+    if len(m.reply) == 0 {
+        fail c.fail_with("jetstream", "not a JetStream message (no reply subject to ack on)");
+    }
     c.pub_msg(m.reply, "", std::bytes::from_string("+ACK")) or raise;
 }

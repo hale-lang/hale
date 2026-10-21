@@ -28,7 +28,13 @@ main locus TrioApi {
     run() {
         Orders <- Order { id: 1, total: 10 };
         std::time::sleep(100ms);
-        println("api: ", self.intake.accepted, " accepted, ", self.tally.asked, " fulfilment(s) asked");
+        println(
+            "api: ",
+            self.intake.accepted,
+            " accepted, ",
+            self.tally.asked,
+            " fulfilment(s) asked",
+        );
         if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
         while true { std::time::sleep(100ms); }
     }

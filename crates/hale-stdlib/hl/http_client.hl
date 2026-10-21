@@ -90,7 +90,10 @@ type __StdHttpError {
 // The error a retry loop fails with once its attempts are spent:
 // the last 5xx response it saw (`resp.status` 0 when none) and the
 // last attempt's failure.
-fn __http_retries_exhausted(resp: std::http::ClientResponse, detail: String) -> std::http::HttpError {
+fn __http_retries_exhausted(
+    resp: std::http::ClientResponse,
+    detail: String
+) -> std::http::HttpError {
     return std::http::HttpError {
         kind: "retries_exhausted",
         status: resp.status,
@@ -164,15 +167,27 @@ fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) 
         // host is what the brackets hold, and only a port may follow them
         let close = std::str::index_of(authority, "]");
         if close < 0 {
-            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "an IPv6 host's [ is never closed" };
+            fail std::http::HttpError {
+                kind: "bad_url",
+                status: 0,
+                detail: "an IPv6 host's [ is never closed",
+            };
         }
         host = authority[1..close];
         rest = authority[(close + 1)..auth_len];
         if len(rest) > 0 && rest[0..1] != ":" {
-            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "only a :port may follow an IPv6 host's ]" };
+            fail std::http::HttpError {
+                kind: "bad_url",
+                status: 0,
+                detail: "only a :port may follow an IPv6 host's ]",
+            };
         }
         if std::str::index_of(host, ":") < 0 {
-            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "brackets hold an IPv6 address" };
+            fail std::http::HttpError {
+                kind: "bad_url",
+                status: 0,
+                detail: "brackets hold an IPv6 address",
+            };
         }
     } else {
         let port_sep = std::str::index_of(authority, ":");
@@ -295,7 +310,8 @@ fn __http_send_within(handle: Int, is_tls: Bool, b: Bytes, deadline: Int) -> Int
 
 // What a call its deadline ended says.
 fn __http_timeout_detail(host: String, port: Int, timeout_ms: Int) -> String {
-    return host + ":" + to_string(port) + " timeout: no complete response within " + to_string(timeout_ms) + " ms";
+    return host + ":" + to_string(port) + " timeout: no complete response within "
+        + to_string(timeout_ms) + " ms";
 }
 
 // Connect + TCP_NODELAY (Nagle costs up to ~40ms on small
@@ -353,11 +369,20 @@ fn __http_host_text(host: String) -> String {
 
 // Assemble the request header block. Body ships as a separate
 // trailing send. ASCII throughout, so String concat is safe.
-fn __http_build_request_headers(req: std::http::ClientRequest, user_agent: String, keep_alive: Bool) -> String {
-    let host_header = "Host: " + __http_host_text(req.url.host) + ":" + to_string(req.url.port) + "\r\n";
+fn __http_build_request_headers(
+    req: std::http::ClientRequest,
+    user_agent: String,
+    keep_alive: Bool
+) -> String {
+    let host_header = "Host: " + __http_host_text(req.url.host) + ":" + to_string(req.url.port)
+        + "\r\n";
     let ua_header = "User-Agent: " + user_agent + "\r\n";
     let cl_header = "Content-Length: " + to_string(len(req.body)) + "\r\n";
-    let conn_header = if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" };
+    let conn_header = if keep_alive {
+        "Connection: keep-alive\r\n"
+    } else {
+        "Connection: close\r\n"
+    };
     let request_line = req.method + " " + req.url.path + " HTTP/1.1\r\n";
     let mut user_headers = "";
     if len(req.headers) > 0 {
@@ -535,17 +560,27 @@ fn __http_scan_chunks(raw: Bytes, start: Int, end: Int) -> __StdHttpChunkScan {
             while tpos < end {
                 let tnl = __http_crlf_at(raw, tpos, end);
                 if tnl < 0 { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
-                if tnl == tpos { return __StdHttpChunkScan { body: out.snapshot() or raise, complete: true, bad: false }; }
+                if tnl == tpos {
+                    return __StdHttpChunkScan {
+                        body: out.snapshot() or raise,
+                        complete: true,
+                        bad: false,
+                    };
+                }
                 tpos = tnl + 2;
             }
             return __StdHttpChunkScan { body: b"", complete: false, bad: false };
         }
         let data_start = nl + 2;
         let data_end = data_start + size;
-        if data_end + 2 > end { return __StdHttpChunkScan { body: b"", complete: false, bad: false }; }
+        if data_end + 2 > end {
+            return __StdHttpChunkScan { body: b"", complete: false, bad: false };
+        }
         let ca = std::bytes::at(raw, data_end) or - 1;
         let cb = std::bytes::at(raw, data_end + 1) or - 1;
-        if ca != 13 || cb != 10 { return __StdHttpChunkScan { body: b"", complete: false, bad: true }; }
+        if ca != 13 || cb != 10 {
+            return __StdHttpChunkScan { body: b"", complete: false, bad: true };
+        }
         out.append(std::bytes::slice(raw, data_start, data_end));
         pos = data_end + 2;
     }
@@ -558,7 +593,12 @@ type __StdHttpFramedRead { bytes: Bytes; framed: Bool; }
 // by Content-Length or chunked. framed=true ⇒ stopped cleanly at
 // the boundary (connection reusable); framed=false ⇒ EOF/close
 // or unframable (fall back to read-to-close semantics).
-fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int, deadline: Int) -> __StdHttpFramedRead {
+fn __http_recv_framed(
+    handle: Int,
+    is_tls: Bool,
+    max_body: Int,
+    deadline: Int
+) -> __StdHttpFramedRead {
     let chunk = 8192;
     let buf = std::bytes::BytesBuilder { initial_cap: 4096 };
     let mut total = 0;
@@ -613,13 +653,18 @@ fn __http_recv_framed(handle: Int, is_tls: Bool, max_body: Int, deadline: Int) -
             let take = if want < chunk { want } else { chunk };
             let piece = __http_recv_within(handle, is_tls, take, deadline);
             let n = len(piece);
-            if n <= 0 { return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false }; }
+            if n <= 0 {
+                return __StdHttpFramedRead { bytes: buf.snapshot() or raise, framed: false };
+            }
             buf.append(piece);
             total = total + n;
         }
         full = buf.snapshot() or raise;
         let end = if need < total { need } else { total };
-        return __StdHttpFramedRead { bytes: std::bytes::slice(full, 0, end), framed: total >= need };
+        return __StdHttpFramedRead {
+            bytes: std::bytes::slice(full, 0, end),
+            framed: total >= need,
+        };
     }
 
     while total < max_body {
@@ -638,22 +683,47 @@ type __StdHttpExchangeResult { resp: std::http::ClientResponse; ok: Bool; reusab
 // One keep-alive round-trip on a raw handle (no auto-close).
 // reusable ⇒ cleanly framed AND the peer didn't say
 // `Connection: close`.
-fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRequest, ua: String, max_body: Int, deadline: Int) -> __StdHttpExchangeResult {
+fn __http_exchange_on_handle(
+    handle: Int,
+    is_tls: Bool,
+    req: std::http::ClientRequest,
+    ua: String,
+    max_body: Int,
+    deadline: Int
+) -> __StdHttpExchangeResult {
     let header_block = __http_build_request_headers(req, ua, true);
     let sent = __http_send_within(handle, is_tls, std::bytes::from_string(header_block), deadline);
-    if sent < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
+    if sent < 0 {
+        return __StdHttpExchangeResult {
+            resp: __http_empty_client_response(),
+            ok: false,
+            reusable: false,
+        };
+    }
     if len(req.body) > 0 {
         let bs = __http_send_within(handle, is_tls, req.body, deadline);
-        if bs < 0 { return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false }; }
+        if bs < 0 {
+            return __StdHttpExchangeResult {
+                resp: __http_empty_client_response(),
+                ok: false,
+                reusable: false,
+            };
+        }
     }
     let fr = __http_recv_framed(handle, is_tls, max_body, deadline);
     // a read the deadline cut short is no response, however much of
     // one it holds
     if !fr.framed && __http_expired(deadline) {
-        return __StdHttpExchangeResult { resp: __http_empty_client_response(), ok: false, reusable: false };
+        return __StdHttpExchangeResult {
+            resp: __http_empty_client_response(),
+            ok: false,
+            reusable: false,
+        };
     }
     let resp = __http_parse_client_response(fr.bytes);
-    if resp.status <= 0 { return __StdHttpExchangeResult { resp: resp, ok: false, reusable: false }; }
+    if resp.status <= 0 {
+        return __StdHttpExchangeResult { resp: resp, ok: false, reusable: false };
+    }
     let conn = std::str::lower(__http_client_header(resp.headers, "connection"));
     let reusable = fr.framed && conn != "close";
     return __StdHttpExchangeResult { resp: resp, ok: true, reusable: reusable };
@@ -661,7 +731,12 @@ fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRe
 
 // ---- dial + one-shot round trip -------------------------------------
 
-fn __http_raise_connect(e: IoError, host: String, port: Int, timeout_ms: Int) -> Int fallible(std::http::HttpError) {
+fn __http_raise_connect(
+    e: IoError,
+    host: String,
+    port: Int,
+    timeout_ms: Int
+) -> Int fallible(std::http::HttpError) {
     fail std::http::HttpError {
         kind: "connect_failed",
         status: 0,
@@ -693,14 +768,27 @@ fn __http_round_trip_oneshot(
     let host = req.url.host;
     let port = req.url.port;
     let is_tls = req.url.scheme == "https";
-    let handle = __http_dial_nd(host, port, is_tls, __http_left_ms(deadline)) or __http_raise_connect(err, host, port, timeout_ms);
+    let handle = __http_dial_nd(
+        host,
+        port,
+        is_tls,
+        __http_left_ms(deadline),
+    ) or __http_raise_connect(err, host, port, timeout_ms);
     let s = __StdHttpConn { handle: handle, is_tls: is_tls };
     let resp = __http_exchange_oneshot(s, req, user_agent, max_body, deadline);
     if __http_expired(deadline) {
-        fail std::http::HttpError { kind: "recv_failed", status: 0, detail: __http_timeout_detail(host, port, timeout_ms) };
+        fail std::http::HttpError {
+            kind: "recv_failed",
+            status: 0,
+            detail: __http_timeout_detail(host, port, timeout_ms),
+        };
     }
     if resp.status <= 0 {
-        fail std::http::HttpError { kind: "bad_response", status: 0, detail: "unparseable response" };
+        fail std::http::HttpError {
+            kind: "bad_response",
+            status: 0,
+            detail: "unparseable response",
+        };
     }
     return resp;
 }
@@ -744,7 +832,10 @@ fn __http_round_trip_with_retry(
             std::time::sleep(50ms);
         }
     }
-    fail __http_retries_exhausted(last_5xx, detail + " after " + to_string(attempt) + " attempt(s)");
+    fail __http_retries_exhausted(
+        last_5xx,
+        detail + " after " + to_string(attempt) + " attempt(s)"
+    );
 }
 
 // ---- free-fn surface (one-shot) -------------------------------------
@@ -769,27 +860,51 @@ fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std:
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
+    return __http_round_trip_oneshot(
+        req,
+        "hale-std-http/0.11",
+        16777216,
+        30000,
+        __http_deadline(30000),
+    ) or raise;
 }
 
 // `std::http::post(url, body, content_type)`.
 /// One-shot POST with a body and content type. Same contract as
 /// `get`.
-fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn __http_client_post(
+    url_str: String,
+    body: Bytes,
+    content_type: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest {
         method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
     };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
+    return __http_round_trip_oneshot(
+        req,
+        "hale-std-http/0.11",
+        16777216,
+        30000,
+        __http_deadline(30000),
+    ) or raise;
 }
 
 // `std::http::request(req)` — full control over method / headers
 // / body / a hand-built Url.
 /// One-shot arbitrary request (build a ClientRequest yourself).
-fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn __http_client_request(
+    req: std::http::ClientRequest
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000, __http_deadline(30000)) or raise;
+    return __http_round_trip_oneshot(
+        req,
+        "hale-std-http/0.11",
+        16777216,
+        30000,
+        __http_deadline(30000),
+    ) or raise;
 }
 
 // ---- the pooled Client ----------------------------------------------
@@ -839,14 +954,20 @@ locus __StdHttpClient {
         }) or raise;
     }
 
-    fn post(url_str: String, body: Bytes, content_type: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn post(
+        url_str: String,
+        body: Bytes,
+        content_type: String
+    ) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = __http_parse_url(url_str) or raise;
         return self.request(std::http::ClientRequest {
             method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
         }) or raise;
     }
 
-    fn request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn request(
+        req: std::http::ClientRequest
+    ) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let _ = __http_check_scheme(req.url.scheme) or raise;
         if self.keep_alive { return self.__pooled(req) or raise; }
         return __http_round_trip_with_retry(
@@ -858,7 +979,9 @@ locus __StdHttpClient {
     // present (one stale-retry), else dial fresh with backoff.
     // On success the fd returns to the pool when the peer left
     // it open (framed + not `Connection: close`), else closes.
-    fn __pooled(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn __pooled(
+        req: std::http::ClientRequest
+    ) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let host = req.url.host;
         let port = req.url.port;
         let is_tls = req.url.scheme == "https";
@@ -866,9 +989,19 @@ locus __StdHttpClient {
         let deadline = __http_deadline(self.timeout_ms);
         let pfd = self.__pool_take(host, port, is_tls);
         if pfd >= 0 {
-            let ex = __http_exchange_on_handle(pfd, is_tls, req, self.user_agent, self.max_body, deadline);
+            let ex = __http_exchange_on_handle(
+                pfd,
+                is_tls,
+                req,
+                self.user_agent,
+                self.max_body,
+                deadline,
+            );
             if ex.ok {
-                if ex.reusable { __http_disarm(pfd, is_tls, deadline); self.__pool_put(host, port, pfd, is_tls); }
+                if ex.reusable {
+                    __http_disarm(pfd, is_tls, deadline);
+                    self.__pool_put(host, port, pfd, is_tls);
+                }
                 else { __http_close_handle(pfd, is_tls); }
                 return ex.resp;
             }
@@ -885,9 +1018,19 @@ locus __StdHttpClient {
                     -1
             };
             if fd >= 0 {
-                let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body, deadline);
+                let ex = __http_exchange_on_handle(
+                    fd,
+                    is_tls,
+                    req,
+                    self.user_agent,
+                    self.max_body,
+                    deadline,
+                );
                 if ex.ok && ex.resp.status < 500 {
-                    if ex.reusable { __http_disarm(fd, is_tls, deadline); self.__pool_put(host, port, fd, is_tls); }
+                    if ex.reusable {
+                        __http_disarm(fd, is_tls, deadline);
+                        self.__pool_put(host, port, fd, is_tls);
+                    }
                     else { __http_close_handle(fd, is_tls); }
                     return ex.resp;
                 }
@@ -895,7 +1038,8 @@ locus __StdHttpClient {
                     last_5xx = ex.resp;
                     detail = "status " + to_string(ex.resp.status);
                 } else if __http_expired(deadline) {
-                    detail = "timeout: no complete response within " + to_string(self.timeout_ms) + " ms";
+                    detail = "timeout: no complete response within " + to_string(self.timeout_ms)
+                        + " ms";
                 } else {
                     detail = "no response";
                 }
@@ -906,31 +1050,92 @@ locus __StdHttpClient {
         }
         fail __http_retries_exhausted(
             last_5xx,
-            host + ":" + to_string(port) + " " + detail + " after " + to_string(attempt) + " attempt(s)"
+            host + ":" + to_string(port) + " " + detail + " after " + to_string(attempt)
+                + " attempt(s)"
         );
     }
 
     fn __pool_take(host: String, port: Int, is_tls: Bool) -> Int {
-        if self.pool_fd0 >= 0 && self.pool_host0 == host && self.pool_port0 == port && self.pool_tls0 == is_tls {
-            let fd = self.pool_fd0; self.pool_fd0 = -1; self.pool_host0 = ""; self.pool_port0 = 0; self.pool_tls0 = false; return fd;
+        if self.pool_fd0 >= 0
+            && self.pool_host0 == host
+            && self.pool_port0 == port
+            && self.pool_tls0 == is_tls
+        {
+            let fd = self.pool_fd0;
+            self.pool_fd0 = -1;
+            self.pool_host0 = "";
+            self.pool_port0 = 0;
+            self.pool_tls0 = false;
+            return fd;
         }
-        if self.pool_fd1 >= 0 && self.pool_host1 == host && self.pool_port1 == port && self.pool_tls1 == is_tls {
-            let fd = self.pool_fd1; self.pool_fd1 = -1; self.pool_host1 = ""; self.pool_port1 = 0; self.pool_tls1 = false; return fd;
+        if self.pool_fd1 >= 0
+            && self.pool_host1 == host
+            && self.pool_port1 == port
+            && self.pool_tls1 == is_tls
+        {
+            let fd = self.pool_fd1;
+            self.pool_fd1 = -1;
+            self.pool_host1 = "";
+            self.pool_port1 = 0;
+            self.pool_tls1 = false;
+            return fd;
         }
-        if self.pool_fd2 >= 0 && self.pool_host2 == host && self.pool_port2 == port && self.pool_tls2 == is_tls {
-            let fd = self.pool_fd2; self.pool_fd2 = -1; self.pool_host2 = ""; self.pool_port2 = 0; self.pool_tls2 = false; return fd;
+        if self.pool_fd2 >= 0
+            && self.pool_host2 == host
+            && self.pool_port2 == port
+            && self.pool_tls2 == is_tls
+        {
+            let fd = self.pool_fd2;
+            self.pool_fd2 = -1;
+            self.pool_host2 = "";
+            self.pool_port2 = 0;
+            self.pool_tls2 = false;
+            return fd;
         }
-        if self.pool_fd3 >= 0 && self.pool_host3 == host && self.pool_port3 == port && self.pool_tls3 == is_tls {
-            let fd = self.pool_fd3; self.pool_fd3 = -1; self.pool_host3 = ""; self.pool_port3 = 0; self.pool_tls3 = false; return fd;
+        if self.pool_fd3 >= 0
+            && self.pool_host3 == host
+            && self.pool_port3 == port
+            && self.pool_tls3 == is_tls
+        {
+            let fd = self.pool_fd3;
+            self.pool_fd3 = -1;
+            self.pool_host3 = "";
+            self.pool_port3 = 0;
+            self.pool_tls3 = false;
+            return fd;
         }
         return -1;
     }
 
     fn __pool_put(host: String, port: Int, fd: Int, is_tls: Bool) {
-        if self.pool_fd0 < 0 { self.pool_fd0 = fd; self.pool_host0 = host; self.pool_port0 = port; self.pool_tls0 = is_tls; return; }
-        if self.pool_fd1 < 0 { self.pool_fd1 = fd; self.pool_host1 = host; self.pool_port1 = port; self.pool_tls1 = is_tls; return; }
-        if self.pool_fd2 < 0 { self.pool_fd2 = fd; self.pool_host2 = host; self.pool_port2 = port; self.pool_tls2 = is_tls; return; }
-        if self.pool_fd3 < 0 { self.pool_fd3 = fd; self.pool_host3 = host; self.pool_port3 = port; self.pool_tls3 = is_tls; return; }
+        if self.pool_fd0 < 0 {
+            self.pool_fd0 = fd;
+            self.pool_host0 = host;
+            self.pool_port0 = port;
+            self.pool_tls0 = is_tls;
+            return;
+        }
+        if self.pool_fd1 < 0 {
+            self.pool_fd1 = fd;
+            self.pool_host1 = host;
+            self.pool_port1 = port;
+            self.pool_tls1 = is_tls;
+            return;
+        }
+        if self.pool_fd2 < 0 {
+            self.pool_fd2 = fd;
+            self.pool_host2 = host;
+            self.pool_port2 = port;
+            self.pool_tls2 = is_tls;
+            return;
+        }
+        if self.pool_fd3 < 0 {
+            self.pool_fd3 = fd;
+            self.pool_host3 = host;
+            self.pool_port3 = port;
+            self.pool_tls3 = is_tls;
+            return;
+        }
         __http_close_handle(self.pool_fd3, self.pool_tls3);
         self.pool_fd3 = fd; self.pool_host3 = host; self.pool_port3 = port; self.pool_tls3 = is_tls;
     }

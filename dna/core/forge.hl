@@ -69,7 +69,18 @@ fn leg_commit_in(body: String) -> String {
     return std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
 }
 
-type MemReview { ref: String = ""; candidate: String = ""; title: String = ""; body: String = ""; verdicts: String = ""; closed: String = ""; comments: Int = 0; checks: String = ""; merged: String = ""; said: String = ""; }
+type MemReview {
+    ref: String = "";
+    candidate: String = "";
+    title: String = "";
+    body: String = "";
+    verdicts: String = "";
+    closed: String = "";
+    comments: Int = 0;
+    checks: String = "";
+    merged: String = "";
+    said: String = "";
+}
 
 @form(hashmap)
 locus MemReviews {
@@ -175,7 +186,9 @@ locus NoForge {
     fn kind() -> String { return "none"; }
     fn present() -> Bool { return false; }
     fn name() -> String { return "none (a bare remote)"; }
-    fn open_review(candidate: String, title: String, body: String) -> ReviewRef { return ReviewRef { why: "no forge" }; }
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef {
+        return ReviewRef { why: "no forge" };
+    }
     fn verdicts(review: String) -> String { return ""; }
     fn checks(review: String, sha: String) -> String { return ""; }
     fn comment(review: String, text: String) -> Bool { return false; }

@@ -10,13 +10,39 @@ import "../face/standard" as standard;
 const FACES: String = "[{\"name\":\"admin\",\"app\":\"faces/admin\",\"port\":18801,\"roles\":\"operator\",\"consumes\":\"OrdersSurface\"},{\"name\":\"product\",\"app\":\"faces/product\",\"port\":18802,\"roles\":\"shopper\",\"consumes\":\"CatalogSurface\"}]";
 
 fn main() {
-    let page = standard::index_page(standard::RecordIndex { ok: true, faces: FACES }, "shop.example:8792");
+    let page = standard::index_page(
+        standard::RecordIndex { ok: true, faces: FACES },
+        "shop.example:8792",
+    );
     std::test::assert(std::str::contains(page, "<h2>Faces</h2>"), "a Faces section: " + page);
-    std::test::assert(std::str::contains(page, "<a href=\"http://shop.example:18801/\" rel=\"noopener noreferrer\">admin</a>"), "admin is a link to its port on the face's host: " + page);
-    std::test::assert(std::str::contains(page, "<a href=\"http://shop.example:18802/\" rel=\"noopener noreferrer\">product</a>"), "product likewise");
-    std::test::assert(std::str::contains(page, "<code>faces/admin</code>") && std::str::contains(page, "<td>OrdersSurface</td>") && std::str::contains(page, "<td>shopper</td>"), "with its application, roles and surfaces");
+    std::test::assert(
+        std::str::contains(
+            page,
+            "<a href=\"http://shop.example:18801/\" rel=\"noopener noreferrer\">admin</a>",
+        ),
+        "admin is a link to its port on the face's host: " + page,
+    );
+    std::test::assert(
+        std::str::contains(
+            page,
+            "<a href=\"http://shop.example:18802/\" rel=\"noopener noreferrer\">product</a>",
+        ),
+        "product likewise",
+    );
+    std::test::assert(
+        std::str::contains(page, "<code>faces/admin</code>")
+            && std::str::contains(page, "<td>OrdersSurface</td>")
+            && std::str::contains(page, "<td>shopper</td>"),
+        "with its application, roles and surfaces",
+    );
     let v6 = standard::index_page(standard::RecordIndex { ok: true, faces: FACES }, "[::1]:8792");
-    std::test::assert(std::str::contains(v6, "href=\"http://[::1]:18801/\""), "an IPv6 host keeps its brackets");
+    std::test::assert(
+        std::str::contains(v6, "href=\"http://[::1]:18801/\""),
+        "an IPv6 host keeps its brackets",
+    );
     let none = standard::index_page(standard::RecordIndex { ok: true }, "shop.example:8792");
-    std::test::assert(!std::str::contains(none, "Faces"), "an organism naming none has no Faces section");
+    std::test::assert(
+        !std::str::contains(none, "Faces"),
+        "an organism naming none has no Faces section",
+    );
 }

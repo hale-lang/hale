@@ -61,10 +61,18 @@ main locus App {
         std::test::assert_eq_int(where, 5, "a free fn named `run` over fields `run` and `epoch`");
         std::test::assert_eq_int(epoch(2, 7), 14, "a free fn `epoch` with params `of` and `where`");
         std::test::assert_eq_int(capacity(4), 10, "locals `publish` and `subscribe`");
-        std::test::assert_eq_int(job.capacity + job.tier, 5, "field defaults named `capacity` and `tier`");
+        std::test::assert_eq_int(
+            job.capacity + job.tier,
+            5,
+            "field defaults named `capacity` and `tier`",
+        );
         std::test::assert(!job.restart, "a Bool field named `restart`");
         std::test::assert_eq_str(phase_name(Phase::run), "run", "an enum variant named `run`");
-        std::test::assert_eq_int(self.b.yield, 7, "a params field named `yield`, a method param named `tier`");
+        std::test::assert_eq_int(
+            self.b.yield,
+            7,
+            "a params field named `yield`, a method param named `tier`",
+        );
         std::test::assert_eq_int(self.b.terminate, 10, "a locus method named `restart`");
     }
 }

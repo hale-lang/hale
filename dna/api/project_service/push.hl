@@ -69,7 +69,11 @@ fn open_push_stream(slots: PushSlots, slot: Int, fd: Int) {
     std::io::tcp::set_send_timeout(fd, 1s) or discard;
     let st = std::io::tcp::Stream { conn_fd: fd, owns_fd: false };
     let mut sent = true;
-    st.send("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n") or { sent = false; };
+    st.send(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+    ) or {
+        sent = false;
+    };
     if !sent {
         slots.set(PushSlot { key: to_string(slot), fd: -1 });
         std::io::tcp::close_fd(fd);
@@ -97,8 +101,16 @@ locus NervesWatch {
         api_ready_pid: Int = -1; // the API child last seen answering
     }
     birth() {
-        self.head_url = if std::env::var_exists(dna::NATS_HEAD_URL_ENV) { std::env::var(dna::NATS_HEAD_URL_ENV) } else { "" };
-        self.owner_url = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
+        self.head_url = if std::env::var_exists(dna::NATS_HEAD_URL_ENV) {
+            std::env::var(dna::NATS_HEAD_URL_ENV)
+        } else {
+            ""
+        };
+        self.owner_url = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) {
+            std::env::var(dna::NATS_OWNER_URL_ENV)
+        } else {
+            ""
+        };
     }
     // Write `frame` to every stream; a stream that will not take it is
     // closed and its slot freed.
@@ -157,7 +169,14 @@ locus NervesWatch {
         self.client.user = "head";
         // the head's account, sealed: its password is the vault's and is
         // revealed on CONNECT alone; none in the vault, no connection
-        if len(self.client.url) == 0 || !self.client.open_as(std::secret::Credential { vault: dna::nerves_vault_name(p.org, "head") }) { self.org = p.org; return; }
+        if len(self.client.url) == 0
+            || !self.client.open_as(
+                std::secret::Credential { vault: dna::nerves_vault_name(p.org, "head") },
+            )
+        {
+            self.org = p.org;
+            return;
+        }
         let a = self.client.sub_to(p.org + ".head.row.landed", "") or - 1;
         let b = self.client.sub_to(p.org + ".*.head.row.landed", "") or - 1;
         if a < 0 || b < 0 { self.client.close(); }
@@ -180,14 +199,19 @@ locus NervesWatch {
     // receipt, a run or a child does: the journal's size, every run's and
     // child's state files, and whether the API child answers.
     fn head_state() -> String {
-        let mut f = to_string(std::io::fs::file_size(self.cfg.state_dir + "/" + RECEIPTS_FILE) or - 1);
+        let mut f = to_string(
+            std::io::fs::file_size(self.cfg.state_dir + "/" + RECEIPTS_FILE) or - 1,
+        );
         f = f + self.dir_state(self.cfg.state_dir + "/children");
         let runs = self.cfg.state_dir + "/runs";
         let n = std::io::fs::list_dir_count(runs) or 0;
         let mut i = 0;
         while i < n {
             let one = std::io::fs::list_dir_at(runs, i) or "";
-            f = f + "|" + one + (if std::io::fs::file_exists(runs + "/" + one + "/run.exit") { ":x" } else { "" });
+            f = f + "|" + one
+                + (
+                    if std::io::fs::file_exists(runs + "/" + one + "/run.exit") { ":x" } else { "" }
+                );
             i = i + 1;
         }
         return f + "|api:" + to_string(self.api_answering());
@@ -207,13 +231,19 @@ locus NervesWatch {
     // The API child's pid when it answers for the active project, else -1:
     // asked of it only until it first answers.
     fn api_answering() -> Int {
-        let pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(self.cfg.state_dir + "/children/api.pid") or "")) or - 1;
+        let pid = std::str::parse_int(
+            dna::trim_nl(std::io::fs::read_file(self.cfg.state_dir + "/children/api.pid") or ""),
+        ) or
+            - 1;
         if pid <= 0 { return -1; }
         if pid == self.api_ready_pid { return pid; }
         let reg = Registry { state_dir: self.cfg.state_dir };
         let a = reg.active();
         if !a.ok { return -1; }
-        if api_ready(api_port_of(self.cfg), a.application_id, child_proof(self.cfg)) { self.api_ready_pid = pid; return pid; }
+        if api_ready(api_port_of(self.cfg), a.application_id, child_proof(self.cfg)) {
+            self.api_ready_pid = pid;
+            return pid;
+        }
         return -1;
     }
     run() {

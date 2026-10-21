@@ -43,7 +43,9 @@ locus Nodes {
     fn offer(to: String, reply_to: String, body: String) -> api::ServeOutcome {
         self.offers = self.offers + 1;
         self.last_body = body;
-        if to == self.refusing { return api::ServeOutcome { ack: "refused", reason: "seat static is paused" }; }
+        if to == self.refusing {
+            return api::ServeOutcome { ack: "refused", reason: "seat static is paused" };
+        }
         let id = std::json::find_string_field(body, "request_id");
         self.at = 0;
         self.ended = false;
@@ -55,12 +57,26 @@ locus Nodes {
         }
         if to == self.failing {
             self.script = "";
-            self.result = "{\"type\": \"result\", \"request_id\": \"" + id + "\", \"outcome\": \"failed\", \"error\": {\"code\": \"engine_failed\", \"message\": \"the engine exited\", \"retryable\": true}}";
+            self.result = "{\"type\": \"result\", \"request_id\": \"" + id
+                + "\", \"outcome\": \"failed\", \"error\": {\"code\": \"engine_failed\", \"message\": \"the engine exited\", \"retryable\": true}}";
             return api::ServeOutcome { ack: "accepted" };
         }
         let model = std::json::find_string_field(body, "model");
         let named = std::json::string_field(body, "engine_model");
-        let run = node::run_static(id, model, if named.kind == "string" { named.text } else { model }, std::str::trim(std::json::find_field_raw(body, "body")), node::static_config(if len(self.tool) > 0 { "{\"text\": \"hello from voice\", \"tool_call\": {\"name\": \"" + self.tool + "\", \"arguments\": \"{\\\"city\\\": \\\"Oslo\\\"}\"}}" } else { "{\"text\": \"hello from voice\", \"chunk_chars\": 8}" }));
+        let run = node::run_static(
+            id,
+            model,
+            if named.kind == "string" { named.text } else { model },
+            std::str::trim(std::json::find_field_raw(body, "body")),
+            node::static_config(
+                if len(self.tool) > 0 {
+                    "{\"text\": \"hello from voice\", \"tool_call\": {\"name\": \"" + self.tool
+                        + "\", \"arguments\": \"{\\\"city\\\": \\\"Oslo\\\"}\"}}"
+                } else {
+                    "{\"text\": \"hello from voice\", \"chunk_chars\": 8}"
+                },
+            ),
+        );
         self.script = run.script;
         self.result = node::result_message(id, run, 0, 0);
         if to == self.dying {
@@ -79,13 +95,17 @@ locus Nodes {
             let rest = self.script[self.at..len(self.script)];
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
-            if self.hold > 0 && std::str::contains(line, "\"type\":\"response.output_text.delta\"") {
+            if self.hold > 0
+                && std::str::contains(line, "\"type\":\"response.output_text.delta\"")
+            {
                 self.hold = self.hold - 1;
                 std::time::sleep(wait);
                 return api::LinkMsg { kind: "none" };
             }
             self.at = self.at + (if nl < 0 { len(rest) } else { nl + 1 });
-            if !std::str::starts_with(line, "pause ") && len(line) > 0 { return api::LinkMsg { kind: "event", json: line }; }
+            if !std::str::starts_with(line, "pause ") && len(line) > 0 {
+                return api::LinkMsg { kind: "event", json: line };
+            }
         }
         if !self.ended && len(self.result) > 0 {
             self.ended = true;
@@ -104,28 +124,96 @@ locus Nodes {
 /// The streamed answers: the standard event stream, and Chat Completions
 /// chunks, as Server-Sent Events.
 fn streamed_with_sse(e: api::Endpoints, key: String, nodes: Nodes) {
-    let r = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
+    let r = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
     std::test::assert_eq_int(r.status, 200, "a streamed response: " + r.body);
-    std::test::assert(std::str::starts_with(r.content_type, "text/event-stream"), "is an event stream");
-    std::test::assert(std::str::starts_with(r.headers, "X-Request-Id: resp_"), "with its request id");
-    std::test::assert(std::str::starts_with(r.body, "event: response.created\ndata: {"), "that starts with response.created");
-    std::test::assert(std::str::contains(r.body, "event: response.output_text.delta\n") && std::str::contains(r.body, "\"delta\": \"hello fr\""), "streams the text");
-    std::test::assert(std::str::contains(r.body, "event: response.completed\n") && std::str::contains(r.body, "\"voice\": {\"request_id\": \"resp_"), "ends with the response, its voice object in it");
-    std::test::assert(std::str::contains(r.body, "\"sequence_number\": 0}") && !std::str::contains(r.body, ",\"sequence_number\":"), "numbered by the api, not the node");
-    std::test::assert(std::str::ends_with(std::str::trim(r.body), "data: [DONE]"), "and ends with [DONE]");
+    std::test::assert(
+        std::str::starts_with(r.content_type, "text/event-stream"),
+        "is an event stream",
+    );
+    std::test::assert(
+        std::str::starts_with(r.headers, "X-Request-Id: resp_"),
+        "with its request id",
+    );
+    std::test::assert(
+        std::str::starts_with(r.body, "event: response.created\ndata: {"),
+        "that starts with response.created",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "event: response.output_text.delta\n")
+            && std::str::contains(r.body, "\"delta\": \"hello fr\""),
+        "streams the text",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "event: response.completed\n")
+            && std::str::contains(r.body, "\"voice\": {\"request_id\": \"resp_"),
+        "ends with the response, its voice object in it",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "\"sequence_number\": 0}")
+            && !std::str::contains(r.body, ",\"sequence_number\":"),
+        "numbered by the api, not the node",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(r.body), "data: [DONE]"),
+        "and ends with [DONE]",
+    );
 
-    let c = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"stream\": true}");
+    let c = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"stream\": true}",
+    );
     std::test::assert_eq_int(c.status, 200, "a streamed chat completion: " + c.body);
-    std::test::assert(std::str::starts_with(c.body, "data: {\"id\": \"resp_") && std::str::contains(c.body, "\"object\": \"chat.completion.chunk\""), "as chunks");
-    std::test::assert(std::str::contains(c.body, "\"delta\": {\"role\": \"assistant\", \"content\": \"\"}"), "the role first");
-    std::test::assert(std::str::contains(c.body, "\"delta\": {\"content\": \"hello fr\"}"), "then the text");
-    std::test::assert(std::str::contains(c.body, "\"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\":") && std::str::contains(c.body, "\"voice\": {\"request_id\""), "the last chunk with its finish, usage and voice");
-    std::test::assert(!std::str::contains(c.body, "event: ") && std::str::ends_with(std::str::trim(c.body), "data: [DONE]"), "unnamed events, ending with [DONE]");
+    std::test::assert(
+        std::str::starts_with(c.body, "data: {\"id\": \"resp_")
+            && std::str::contains(c.body, "\"object\": \"chat.completion.chunk\""),
+        "as chunks",
+    );
+    std::test::assert(
+        std::str::contains(c.body, "\"delta\": {\"role\": \"assistant\", \"content\": \"\"}"),
+        "the role first",
+    );
+    std::test::assert(
+        std::str::contains(c.body, "\"delta\": {\"content\": \"hello fr\"}"),
+        "then the text",
+    );
+    std::test::assert(
+        std::str::contains(c.body, "\"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\":")
+            && std::str::contains(c.body, "\"voice\": {\"request_id\""),
+        "the last chunk with its finish, usage and voice",
+    );
+    std::test::assert(
+        !std::str::contains(c.body, "event: ")
+            && std::str::ends_with(std::str::trim(c.body), "data: [DONE]"),
+        "unnamed events, ending with [DONE]",
+    );
 
     nodes.tool = "weather";
-    let t = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"weather?\"}], \"stream\": true}");
-    std::test::assert(std::str::contains(t.body, "\"tool_calls\": [{\"index\": 0, \"id\": \"call_") && std::str::contains(t.body, "\"name\": \"weather\""), "a tool call streamed as one");
-    std::test::assert(std::str::contains(t.body, "\"function\": {\"arguments\": \"{\\\"city\\\": \\\"Oslo\\\"}\"}") && std::str::contains(t.body, "\"finish_reason\": \"tool_calls\""), "its arguments, and the finish");
+    let t = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"weather?\"}], \"stream\": true}",
+    );
+    std::test::assert(
+        std::str::contains(t.body, "\"tool_calls\": [{\"index\": 0, \"id\": \"call_")
+            && std::str::contains(t.body, "\"name\": \"weather\""),
+        "a tool call streamed as one",
+    );
+    std::test::assert(
+        std::str::contains(
+            t.body,
+            "\"function\": {\"arguments\": \"{\\\"city\\\": \\\"Oslo\\\"}\"}",
+        )
+            && std::str::contains(t.body, "\"finish_reason\": \"tool_calls\""),
+        "its arguments, and the finish",
+    );
     nodes.tool = "";
 }
 
@@ -136,27 +224,76 @@ fn streamed_failures(e: api::Endpoints, key: String, nodes: Nodes, laptop: Strin
     e.inference.idle = 2s;
     e.inference.keep_alive = 1s;
     nodes.dying = "laptop";
-    let r = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
+    let r = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
     std::test::assert_eq_int(r.status, 200, "a stream whose seat dies: " + r.body);
-    std::test::assert(std::str::contains(r.body, "\n: keep-alive\n"), "kept alive while the seat is silent");
-    std::test::assert(std::str::contains(r.body, "event: error\ndata: {\"type\": \"error\""), "an error event");
-    std::test::assert(std::str::contains(r.body, "event: response.failed\ndata: {\"type\": \"response.failed\""), "then response.failed");
-    std::test::assert(std::str::contains(r.body, "\"status\": \"failed\"") && std::str::contains(r.body, "\"text\": \"hello fr\""), "carrying the response as far as it came");
-    std::test::assert(std::str::contains(r.body, "\"error\": {\"code\": \"upstream_failed\"") && std::str::contains(r.body, "\"attempts\": [{\"seat\": \"laptop/static\""), "with its error and its voice, attempts included");
-    std::test::assert(std::str::ends_with(std::str::trim(r.body), "data: [DONE]") && !std::str::contains(r.body, "response.completed"), "never as a completed one");
+    std::test::assert(
+        std::str::contains(r.body, "\n: keep-alive\n"),
+        "kept alive while the seat is silent",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "event: error\ndata: {\"type\": \"error\""),
+        "an error event",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "event: response.failed\ndata: {\"type\": \"response.failed\""),
+        "then response.failed",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "\"status\": \"failed\"")
+            && std::str::contains(r.body, "\"text\": \"hello fr\""),
+        "carrying the response as far as it came",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "\"error\": {\"code\": \"upstream_failed\"")
+            && std::str::contains(r.body, "\"attempts\": [{\"seat\": \"laptop/static\""),
+        "with its error and its voice, attempts included",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(r.body), "data: [DONE]")
+            && !std::str::contains(r.body, "response.completed"),
+        "never as a completed one",
+    );
 
-    let c = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"stream\": true}");
-    std::test::assert(std::str::contains(c.body, "\"finish_reason\": \"error\"}], \"error\": {\"message\":") && std::str::contains(c.body, "\"usage\": null, \"voice\": {"), "a chat stream ends with a chunk finished error: " + c.body);
-    std::test::assert(!std::str::contains(c.body, "\"finish_reason\": \"stop\""), "never as a complete one");
+    let c = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"stream\": true}",
+    );
+    std::test::assert(
+        std::str::contains(c.body, "\"finish_reason\": \"error\"}], \"error\": {\"message\":")
+            && std::str::contains(c.body, "\"usage\": null, \"voice\": {"),
+        "a chat stream ends with a chunk finished error: " + c.body,
+    );
+    std::test::assert(
+        !std::str::contains(c.body, "\"finish_reason\": \"stop\""),
+        "never as a complete one",
+    );
     nodes.dying = "";
 
     // the caller went away: the stream ends after its first event, and the
     // offer is finished before its result (the link sends cancel)
     let before = nodes.cancelled;
     let ctx = e.bearer.context("Bearer " + key) or std::api::Context { };
-    let req = api::read_inference("{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}", "responses") or api::InferenceRequest { };
-    let gone = e.inference.stream(req, ctx, api::EventStream { gone: true }) or std::http::Response { status: 0, body: "" };
-    std::test::assert(std::str::starts_with(gone.body, "event: response.created") && !std::str::contains(gone.body, "response.in_progress"), "a gone caller is sent nothing more");
+    let req = api::read_inference(
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+        "responses",
+    ) or api::InferenceRequest { };
+    let gone = e.inference.stream(
+        req,
+        ctx,
+        api::EventStream { gone: true },
+    ) or std::http::Response { status: 0, body: "" };
+    std::test::assert(
+        std::str::starts_with(gone.body, "event: response.created")
+            && !std::str::contains(gone.body, "response.in_progress"),
+        "a gone caller is sent nothing more",
+    );
     std::test::assert_eq_int(nodes.cancelled, before + 1, "and its seat is cancelled");
     e.inference.idle = 30s;
     e.inference.keep_alive = 15s;
@@ -172,8 +309,17 @@ fn first_output_span(e: api::Endpoints, key: String, nodes: Nodes, laptop: Strin
     e.inference.keep_alive = 1s;
     nodes.slow = "laptop";
     nodes.slow_waits = 3;
-    let r = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
-    std::test::assert(std::str::contains(r.body, "\n: keep-alive\n") && std::str::contains(r.body, "event: response.completed\n"), "a seat quiet 3 s before its first output, past the idle span, is waited for: " + r.body);
+    let r = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
+    std::test::assert(
+        std::str::contains(r.body, "\n: keep-alive\n")
+            && std::str::contains(r.body, "event: response.completed\n"),
+        "a seat quiet 3 s before its first output, past the idle span, is waited for: " + r.body,
+    );
     let whole = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(whole, 200, "and an unstreamed answer too");
     nodes.slow = "";
@@ -181,11 +327,30 @@ fn first_output_span(e: api::Endpoints, key: String, nodes: Nodes, laptop: Strin
     e.inference.first = 2s;
     beat(e, laptop);
     nodes.mute = "laptop";
-    let m = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
+    let m = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
     std::test::assert_eq_int(m.status, 200, "a seat that accepts and stays quiet: " + m.body);
-    std::test::assert(std::str::starts_with(m.body, ": keep-alive\n\n"), "its stream opened by a keep-alive");
-    std::test::assert(std::str::contains(m.body, "event: error\n") && std::str::contains(m.body, "no output within the first-output span"), "failed at the first-output span");
-    std::test::assert(std::str::contains(m.body, "event: response.failed\ndata: {\"type\": \"response.failed\", \"response\": {\"id\": \"resp_") && std::str::contains(m.body, "\"attempts\": [{\"seat\": \"laptop/static\""), "with a response.failed carrying voice, though no seat sent a response");
+    std::test::assert(
+        std::str::starts_with(m.body, ": keep-alive\n\n"),
+        "its stream opened by a keep-alive",
+    );
+    std::test::assert(
+        std::str::contains(m.body, "event: error\n")
+            && std::str::contains(m.body, "no output within the first-output span"),
+        "failed at the first-output span",
+    );
+    std::test::assert(
+        std::str::contains(
+            m.body,
+            "event: response.failed\ndata: {\"type\": \"response.failed\", \"response\": {\"id\": \"resp_",
+        )
+            && std::str::contains(m.body, "\"attempts\": [{\"seat\": \"laptop/static\""),
+        "with a response.failed carrying voice, though no seat sent a response",
+    );
     std::test::assert(std::str::ends_with(std::str::trim(m.body), "data: [DONE]"), "then [DONE]");
     let quiet = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(quiet, 502, "unstreamed, the same seat fails at the first-output span");
@@ -196,10 +361,20 @@ fn first_output_span(e: api::Endpoints, key: String, nodes: Nodes, laptop: Strin
     let before = nodes.cancelled;
     e.inference.first = 30s;
     let ctx = e.bearer.context("Bearer " + key) or std::api::Context { };
-    let req = api::read_inference("{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}", "responses") or api::InferenceRequest { };
+    let req = api::read_inference(
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+        "responses",
+    ) or api::InferenceRequest { };
     let t0 = std::time::monotonic();
-    let gone = e.inference.stream(req, ctx, api::EventStream { gone: true }) or std::http::Response { status: 0, body: "" };
-    std::test::assert(std::time::monotonic() - t0 < 5s, "a caller gone during a quiet gap ends the wait");
+    let gone = e.inference.stream(
+        req,
+        ctx,
+        api::EventStream { gone: true },
+    ) or std::http::Response { status: 0, body: "" };
+    std::test::assert(
+        std::time::monotonic() - t0 < 5s,
+        "a caller gone during a quiet gap ends the wait",
+    );
     std::test::assert(!std::str::contains(gone.body, "event: "), "and is sent nothing");
     std::test::assert_eq_int(nodes.cancelled, before + 1, "its seat cancelled");
     nodes.mute = "";
@@ -213,69 +388,202 @@ fn first_output_span(e: api::Endpoints, key: String, nodes: Nodes, laptop: Strin
 fn rate_limits(e: api::Endpoints, key: String, laptop: String) {
     beat(e, laptop);
     let hi = "{\"model\": \"echo-1\", \"input\": \"hi\"}";
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 2}, {\"scope\": \"model\", \"model\": \"other-1\", \"window_seconds\": 60, \"requests\": 0}]}"), 200, "a limit of two a minute, and none for another model");
+    expect(
+        admin(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 2}, {\"scope\": \"model\", \"model\": \"other-1\", \"window_seconds\": 60, \"requests\": 0}]}",
+        ),
+        200,
+        "a limit of two a minute, and none for another model",
+    );
     let one = ask(e, "/v1/responses", key, hi);
     expect(one, 200, "the first is served");
-    std::test::assert(std::str::contains(one.headers, "x-ratelimit-limit-requests: 2") && std::str::contains(one.headers, "x-ratelimit-remaining-requests: 1") && std::str::contains(one.headers, "x-ratelimit-reset-requests: "), "with the limit's headers: " + one.headers);
-    expect(ask(e, "/v1/responses", key, hi), 200, "the second is served; another model's limit does not apply");
+    std::test::assert(
+        std::str::contains(one.headers, "x-ratelimit-limit-requests: 2")
+            && std::str::contains(one.headers, "x-ratelimit-remaining-requests: 1")
+            && std::str::contains(one.headers, "x-ratelimit-reset-requests: "),
+        "with the limit's headers: " + one.headers,
+    );
+    expect(
+        ask(e, "/v1/responses", key, hi),
+        200,
+        "the second is served; another model's limit does not apply",
+    );
     let third = ask(e, "/v1/responses", key, hi);
     expect(third, 429, "the third is past the limit");
-    std::test::assert(std::str::contains(third.headers, "Retry-After: "), "with Retry-After: " + third.headers);
+    std::test::assert(
+        std::str::contains(third.headers, "Retry-After: "),
+        "with Retry-After: " + third.headers,
+    );
     let refusal = std::json::find_field_raw(third.body, "error");
-    std::test::assert(std::json::find_string_field(refusal, "code") == "rate_limited" && std::json::find_string_field(refusal, "type") == "too_many_requests", "rate_limited: " + third.body);
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(std::json::find_field_raw(refusal, "voice"), "limit"), "requests"), 2, "naming the limit that refused it");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}"), 429, "a stream too, before it begins");
+    std::test::assert(
+        std::json::find_string_field(refusal, "code") == "rate_limited"
+            && std::json::find_string_field(refusal, "type") == "too_many_requests",
+        "rate_limited: " + third.body,
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(
+            std::json::find_field_raw(std::json::find_field_raw(refusal, "voice"), "limit"),
+            "requests",
+        ),
+        2,
+        "naming the limit that refused it",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/responses",
+            key,
+            "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+        ),
+        429,
+        "a stream too, before it begins",
+    );
     let stored = admin(e, "GET", "/admin/v1/projects/work/limits", "");
-    std::test::assert_eq_str(std::json::find_string_field(stored.body, "source"), "stored", "the stored limits are the source");
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"), 200, "the limit lifted");
+    std::test::assert_eq_str(
+        std::json::find_string_field(stored.body, "source"),
+        "stored",
+        "the stored limits are the source",
+    );
+    expect(
+        admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"),
+        200,
+        "the limit lifted",
+    );
     expect(ask(e, "/v1/responses", key, hi), 200, "and served again");
 
     // a key's own limit
-    let keys = std::json::find_field_raw(admin(e, "GET", "/admin/v1/projects/work/keys", "").body, "data");
+    let keys = std::json::find_field_raw(
+        admin(e, "GET", "/admin/v1/projects/work/keys", "").body,
+        "data",
+    );
     let kid = std::json::find_string_field(std::json::array_first(keys).element, "id");
     std::test::assert(len(kid) > 0, "the key's id: " + keys);
-    expect(admin(e, "PATCH", "/admin/v1/projects/work/keys/" + kid, "{\"limits\": [{\"scope\": \"key\", \"window_seconds\": 60, \"requests\": 1}]}"), 200, "a key limited to one a minute");
+    expect(
+        admin(
+            e,
+            "PATCH",
+            "/admin/v1/projects/work/keys/" + kid,
+            "{\"limits\": [{\"scope\": \"key\", \"window_seconds\": 60, \"requests\": 1}]}",
+        ),
+        200,
+        "a key limited to one a minute",
+    );
     expect(ask(e, "/v1/responses", key, hi), 200, "its first is served");
     expect(ask(e, "/v1/responses", key, hi), 429, "its second is past the key's limit");
-    expect(admin(e, "PATCH", "/admin/v1/projects/work/keys/" + kid, "{\"limits\": []}"), 200, "the key's limit lifted");
+    expect(
+        admin(e, "PATCH", "/admin/v1/projects/work/keys/" + kid, "{\"limits\": []}"),
+        200,
+        "the key's limit lifted",
+    );
 
     // a request limit and a token limit on the same window each have a
     // counter of their own: the token limit counts no requests, and the
     // remaining requests go down by one a request
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 30, \"requests\": 3}, {\"scope\": \"project\", \"window_seconds\": 30, \"input_tokens\": 1000}]}"), 200, "three a window, and a token limit beside it");
+    expect(
+        admin(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 30, \"requests\": 3}, {\"scope\": \"project\", \"window_seconds\": 30, \"input_tokens\": 1000}]}",
+        ),
+        200,
+        "three a window, and a token limit beside it",
+    );
     let mut left = 2;
     while left >= 0 {
         let a = ask(e, "/v1/responses", key, hi);
         expect(a, 200, "served under three a window");
-        std::test::assert(std::str::contains(a.headers, "x-ratelimit-limit-requests: 3\r\nx-ratelimit-remaining-requests: " + to_string(left) + "\r\n"), to_string(left) + " remaining: " + a.headers);
+        std::test::assert(
+            std::str::contains(
+                a.headers,
+                "x-ratelimit-limit-requests: 3\r\nx-ratelimit-remaining-requests: "
+                    + to_string(left) + "\r\n",
+            ),
+            to_string(left) + " remaining: " + a.headers,
+        );
         left = left - 1;
     }
     expect(ask(e, "/v1/responses", key, hi), 429, "the fourth is past the limit, and only then");
     // and two request limits on one window: the tighter one's headers
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 45, \"requests\": 4}, {\"scope\": \"project\", \"window_seconds\": 45, \"requests\": 2}]}"), 200, "four and two a window");
+    expect(
+        admin(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 45, \"requests\": 4}, {\"scope\": \"project\", \"window_seconds\": 45, \"requests\": 2}]}",
+        ),
+        200,
+        "four and two a window",
+    );
     let tight = ask(e, "/v1/responses", key, hi);
     expect(tight, 200, "the first served");
-    std::test::assert(std::str::contains(tight.headers, "x-ratelimit-limit-requests: 2\r\nx-ratelimit-remaining-requests: 1\r\n"), "the tighter limit's headers: " + tight.headers);
+    std::test::assert(
+        std::str::contains(
+            tight.headers,
+            "x-ratelimit-limit-requests: 2\r\nx-ratelimit-remaining-requests: 1\r\n",
+        ),
+        "the tighter limit's headers: " + tight.headers,
+    );
     expect(ask(e, "/v1/responses", key, hi), 200, "the second served");
     expect(ask(e, "/v1/responses", key, hi), 429, "the third past the tighter limit");
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"), 200, "the limits lifted");
+    expect(
+        admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"),
+        200,
+        "the limits lifted",
+    );
 
     // under a head, the organization's ratified practice is the limit, and
     // the stored ones are not: one a minute, though five are stored
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 5}]}"), 200, "five stored");
+    expect(
+        admin(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 5}]}",
+        ),
+        200,
+        "five stored",
+    );
     e.projects.governed = true;
     e.inference.governed = true;
     let read = api::PracticeLimits { };
-    read.push(api::PracticeLimit { project: "work", name: "operating/limits/work", id: "p_1", limit: api::parse_limit("The limit for work.\nwindow_seconds: 60\nrequests: 1") });
+    read.push(
+        api::PracticeLimit {
+            project: "work",
+            name: "operating/limits/work",
+            id: "p_1",
+            limit: api::parse_limit("The limit for work.\nwindow_seconds: 60\nrequests: 1"),
+        },
+    );
     api::hold_limits(e.inference.held, 1, read);
     expect(ask(e, "/v1/responses", key, hi), 200, "the first under the practice is served");
     expect(ask(e, "/v1/responses", key, hi), 429, "the second is past the ratified limit");
     let ratified = admin(e, "GET", "/admin/v1/projects/work/limits", "");
-    std::test::assert(std::json::find_string_field(ratified.body, "source") == "practice" && std::json::find_string_field(std::json::find_field_raw(ratified.body, "practice"), "name") == "operating/limits/work", "the limit shown is the practice's, and says so: " + ratified.body);
-    std::test::assert_eq_int(std::json::find_int_field(std::json::array_first(std::json::find_field_raw(ratified.body, "limits")).element, "requests"), 1, "its limit");
+    std::test::assert(
+        std::json::find_string_field(ratified.body, "source") == "practice"
+            && std::json::find_string_field(
+                std::json::find_field_raw(ratified.body, "practice"),
+                "name",
+            ) == "operating/limits/work",
+        "the limit shown is the practice's, and says so: " + ratified.body,
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(
+            std::json::array_first(std::json::find_field_raw(ratified.body, "limits")).element,
+            "requests",
+        ),
+        1,
+        "its limit",
+    );
     let refused = admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}");
     expect(refused, 409, "the admin plane cannot set what the organization decides");
-    std::test::assert(std::str::contains(refused.body, "organization's practice"), "and says why: " + refused.body);
+    std::test::assert(
+        std::str::contains(refused.body, "organization's practice"),
+        "and says why: " + refused.body,
+    );
 
     // a later generation replaces the limits whole: a project it has no
     // practice for is no longer limited
@@ -285,28 +593,62 @@ fn rate_limits(e: api::Endpoints, key: String, laptop: String) {
     // a project whose ratified practices are ambiguous, with no limit
     // held before: its keyed requests are refused, and its limits unread
     let unsettled = api::PracticeLimits { };
-    unsettled.push(api::PracticeLimit { project: "work", name: "operating/limits/work", closed: true, why: "2 of its ratified practices are in force, none superseding the others" });
+    unsettled.push(
+        api::PracticeLimit {
+            project: "work",
+            name: "operating/limits/work",
+            closed: true,
+            why: "2 of its ratified practices are in force, none superseding the others",
+        },
+    );
     api::hold_limits(e.inference.held, 3, unsettled);
     let ambiguous = ask(e, "/v1/responses", key, hi);
     expect(ambiguous, 503, "an ambiguous project's request is refused");
-    std::test::assert(std::str::contains(ambiguous.body, "metering_unavailable") && std::str::contains(ambiguous.body, "are in force"), "saying why: " + ambiguous.body);
-    expect(admin(e, "GET", "/admin/v1/projects/work/limits", ""), 503, "and its limits are not shown");
+    std::test::assert(
+        std::str::contains(ambiguous.body, "metering_unavailable")
+            && std::str::contains(ambiguous.body, "are in force"),
+        "saying why: " + ambiguous.body,
+    );
+    expect(
+        admin(e, "GET", "/admin/v1/projects/work/limits", ""),
+        503,
+        "and its limits are not shown",
+    );
 
     // no read landed yet: the limits fail closed
     e.inference.held.remove("held") or discard;
     let closed = ask(e, "/v1/responses", key, hi);
     expect(closed, 503, "before any limits are read, a keyed request is refused");
-    std::test::assert(std::str::contains(closed.body, "metering_unavailable") && std::str::contains(closed.headers, "Retry-After: 1"), "metering_unavailable, retrying in a second: " + closed.headers + " " + closed.body);
+    std::test::assert(
+        std::str::contains(closed.body, "metering_unavailable")
+            && std::str::contains(closed.headers, "Retry-After: 1"),
+        "metering_unavailable, retrying in a second: " + closed.headers + " " + closed.body,
+    );
     std::test::assert(!std::str::contains(closed.headers, "x-ratelimit"), "and states no limit");
-    expect(admin(e, "GET", "/admin/v1/projects/work/limits", ""), 503, "nor can the admin plane read them");
+    expect(
+        admin(e, "GET", "/admin/v1/projects/work/limits", ""),
+        503,
+        "nor can the admin plane read them",
+    );
 
     e.projects.governed = false;
     e.inference.governed = false;
-    expect(admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"), 200, "ungoverned again, the stored limits lifted");
+    expect(
+        admin(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}"),
+        200,
+        "ungoverned again, the stored limits lifted",
+    );
 }
 
 fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 /// A heartbeat from the node `token` names, its seat up. A node is up for
@@ -314,15 +656,38 @@ fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::
 /// out seconds of seat silence, so they beat before relying on the laptop
 /// being eligible, however slow the machine.
 fn beat(e: api::Endpoints, token: String) {
-    expect(plane(e, "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}"), 204, "a heartbeat");
+    expect(
+        plane(
+            e,
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 0, \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}",
+        ),
+        204,
+        "a heartbeat",
+    );
 }
 
 fn plane(e: api::Endpoints, path: String, token: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: "POST", path: path, headers: "Authorization: Bearer " + token, body: body });
+    return e.handle(
+        std::http::Request {
+            method: "POST",
+            path: path,
+            headers: "Authorization: Bearer " + token,
+            body: body,
+        },
+    );
 }
 
 fn ask(e: api::Endpoints, path: String, key: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: "POST", path: path, headers: "Authorization: Bearer " + key, body: body });
+    return e.handle(
+        std::http::Request {
+            method: "POST",
+            path: path,
+            headers: "Authorization: Bearer " + key,
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -334,91 +699,322 @@ const LOCAL: String = "{\"paused\": false, \"paused_seats\": [], \"max_in_flight
 
 /// A node with one static seat, registered and reporting it up.
 fn bring_up(e: api::Endpoints, id: String) -> String {
-    let token = std::json::find_string_field(admin(e, "POST", "/admin/v1/nodes", "{\"id\": \"" + id + "\"}").body, "enrollment_token");
-    expect(admin(e, "POST", "/admin/v1/nodes/" + id + "/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\", \"as\": \"echo\"}], \"config\": {\"text\": \"hello from voice\"}}"), 201, "a seat on " + id);
-    let reg = plane(e, "/node/v1/register", token, "{\"protocol\": 2, \"version\": \"0.1.0\", \"capabilities\": " + CAPS + ", \"local\": " + LOCAL + "}");
-    let version = std::json::find_int_field(std::json::find_field_raw(reg.body, "assignment"), "version");
-    expect(plane(e, "/node/v1/seats", token, "{\"assignment_version\": " + to_string(version) + ", \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}"), 204, id + " reports its seat");
+    let token = std::json::find_string_field(
+        admin(e, "POST", "/admin/v1/nodes", "{\"id\": \"" + id + "\"}").body,
+        "enrollment_token",
+    );
+    expect(
+        admin(
+            e,
+            "POST",
+            "/admin/v1/nodes/" + id + "/seats",
+            "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\", \"as\": \"echo\"}], \"config\": {\"text\": \"hello from voice\"}}",
+        ),
+        201,
+        "a seat on " + id,
+    );
+    let reg = plane(
+        e,
+        "/node/v1/register",
+        token,
+        "{\"protocol\": 2, \"version\": \"0.1.0\", \"capabilities\": " + CAPS + ", \"local\": "
+            + LOCAL + "}",
+    );
+    let version = std::json::find_int_field(
+        std::json::find_field_raw(reg.body, "assignment"),
+        "version",
+    );
+    expect(
+        plane(
+            e,
+            "/node/v1/seats",
+            token,
+            "{\"assignment_version\": " + to_string(version)
+                + ", \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}",
+        ),
+        204,
+        id + " reports its seat",
+    );
     return token;
 }
 
 fn main() {
     let nodes = Nodes { };
     let e = api::Endpoints { link: nodes };
-    admin(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\", \"price\": {\"input_per_mtok_micros\": 3000000, \"output_per_mtok_micros\": 15000000}}");
+    admin(
+        e,
+        "POST",
+        "/admin/v1/models",
+        "{\"id\": \"echo-1\", \"price\": {\"input_per_mtok_micros\": 3000000, \"output_per_mtok_micros\": 15000000}}",
+    );
     admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
     admin(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}");
-    let key = std::json::find_string_field(admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}").body, "secret");
+    let key = std::json::find_string_field(
+        admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}").body,
+        "secret",
+    );
     let laptop = bring_up(e, "laptop");
-    let listed = e.handle(std::http::Request { method: "GET", path: "/v1/models/echo-1", headers: "Authorization: Bearer " + key });
+    let listed = e.handle(
+        std::http::Request {
+            method: "GET",
+            path: "/v1/models/echo-1",
+            headers: "Authorization: Bearer " + key,
+        },
+    );
     let lv = std::json::find_field_raw(listed.body, "voice");
-    std::test::assert(std::json::find_bool_field(lv, "available"), "a model a seat could serve is available");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(lv, "data_classes")), "[\"internal\"]", "with the data classes its seats carry");
-    std::test::assert(std::json::find_bool_field(admin(e, "GET", "/admin/v1/models/echo-1", "").body, "available"), "on the admin plane too");
+    std::test::assert(
+        std::json::find_bool_field(lv, "available"),
+        "a model a seat could serve is available",
+    );
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(lv, "data_classes")),
+        "[\"internal\"]",
+        "with the data classes its seats carry",
+    );
+    std::test::assert(
+        std::json::find_bool_field(
+            admin(e, "GET", "/admin/v1/models/echo-1", "").body,
+            "available",
+        ),
+        "on the admin plane too",
+    );
 
     // a response
-    let r = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hello there\", \"instructions\": \"Be brief.\", \"metadata\": {\"dna.attempt_id\": \"w-1\"}, \"voice\": {\"data_class\": \"internal\"}}");
+    let r = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hello there\", \"instructions\": \"Be brief.\", \"metadata\": {\"dna.attempt_id\": \"w-1\"}, \"voice\": {\"data_class\": \"internal\"}}",
+    );
     expect(r, 200, "served");
     let id = std::json::find_string_field(r.body, "id");
     std::test::assert(std::str::starts_with(id, "resp_"), "the request id is the response's id");
     std::test::assert_eq_str(r.headers, "X-Request-Id: " + id, "and its X-Request-Id");
-    std::test::assert_eq_str(std::json::find_string_field(r.body, "status"), "completed", "completed");
+    std::test::assert_eq_str(
+        std::json::find_string_field(r.body, "status"),
+        "completed",
+        "completed",
+    );
     std::test::assert(std::str::contains(r.body, "\"hello from voice\""), "the seat's text");
-    std::test::assert_eq_str(std::json::find_string_field(r.body, "instructions"), "Be brief.", "the request's instructions");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(r.body, "metadata"), "dna.attempt_id"), "w-1", "its metadata, echoed");
+    std::test::assert_eq_str(
+        std::json::find_string_field(r.body, "instructions"),
+        "Be brief.",
+        "the request's instructions",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(
+            std::json::find_field_raw(r.body, "metadata"),
+            "dna.attempt_id",
+        ),
+        "w-1",
+        "its metadata, echoed",
+    );
     let usage = std::json::find_field_raw(r.body, "usage");
-    std::test::assert_eq_int(std::json::find_int_field(usage, "input_tokens"), 3, "eleven characters in");
+    std::test::assert_eq_int(
+        std::json::find_int_field(usage, "input_tokens"),
+        3,
+        "eleven characters in",
+    );
     std::test::assert_eq_int(std::json::find_int_field(usage, "output_tokens"), 4, "sixteen out");
     let v = std::json::find_field_raw(r.body, "voice");
     std::test::assert_eq_str(std::json::find_string_field(v, "request_id"), id, "voice.request_id");
     std::test::assert_eq_str(std::json::find_string_field(v, "project"), "work", "the project");
     let served = std::json::find_field_raw(v, "served");
-    std::test::assert_eq_str(std::json::find_string_field(served, "seat"), "laptop/static", "what served it");
-    std::test::assert_eq_str(std::json::find_string_field(served, "model"), "echo", "the model as the engine named it");
-    std::test::assert_eq_str(std::json::find_string_field(served, "engine"), "static", "the engine");
-    std::test::assert_eq_int(std::json::find_int_field(v, "price_micros"), 69, "3 in and 4 out at the model's price");
-    std::test::assert(!std::str::contains(nodes.last_body, "\"voice\"") && std::str::contains(nodes.last_body, "\"engine_model\": \"echo\""), "the node gets the standard request and the seat's name for the model");
+    std::test::assert_eq_str(
+        std::json::find_string_field(served, "seat"),
+        "laptop/static",
+        "what served it",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(served, "model"),
+        "echo",
+        "the model as the engine named it",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(served, "engine"),
+        "static",
+        "the engine",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(v, "price_micros"),
+        69,
+        "3 in and 4 out at the model's price",
+    );
+    std::test::assert(
+        !std::str::contains(nodes.last_body, "\"voice\"")
+            && std::str::contains(nodes.last_body, "\"engine_model\": \"echo\""),
+        "the node gets the standard request and the seat's name for the model",
+    );
 
     // a chat completion
-    let c = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"system\", \"content\": \"Be brief.\"}, {\"role\": \"user\", \"content\": \"hi\"}], \"max_tokens\": 64}");
+    let c = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"system\", \"content\": \"Be brief.\"}, {\"role\": \"user\", \"content\": \"hi\"}], \"max_tokens\": 64}",
+    );
     expect(c, 200, "a chat completion");
-    std::test::assert_eq_str(std::json::find_string_field(c.body, "object"), "chat.completion", "its object");
+    std::test::assert_eq_str(
+        std::json::find_string_field(c.body, "object"),
+        "chat.completion",
+        "its object",
+    );
     let choice = std::json::array_first(std::json::find_field_raw(c.body, "choices")).element;
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(choice, "message"), "content"), "hello from voice", "the text");
-    std::test::assert_eq_str(std::json::find_string_field(choice, "finish_reason"), "stop", "stopped");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(c.body, "usage"), "completion_tokens"), 4, "its usage");
-    std::test::assert(std::str::contains(nodes.last_body, "\"input\": [{\"type\": \"message\", \"role\": \"system\""), "sent as input messages");
-    std::test::assert(std::str::contains(nodes.last_body, "\"max_output_tokens\": 64"), "its cap converted");
-    let tools = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"look\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.test/a.png\"}}]}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"call_1\", \"type\": \"function\", \"function\": {\"name\": \"lookup\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"call_1\", \"content\": \"42\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"parameters\": {\"type\": \"object\"}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"lookup\"}}}");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(choice, "message"), "content"),
+        "hello from voice",
+        "the text",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(choice, "finish_reason"),
+        "stop",
+        "stopped",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(std::json::find_field_raw(c.body, "usage"), "completion_tokens"),
+        4,
+        "its usage",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "\"input\": [{\"type\": \"message\", \"role\": \"system\"",
+        ),
+        "sent as input messages",
+    );
+    std::test::assert(
+        std::str::contains(nodes.last_body, "\"max_output_tokens\": 64"),
+        "its cap converted",
+    );
+    let tools = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"look\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.test/a.png\"}}]}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"call_1\", \"type\": \"function\", \"function\": {\"name\": \"lookup\", \"arguments\": \"{}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"call_1\", \"content\": \"42\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"lookup\", \"parameters\": {\"type\": \"object\"}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"lookup\"}}}",
+    );
     expect(tools, 200, "a chat completion with parts and tools");
-    std::test::assert(std::str::contains(nodes.last_body, "{\"type\": \"input_text\", \"text\": \"look\"}"), "a text part as input_text");
-    std::test::assert(std::str::contains(nodes.last_body, "{\"type\": \"input_image\", \"image_url\": \"https://example.test/a.png\", \"detail\": \"auto\"}"), "an image part as input_image");
-    std::test::assert(std::str::contains(nodes.last_body, "{\"type\": \"function_call\", \"call_id\": \"call_1\", \"name\": \"lookup\", \"arguments\": \"{}\"}"), "a tool call as a function_call");
-    std::test::assert(std::str::contains(nodes.last_body, "{\"type\": \"function_call_output\", \"call_id\": \"call_1\", \"output\": \"42\"}"), "a tool message as its output");
-    std::test::assert(std::str::contains(nodes.last_body, "\"tools\": [{\"type\": \"function\", \"name\": \"lookup\", \"parameters\": {\"type\": \"object\"}}]") && std::str::contains(nodes.last_body, "\"tool_choice\": {\"type\": \"function\", \"name\": \"lookup\"}"), "the tools and the choice as the standard names them");
-    let audio = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\", \"input_audio\": {}}]}]}");
+    std::test::assert(
+        std::str::contains(nodes.last_body, "{\"type\": \"input_text\", \"text\": \"look\"}"),
+        "a text part as input_text",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "{\"type\": \"input_image\", \"image_url\": \"https://example.test/a.png\", \"detail\": \"auto\"}",
+        ),
+        "an image part as input_image",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "{\"type\": \"function_call\", \"call_id\": \"call_1\", \"name\": \"lookup\", \"arguments\": \"{}\"}",
+        ),
+        "a tool call as a function_call",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "{\"type\": \"function_call_output\", \"call_id\": \"call_1\", \"output\": \"42\"}",
+        ),
+        "a tool message as its output",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "\"tools\": [{\"type\": \"function\", \"name\": \"lookup\", \"parameters\": {\"type\": \"object\"}}]",
+        )
+            && std::str::contains(
+                nodes.last_body,
+                "\"tool_choice\": {\"type\": \"function\", \"name\": \"lookup\"}",
+            ),
+        "the tools and the choice as the standard names them",
+    );
+    let audio = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_audio\", \"input_audio\": {}}]}]}",
+    );
     expect(audio, 400, "a part with no standard form is refused");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(audio.body, "error"), "code"), "unsupported", "as unsupported");
-    expect(ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"tool\", \"content\": \"42\"}]}"), 400, "a tool message names its call");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(audio.body, "error"), "code"),
+        "unsupported",
+        "as unsupported",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/chat/completions",
+            key,
+            "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"tool\", \"content\": \"42\"}]}",
+        ),
+        400,
+        "a tool message names its call",
+    );
     nodes.tool = "weather";
-    let asked = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"weather?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"weather\"}}]}");
+    let asked = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"weather?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"weather\"}}]}",
+    );
     expect(asked, 200, "a seat that answers with a tool call");
-    let call_choice = std::json::array_first(std::json::find_field_raw(asked.body, "choices")).element;
-    std::test::assert_eq_str(std::json::find_string_field(call_choice, "finish_reason"), "tool_calls", "stopped for its tool calls");
+    let call_choice = std::json::array_first(
+        std::json::find_field_raw(asked.body, "choices"),
+    ).element;
+    std::test::assert_eq_str(
+        std::json::find_string_field(call_choice, "finish_reason"),
+        "tool_calls",
+        "stopped for its tool calls",
+    );
     let call_message = std::json::find_field_raw(call_choice, "message");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(call_message, "content")), "null", "with no text");
-    let call = std::json::array_first(std::json::find_field_raw(call_message, "tool_calls")).element;
-    std::test::assert(std::str::starts_with(std::json::find_string_field(call, "id"), "call_"), "the call's id");
-    std::test::assert_eq_str(std::json::find_string_field(call, "type"), "function", "a function call");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(call_message, "content")),
+        "null",
+        "with no text",
+    );
+    let call = std::json::array_first(
+        std::json::find_field_raw(call_message, "tool_calls"),
+    ).element;
+    std::test::assert(
+        std::str::starts_with(std::json::find_string_field(call, "id"), "call_"),
+        "the call's id",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(call, "type"),
+        "function",
+        "a function call",
+    );
     let f = std::json::find_field_raw(call, "function");
     std::test::assert_eq_str(std::json::find_string_field(f, "name"), "weather", "its name");
-    std::test::assert_eq_str(std::json::find_string_field(f, "arguments"), "{\"city\": \"Oslo\"}", "and its arguments, as text");
-    let responded = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"weather?\"}");
-    std::test::assert(std::str::contains(responded.body, "\"type\":\"function_call\""), "a response carries the function_call item as it is");
+    std::test::assert_eq_str(
+        std::json::find_string_field(f, "arguments"),
+        "{\"city\": \"Oslo\"}",
+        "and its arguments, as text",
+    );
+    let responded = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"weather?\"}",
+    );
+    std::test::assert(
+        std::str::contains(responded.body, "\"type\":\"function_call\""),
+        "a response carries the function_call item as it is",
+    );
     nodes.tool = "";
-    let cut = ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"max_tokens\": 2}");
+    let cut = ask(
+        e,
+        "/v1/chat/completions",
+        key,
+        "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"max_tokens\": 2}",
+    );
     let cut_choice = std::json::array_first(std::json::find_field_raw(cut.body, "choices")).element;
-    std::test::assert_eq_str(std::json::find_string_field(cut_choice, "finish_reason"), "length", "a cut answer stopped for length");
+    std::test::assert_eq_str(
+        std::json::find_string_field(cut_choice, "finish_reason"),
+        "length",
+        "a cut answer stopped for length",
+    );
 
     streamed_with_sse(e, key, nodes);
     streamed_failures(e, key, nodes, laptop);
@@ -430,46 +1026,136 @@ fn main() {
     beat(e, laptop);
     let desktop = bring_up(e, "desktop");
     nodes.refusing = "laptop";
-    let moved_stream = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
-    std::test::assert(std::str::starts_with(moved_stream.body, "event: voice:attempt\ndata: {\"type\": \"voice:attempt\", \"sequence_number\": 0, \"attempt\": {\"seat\": \"laptop/static\""), "a streamed request says the switch first: " + moved_stream.body);
-    std::test::assert(std::str::contains(moved_stream.body, "\"next_seat\": \"desktop/static\"") && std::str::contains(moved_stream.body, "event: response.created\ndata: {") && std::str::contains(moved_stream.body, "\"sequence_number\": 1}"), "then the next seat's events, numbered on");
+    let moved_stream = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
+    std::test::assert(
+        std::str::starts_with(
+            moved_stream.body,
+            "event: voice:attempt\ndata: {\"type\": \"voice:attempt\", \"sequence_number\": 0, \"attempt\": {\"seat\": \"laptop/static\"",
+        ),
+        "a streamed request says the switch first: " + moved_stream.body,
+    );
+    std::test::assert(
+        std::str::contains(moved_stream.body, "\"next_seat\": \"desktop/static\"")
+            && std::str::contains(moved_stream.body, "event: response.created\ndata: {")
+            && std::str::contains(moved_stream.body, "\"sequence_number\": 1}"),
+        "then the next seat's events, numbered on",
+    );
     let moved = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(moved, 200, "served elsewhere");
-    let attempts = std::json::find_field_raw(std::json::find_field_raw(moved.body, "voice"), "attempts");
+    let attempts = std::json::find_field_raw(
+        std::json::find_field_raw(moved.body, "voice"),
+        "attempts",
+    );
     let first = std::json::array_first(attempts);
-    std::test::assert_eq_str(std::json::find_string_field(first.element, "outcome"), "failed", "the first seat's attempt is evidence");
-    std::test::assert(std::str::contains(std::json::find_string_field(first.element, "error"), "paused"), "with why");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::array_next(first).element, "seat"), "desktop/static", "the second served");
+    std::test::assert_eq_str(
+        std::json::find_string_field(first.element, "outcome"),
+        "failed",
+        "the first seat's attempt is evidence",
+    );
+    std::test::assert(
+        std::str::contains(std::json::find_string_field(first.element, "error"), "paused"),
+        "with why",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::array_next(first).element, "seat"),
+        "desktop/static",
+        "the second served",
+    );
 
     // every seat fails
     nodes.failing = "desktop";
     let failed = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(failed, 502, "every eligible seat failed");
     let failure = std::json::find_field_raw(failed.body, "error");
-    std::test::assert_eq_str(std::json::find_string_field(failure, "code"), "upstream_failed", "upstream_failed");
+    std::test::assert_eq_str(
+        std::json::find_string_field(failure, "code"),
+        "upstream_failed",
+        "upstream_failed",
+    );
     let fv = std::json::find_field_raw(failure, "voice");
-    std::test::assert(std::str::starts_with(std::json::find_string_field(fv, "request_id"), "resp_"), "the error names the request");
+    std::test::assert(
+        std::str::starts_with(std::json::find_string_field(fv, "request_id"), "resp_"),
+        "the error names the request",
+    );
     let tried = std::json::array_first(std::json::find_field_raw(fv, "attempts"));
-    std::test::assert_eq_str(std::json::find_string_field(tried.element, "seat"), "laptop/static", "and every seat it tried");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::array_next(tried).element, "seat"), "desktop/static", "in turn");
-    std::test::assert(std::str::contains(nodes.last_body, "\"reply_to\": \"voice.reply." + std::json::find_string_field(fv, "request_id") + ".2\""), "each attempt answering on a subject of its own");
-    let failed_stream = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}");
-    expect(failed_stream, 502, "a streamed request every seat failed before any output is answered whole");
-    std::test::assert(std::str::starts_with(failed_stream.content_type, "application/json"), "as JSON, no stream begun");
+    std::test::assert_eq_str(
+        std::json::find_string_field(tried.element, "seat"),
+        "laptop/static",
+        "and every seat it tried",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::array_next(tried).element, "seat"),
+        "desktop/static",
+        "in turn",
+    );
+    std::test::assert(
+        std::str::contains(
+            nodes.last_body,
+            "\"reply_to\": \"voice.reply." + std::json::find_string_field(fv, "request_id")
+                + ".2\"",
+        ),
+        "each attempt answering on a subject of its own",
+    );
+    let failed_stream = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"stream\": true}",
+    );
+    expect(
+        failed_stream,
+        502,
+        "a streamed request every seat failed before any output is answered whole",
+    );
+    std::test::assert(
+        std::str::starts_with(failed_stream.content_type, "application/json"),
+        "as JSON, no stream begun",
+    );
     nodes.refusing = "";
     nodes.failing = "";
 
     // a node whose local cap is 0 is at its cap: its seats are not offered
     let before = nodes.offers;
     for t in [laptop, desktop] {
-        expect(e.handle(std::http::Request { method: "PUT", path: "/node/v1/local", headers: "Authorization: Bearer " + t, body: "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 0, \"reason\": null}" }), 204, "a local cap of 0");
+        expect(
+            e.handle(
+                std::http::Request {
+                    method: "PUT",
+                    path: "/node/v1/local",
+                    headers: "Authorization: Bearer " + t,
+                    body: "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 0, \"reason\": null}",
+                },
+            ),
+            204,
+            "a local cap of 0",
+        );
     }
     let capped = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(capped, 503, "no seat is eligible");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(capped.body, "error"), "code"), "no_eligible_seat", "no_eligible_seat, not a seat failure");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(capped.body, "error"), "code"),
+        "no_eligible_seat",
+        "no_eligible_seat, not a seat failure",
+    );
     std::test::assert_eq_int(nodes.offers, before, "nothing was offered");
     for t in [laptop, desktop] {
-        expect(e.handle(std::http::Request { method: "PUT", path: "/node/v1/local", headers: "Authorization: Bearer " + t, body: "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": null, \"reason\": null}" }), 204, "the cap lifted");
+        expect(
+            e.handle(
+                std::http::Request {
+                    method: "PUT",
+                    path: "/node/v1/local",
+                    headers: "Authorization: Bearer " + t,
+                    body: "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": null, \"reason\": null}",
+                },
+            ),
+            204,
+            "the cap lifted",
+        );
     }
 
     // seats that are not eligible are not offered
@@ -477,6 +1163,10 @@ fn main() {
     admin(e, "PATCH", "/admin/v1/nodes/desktop/seats/static", "{\"enabled\": false}");
     let none = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\"}");
     expect(none, 503, "a draining node, and a seat whose new assignment its node has not applied");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(none.body, "error"), "code"), "no_eligible_seat", "no_eligible_seat");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(none.body, "error"), "code"),
+        "no_eligible_seat",
+        "no_eligible_seat",
+    );
     std::test::assert_eq_int(nodes.offers, before, "nothing was offered");
 }

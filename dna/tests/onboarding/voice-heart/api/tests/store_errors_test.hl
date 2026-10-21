@@ -5,11 +5,35 @@ import ".." as api;
 import "../../store" as st;
 
 fn main() {
-    let failed = api::store_failed(st::StoreError { kind: "unavailable", message: "query_failed: duplicate key value violates unique constraint \"secret_idx\"" });
-    std::test::assert(failed.status == 500 && failed.code == api::ErrorCode::internal_error && !std::str::contains(failed.message, "secret_idx"), "an admin failure answers without what the store said: " + failed.message);
-    std::test::assert(std::str::contains(failed.message, "err_") && std::str::starts_with(failed.voice.request_id, "err_"), "and with an id the api's log has");
-    let metering = api::metering_failed(st::StoreError { kind: "unavailable", message: "query_failed: secret_idx" });
-    std::test::assert(metering.status == 503 && !std::str::contains(metering.message, "secret_idx"), "on the caller plane too");
-    let full = api::store_failed(st::StoreError { kind: "full", message: "voice holds at most 64 projects" });
-    std::test::assert(full.status == 400 && full.message == "voice holds at most 64 projects", "a full store is the caller's to fix, and says so");
+    let failed = api::store_failed(
+        st::StoreError {
+            kind: "unavailable",
+            message: "query_failed: duplicate key value violates unique constraint \"secret_idx\"",
+        },
+    );
+    std::test::assert(
+        failed.status == 500
+            && failed.code == api::ErrorCode::internal_error
+            && !std::str::contains(failed.message, "secret_idx"),
+        "an admin failure answers without what the store said: " + failed.message,
+    );
+    std::test::assert(
+        std::str::contains(failed.message, "err_")
+            && std::str::starts_with(failed.voice.request_id, "err_"),
+        "and with an id the api's log has",
+    );
+    let metering = api::metering_failed(
+        st::StoreError { kind: "unavailable", message: "query_failed: secret_idx" },
+    );
+    std::test::assert(
+        metering.status == 503 && !std::str::contains(metering.message, "secret_idx"),
+        "on the caller plane too",
+    );
+    let full = api::store_failed(
+        st::StoreError { kind: "full", message: "voice holds at most 64 projects" },
+    );
+    std::test::assert(
+        full.status == 400 && full.message == "voice holds at most 64 projects",
+        "a full store is the caller's to fix, and says so",
+    );
 }

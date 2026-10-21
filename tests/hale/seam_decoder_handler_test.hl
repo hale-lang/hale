@@ -92,7 +92,11 @@ locus Counter {
 fn main() {
     // the closed flow ran to its source's end
     let g = Gateway { };
-    std::test::assert_eq_str(g.log.lines, "ack 20;ack 1;bad frame at 5;reject 500 too big;", "the closed flow, frame by frame");
+    std::test::assert_eq_str(
+        g.log.lines,
+        "ack 20;ack 1;bad frame at 5;reject 500 too big;",
+        "the closed flow, frame by frame",
+    );
     let c = Counter { };
     std::test::assert_eq_str(c.answer("new 3"), "ack 30", "a new order, answered");
     std::test::assert_eq_str(c.answer("new 11"), "reject 110 too big", "the desk's reject");

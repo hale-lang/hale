@@ -53,7 +53,14 @@ main locus App {
         fixture: std::api::test::Rpc = std::api::test::Rpc { };
         failures: Int = 0;
         answered_when_failed: Int = -1;
-        h: api::Exposure = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        h: api::Exposure = api::serve(
+            S,
+            self.fixture,
+            as: "svc",
+            receivers: { Svc: self.svc },
+            bound: 8,
+            on_full: refuse
+        );
     }
     placement { svc: cooperative(pool = work) where async_io; }
     on_failure(c: Svc, err: ClosureViolation) {
@@ -67,7 +74,10 @@ main locus App {
 
         f.call_as_peer(1, "Svc::fast", "{\"n\":1}", 1000);
         std::test::assert_eq_str(f.await_outcome(1, 2000), "result", "the first instance serves");
-        std::test::assert(std::str::contains(f.line(1), "\"value\":{\"n\":1}"), "in the first generation");
+        std::test::assert(
+            std::str::contains(f.line(1), "\"value\":{\"n\":1}"),
+            "in the first generation",
+        );
 
         // the violating call, and two calls queued behind it
         f.call_as_peer(2, "Svc::poison", "{\"n\":2}", 1000);
@@ -77,21 +87,48 @@ main locus App {
         // after the three is answered once they are admitted; only then may the
         // receiver fail
         f.send(-1, "probe");
-        std::test::assert_eq_str(f.await_outcome(-1, 3000), "refusal:malformed", "the three calls were admitted before the receiver failed");
+        std::test::assert_eq_str(
+            f.await_outcome(-1, 3000),
+            "refusal:malformed",
+            "the three calls were admitted before the receiver failed",
+        );
         self.svc.released = true;
-        std::test::assert_eq_str(f.await_outcome(2, 3000), "server_error", "the violating call is the server error");
+        std::test::assert_eq_str(
+            f.await_outcome(2, 3000),
+            "server_error",
+            "the violating call is the server error",
+        );
         std::test::assert_eq_int(self.failures, 1, "the owner's on_failure ran");
         std::test::assert_eq_int(self.answered_when_failed, 0, "before the caller was answered");
-        std::test::assert_eq_str(f.await_outcome(3, 3000), "refusal:unavailable", "a call queued behind it was accepted under the old generation");
-        std::test::assert_eq_str(f.await_outcome(4, 3000), "refusal:unavailable", "and so was the next");
+        std::test::assert_eq_str(
+            f.await_outcome(3, 3000),
+            "refusal:unavailable",
+            "a call queued behind it was accepted under the old generation",
+        );
+        std::test::assert_eq_str(
+            f.await_outcome(4, 3000),
+            "refusal:unavailable",
+            "and so was the next",
+        );
         std::test::assert_eq_int(self.svc.births, 1, "the field holds a new instance: born once");
-        std::test::assert_eq_int(self.svc.ran_slow, 0, "the replacement did not run the old instance's queued calls");
+        std::test::assert_eq_int(
+            self.svc.ran_slow,
+            0,
+            "the replacement did not run the old instance's queued calls",
+        );
         std::test::assert_eq_int(self.svc.ran_fast, 0, "nor any other");
 
         // the next call runs on the replacement, in the next generation
         f.call_as_peer(5, "Svc::fast", "{\"n\":5}", 1000);
-        std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "the replacement serves, without re-establishing the exposure");
-        std::test::assert(std::str::contains(f.line(5), "\"value\":{\"n\":2}"), "in the second generation");
+        std::test::assert_eq_str(
+            f.await_outcome(5, 3000),
+            "result",
+            "the replacement serves, without re-establishing the exposure",
+        );
+        std::test::assert(
+            std::str::contains(f.line(5), "\"value\":{\"n\":2}"),
+            "in the second generation",
+        );
         std::test::assert_eq_int(self.svc.ran_fast, 1, "on the replacement");
 
         self.h.stop();

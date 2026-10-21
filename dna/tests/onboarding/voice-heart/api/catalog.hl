@@ -36,7 +36,10 @@ locus Catalog {
             created_at: now_seconds()
         };
         let v = self.view(row) or raise;
-        let added = self.store.insert_model(row, change("create", "models/" + m.id, "", catalog_model_json(v))) or fail store_failed(err);
+        let added = self.store.insert_model(
+            row,
+            change("create", "models/" + m.id, "", catalog_model_json(v)),
+        ) or fail store_failed(err);
         if !added { fail conflict("model " + m.id + " exists; a model id is never reused"); }
         return v;
     }
@@ -72,7 +75,15 @@ locus Catalog {
         }
         check_model_fields(row.context_length, row.max_output_tokens) or raise;
         let after = self.view(row) or raise;
-        self.store.update_model(row, change("update", "models/" + row.id, catalog_model_json(before), catalog_model_json(after))) or fail store_failed(err);
+        self.store.update_model(
+            row,
+            change(
+                "update",
+                "models/" + row.id,
+                catalog_model_json(before),
+                catalog_model_json(after),
+            ),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -94,7 +105,10 @@ locus Catalog {
         let before = self.view(row) or raise;
         row.removed = true;
         row.removed_at = now_seconds();
-        self.store.update_model(row, change("delete", "models/" + row.id, catalog_model_json(before), "")) or fail store_failed(err);
+        self.store.update_model(
+            row,
+            change("delete", "models/" + row.id, catalog_model_json(before), ""),
+        ) or fail store_failed(err);
         return before;
     }
 
@@ -145,7 +159,14 @@ locus Models {
         let p = self.store.project(k.project) or fail metering_failed(err);
         let row = self.store.model(r.model) or fail metering_failed(err);
         if !row.present || row.removed || !visible(p, k, r.model) {
-            fail ApiError { status: 404, kind: "not_found", code: ErrorCode::model_not_found, message: "no model " + r.model, has_param: true, param: "model" };
+            fail ApiError {
+                status: 404,
+                kind: "not_found",
+                code: ErrorCode::model_not_found,
+                message: "no model " + r.model,
+                has_param: true,
+                param: "model",
+            };
         }
         return model_with_seats(self.store, row) or raise;
     }
@@ -216,7 +237,9 @@ fn has_name(ns: bounded[String; 32], name: String) -> Bool {
 
 fn check_model_fields(context_length: Int, max_output_tokens: Int) -> Bool fallible(ApiError) {
     if context_length < 0 { fail invalid("`context_length` is at least 1", "context_length"); }
-    if max_output_tokens < 0 { fail invalid("`max_output_tokens` is at least 1", "max_output_tokens"); }
+    if max_output_tokens < 0 {
+        fail invalid("`max_output_tokens` is at least 1", "max_output_tokens");
+    }
     return true;
 }
 
@@ -252,23 +275,52 @@ fn model_view(r: st::ModelRow) -> Model {
 // ---- errors ----------------------------------------------------------
 
 fn invalid(message: String, param: String) -> ApiError {
-    return ApiError { status: 400, kind: "invalid_request", code: ErrorCode::invalid_request, message: message, has_param: len(param) > 0, param: param };
+    return ApiError {
+        status: 400,
+        kind: "invalid_request",
+        code: ErrorCode::invalid_request,
+        message: message,
+        has_param: len(param) > 0,
+        param: param,
+    };
 }
 
 fn unsupported(message: String, param: String) -> ApiError {
-    return ApiError { status: 400, kind: "invalid_request", code: ErrorCode::unsupported, message: message, has_param: len(param) > 0, param: param };
+    return ApiError {
+        status: 400,
+        kind: "invalid_request",
+        code: ErrorCode::unsupported,
+        message: message,
+        has_param: len(param) > 0,
+        param: param,
+    };
 }
 
 fn not_found(message: String) -> ApiError {
-    return ApiError { status: 404, kind: "not_found", code: ErrorCode::not_found, message: message };
+    return ApiError {
+        status: 404,
+        kind: "not_found",
+        code: ErrorCode::not_found,
+        message: message,
+    };
 }
 
 fn conflict(message: String) -> ApiError {
-    return ApiError { status: 409, kind: "invalid_request", code: ErrorCode::conflict, message: message };
+    return ApiError {
+        status: 409,
+        kind: "invalid_request",
+        code: ErrorCode::conflict,
+        message: message,
+    };
 }
 
 fn invalid_key() -> ApiError {
-    return ApiError { status: 401, kind: "authentication_error", code: ErrorCode::invalid_key, message: "a valid project key is required: Authorization: Bearer vk-..." };
+    return ApiError {
+        status: 401,
+        kind: "authentication_error",
+        code: ErrorCode::invalid_key,
+        message: "a valid project key is required: Authorization: Bearer vk-...",
+    };
 }
 
 /// A store that could not answer an admin request. A full list is the
@@ -276,14 +328,28 @@ fn invalid_key() -> ApiError {
 fn store_failed(e: st::StoreError) -> ApiError {
     if e.kind == "full" { return invalid(e.message, ""); }
     let id = store_incident(e);
-    return ApiError { status: 500, kind: "server_error", code: ErrorCode::internal_error, message: "the store could not complete the request (" + id + ")", has_voice: true, voice: ErrorVoice { request_id: id } };
+    return ApiError {
+        status: 500,
+        kind: "server_error",
+        code: ErrorCode::internal_error,
+        message: "the store could not complete the request (" + id + ")",
+        has_voice: true,
+        voice: ErrorVoice { request_id: id },
+    };
 }
 
 /// The caller plane's store failure: nothing is served while the store
 /// cannot record usage.
 fn metering_failed(e: st::StoreError) -> ApiError {
     let id = store_incident(e);
-    return ApiError { status: 503, kind: "server_error", code: ErrorCode::metering_unavailable, message: "the store is unavailable; nothing is served until it is back (" + id + ")", has_voice: true, voice: ErrorVoice { request_id: id } };
+    return ApiError {
+        status: 503,
+        kind: "server_error",
+        code: ErrorCode::metering_unavailable,
+        message: "the store is unavailable; nothing is served until it is back (" + id + ")",
+        has_voice: true,
+        voice: ErrorVoice { request_id: id },
+    };
 }
 
 /// A store failure, on the api's stderr with an id the answer quotes. What
@@ -291,7 +357,13 @@ fn metering_failed(e: st::StoreError) -> ApiError {
 /// the values they refused) stays here and never reaches a response.
 fn store_incident(e: st::StoreError) -> String {
     let id = "err_" + (random_hex(8) or "0");
-    log_error("store failure", fields2(std::log::kv("incident", id), fields2(std::log::kv("kind", e.kind), std::log::kv("detail", e.message))));
+    log_error(
+        "store failure",
+        fields2(
+            std::log::kv("incident", id),
+            fields2(std::log::kv("kind", e.kind), std::log::kv("detail", e.message)),
+        ),
+    );
     return id;
 }
 
@@ -336,9 +408,12 @@ fn capabilities_json(c: Capabilities) -> String {
         limits_list.add(limit_json(l));
     }
     let limits = limits_list.text();
-    return "{\"project\": {\"id\": " + jq(c.project_id) + ", \"name\": " + jq(c.project_name) + "}, \"key\": {\"id\": " + jq(c.key_id) + ", \"name\": " + jq(c.key_name) + "}"
-        + ", \"data_classes\": " + st::jnames(c.data_classes) + ", \"models\": [" + models + "], \"accounts\": " + jnames_or_null(c.has_accounts, c.accounts)
-        + ", \"limits\": [" + limits + "], \"budget\": " + (if c.has_budget { budget_json(c.budget) } else { "null" }) + "}";
+    return "{\"project\": {\"id\": " + jq(c.project_id) + ", \"name\": " + jq(c.project_name)
+        + "}, \"key\": {\"id\": " + jq(c.key_id) + ", \"name\": " + jq(c.key_name) + "}"
+        + ", \"data_classes\": " + st::jnames(c.data_classes) + ", \"models\": [" + models
+        + "], \"accounts\": " + jnames_or_null(c.has_accounts, c.accounts)
+        + ", \"limits\": [" + limits + "], \"budget\": "
+        + (if c.has_budget { budget_json(c.budget) } else { "null" }) + "}";
 }
 
 /// Whether a model can be served now, and the data classes the seats that

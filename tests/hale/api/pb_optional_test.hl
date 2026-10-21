@@ -46,7 +46,14 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(PbOptional, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            PbOptional,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     // JSON in, protobuf through, JSON out: the same text.
@@ -56,7 +63,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Opt(__api_pb_encode_Opt(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Opt(back), json, what);
@@ -64,9 +74,18 @@ main locus Desk {
 
     run() {
         self.round("{\"name\":\"a\"}", "every optional field absent");
-        self.round("{\"name\":\"b\",\"note\":\"\",\"tags\":[],\"inner\":{\"a\":0,\"b\":\"\"}}", "every optional field present at its zero");
-        self.round("{\"name\":\"c\",\"note\":\"x\",\"tags\":[\"p\",\"q\"],\"inner\":{\"a\":7,\"b\":\"y\"}}", "every optional field present");
-        self.round("{\"name\":\"r\",\"ranged\":{\"n\":5}}", "an optional record of a range that leaves out zero");
+        self.round(
+            "{\"name\":\"b\",\"note\":\"\",\"tags\":[],\"inner\":{\"a\":0,\"b\":\"\"}}",
+            "every optional field present at its zero",
+        );
+        self.round(
+            "{\"name\":\"c\",\"note\":\"x\",\"tags\":[\"p\",\"q\"],\"inner\":{\"a\":7,\"b\":\"y\"}}",
+            "every optional field present",
+        );
+        self.round(
+            "{\"name\":\"r\",\"ranged\":{\"n\":5}}",
+            "an optional record of a range that leaves out zero",
+        );
 
         // a message carrying only the name: every flag false, every value its zero
         let only = __api_pb_decode_Opt(__api_pb_put_str(1, "d")) or {
@@ -77,9 +96,21 @@ main locus Desk {
         std::test::assert_eq_str(only.note, "", "an absent string is empty");
         std::test::assert_eq_int(count(only.tags), 0, "an absent list is empty");
         std::test::assert_eq_int(only.inner.a, 0, "an absent record is its zero");
-        std::test::assert_eq_str(only.inner.b, "dflt", "an absent record's field keeps its default");
-        std::test::assert_eq_int(Int(only.ranged.n), 1, "an absent record of a range holds its least value");
-        std::test::assert_eq_str(__api_encode_Opt(only), "{\"name\":\"d\"}", "and JSON writes none of them");
+        std::test::assert_eq_str(
+            only.inner.b,
+            "dflt",
+            "an absent record's field keeps its default",
+        );
+        std::test::assert_eq_int(
+            Int(only.ranged.n),
+            1,
+            "an absent record of a range holds its least value",
+        );
+        std::test::assert_eq_str(
+            __api_encode_Opt(only),
+            "{\"name\":\"d\"}",
+            "and JSON writes none of them",
+        );
 
         // the flag is read from its own field: set, with no value, it is a presence of the zero
         let flagged = std::bytes::concat(__api_pb_put_str(1, "e"), __api_pb_put_bool(3, true));
@@ -87,7 +118,11 @@ main locus Desk {
             std::test::assert(false, "a flag alone: " + err.kind + " " + err.field);
             return;
         };
-        std::test::assert_eq_str(__api_encode_Opt(f), "{\"name\":\"e\",\"note\":\"\"}", "a flag alone is a presence of the zero");
+        std::test::assert_eq_str(
+            __api_encode_Opt(f),
+            "{\"name\":\"e\",\"note\":\"\"}",
+            "a flag alone is a presence of the zero",
+        );
     }
 }
 

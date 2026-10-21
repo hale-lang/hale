@@ -18,7 +18,9 @@ fn local_problem(body: String) -> String {
     if !std::str::starts_with(seats, "[") { return "paused_seats must be a list of seat ids"; }
     let mut it = std::json::array_first_span(seats);
     while !it.done {
-        if !std::str::starts_with(std::json::iter_substring(it, seats), "\"") { return "paused_seats must be a list of seat ids"; }
+        if !std::str::starts_with(std::json::iter_substring(it, seats), "\"") {
+            return "paused_seats must be a list of seat ids";
+        }
         it = std::json::array_next_span(it, seats);
     }
     let cap = top_value(body, "max_in_flight");
@@ -27,7 +29,9 @@ fn local_problem(body: String) -> String {
         if n < 0 { return "max_in_flight must be a whole number of at least 0, or null"; }
     }
     let reason = top_value(body, "reason");
-    if len(reason) > 0 && reason != "null" && !std::str::starts_with(reason, "\"") { return "reason must be text or null"; }
+    if len(reason) > 0 && reason != "null" && !std::str::starts_with(reason, "\"") {
+        return "reason must be text or null";
+    }
     return "";
 }
 
@@ -35,7 +39,10 @@ fn local_problem(body: String) -> String {
 fn normalized_local(body: String) -> String {
     let cap = top_value(body, "max_in_flight");
     let reason = top_value(body, "reason");
-    return "{\"paused\": " + top_value(body, "paused") + ", \"paused_seats\": " + top_value(body, "paused_seats") + ", \"max_in_flight\": " + (if len(cap) > 0 { cap } else { "null" }) + ", \"reason\": " + (if len(reason) > 0 { reason } else { "null" }) + "}";
+    return "{\"paused\": " + top_value(body, "paused") + ", \"paused_seats\": "
+        + top_value(body, "paused_seats") + ", \"max_in_flight\": "
+        + (if len(cap) > 0 { cap } else { "null" }) + ", \"reason\": "
+        + (if len(reason) > 0 { reason } else { "null" }) + "}";
 }
 
 /// The effective cap: the declared cap, lowered by a local one. The

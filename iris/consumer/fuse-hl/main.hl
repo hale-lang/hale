@@ -105,14 +105,46 @@ const MAX_LOCI: Int = 8192;
 // from (PROTOCOL §3, proto >= 0.2). "" means the emitter predates
 // the field and said nothing — which is NOT the same as
 // "0000000000000000", an emitter that positively has no model.
-type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; model: String = ""; process_key: String = ""; started: String = ""; }
+type SegRow {
+    h: Int = -1;
+    pid: Int = 0;
+    name: String = "";
+    dead: Int = 0;
+    restarts: Int = 0;
+    reg: String = "";
+    model: String = "";
+    process_key: String = "";
+    started: String = "";
+}
 // btype: the locus type's manifest id in its segment; the name is read
 // from the segment when shown, so a row holds no string and rewriting it
 // (a bump, an eviction) leaves nothing behind in App's region
-type LocusRow { seg: Int = -1; inst: Int = 0; btype: Int = -1; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
+type LocusRow {
+    seg: Int = -1;
+    inst: Int = 0;
+    btype: Int = -1;
+    parent: Int = 0;
+    alive: Int = 0;
+    pub: Int = 0;
+    dlv: Int = 0;
+}
 type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
-type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
-type EdgeRow { topic: Int = -1; from_seg: Int = -1; to_seg: Int = -1; matched: Int = 0; lat_sum: Int = 0; lat_max: Int = 0; }
+type TopicSeg {
+    topic: Int = -1;
+    seg: Int = -1;
+    local_id: Int = -1;
+    line: Int = -1;
+    sends: Int = 0;
+    delivers: Int = 0;
+}
+type EdgeRow {
+    topic: Int = -1;
+    from_seg: Int = -1;
+    to_seg: Int = -1;
+    matched: Int = 0;
+    lat_sum: Int = 0;
+    lat_max: Int = 0;
+}
 type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; origin: Int = 0; }
 // law rows (artifact-fed; see INSPECTOR.md "witnessed law").
 // ClaimRow.kind: 1=count 2=require_endpoint 3=forbid_reaches 0=other
@@ -389,13 +421,23 @@ locus Cycle {
                             fz::fz_unlink("/dev/shm/hale-obs-" + stale_pid);
                         } else {
                             let after = identity_reader.capture(fz::fz_pid(h));
-                            let same = registered_pid == fz::fz_pid(h) && before.key != "" && before.key == after.key;
+                            let same = registered_pid == fz::fz_pid(h)
+                                && before.key != ""
+                                && before.key == after.key;
                             self.segs.push(SegRow {
                                 h: h, pid: fz::fz_pid(h),
                                 name: basename(fz::fz_exe(h)),
                                 dead: 0, restarts: 0, reg: p,
                                 model: fz::fz_model_hash_hex(h),
-                                process_key: if same { after.key } else { "" }, started: if same { after.started } else { "" }
+                                process_key: if same {
+                                    after.key
+                                } else {
+                                    ""
+                                }, started: if same {
+                                    after.started
+                                } else {
+                                    ""
+                                }
                             });
                             self.index_topics(self.segs.len() - 1);
                             println("fuse-hl: attached pid " + fz::fz_pid(h));
@@ -507,7 +549,10 @@ locus Cycle {
                 self.loci.push(row);
                 self.lidx.set(LocusSlot { key: key, slot: self.loci.len() - 1 });
             } else {
-                self.meta.set(M_LOCI_UNTRACKED, (self.meta.get(M_LOCI_UNTRACKED) or 0) + 1) or discard;
+                self.meta.set(
+                    M_LOCI_UNTRACKED,
+                    (self.meta.get(M_LOCI_UNTRACKED) or 0) + 1,
+                ) or discard;
             }
             return;
         }
@@ -586,7 +631,10 @@ locus Cycle {
         if is_send {
             // store (overwrite on window wrap); kept after matches
             // so every listener can pair against it
-            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1, origin: origin }) or discard;
+            self.inflight.set(
+                sidx,
+                SeqEnt { seq: seq, ts: ts, seg: si, kind: 1, origin: origin },
+            ) or discard;
             // sweep pending delivers parked by any other seg
             let mut rs = 0;
             while rs < self.segs.len() {
@@ -621,7 +669,10 @@ locus Cycle {
             // deliver-before-send: park in this seg's pending window
             if si < MAX_SEGS {
                 let pidx = self.pending_base(slot, si) + (seq + origin * 7919) % PWINDOW;
-                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2, origin: origin }) or discard;
+                self.inflight.set(
+                    pidx,
+                    SeqEnt { seq: seq, ts: ts, seg: si, kind: 2, origin: origin },
+                ) or discard;
             }
         }
     }
@@ -828,7 +879,9 @@ locus Cycle {
         // bounded: topics x types x segs in practice; 512 is a loud
         // ceiling, not a silent cap — overflow shows in the tail.
         if self.wits.len() < 512 {
-            self.wits.push(WitRow { topic: tseg.topic, seg: si, tname: tname, kind: kind, count: 1 });
+            self.wits.push(
+                WitRow { topic: tseg.topic, seg: si, tname: tname, kind: kind, count: 1 },
+            );
         } else {
             self.tail_push("law: witness table full (512) — evidence dropped");
         }
@@ -968,7 +1021,9 @@ locus Cycle {
         }
         self.lawmeta.set(7, oneline(doc)) or discard;
         self.lawmeta.set(8, "loaded") or discard;
-        self.tail_push("diff: loaded (" + std::json::find_string_field(doc, "classification") + ")");
+        self.tail_push(
+            "diff: loaded (" + std::json::find_string_field(doc, "classification") + ")",
+        );
     }
 
     @unbounded
@@ -992,7 +1047,14 @@ locus Cycle {
             let mut state = "live";
             if g.dead == 1 { state = "dead"; }
             let identity_reader = identity::Identity { };
-            let process_key = if g.dead == 0 && g.process_key != "" && identity_reader.start_ticks(g.pid) == g.started { g.process_key } else { "" };
+            let process_key = if g.dead == 0
+                && g.process_key != ""
+                && identity_reader.start_ticks(g.pid) == g.started
+            {
+                g.process_key
+            } else {
+                ""
+            };
             s = s + "{\"pid\":" + g.pid + ",\"name\":\"" + jstr(g.name)
                 + "\",\"state\":\"" + state + "\""
                 + ",\"model\":\"" + g.model + "\""
@@ -1010,7 +1072,16 @@ locus Cycle {
                 if l.seg == i {
                     if l.alive == 1 {
                         if nl > 0 { std::str::builder_append(lb, ","); }
-                        std::str::builder_append(lb, "{\"id\":" + l.inst + ",\"type\":\"" + jstr(if l.btype >= 0 { fz::fz_name(g.h, MK_LOCUS_TYPE, l.btype) } else { "" })
+                        std::str::builder_append(
+                            lb,
+                            "{\"id\":" + l.inst + ",\"type\":\""
+                                + jstr(
+                                    if l.btype >= 0 {
+                                        fz::fz_name(g.h, MK_LOCUS_TYPE, l.btype)
+                                    } else {
+                                        ""
+                                    },
+                                )
                                 + "\",\"parent\":" + l.parent
                                 + ",\"pub\":" + l.pub + ",\"dlv\":" + l.dlv + "}");
                         nl = nl + 1;
@@ -1080,7 +1151,8 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "],\"loci_untracked\":" + (self.meta.get(M_LOCI_UNTRACKED) or 0) + self.law_json() + self.diff_json() + "}";
+        s = s + "],\"loci_untracked\":" + (self.meta.get(M_LOCI_UNTRACKED) or 0) + self.law_json()
+            + self.diff_json() + "}";
         return s;
     }
 
@@ -1277,24 +1349,36 @@ locus Cycle {
                 let unatt = self.wit_unattr(c.subject, wk);
                 extra = ",\"witnesses\":" + self.wit_types_json(c.subject, wk);
                 if c.cmp == ">=" {
-                    if dc >= c.n { wstate = "consistent"; detail = dc + " distinct " + verb + " type(s) observed"; }
-                    else { wstate = "unwitnessed"; detail = "only " + dc + " of " + c.n + " required " + verb + " type(s) observed"; }
+                    if dc >= c.n {
+                        wstate = "consistent";
+                        detail = dc + " distinct " + verb + " type(s) observed";
+                    }
+                    else {
+                        wstate = "unwitnessed";
+                        detail = "only " + dc + " of " + c.n + " required " + verb
+                            + " type(s) observed";
+                    }
                 } else {
                     // == and <= share the falsifying direction
                     if dc > c.n {
                         wstate = "contradicted";
-                        detail = dc + " distinct " + verb + " types observed on \"" + c.subject + "\" - the model declares " + c.n + ". The compiler is deployment-blind by design; this is the fleet.";
+                        detail = dc + " distinct " + verb + " types observed on \"" + c.subject
+                            + "\" - the model declares " + c.n
+                            + ". The compiler is deployment-blind by design; this is the fleet.";
                     } else {
                         if unatt {
                             wstate = "unwitnessed";
-                            detail = "unattributed " + verb + " traffic on \"" + c.subject + "\" - cannot bound the count";
+                            detail = "unattributed " + verb + " traffic on \"" + c.subject
+                                + "\" - cannot bound the count";
                         } else {
                             if c.cmp == "==" && dc < c.n {
                                 wstate = "unwitnessed";
-                                detail = "only " + dc + " of " + c.n + " declared " + verb + " type(s) active";
+                                detail = "only " + dc + " of " + c.n + " declared " + verb
+                                    + " type(s) active";
                             } else {
                                 wstate = "consistent";
-                                detail = dc + " distinct " + verb + " type(s) observed, within bound";
+                                detail = dc + " distinct " + verb
+                                    + " type(s) observed, within bound";
                             }
                         }
                     }
@@ -1313,10 +1397,12 @@ locus Cycle {
             } else {
                 if pubtot == 0 {
                     wstate = "not_exercised";
-                    detail = "nothing has ever published \"" + c.subject + "\" - the wiring exists, no traffic has pressured it";
+                    detail = "nothing has ever published \"" + c.subject
+                        + "\" - the wiring exists, no traffic has pressured it";
                 } else {
                     wstate = "unwitnessed";
-                    detail = "traffic flows on \"" + c.subject + "\" but no " + verb + " any member of " + c.grp + " observed";
+                    detail = "traffic flows on \"" + c.subject + "\" but no " + verb
+                        + " any member of " + c.grp + " observed";
                 }
             }
         }
@@ -1372,7 +1458,8 @@ locus Cycle {
             }
             si = si + 1;
         }
-        s = s + ",\"evidence\":{\"in_sync\":" + insync + ",\"other_model\":" + other + ",\"no_model\":" + unk + "}";
+        s = s + ",\"evidence\":{\"in_sync\":" + insync + ",\"other_model\":" + other
+            + ",\"no_model\":" + unk + "}";
         let adq = self.lawmeta.get(4) or "";
         if len(adq) > 0 { s = s + ",\"adequacy\":" + oneline(adq); }
         let cap = self.lawmeta.get(5) or "";

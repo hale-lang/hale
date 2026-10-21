@@ -76,7 +76,9 @@ fn codebase_of(j: Journal, name: String) -> Codebase {
                 knowledge: if len(kdir) > 0 { kdir } else { "docs/integrations/" }
             };
         }
-        if e.kind == "codebase.detached" && std::json::find_string_field(e.body, "name") == name { out = Codebase { }; }
+        if e.kind == "codebase.detached" && std::json::find_string_field(e.body, "name") == name {
+            out = Codebase { };
+        }
         i = i + 1;
     }
     return out;
@@ -115,7 +117,9 @@ fn codebase_listing(j: Journal) -> String {
         let nl = std::str::index_of(rest, "\n");
         let c = codebase_of(j, rest[0..nl]);
         rest = rest[(nl + 1)..len(rest)];
-        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: " + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: " + (if len(c.test) > 0 { c.test } else { "-" }) + "  toolchain: " + c.toolchain + "\n";
+        out = out + "  " + c.name + "  " + c.repo + " (" + c.branch + ")  build: "
+            + (if len(c.build) > 0 { c.build } else { "-" }) + "  test: "
+            + (if len(c.test) > 0 { c.test } else { "-" }) + "  toolchain: " + c.toolchain + "\n";
     }
     return out;
 }
@@ -126,7 +130,14 @@ fn codebase_listing(j: Journal) -> String {
 // the repository, no `..`, with its trailing `/`. "" when it cannot stand.
 fn knowledge_dir_ok(d: String) -> String {
     let t = std::str::trim(d);
-    if len(t) == 0 || len(t) > 200 || std::str::starts_with(t, "/") || std::str::contains(t, "..") || std::str::contains(t, "\n") { return ""; }
+    if len(t) == 0
+        || len(t) > 200
+        || std::str::starts_with(t, "/")
+        || std::str::contains(t, "..")
+        || std::str::contains(t, "\n")
+    {
+        return "";
+    }
     return if std::str::ends_with(t, "/") { t } else { t + "/" };
 }
 
@@ -144,7 +155,9 @@ fn codebase_repo_local(c: Codebase) -> Bool {
 // Watched source `name`'s architecture note as the codebase's default branch
 // holds it now, "" when it holds none.
 fn codebase_note(c: Codebase, name: String) -> String {
-    if !c.present || !codebase_name_ok(name) || len(knowledge_dir_ok(c.knowledge)) == 0 { return ""; }
+    if !c.present || !codebase_name_ok(name) || len(knowledge_dir_ok(c.knowledge)) == 0 {
+        return "";
+    }
     let ref = if codebase_repo_local(c) { c.branch } else { "origin/" + c.branch };
     let r = codebase_git(c, "show\n" + ref + ":" + codebase_note_path(c, name));
     return if r.code == 0 { r.stdout } else { "" };
@@ -160,5 +173,6 @@ fn codebase_diff(c: Codebase, a: String, b: String) -> String {
     if len(whole) <= SOURCE_DIFF_MAX { return whole; }
     let mut cut = SOURCE_DIFF_MAX;
     while cut > 0 && whole[(cut - 1)..cut] != "\n" { cut = cut - 1; }
-    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its " + to_string(len(whole)) + " bytes\n";
+    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its "
+        + to_string(len(whole)) + " bytes\n";
 }

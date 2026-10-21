@@ -32,9 +32,17 @@ main locus App {
     }
     run() {
         std::time::sleep(50ms);
-        std::test::assert_eq_int(self.seen, 1, "the frame whose decode failed violated the seam's closure");
+        std::test::assert_eq_int(
+            self.seen,
+            1,
+            "the frame whose decode failed violated the seam's closure",
+        );
         std::test::assert_eq_str(self.named, "fuse", "the closure the seam names");
-        std::test::assert_eq_str(self.g.lines, "f1;", "the frame before the violation ran to the sink");
+        std::test::assert_eq_str(
+            self.g.lines,
+            "f1;",
+            "the frame before the violation ran to the sink",
+        );
     }
 }
 

@@ -14,7 +14,13 @@
 // in every birth() and in run().
 
 locus Kid {
-    params { births: Int = 0; ticks: Int = 0; fail_until: Int = 1; birth_off_pool: Int = 0; run_on_pool: Int = 0; }
+    params {
+        births: Int = 0;
+        ticks: Int = 0;
+        fail_until: Int = 1;
+        birth_off_pool: Int = 0;
+        run_on_pool: Int = 0;
+    }
     closure fuse { captures: births; epoch inline; }
     birth() {
         self.births = self.births + 1;
@@ -75,26 +81,60 @@ main locus App {
     run() {
         std::test::assert_eq_int(std::io::tcp::__on_pool(), 0, "App's run() is on the main thread");
         let mut i = 0;
-        while (self.classic.ticks == 0 || self.parked.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0) && i < 400 {
+        while (
+            self.classic.ticks == 0
+                || self.parked.ticks == 0
+                || self.twice.ticks == 0
+                || self.fresh.ticks == 0
+        )
+            && i < 400
+        {
             std::time::sleep(10ms);
             i = i + 1;
         }
-        std::test::assert_eq_int(self.classic.births, 2, "a classic pool child's failed birth ran again");
-        std::test::assert_eq_int(self.classic.birth_off_pool, 0, "every birth on the pool's worker");
+        std::test::assert_eq_int(
+            self.classic.births,
+            2,
+            "a classic pool child's failed birth ran again",
+        );
+        std::test::assert_eq_int(
+            self.classic.birth_off_pool,
+            0,
+            "every birth on the pool's worker",
+        );
         std::test::assert_eq_int(self.classic.run_on_pool, 1, "and its run() too");
-        std::test::assert_eq_int(self.parked.births, 2, "an async_io pool child's failed birth ran again");
+        std::test::assert_eq_int(
+            self.parked.births,
+            2,
+            "an async_io pool child's failed birth ran again",
+        );
         std::test::assert_eq_int(self.parked.birth_off_pool, 0, "every birth on the pool's worker");
         std::test::assert_eq_int(self.parked.run_on_pool, 1, "and its run() too");
-        std::test::assert_eq_int(self.twice.births, 3, "a re-birth that failed again was restarted again");
+        std::test::assert_eq_int(
+            self.twice.births,
+            3,
+            "a re-birth that failed again was restarted again",
+        );
         std::test::assert_eq_int(self.twice.birth_off_pool, 0, "on the pool's worker");
         std::test::assert_eq_int(self.twice.run_on_pool, 1, "and its run() too");
-        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran the birth from its built params");
+        std::test::assert_eq_int(
+            self.fresh_failures,
+            3,
+            "restart_in_place re-ran the birth from its built params",
+        );
         std::test::assert_eq_int(self.fresh.off_pool, 0, "on the pool's worker, run() too");
-        std::test::assert_eq_int(self.kid_failures, 1 + 1 + 2, "every Kid failure reached the handler");
+        std::test::assert_eq_int(
+            self.kid_failures,
+            1 + 1 + 2,
+            "every Kid failure reached the handler",
+        );
         let a = self.classic.ticks + self.parked.ticks + self.twice.ticks + self.fresh.ticks;
         std::time::sleep(100ms);
         let b = self.classic.ticks + self.parked.ticks + self.twice.ticks + self.fresh.ticks;
-        std::test::assert(b > a, "the restarted children's run() loops run on their pools, beside this one");
+        std::test::assert(
+            b > a,
+            "the restarted children's run() loops run on their pools, beside this one",
+        );
         std::process::exit(0);
     }
 }

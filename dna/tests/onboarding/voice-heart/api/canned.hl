@@ -5,21 +5,38 @@ fn no_content() -> std::http::Response {
 
 /// A route that does not exist, in the spec's error envelope.
 fn no_route(req: std::http::Request) -> std::http::Response {
-    return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path);
+    return error_response(
+        404,
+        "not_found",
+        "not_found",
+        "no such endpoint: " + req.method + " " + req.path,
+    );
 }
 
 /// `<dir>/<file>` as the body of a response, or a 500 naming the file
 /// when it is missing.
-fn canned_body(dir: String, file: String, status: Int, content_type: String, headers: String) -> std::http::Response {
+fn canned_body(
+    dir: String,
+    file: String,
+    status: Int,
+    content_type: String,
+    headers: String
+) -> std::http::Response {
     let path = dir + "/" + file;
     let body = std::io::fs::read_file(path) or "";
     if len(body) == 0 {
         return error_response(500, "server_error", "not_found", "canned body missing: " + path);
     }
-    return std::http::Response { status: status, content_type: content_type, headers: headers, body: body };
+    return std::http::Response {
+        status: status,
+        content_type: content_type,
+        headers: headers,
+        body: body,
+    };
 }
 
 fn error_response(status: Int, kind: String, code: String, message: String) -> std::http::Response {
-    let body = "{\"error\": {\"message\": \"" + std::json::escape_string(message) + "\", \"type\": \"" + kind + "\", \"code\": \"" + code + "\"}}";
+    let body = "{\"error\": {\"message\": \"" + std::json::escape_string(message)
+        + "\", \"type\": \"" + kind + "\", \"code\": \"" + code + "\"}}";
     return std::http::Response { status: status, content_type: "application/json", body: body };
 }

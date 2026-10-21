@@ -47,14 +47,27 @@ type Assignment { version: Int = 0; max_in_flight: Int = 1; seats: bounded[Assig
 
 /// A `RegisteredRead` as the surface's typed `Registered`.
 fn registered_of_read(r: RegisteredRead) -> Registered fallible(ApiError) {
-    return Registered { protocol: r.protocol, heartbeat_interval_ms: r.heartbeat_interval_ms, nats_url: r.nats_url, nats_subject: r.nats_subject, assignment: assignment_of_read(r.assignment) or raise };
+    return Registered {
+        protocol: r.protocol,
+        heartbeat_interval_ms: r.heartbeat_interval_ms,
+        nats_url: r.nats_url,
+        nats_subject: r.nats_subject,
+        assignment: assignment_of_read(r.assignment) or raise,
+    };
 }
 
 /// An `AssignmentRead` as the surface's typed `Assignment`.
 fn assignment_of_read(r: AssignmentRead) -> Assignment fallible(ApiError) {
     let mut out = Assignment { version: r.version, max_in_flight: r.max_in_flight };
     for s in r.seats {
-        let mut a = AssignedSeat { id: s.id, engine: s.engine, account: s.account, concurrency: s.concurrency, enabled: s.enabled, config: stored_value(s.config, "seat " + s.id + "'s config") or raise };
+        let mut a = AssignedSeat {
+            id: s.id,
+            engine: s.engine,
+            account: s.account,
+            concurrency: s.concurrency,
+            enabled: s.enabled,
+            config: stored_value(s.config, "seat " + s.id + "'s config") or raise,
+        };
         a.serves = s.serves;
         a.data_classes = s.data_classes;
         push(out.seats, a) or discard;
@@ -88,7 +101,12 @@ fn empty_object() -> std::json::Value {
 }
 
 /// `Registration`. `local` is the node's own controls.
-type Registration { protocol: Int = 0; version: String = ""; capabilities: NodeCapabilities = NodeCapabilities { max_in_flight: 0 }; local: LocalControls = LocalControls { paused: false }; }
+type Registration {
+    protocol: Int = 0;
+    version: String = "";
+    capabilities: NodeCapabilities = NodeCapabilities { max_in_flight: 0 };
+    local: LocalControls = LocalControls { paused: false };
+}
 
 /// `Registered`.
 type RegisteredRead {
@@ -109,7 +127,13 @@ type Registered {
 }
 
 /// `SeatState`. `reason` "" is `null`.
-type SeatState { id: String = ""; status: SeatStateStatus; has_reason: Bool = false; reason: String = ""; in_flight: Int = 0; }
+type SeatState {
+    id: String = "";
+    status: SeatStateStatus;
+    has_reason: Bool = false;
+    reason: String = "";
+    in_flight: Int = 0;
+}
 
 type SeatStateList { items: bounded[SeatState; 16]; }
 
@@ -165,13 +189,22 @@ locus NodeBearer {
     params { store: st::Store; }
 
     fn context(authorization: String) -> std::api::Context fallible(ApiError) {
-        if len(authorization) < 7 || std::str::lower(authorization[0..7]) != "bearer " { fail node_token_refused(); }
+        if len(authorization) < 7 || std::str::lower(authorization[0..7]) != "bearer " {
+            fail node_token_refused();
+        }
         let token = std::str::trim(authorization[7..len(authorization)]);
         let digest = secret_digest(token);
         let nodes = self.store.nodes() or fail store_failed(err);
         for n in nodes.rows {
             if n.token_digest == digest {
-                if n.revoked { fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::invalid_key, message: "node " + n.id + " is revoked" }; }
+                if n.revoked {
+                    fail ApiError {
+                        status: 403,
+                        kind: "permission_error",
+                        code: ErrorCode::invalid_key,
+                        message: "node " + n.id + " is revoked",
+                    };
+                }
                 let who = std::api::Principal { mode: "bearer", name: n.id, via: "http" };
                 return std::api::Context { caller: who, role: "node", via: "http" };
             }
@@ -181,7 +214,12 @@ locus NodeBearer {
 }
 
 fn node_token_refused() -> ApiError {
-    return ApiError { status: 401, kind: "authentication_error", code: ErrorCode::invalid_key, message: "a valid enrollment token is required: Authorization: Bearer vn-..." };
+    return ApiError {
+        status: 401,
+        kind: "authentication_error",
+        code: ErrorCode::invalid_key,
+        message: "a valid enrollment token is required: Authorization: Bearer vn-...",
+    };
 }
 
 locus NodePlane {
@@ -204,7 +242,9 @@ locus NodePlane {
     }
 
     /// `getAssignment`.
-    fn assignment(ctx: std::api::Context) -> Assignment fallible(ApiError) { return assignment_of_read(self.assignment_read(ctx) or raise) or raise; }
+    fn assignment(ctx: std::api::Context) -> Assignment fallible(ApiError) {
+        return assignment_of_read(self.assignment_read(ctx) or raise) or raise;
+    }
 
     fn register_read(r: Registration, ctx: std::api::Context) -> RegisteredRead fallible(ApiError) {
         if r.protocol != 2 { fail invalid("this coordinator speaks protocol 2", "protocol"); }
@@ -212,11 +252,26 @@ locus NodePlane {
         let engines = declared_engines(caps) or raise;
         let n = self.own(ctx) or raise;
         let now = now_seconds();
-        self.store.put_fleet(st::FleetRow { node: n.id, version: r.version, capabilities: caps, local: local_json(r.local), registered_at: now }) or fail store_failed(err);
+        self.store.put_fleet(
+            st::FleetRow {
+                node: n.id,
+                version: r.version,
+                capabilities: caps,
+                local: local_json(r.local),
+                registered_at: now,
+            },
+        ) or fail store_failed(err);
         self.store.put_beat(n.id, now, 0) or fail store_failed(err);
         let a = assignment_of(self.store, n) or raise;
-        let mut out = RegisteredRead { heartbeat_interval_ms: HEARTBEAT_MS, nats_url: self.link.place(), nats_subject: self.link.root() + ".node." + n.id, assignment: a };
-        if engines.max_in_flight > 0 && out.assignment.max_in_flight > engines.max_in_flight { out.assignment.max_in_flight = engines.max_in_flight; }
+        let mut out = RegisteredRead {
+            heartbeat_interval_ms: HEARTBEAT_MS,
+            nats_url: self.link.place(),
+            nats_subject: self.link.root() + ".node." + n.id,
+            assignment: a,
+        };
+        if engines.max_in_flight > 0 && out.assignment.max_in_flight > engines.max_in_flight {
+            out.assignment.max_in_flight = engines.max_in_flight;
+        }
         return out;
     }
 
@@ -233,7 +288,9 @@ locus NodePlane {
         let n = self.registered(ctx) or raise;
         self.store.put_beat(n.id, now_seconds(), h.in_flight) or fail store_failed(err);
         self.put_states(n.id, h.seats) or raise;
-        if h.assignment_version >= 0 && h.assignment_version < n.assignment_version { tell_assignment(self.store, self.link, n.id) or raise; }
+        if h.assignment_version >= 0 && h.assignment_version < n.assignment_version {
+            tell_assignment(self.store, self.link, n.id) or raise;
+        }
     }
 
     /// `reportSeatStates`: the seats as the node applied an assignment.
@@ -244,9 +301,15 @@ locus NodePlane {
             f.applied_version = s.assignment_version;
             self.store.put_fleet(f) or fail store_failed(err);
         }
-        self.store.put_beat(n.id, now_seconds(), (self.store.beat(n.id) or st::Beat { }).in_flight) or fail store_failed(err);
+        self.store.put_beat(
+            n.id,
+            now_seconds(),
+            (self.store.beat(n.id) or st::Beat { }).in_flight,
+        ) or fail store_failed(err);
         self.put_states(n.id, s.seats) or raise;
-        if s.assignment_version < n.assignment_version { tell_assignment(self.store, self.link, n.id) or raise; }
+        if s.assignment_version < n.assignment_version {
+            tell_assignment(self.store, self.link, n.id) or raise;
+        }
     }
 
     /// `reportCapabilities`: what the node offers changed.
@@ -305,7 +368,14 @@ locus NodePlane {
         for st in seats {
             let configured = self.store.seat(node, st.id) or fail store_failed(err);
             if !configured.present { continue; }
-            let row = st::SeatStateRow { ref: node + "/" + st.id, node: node, seat: st.id, status: seat_state_name(st.status), reason: st.reason, in_flight: st.in_flight };
+            let row = st::SeatStateRow {
+                ref: node + "/" + st.id,
+                node: node,
+                seat: st.id,
+                status: seat_state_name(st.status),
+                reason: st.reason,
+                in_flight: st.in_flight,
+            };
             self.store.put_seat_state(row) or fail store_failed(err);
         }
         return true;
@@ -313,7 +383,12 @@ locus NodePlane {
 }
 
 fn is_seat_status(s: String) -> Bool {
-    return s == "starting" || s == "up" || s == "down" || s == "disabled" || s == "paused" || s == "refused";
+    return s == "starting"
+        || s == "up"
+        || s == "down"
+        || s == "disabled"
+        || s == "paused"
+        || s == "refused";
 }
 
 // ---- the fleet, read ---------------------------------------------------
@@ -322,7 +397,11 @@ fn is_seat_status(s: String) -> Bool {
 /// cap: the coordinator's, at most the node's declared one.
 fn assignment_of(store: st::Store, n: st::NodeRow) -> AssignmentRead fallible(ApiError) {
     let f = store.fleet(n.id) or fail store_failed(err);
-    let declared = if f.present { (declared_engines(f.capabilities) or DeclaredEngines { }).max_in_flight } else { 0 };
+    let declared = if f.present {
+        (declared_engines(f.capabilities) or DeclaredEngines { }).max_in_flight
+    } else {
+        0
+    };
     let mut cap = if n.max_in_flight > 0 { n.max_in_flight } else { declared };
     if declared > 0 && cap > declared { cap = declared; }
     if cap < 1 { cap = 1; }
@@ -331,7 +410,14 @@ fn assignment_of(store: st::Store, n: st::NodeRow) -> AssignmentRead fallible(Ap
     let seats = store.seats() or fail store_failed(err);
     for s in seats.rows {
         if s.node == n.id {
-            let mut a = AssignedRead { id: s.id, engine: s.engine, account: s.account, concurrency: s.concurrency, enabled: s.enabled, config: s.config };
+            let mut a = AssignedRead {
+                id: s.id,
+                engine: s.engine,
+                account: s.account,
+                concurrency: s.concurrency,
+                enabled: s.enabled,
+                config: s.config,
+            };
             a.serves = s.serves.items;
             a.data_classes = s.data_classes.items;
             push(out.seats, a) or discard;
@@ -347,14 +433,20 @@ fn node_status(store: st::Store, n: st::NodeRow, now: Time) -> String fallible(A
     let f = store.fleet(n.id) or fail store_failed(err);
     if !f.present { return "pending"; }
     let b = store.beat(n.id) or fail store_failed(err);
-    if b.present && (std::time::nanos(now) - std::time::nanos(b.at)) <= 3 * HEARTBEAT_MS * 1000000 { return "up"; }
+    if b.present && (std::time::nanos(now) - std::time::nanos(b.at)) <= 3 * HEARTBEAT_MS * 1000000 {
+        return "up";
+    }
     return "down";
 }
 
 /// The engines a `Capabilities` object declares, and its cap.
 fn declared_engines(json: String) -> DeclaredEngines fallible(ApiError) {
-    if !std::json::valid_object(json) { fail invalid("`capabilities` is an object", "capabilities"); }
-    if kind_of(json, "engines") != "array" { fail invalid("`capabilities.engines` is a list", "capabilities"); }
+    if !std::json::valid_object(json) {
+        fail invalid("`capabilities` is an object", "capabilities");
+    }
+    if kind_of(json, "engines") != "array" {
+        fail invalid("`capabilities.engines` is a list", "capabilities");
+    }
     let cap = count_or(json, "max_in_flight", 0) or raise;
     if cap < 1 { fail invalid("`capabilities.max_in_flight` is at least 1", "capabilities"); }
     let mut out = DeclaredEngines { max_in_flight: cap };
@@ -362,10 +454,16 @@ fn declared_engines(json: String) -> DeclaredEngines fallible(ApiError) {
     while !it.done {
         let e = std::str::trim(it.element);
         if !std::json::valid_object(e) { fail invalid("an engine is an object", "capabilities"); }
-        let mut d = DeclaredEngine { id: required_string(e, "id") or raise, kind: required_string(e, "kind") or raise };
+        let mut d = DeclaredEngine {
+            id: required_string(e, "id") or raise,
+            kind: required_string(e, "kind") or raise,
+        };
         let schema = std::json::find_field_raw(e, "config_schema");
         if kind_of(schema, "required") == "array" {
-            d.required = names_of(std::json::find_field_raw(schema, "required"), "required") or raise;
+            d.required = names_of(
+                std::json::find_field_raw(schema, "required"),
+                "required",
+            ) or raise;
         }
         push(out.items, d) or fail invalid("a node declares at most 16 engines", "capabilities");
         it = std::json::array_next(it);
@@ -375,13 +473,22 @@ fn declared_engines(json: String) -> DeclaredEngines fallible(ApiError) {
 
 fn check_local(json: String) -> Bool fallible(ApiError) {
     if !std::json::valid_object(json) { fail invalid("`local` is an object", "local"); }
-    if kind_of(json, "paused") != "bool" { fail invalid("`local.paused` is true or false", "local"); }
-    if kind_of(json, "paused_seats") != "array" { fail invalid("`local.paused_seats` is a list", "local"); }
+    if kind_of(json, "paused") != "bool" {
+        fail invalid("`local.paused` is true or false", "local");
+    }
+    if kind_of(json, "paused_seats") != "array" {
+        fail invalid("`local.paused_seats` is a list", "local");
+    }
     names_of(std::json::find_field_raw(json, "paused_seats"), "local") or raise;
     let cap = kind_of(json, "max_in_flight");
     if cap != "missing" && cap != "null" {
-        let n = nullable_count(json, "max_in_flight") or fail invalid("`local.max_in_flight` is a whole number of at least 0, or null", "local");
-        if n < 0 { fail invalid("`local.max_in_flight` is a whole number of at least 0, or null", "local"); }
+        let n = nullable_count(json, "max_in_flight") or fail invalid(
+            "`local.max_in_flight` is a whole number of at least 0, or null",
+            "local"
+        );
+        if n < 0 {
+            fail invalid("`local.max_in_flight` is a whole number of at least 0, or null", "local");
+        }
     }
     return true;
 }
@@ -411,14 +518,18 @@ fn local_of(json: String) -> LocalControls {
 
 fn local_json(l: LocalControls) -> String {
     return "{\"paused\": " + jbool(l.paused) + ", \"paused_seats\": " + st::jnames(l.paused_seats)
-        + ", \"max_in_flight\": " + jcount_or_null(l.has_max_in_flight, l.max_in_flight) + ", \"reason\": " + jstring_or_null(l.has_reason, l.reason) + "}";
+        + ", \"max_in_flight\": " + jcount_or_null(l.has_max_in_flight, l.max_in_flight)
+        + ", \"reason\": " + jstring_or_null(l.has_reason, l.reason) + "}";
 }
 
 /// True when the node's local controls hold `seat` (or the whole node).
 fn locally_paused(local: String, seat: String) -> Bool {
     if len(local) == 0 { return false; }
     if std::json::find_bool_field(local, "paused") { return true; }
-    let held = names_of(std::json::find_field_raw(local, "paused_seats"), "paused_seats") or st::Names { };
+    let held = names_of(
+        std::json::find_field_raw(local, "paused_seats"),
+        "paused_seats",
+    ) or st::Names { };
     return has_name(held.items, seat);
 }
 
@@ -446,7 +557,12 @@ fn seat_state_list(body: String, name: String) -> SeatStateList fallible(ApiErro
         let e = std::str::trim(it.element);
         if !std::json::valid_object(e) { fail invalid("a seat state is an object", name); }
         let status = required_string(e, "status") or raise;
-        if !is_seat_status(status) { fail invalid("a seat's status is starting, up, down, disabled, paused or refused", name); }
+        if !is_seat_status(status) {
+            fail invalid(
+                "a seat's status is starting, up, down, disabled, paused or refused",
+                name
+            );
+        }
         let st = SeatState {
             id: required_string(e, "id") or raise,
             status: seat_state_of(status),
@@ -463,22 +579,33 @@ fn seat_state_list(body: String, name: String) -> SeatStateList fallible(ApiErro
 fn read_registration(body: String) -> Registration fallible(ApiError) {
     object_body(body) or raise;
     if kind_of(body, "protocol") != "number" { fail invalid("`protocol` is required", "protocol"); }
-    if kind_of(body, "capabilities") != "object" { fail invalid("`capabilities` is a required object", "capabilities"); }
+    if kind_of(body, "capabilities") != "object" {
+        fail invalid("`capabilities` is a required object", "capabilities");
+    }
     if kind_of(body, "local") != "object" { fail invalid("`local` is a required object", "local"); }
     let local = read_local(std::str::trim(std::json::find_field_raw(body, "local"))) or raise;
     return Registration {
         protocol: std::json::find_int_field(body, "protocol"),
         version: required_string(body, "version") or raise,
-        capabilities: node_capabilities(std::str::trim(std::json::find_field_raw(body, "capabilities"))) or raise,
+        capabilities: node_capabilities(
+            std::str::trim(std::json::find_field_raw(body, "capabilities")),
+        ) or raise,
         local: local
     };
 }
 
 fn read_heartbeat(body: String) -> Heartbeat fallible(ApiError) {
     object_body(body) or raise;
-    let applied = if kind_of(body, "assignment_version") == "missing" { -1 } else { required_amount(body, "assignment_version") or raise };
+    let applied = if kind_of(body, "assignment_version") == "missing" {
+            -1
+    } else {
+        required_amount(body, "assignment_version") or raise
+    };
     let seats = seat_state_list(body, "seats") or raise;
-    let mut h = Heartbeat { in_flight: required_amount(body, "in_flight") or raise, assignment_version: applied };
+    let mut h = Heartbeat {
+        in_flight: required_amount(body, "in_flight") or raise,
+        assignment_version: applied,
+    };
     h.seats = seats.items;
     return h;
 }
@@ -486,7 +613,9 @@ fn read_heartbeat(body: String) -> Heartbeat fallible(ApiError) {
 fn read_seat_states(body: String) -> SeatStates fallible(ApiError) {
     object_body(body) or raise;
     let seats = seat_state_list(body, "seats") or raise;
-    let mut s = SeatStates { assignment_version: required_amount(body, "assignment_version") or raise };
+    let mut s = SeatStates {
+        assignment_version: required_amount(body, "assignment_version") or raise,
+    };
     s.seats = seats.items;
     return s;
 }
@@ -499,7 +628,9 @@ fn read_node_capabilities(body: String) -> NodeCapabilities fallible(ApiError) {
 /// A node's `Capabilities`, its engines required (a bounded list is never
 /// required by the codec), each engine's `config_schema` kept as written.
 fn node_capabilities(json: String) -> NodeCapabilities fallible(ApiError) {
-    if kind_of(json, "engines") != "array" { fail invalid("`capabilities.engines` is a list", "capabilities"); }
+    if kind_of(json, "engines") != "array" {
+        fail invalid("`capabilities.engines` is a list", "capabilities");
+    }
     // each engine says what it is and the JSON Schema of its seats' config
     // (protocol.yaml, `Engine`): named, so a node's operator sees which
     let mut it = std::json::array_first(std::json::find_field_raw(json, "engines"));
@@ -508,13 +639,29 @@ fn node_capabilities(json: String) -> NodeCapabilities fallible(ApiError) {
         let e = std::str::trim(it.element);
         let id = std::json::find_string_field(e, "id");
         let named = if len(id) > 0 { "engine " + id } else { "engine " + to_string(i + 1) };
-        if kind_of(e, "config_schema") == "missing" { fail invalid(named + " declares no `config_schema`: every engine gives the JSON Schema of its seats' config", "capabilities"); }
-        if kind_of(e, "config_schema") != "object" { fail invalid(named + "'s `config_schema` is a JSON Schema object", "capabilities"); }
-        if len(std::json::find_field_raw(e, "config_schema")) > 65536 { fail invalid(named + "'s `config_schema` is over 64 KiB, the most a JSON value holds", "capabilities"); }
+        if kind_of(e, "config_schema") == "missing" {
+            fail invalid(
+                named
+                    + " declares no `config_schema`: every engine gives the JSON Schema of its seats' config",
+                "capabilities"
+            );
+        }
+        if kind_of(e, "config_schema") != "object" {
+            fail invalid(named + "'s `config_schema` is a JSON Schema object", "capabilities");
+        }
+        if len(std::json::find_field_raw(e, "config_schema")) > 65536 {
+            fail invalid(
+                named + "'s `config_schema` is over 64 KiB, the most a JSON value holds",
+                "capabilities"
+            );
+        }
         it = std::json::array_next(it);
         i = i + 1;
     }
-    return NodeCapabilities::api_decode(json) or fail invalid("the node's capabilities: `" + err.field + "` is " + capabilities_problem_of(err.kind), "capabilities");
+    return NodeCapabilities::api_decode(json) or fail invalid(
+        "the node's capabilities: `" + err.field + "` is " + capabilities_problem_of(err.kind),
+        "capabilities"
+    );
 }
 
 /// A codec refusal in plain words.
@@ -527,7 +674,9 @@ fn capabilities_problem_of(kind: String) -> String {
 
 fn read_quota(body: String) -> QuotaReport fallible(ApiError) {
     object_body(body) or raise;
-    if kind_of(body, "windows") != "array" { fail invalid("`windows` is a required list", "windows"); }
+    if kind_of(body, "windows") != "array" {
+        fail invalid("`windows` is a required list", "windows");
+    }
     let mut out = QuotaReport { seat: required_string(body, "seat") or raise };
     let mut it = std::json::array_first(std::json::find_field_raw(body, "windows"));
     while !it.done {
@@ -545,10 +694,18 @@ fn read_window(w: String) -> QuotaWindow fallible(ApiError) {
     let seat = kind_of(w, "seat") == "string";
     return QuotaWindow {
         name: std::json::find_string_field(w, "name"),
-        used_percent: std::str::parse_float(std::str::trim(std::json::find_field_raw(w, "used_percent"))) or 0.0,
+        used_percent: std::str::parse_float(
+            std::str::trim(std::json::find_field_raw(w, "used_percent")),
+        ) or 0.0,
         has_resets_at: resets,
-        resets_at: if resets { rfc3339(std::json::find_string_field(w, "resets_at")) or `1970-01-01T00:00:00Z` } else { `1970-01-01T00:00:00Z` },
-        observed_at: rfc3339(std::json::find_string_field(w, "observed_at")) or `1970-01-01T00:00:00Z`,
+        resets_at: if resets {
+            rfc3339(std::json::find_string_field(w, "resets_at")) or `1970-01-01T00:00:00Z`
+        } else {
+            `1970-01-01T00:00:00Z`
+        },
+        observed_at: rfc3339(
+            std::json::find_string_field(w, "observed_at"),
+        ) or `1970-01-01T00:00:00Z`,
         has_seat: seat,
         seat: if seat { std::json::find_string_field(w, "seat") } else { "" }
     };
@@ -559,7 +716,11 @@ fn windows_of(json: String) -> QuotaWindows {
     let mut out = QuotaWindows { };
     let mut it = std::json::array_first(json);
     while !it.done {
-        let w = read_window(std::str::trim(it.element)) or QuotaWindow { name: "", used_percent: 0.0, observed_at: `1970-01-01T00:00:00Z` };
+        let w = read_window(std::str::trim(it.element)) or QuotaWindow {
+            name: "",
+            used_percent: 0.0,
+            observed_at: `1970-01-01T00:00:00Z`,
+        };
         if len(w.name) > 0 { push(out.items, w) or discard; }
         it = std::json::array_next(it);
     }
@@ -569,8 +730,11 @@ fn windows_of(json: String) -> QuotaWindows {
 fn windows_json(ws: bounded[QuotaWindow; 16]) -> String {
     let out = st::JsonList { };
     for w in ws {
-        out.add("{\"name\": " + jq(w.name) + ", \"used_percent\": " + to_string(w.used_percent) + ", \"resets_at\": " + jtime_or_null(w.has_resets_at, w.resets_at)
-                + ", \"observed_at\": " + jtime(w.observed_at) + (if w.has_seat { ", \"seat\": " + jq(w.seat) } else { "" }) + "}");
+        out.add(
+            "{\"name\": " + jq(w.name) + ", \"used_percent\": " + to_string(w.used_percent)
+                + ", \"resets_at\": " + jtime_or_null(w.has_resets_at, w.resets_at)
+                + ", \"observed_at\": " + jtime(w.observed_at)
+                + (if w.has_seat { ", \"seat\": " + jq(w.seat) } else { "" }) + "}");
     }
     return "[" + out.text() + "]";
 }
@@ -580,18 +744,37 @@ fn windows_json(ws: bounded[QuotaWindow; 16]) -> String {
 /// time or null and `seat` text when they are set.
 fn check_window(w: String) -> Bool fallible(ApiError) {
     if !std::json::valid_object(w) { fail invalid("a quota window is an object", "windows"); }
-    if kind_of(w, "name") != "string" || len(std::json::find_string_field(w, "name")) == 0 { fail invalid("a quota window has a `name`", "windows"); }
-    let used = std::str::parse_float(std::str::trim(std::json::find_field_raw(w, "used_percent"))) or - 1.0;
-    if kind_of(w, "used_percent") != "number" || used < 0.0 || used > 100.0 { fail invalid("a quota window's `used_percent` is a number from 0 to 100", "windows"); }
-    if kind_of(w, "observed_at") != "string" { fail invalid("a quota window has an `observed_at` time", "windows"); }
-    rfc3339(std::json::find_string_field(w, "observed_at")) or fail invalid("a quota window's `observed_at` is an RFC 3339 time", "windows");
+    if kind_of(w, "name") != "string" || len(std::json::find_string_field(w, "name")) == 0 {
+        fail invalid("a quota window has a `name`", "windows");
+    }
+    let used = std::str::parse_float(
+        std::str::trim(std::json::find_field_raw(w, "used_percent")),
+    ) or
+        - 1.0;
+    if kind_of(w, "used_percent") != "number" || used < 0.0 || used > 100.0 {
+        fail invalid("a quota window's `used_percent` is a number from 0 to 100", "windows");
+    }
+    if kind_of(w, "observed_at") != "string" {
+        fail invalid("a quota window has an `observed_at` time", "windows");
+    }
+    rfc3339(std::json::find_string_field(w, "observed_at")) or fail invalid(
+        "a quota window's `observed_at` is an RFC 3339 time",
+        "windows"
+    );
     let resets = kind_of(w, "resets_at");
     if resets != "missing" && resets != "null" {
-        if resets != "string" { fail invalid("a quota window's `resets_at` is a time or null", "windows"); }
-        rfc3339(std::json::find_string_field(w, "resets_at")) or fail invalid("a quota window's `resets_at` is an RFC 3339 time", "windows");
+        if resets != "string" {
+            fail invalid("a quota window's `resets_at` is a time or null", "windows");
+        }
+        rfc3339(std::json::find_string_field(w, "resets_at")) or fail invalid(
+            "a quota window's `resets_at` is an RFC 3339 time",
+            "windows"
+        );
     }
     let seat = kind_of(w, "seat");
-    if seat != "missing" && seat != "string" { fail invalid("a quota window's `seat` is a seat id", "windows"); }
+    if seat != "missing" && seat != "string" {
+        fail invalid("a quota window's `seat` is a seat id", "windows");
+    }
     return true;
 }
 
@@ -602,8 +785,10 @@ fn read_draining(body: String) -> Draining fallible(ApiError) {
 }
 
 fn assigned_seat_json(s: AssignedRead) -> String {
-    return "{\"id\": " + jq(s.id) + ", \"engine\": " + jq(s.engine) + ", \"account\": " + jq(s.account) + ", \"serves\": " + st::serves_json(s.serves)
-        + ", \"data_classes\": " + st::jnames(s.data_classes) + ", \"concurrency\": " + to_string(s.concurrency) + ", \"enabled\": " + jbool(s.enabled)
+    return "{\"id\": " + jq(s.id) + ", \"engine\": " + jq(s.engine) + ", \"account\": "
+        + jq(s.account) + ", \"serves\": " + st::serves_json(s.serves)
+        + ", \"data_classes\": " + st::jnames(s.data_classes) + ", \"concurrency\": "
+        + to_string(s.concurrency) + ", \"enabled\": " + jbool(s.enabled)
         + ", \"config\": " + s.config + "}";
 }
 
@@ -613,7 +798,8 @@ fn assignment_json(a: AssignmentRead) -> String {
         seats_list.add(assigned_seat_json(s));
     }
     let seats = seats_list.text();
-    return "{\"version\": " + to_string(a.version) + ", \"max_in_flight\": " + to_string(a.max_in_flight) + ", \"seats\": [" + seats + "]}";
+    return "{\"version\": " + to_string(a.version) + ", \"max_in_flight\": "
+        + to_string(a.max_in_flight) + ", \"seats\": [" + seats + "]}";
 }
 
 fn registered_json(r: RegisteredRead) -> String {
@@ -622,7 +808,9 @@ fn registered_json(r: RegisteredRead) -> String {
 
 /// A registration's answer up to the end of its `nats` object's subject.
 fn registered_head(r: RegisteredRead) -> String {
-    return "{\"protocol\": " + to_string(r.protocol) + ", \"heartbeat_interval_ms\": " + to_string(r.heartbeat_interval_ms) + ", \"nats\": {\"url\": " + jq(r.nats_url) + ", \"subject\": " + jq(r.nats_subject);
+    return "{\"protocol\": " + to_string(r.protocol) + ", \"heartbeat_interval_ms\": "
+        + to_string(r.heartbeat_interval_ms) + ", \"nats\": {\"url\": " + jq(r.nats_url)
+        + ", \"subject\": " + jq(r.nats_subject);
 }
 
 /// What the coordinator publishes on `voice.node.<id>.assign`.

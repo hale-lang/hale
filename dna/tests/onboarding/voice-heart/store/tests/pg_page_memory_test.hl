@@ -18,13 +18,21 @@ fn main() {
     if !std::env::var_exists("VOICE_TEST_DATABASE_URL") { return; }
     let pg = st::PgStore { url: std::env::var("VOICE_TEST_DATABASE_URL") };
     std::test::assert(pg.ready(), "the test database answers");
-    pg.conn.exec("TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE");
+    pg.conn.exec(
+        "TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE",
+    );
     let name = std::str::repeat("a project whose name is long ", 10);
-    pg.conn.exec("INSERT INTO change (at, action, target, before, after) SELECT now(), 'update', 'projects/work', jsonb_build_object('name', '" + name + "'), jsonb_build_object('name', '" + name + "') FROM generate_series(1, 1000)");
+    pg.conn.exec(
+        "INSERT INTO change (at, action, target, before, after) SELECT now(), 'update', 'projects/work', jsonb_build_object('name', '"
+            + name + "'), jsonb_build_object('name', '" + name + "') FROM generate_series(1, 1000)",
+    );
     let before = peak_kb();
     std::test::assert(before > 0, "the peak is readable from /proc/self/status");
     let page = pg.changes(st::ChangeQuery { limit: 1000 }) or st::ChangeRows { };
     let after = peak_kb();
     std::test::assert_eq_int(count(page.rows), 1000, "a full page");
-    std::test::assert(after - before < 32768, "the page grew the peak by " + to_string(after - before) + " kB; under 32 MB is linear");
+    std::test::assert(
+        after - before < 32768,
+        "the page grew the peak by " + to_string(after - before) + " kB; under 32 MB is linear",
+    );
 }

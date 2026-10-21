@@ -45,7 +45,9 @@ type Connection {
 // (never brought up from here); "" when there are none.
 fn own_nerves(root: String) -> String {
     if dna::dsn_set(dna::NATS_SPINE_URL_ENV) { return std::env::var(dna::NATS_SPINE_URL_ENV); }
-    if dna::dsn_set(dna::NATS_OWNER_URL_ENV) { return dna::nerves_server_url(std::env::var(dna::NATS_OWNER_URL_ENV)); }
+    if dna::dsn_set(dna::NATS_OWNER_URL_ENV) {
+        return dna::nerves_server_url(std::env::var(dna::NATS_OWNER_URL_ENV));
+    }
     let infra = ReferenceInfrastructure { root: root };
     return infra.nerves_if_up();
 }
@@ -54,7 +56,13 @@ fn own_nerves(root: String) -> String {
 // `vault` when it holds one and nothing when it does not (an open server).
 fn exchange_client(url: String, user: String, vault: String, name: String) -> nats::NatsClient {
     if std::secret::Credential { vault: vault }.ready() {
-        return nats::NatsClient { url: url, user: user, credential: std::secret::Credential { vault: vault }, name: name, timeout: 3s };
+        return nats::NatsClient {
+            url: url,
+            user: user,
+            credential: std::secret::Credential { vault: vault },
+            name: name,
+            timeout: 3s,
+        };
     }
     return nats::NatsClient { url: url, name: name, timeout: 3s };
 }
@@ -93,14 +101,37 @@ locus NatsExchange {
     fn kind() -> String { return "nerves"; }
     fn card(url: String, record: String) -> dna::Card {
         let org = dna::schema_for(record);
-        let c = exchange_client(url, "exchange", dna::nerves_vault_name(org, "exchange"), "dna-exchange-card");
-        if !c.open() { return dna::Card { why: "the nerves at " + url + " could not be reached: " + c.last_error, unreachable: true }; }
-        let reply = c.request("$JS.API.DIRECT.GET." + dna::exchange_stream(org) + "." + dna::exchange_card_subject(org), b"", 3s) or nats::NatsMsg { };
+        let c = exchange_client(
+            url,
+            "exchange",
+            dna::nerves_vault_name(org, "exchange"),
+            "dna-exchange-card",
+        );
+        if !c.open() {
+            return dna::Card {
+                why: "the nerves at " + url + " could not be reached: " + c.last_error,
+                unreachable: true,
+            };
+        }
+        let reply = c.request(
+            "$JS.API.DIRECT.GET." + dna::exchange_stream(org) + "."
+                + dna::exchange_card_subject(org),
+            b"",
+            3s,
+        ) or nats::NatsMsg { };
         let why = c.last_error;
         c.close();
         let status = nats::header_status(reply.headers);
         if len(reply.data) == 0 || std::str::starts_with(status, "404") {
-            if len(status) > 0 || std::str::contains(why, "no_responders") || std::str::contains(why, "timeout") { return dna::Card { why: "record " + record + " publishes no card at " + url + " (`hale dna nerves migrate` there publishes it)" }; }
+            if len(status) > 0
+                || std::str::contains(why, "no_responders")
+                || std::str::contains(why, "timeout")
+            {
+                return dna::Card {
+                    why: "record " + record + " publishes no card at " + url
+                        + " (`hale dna nerves migrate` there publishes it)",
+                };
+            }
             return dna::Card { why: "the card could not be read: " + why, unreachable: true };
         }
         return dna::card_of(std::str::from_bytes(reply.data), record);
@@ -109,20 +140,45 @@ locus NatsExchange {
         let org = dna::schema_for(peer);
         let dot = std::str::index_of(id, ".");
         let kind = if dot < 0 { "received" } else { id[(dot + 1)..len(id)] };
-        let c = exchange_client(url, "exchange", dna::nerves_vault_name(org, "exchange"), "dna-exchange");
-        if !c.open() { return dna::Delivered { why: "the nerves at " + url + " could not be reached: " + c.last_error, unreachable: true }; }
+        let c = exchange_client(
+            url,
+            "exchange",
+            dna::nerves_vault_name(org, "exchange"),
+            "dna-exchange",
+        );
+        if !c.open() {
+            return dna::Delivered {
+                why: "the nerves at " + url + " could not be reached: " + c.last_error,
+                unreachable: true,
+            };
+        }
         // the transport's id is the envelope's own, signature and all: a
         // retry of the same signed envelope is stored once, and no other
         // publisher (the inbox key is shared) can take its place by
         // publishing first under an id it can predict (GH #1590)
         let msg_id = id + "." + dna::digest_of(std::json::find_string_field(line, "sig"))[7..39];
-        let ack = nats::js_publish_id(c, dna::exchange_inbox_subject(org, dna::schema_for(self.mine), kind), msg_id, std::bytes::from_string(line)) or nats::PubAck { };
+        let ack = nats::js_publish_id(
+            c,
+            dna::exchange_inbox_subject(org, dna::schema_for(self.mine), kind),
+            msg_id,
+            std::bytes::from_string(line),
+        ) or nats::PubAck { };
         let why = c.last_error;
         c.close();
-        if ack.seq > 0 { return dna::Delivered { ok: true, ref: ack.stream + "#" + to_string(ack.seq) }; }
+        if ack.seq > 0 {
+            return dna::Delivered { ok: true, ref: ack.stream + "#" + to_string(ack.seq) };
+        }
         // a bounded inbox refuses what overflows it (discard new)
-        if std::str::contains(why, "maximum") { return dna::Delivered { why: "record " + short(peer) + "'s inbox is full (" + why + ")", full: true }; }
-        return dna::Delivered { why: "the envelope could not be delivered: " + why, unreachable: true };
+        if std::str::contains(why, "maximum") {
+            return dna::Delivered {
+                why: "record " + short(peer) + "'s inbox is full (" + why + ")",
+                full: true,
+            };
+        }
+        return dna::Delivered {
+            why: "the envelope could not be delivered: " + why,
+            unreachable: true,
+        };
     }
     // This record's inbox drained into its memory: each envelope addressed to
     // this record, from the sender its subject names, under a signature
@@ -130,9 +186,17 @@ locus NatsExchange {
     // acknowledged so it is not offered again. A batch at most per call.
     fn collect() {
         let url = own_nerves(self.root);
-        if len(url) == 0 { self.note = "no nerves named for this record (HALE_DNA_NATS_URL_SPINE): its inbox was not read from them"; return; }
+        if len(url) == 0 {
+            self.note = "no nerves named for this record (HALE_DNA_NATS_URL_SPINE): its inbox was not read from them";
+            return;
+        }
         let org = dna::schema_for(self.mine);
-        let c = exchange_client(url, "spine", dna::nerves_vault_name(org, "spine"), "dna-exchange-drain");
+        let c = exchange_client(
+            url,
+            "spine",
+            dna::nerves_vault_name(org, "spine"),
+            "dna-exchange-drain",
+        );
         if !c.open() { self.note = "the nerves could not be reached: " + c.last_error; return; }
         let stream = dna::exchange_stream(org);
         let prefix = "exchange." + org + ".in.";
@@ -146,23 +210,45 @@ locus NatsExchange {
             let line = std::str::from_bytes(m.data);
             let text = std::json::find_string_field(line, "envelope");
             let e = dna::envelope_of(text);
-            let rest = if std::str::starts_with(m.subject, prefix) { m.subject[len(prefix)..len(m.subject)] } else { "" };
+            let rest = if std::str::starts_with(m.subject, prefix) {
+                m.subject[len(prefix)..len(m.subject)]
+            } else {
+                ""
+            };
             let dot = std::str::index_of(rest, ".");
             let sender_org = if dot < 0 { "" } else { rest[0..dot] };
-            let ours = e.recipient == self.mine && len(e.sender) > 0 && dna::schema_for(e.sender) == sender_org && dna::signed_line_holds(line) && len(e.id) > 0;
+            let ours = e.recipient == self.mine
+                && len(e.sender) > 0
+                && dna::schema_for(e.sender) == sender_org
+                && dna::signed_line_holds(line)
+                && len(e.id) > 0;
             // a sender this record is connected to signs with the key its
             // connection pinned: an envelope claiming it under another key is
             // acknowledged and dropped, never kept, so it cannot stand in for
             // the sender's own envelope of the same id
             let pinned = pin_of(self.pins, e.sender);
-            let forged = ours && len(pinned) > 0 && std::json::find_string_field(line, "key") != pinned;
+            let forged = ours
+                && len(pinned) > 0
+                && std::json::find_string_field(line, "key") != pinned;
             if forged {
                 self.forged = self.forged + 1;
-                eprintln("hale dna: an envelope claiming record " + short(e.sender) + " (" + e.id + ") is not signed with the key its connection pinned; it was dropped");
+                eprintln(
+                    "hale dna: an envelope claiming record " + short(e.sender) + " (" + e.id
+                        + ") is not signed with the key its connection pinned; it was dropped",
+                );
             }
             if ours && !forged {
                 let seq = std::str::parse_int(nats_header(m.headers, "Nats-Sequence")) or 0;
-                if !self.memory.keep(dna::ExchangeRow { id: e.id, sender: e.sender, kind: e.kind, entity: e.entity, line: line }, if seq > 0 { seq } else { n }) {
+                if !self.memory.keep(
+                    dna::ExchangeRow {
+                        id: e.id,
+                        sender: e.sender,
+                        kind: e.kind,
+                        entity: e.entity,
+                        line: line,
+                    },
+                    if seq > 0 { seq } else { n },
+                ) {
                     // not acknowledged: it is offered again at the next read
                     unkept = true;
                     more = false;
@@ -175,7 +261,9 @@ locus NatsExchange {
             nats::js_ack(c, m) or discard;
         }
         c.close();
-        if unkept { self.note = "the inbox could not be kept in memory: " + self.memory.last_error(); }
+        if unkept {
+            self.note = "the inbox could not be kept in memory: " + self.memory.last_error();
+        }
     }
     fn received() -> String {
         self.collect();
@@ -209,9 +297,20 @@ fn connection_of(p: Projection, name: String) -> Connection {
                 by: std::json::find_string_field(b, "by"),
                 review_id: std::json::find_string_field(b, "review_id")
             };
-        } else if c.present && e.kind == "review.verdict" && p.review_id_of(e) == c.review_id && len(c.approved_by) == 0 && len(c.closed) == 0 && (!signed || row_verified(p.root, e.digest)) {
+        } else if c.present
+            && e.kind == "review.verdict"
+            && p.review_id_of(e) == c.review_id
+            && len(c.approved_by) == 0
+            && len(c.closed) == 0
+            && (!signed || row_verified(p.root, e.digest))
+        {
             let reviewer = std::json::find_string_field(e.body, "reviewer");
-            if std::json::find_string_field(e.body, "verdict") == "approve" && std::json::find_string_field(e.body, "authority") == "board" && reviewer != c.by { c.approved_by = reviewer; }
+            if std::json::find_string_field(e.body, "verdict") == "approve"
+                && std::json::find_string_field(e.body, "authority") == "board"
+                && reviewer != c.by
+            {
+                c.approved_by = reviewer;
+            }
         } else if c.present && e.kind == "review.settled" && p.review_id_of(e) == c.review_id {
             c.settled = true;
         } else if c.present && e.kind == "connection.closed" && e.entity == ent {
@@ -226,19 +325,32 @@ fn connection_of(p: Projection, name: String) -> Connection {
 // no key: it is proposed again (GH #1590).
 fn connection_stale(c: Connection) -> Bool { return c.present && c.exchange != "nerves"; }
 
-fn connection_live(c: Connection) -> Bool { return c.present && len(c.approved_by) > 0 && len(c.closed) == 0 && !connection_stale(c); }
+fn connection_live(c: Connection) -> Bool {
+    return c.present && len(c.approved_by) > 0 && len(c.closed) == 0 && !connection_stale(c);
+}
 
 fn connection_state(c: Connection) -> String {
     if len(c.closed) > 0 { return "closed: " + c.closed; }
-    if connection_stale(c) { return "proposed before the nerves exchange, with no key pinned: propose it again (`hale dna disconnect " + c.name + "`, then `hale dna connect`)"; }
+    if connection_stale(c) {
+        return "proposed before the nerves exchange, with no key pinned: propose it again (`hale dna disconnect "
+            + c.name + "`, then `hale dna connect`)";
+    }
     if len(c.approved_by) > 0 { return "in force (approved by " + c.approved_by + ")"; }
-    return "proposed: Review " + c.review_id + " needs an approval by a board member other than " + c.by;
+    return "proposed: Review " + c.review_id + " needs an approval by a board member other than "
+        + c.by;
 }
 
 // An approved connection's Review is settled once, in its approver's name.
 fn settle_connection(root: String, c: Connection, memory: dna::Memory) {
     if len(c.approved_by) == 0 || c.settled { return; }
-    let ok = append_as(root, "review.settled", "review:" + c.review_id, "approve by " + c.approved_by + " (board): connection `" + c.name + "` in force", c.approved_by, memory);
+    let ok = append_as(
+        root,
+        "review.settled",
+        "review:" + c.review_id,
+        "approve by " + c.approved_by + " (board): connection `" + c.name + "` in force",
+        c.approved_by,
+        memory,
+    );
 }
 
 // The connection names the record holds, newline-separated, first-proposed first.
@@ -280,7 +392,9 @@ fn connection_pins(p: Projection) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(name) == 0 { continue; }
         let c = connection_of(p, name);
-        if connection_live(c) && len(c.peer) > 0 && len(c.peer_key) > 0 { out = out + c.peer + " " + c.peer_key + "\n"; }
+        if connection_live(c) && len(c.peer) > 0 && len(c.peer_key) > 0 {
+            out = out + c.peer + " " + c.peer_key + "\n";
+        }
     }
     return out;
 }
@@ -296,12 +410,35 @@ fn pin_of(pins: String, record: String) -> String {
 
 // ---- hale dna connect | disconnect ------------------------------------
 
-fn connect_verb(root: String, seed: String, url: String, record: String, name: String, position: String, purpose: String, classes: String, by_flag: String, memory: dna::Memory) -> Answer {
+fn connect_verb(
+    root: String,
+    seed: String,
+    url: String,
+    record: String,
+    name: String,
+    position: String,
+    purpose: String,
+    classes: String,
+    by_flag: String,
+    memory: dna::Memory
+) -> Answer {
     if len(url) == 0 { return connections_list(root, seed, memory); }
-    if len(record) == 0 || len(name) == 0 || len(position) == 0 || len(purpose) == 0 || len(classes) == 0 {
-        return fail("connect: `hale dna connect <nerves-url> --record <identity> --name <name> --as <position> --purpose <purpose> --classes <internal,customer,…> [--by <who>]`");
+    if len(record) == 0
+        || len(name) == 0
+        || len(position) == 0
+        || len(purpose) == 0
+        || len(classes) == 0
+    {
+        return fail(
+            "connect: `hale dna connect <nerves-url> --record <identity> --name <name> --as <position> --purpose <purpose> --classes <internal,customer,…> [--by <who>]`",
+        );
     }
-    if !std::str::starts_with(url, "nats://") && !std::str::starts_with(url, "tls://") { return fail("connect: " + url + " is not the other record's nerves (`nats://host:port`): a connection reads its card there and delivers into its inbox"); }
+    if !std::str::starts_with(url, "nats://") && !std::str::starts_with(url, "tls://") {
+        return fail(
+            "connect: " + url
+                + " is not the other record's nerves (`nats://host:port`): a connection reads its card there and delivers into its inbox",
+        );
+    }
     let bad_name = dna::connection_name_refusal(name);
     if len(bad_name) > 0 { return fail("connect: " + bad_name); }
     let bad_classes = dna::classes_refusal(classes);
@@ -310,9 +447,18 @@ fn connect_verb(root: String, seed: String, url: String, record: String, name: S
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
     let prior = connection_of(p, name);
-    if prior.present && len(prior.closed) == 0 && !connection_stale(prior) { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
+    if prior.present && len(prior.closed) == 0 && !connection_stale(prior) {
+        return fail(
+            "connect: a connection `" + name + "` exists (" + connection_state(prior) + ")",
+        );
+    }
     let mine = record_identity(root);
-    if record == mine { return fail("connect: record " + short(record) + " is this record itself; a replica is inside the horizon — a connection crosses to a separate record"); }
+    if record == mine {
+        return fail(
+            "connect: record " + short(record)
+                + " is this record itself; a replica is inside the horizon — a connection crosses to a separate record",
+        );
+    }
     let x = NatsExchange { root: root, mine: mine };
     let card = x.card(url, record);
     if !card.ok { return fail("connect: " + card.why + "; nothing was changed"); }
@@ -333,8 +479,11 @@ fn connect_verb(root: String, seed: String, url: String, record: String, name: S
     b.string_field("review_id", review_id);
     b.string_field("exchange", "nerves");
     b.end_object();
-    if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by, memory) { return fail("the record refused the append"); }
-    let question = "connect this record to record " + short(card.identity) + " at " + url + " (key " + short(card.key) + ") as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
+    if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by, memory) {
+        return fail("the record refused the append");
+    }
+    let question = "connect this record to record " + short(card.identity) + " at " + url + " (key "
+        + short(card.key) + ") as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
     let q = std::json::Builder { };
     q.begin_object();
     q.string_field("question", question);
@@ -344,9 +493,16 @@ fn connect_verb(root: String, seed: String, url: String, record: String, name: S
     q.string_field("kind", "connection");
     q.string_field("target", position);
     q.end_object();
-    if !append_as(root, "review.requested", "review:" + review_id, q.result(), by, memory) { return fail("the record refused the append"); }
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), by, memory) {
+        return fail("the record refused the append");
+    }
     let s2 = sync_record(root, memory);
-    return answer("connection " + name + " proposed: record " + short(card.identity) + " at " + url + " (its card's key " + short(card.key) + "), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
+    return answer(
+        "connection " + name + " proposed: record " + short(card.identity) + " at " + url
+            + " (its card's key " + short(card.key) + "), as `" + position + "`, for `" + purpose
+            + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id
+            + " approve --authority board`, by someone other than " + by + "\n",
+    );
 }
 
 fn connections_list(root: String, seed: String, memory: dna::Memory) -> Answer {
@@ -363,50 +519,94 @@ fn connections_list(root: String, seed: String, memory: dna::Memory) -> Answer {
         if len(name) == 0 { continue; }
         let c = connection_of(p, name);
         settle_connection(root, c, memory);
-        out = out + "  " + name + " → record " + short(c.peer) + " (" + c.url + ") as `" + c.position + "` for `" + c.purpose + "`, carrying " + c.classes + " — " + connection_state(c) + "\n";
+        out = out + "  " + name + " → record " + short(c.peer) + " (" + c.url + ") as `"
+            + c.position + "` for `" + c.purpose + "`, carrying " + c.classes + " — "
+            + connection_state(c) + "\n";
         n = n + 1;
     }
     return answer("connections: " + (if n == 0 { "none" } else { to_string(n) }) + "\n" + out);
 }
 
-fn disconnect_verb(root: String, seed: String, name: String, why: String, by_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(why) == 0 { return fail("disconnect: `hale dna disconnect <name> --why <why> [--by <who>]`"); }
+fn disconnect_verb(
+    root: String,
+    seed: String,
+    name: String,
+    why: String,
+    by_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(name) == 0 || len(why) == 0 {
+        return fail("disconnect: `hale dna disconnect <name> --why <why> [--by <who>]`");
+    }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
     let c = connection_of(p, name);
     if !c.present { return fail("disconnect: no connection `" + name + "`"); }
-    if len(c.closed) > 0 { return fail("disconnect: `" + name + "` is already closed: " + c.closed); }
+    if len(c.closed) > 0 {
+        return fail("disconnect: `" + name + "` is already closed: " + c.closed);
+    }
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("by", by);
     b.string_field("why", why);
     b.end_object();
-    if !append_as(root, "connection.closed", "connection:" + name, b.result(), by, memory) { return fail("the record refused the append"); }
+    if !append_as(root, "connection.closed", "connection:" + name, b.result(), by, memory) {
+        return fail("the record refused the append");
+    }
     let s2 = sync_record(root, memory);
-    return answer("connection " + name + " closed by " + by + ": " + why + "; its history stays in both records, and nothing further crosses it\n");
+    return answer(
+        "connection " + name + " closed by " + by + ": " + why
+            + "; its history stays in both records, and nothing further crosses it\n",
+    );
 }
 
 // ---- hale dna handoff -------------------------------------------------
 
 // This record's key, which signs every envelope it sends.
 fn exchange_key(root: String) -> dna::ExchangeKey {
-    return dna::ExchangeKey { vault: dna::exchange_key_vault(dna::schema_for(record_identity(root))) };
+    return dna::ExchangeKey {
+        vault: dna::exchange_key_vault(dna::schema_for(record_identity(root))),
+    };
 }
 
-fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, subject_in: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn handoff_publish_verb(
+    root: String,
+    seed: String,
+    name: String,
+    kind: String,
+    subject_in: String,
+    note: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     if (kind != "task" && kind != "receipt") || len(subject_in) == 0 {
-        return fail("handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list");
+        return fail(
+            "handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list",
+        );
     }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
     let c = connection_of(p, name);
-    if !c.present { return fail("handoff: no connection `" + name + "`; `hale dna connect <nerves-url> --record <identity> --name " + name + " …` proposes one"); }
+    if !c.present {
+        return fail(
+            "handoff: no connection `" + name
+                + "`; `hale dna connect <nerves-url> --record <identity> --name " + name
+                + " …` proposes one",
+        );
+    }
     settle_connection(root, c, memory);
-    if len(c.closed) > 0 { return fail("handoff: connection `" + name + "` is closed (" + c.closed + "): nothing further crosses it"); }
-    if len(c.approved_by) == 0 || connection_stale(c) { return fail("handoff: connection `" + name + "` is " + connection_state(c)); }
+    if len(c.closed) > 0 {
+        return fail(
+            "handoff: connection `" + name + "` is closed (" + c.closed
+                + "): nothing further crosses it",
+        );
+    }
+    if len(c.approved_by) == 0 || connection_stale(c) {
+        return fail("handoff: connection `" + name + "` is " + connection_state(c));
+    }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let mine = record_identity(root);
     let mut subject = subject_in;
@@ -415,18 +615,33 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     if kind == "task" {
         let t = p.task_of(subject);
         if len(t.id) == 0 { return fail("handoff: no Task `" + subject + "` in the record"); }
-        if t.state != "handed" { return fail("handoff: Task `" + subject + "` is " + t.state + "; only a person's job, handed and not yet transferred, crosses to another record"); }
+        if t.state != "handed" {
+            return fail(
+                "handoff: Task `" + subject + "` is " + t.state
+                    + "; only a person's job, handed and not yet transferred, crosses to another record",
+            );
+        }
         fact = t.outcome;
     } else {
         subject = dna::evidence_digest(subject_in);
-        if !dna::digest_well_formed(subject) { return fail("handoff: `" + subject_in + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+        if !dna::digest_well_formed(subject) {
+            return fail(
+                "handoff: `" + subject_in + "` is not a receipt digest (sha256:<64 hex digits>)",
+            );
+        }
         let mut known = receipt_read(root, subject[7..len(subject)]).present;
         let mut redacted = false;
         let mut i = 0;
         while i < p.rows() {
             let e = p.row(i);
             if e.entity == subject {
-                if e.kind == "receipt.filed" || e.kind == "receipt.classified" || e.kind == "receipt.withheld" { known = true; class = std::json::find_string_field(e.body, "class"); }
+                if e.kind == "receipt.filed"
+                    || e.kind == "receipt.classified"
+                    || e.kind == "receipt.withheld"
+                {
+                    known = true;
+                    class = std::json::find_string_field(e.body, "class");
+                }
                 if e.kind == "receipt.redacted" { redacted = true; }
             }
             i = i + 1;
@@ -442,14 +657,20 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     while i < p.rows() {
         let e = p.row(i);
         if e.entity == subject {
-            lineage = lineage + (if len(lineage) > 0 { " " } else { "" }) + e.kind + "#" + to_string(e.seq);
-            source = if len(e.digest) > 0 { e.digest } else { dna::digest_of(e.kind + "\n" + e.entity + "\n" + e.body) };
+            lineage = lineage + (if len(lineage) > 0 { " " } else { "" }) + e.kind + "#"
+                + to_string(e.seq);
+            source = if len(e.digest) > 0 {
+                e.digest
+            } else {
+                dna::digest_of(e.kind + "\n" + e.entity + "\n" + e.body)
+            };
         }
         i = i + 1;
     }
     let hid = dna::handoff_id(mine, c.peer, kind, subject);
     if !dna::classes_allow(c.classes, class) {
-        let why = "`" + class + "` does not cross connection `" + name + "` (it carries " + c.classes + ")";
+        let why = "`" + class + "` does not cross connection `" + name + "` (it carries "
+            + c.classes + ")";
         let rb = std::json::Builder { };
         rb.begin_object();
         rb.string_field("connection", name);
@@ -459,12 +680,24 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         rb.string_field("by", who);
         rb.string_field("why", why);
         rb.end_object();
-        let refused = append_as(root, "handoff.refused", "handoff:" + hid, rb.result(), who, memory);
-        return fail("handoff: " + why + "; refused at the edge (handoff.refused), nothing was written across");
+        let refused = append_as(
+            root,
+            "handoff.refused",
+            "handoff:" + hid,
+            rb.result(),
+            who,
+            memory,
+        );
+        return fail(
+            "handoff: " + why
+                + "; refused at the edge (handoff.refused), nothing was written across",
+        );
     }
     if p.has_row("handoff.published", "handoff:" + hid) {
         // published, and a crash before the Task's own row: the row now (#637)
-        if kind == "task" && !has_row(p, "task.transfer_requested", subject, "\"handoff\": \"" + hid + "\"") {
+        if kind == "task"
+            && !has_row(p, "task.transfer_requested", subject, "\"handoff\": \"" + hid + "\"")
+        {
             let rb = std::json::Builder { };
             rb.begin_object();
             rb.string_field("connection", name);
@@ -472,10 +705,18 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
             rb.string_field("handoff", hid);
             rb.string_field("by", who);
             rb.end_object();
-            if !append_as(root, "task.transfer_requested", subject, rb.result(), who, memory) { return fail("the record refused the append"); }
-            return answer("handoff " + hid + ": task " + subject + " was already delivered to record " + short(c.peer) + "; its transfer is recorded here now\n");
+            if !append_as(root, "task.transfer_requested", subject, rb.result(), who, memory) {
+                return fail("the record refused the append");
+            }
+            return answer(
+                "handoff " + hid + ": task " + subject + " was already delivered to record "
+                    + short(c.peer) + "; its transfer is recorded here now\n",
+            );
         }
-        return fail("handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer) + " as " + hid);
+        return fail(
+            "handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer)
+                + " as " + hid,
+        );
     }
     let b = std::json::Builder { };
     b.begin_object();
@@ -494,12 +735,39 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     b.string_field("note", note);
     b.end_object();
     let key = exchange_key(root);
-    let line = key.seal(dna::Envelope { id: hid + ".received", sender: mine, recipient: c.peer, kind: "received", entity: "handoff:" + hid, body: b.result(), author: who });
-    if len(line) == 0 { return fail("handoff: this record has no exchange key to sign with (`" + key.vault + "`; `hale dna upgrade` provisions it); nothing was delivered"); }
+    let line = key.seal(
+        dna::Envelope {
+            id: hid + ".received",
+            sender: mine,
+            recipient: c.peer,
+            kind: "received",
+            entity: "handoff:" + hid,
+            body: b.result(),
+            author: who,
+        },
+    );
+    if len(line) == 0 {
+        return fail(
+            "handoff: this record has no exchange key to sign with (`" + key.vault
+                + "`; `hale dna upgrade` provisions it); nothing was delivered",
+        );
+    }
     // delivered once by its id: a delivery repeated after a crash lands once (#637)
     let x = NatsExchange { root: root, mine: mine };
     let landed = x.deliver(c.url, c.peer, hid + ".received", line);
-    if !landed.ok { return fail("handoff: " + landed.why + "; nothing was recorded here" + (if landed.unreachable { " — `hale dna handoff " + name + " " + kind + " " + subject_in + "` again delivers it" } else { "" })); }
+    if !landed.ok {
+        return fail(
+            "handoff: " + landed.why + "; nothing was recorded here"
+                + (
+                    if landed.unreachable {
+                        " — `hale dna handoff " + name + " " + kind + " " + subject_in
+                            + "` again delivers it"
+                    } else {
+                        ""
+                    }
+                ),
+        );
+    }
     let pb = std::json::Builder { };
     pb.begin_object();
     pb.string_field("connection", name);
@@ -514,7 +782,12 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     // the envelope as delivered, signed
     pb.string_field("envelope", line);
     pb.end_object();
-    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who, memory) { return fail("handoff: delivered to record " + short(c.peer) + "'s inbox as " + landed.ref + ", but this record refused the append"); }
+    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who, memory) {
+        return fail(
+            "handoff: delivered to record " + short(c.peer) + "'s inbox as " + landed.ref
+                + ", but this record refused the append",
+        );
+    }
     if kind == "task" {
         let tb = std::json::Builder { };
         tb.begin_object();
@@ -525,7 +798,18 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         tb.end_object();
         let t = append_as(root, "task.transfer_requested", subject, tb.result(), who, memory);
     }
-    return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] delivered to record " + short(c.peer) + "'s inbox as " + landed.ref + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
+    return answer(
+        "handoff " + hid + ": " + kind + " " + subject + " [" + class + "] delivered to record "
+            + short(c.peer) + "'s inbox as " + landed.ref + ", for `" + c.purpose + "`"
+            + (
+                if kind == "task" {
+                    "; the Task settles here when that record accepts it (`hale dna handoff sync`)"
+                } else {
+                    ""
+                }
+            )
+            + "\n",
+    );
 }
 
 // Why a received envelope is not admitted here ("" when it is): a
@@ -534,10 +818,20 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
 fn admission_refusal(p: Projection, line: String) -> String {
     let e = dna::envelope_of(std::json::find_string_field(line, "envelope"));
     let c = connection_to(p, e.sender);
-    if !c.present { return "no connection in force to record " + short(e.sender) + ": this record admits nothing from it (`hale dna connect <its nerves> --record " + e.sender + "`)"; }
-    if !dna::signed_line_holds(line) || std::json::find_string_field(line, "key") != c.peer_key { return "it is not signed with the key connection `" + c.name + "` pinned for record " + short(e.sender); }
+    if !c.present {
+        return "no connection in force to record " + short(e.sender)
+            + ": this record admits nothing from it (`hale dna connect <its nerves> --record "
+            + e.sender + "`)";
+    }
+    if !dna::signed_line_holds(line) || std::json::find_string_field(line, "key") != c.peer_key {
+        return "it is not signed with the key connection `" + c.name + "` pinned for record "
+            + short(e.sender);
+    }
     let class = std::json::find_string_field(e.body, "class");
-    if e.kind == "received" && !dna::classes_allow(c.classes, class) { return "`" + class + "` does not cross connection `" + c.name + "` (it carries " + c.classes + ")"; }
+    if e.kind == "received" && !dna::classes_allow(c.classes, class) {
+        return "`" + class + "` does not cross connection `" + c.name + "` (it carries " + c.classes
+            + ")";
+    }
     return "";
 }
 
@@ -571,8 +865,17 @@ fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
         let e = p.row(i);
         if e.kind == "handoff.published" {
             let b = e.body;
-            let back = if p.has_row("handoff.accepted_by_peer", e.entity) { "accepted there" } else { "awaiting acceptance" };
-            sent = sent + "  " + e.entity[8..len(e.entity)] + " → " + std::json::find_string_field(b, "connection") + ": " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " [" + std::json::find_string_field(b, "class") + "] by " + std::json::find_string_field(b, "by") + " — " + back + "\n";
+            let back = if p.has_row("handoff.accepted_by_peer", e.entity) {
+                "accepted there"
+            } else {
+                "awaiting acceptance"
+            };
+            sent = sent + "  " + e.entity[8..len(e.entity)] + " → "
+                + std::json::find_string_field(b, "connection") + ": "
+                + std::json::find_string_field(b, "kind") + " "
+                + std::json::find_string_field(b, "subject") + " ["
+                + std::json::find_string_field(b, "class") + "] by "
+                + std::json::find_string_field(b, "by") + " — " + back + "\n";
         }
         i = i + 1;
     }
@@ -590,15 +893,40 @@ fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
         let b = e.body;
         let why = admission_refusal(p, line);
         let c = connection_to(p, e.sender);
-        let state = if p.has_row("handoff.accepted", e.entity) { "accepted" } else if len(why) == 0 { "admitted under `" + c.name + "`" } else { "not admitted: " + why };
-        got = got + "  " + e.entity[8..len(e.entity)] + " ← " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " from record " + short(e.sender) + " (" + e.author + " as `" + std::json::find_string_field(b, "position") + "`, for `" + std::json::find_string_field(b, "purpose") + "`) [" + std::json::find_string_field(b, "class") + "] " + std::json::find_string_field(b, "fact") + " · lineage " + std::json::find_string_field(b, "lineage") + " — " + state + "\n";
+        let state = if p.has_row("handoff.accepted", e.entity) {
+            "accepted"
+        } else if len(why) == 0 {
+            "admitted under `" + c.name + "`"
+        } else {
+            "not admitted: " + why
+        };
+        got = got + "  " + e.entity[8..len(e.entity)] + " ← "
+            + std::json::find_string_field(b, "kind") + " "
+            + std::json::find_string_field(b, "subject") + " from record " + short(e.sender) + " ("
+            + e.author + " as `" + std::json::find_string_field(b, "position") + "`, for `"
+            + std::json::find_string_field(b, "purpose") + "`) ["
+            + std::json::find_string_field(b, "class") + "] "
+            + std::json::find_string_field(b, "fact") + " · lineage "
+            + std::json::find_string_field(b, "lineage") + " — " + state + "\n";
     }
     let note = if len(x.note) > 0 { "(" + x.note + ")\n" } else { "" };
-    return answer("handed across: " + (if len(sent) == 0 { "none\n" } else { "\n" + sent }) + "received: " + (if len(got) == 0 { "none\n" } else { "\n" + got }) + note);
+    return answer(
+        "handed across: " + (if len(sent) == 0 { "none\n" } else { "\n" + sent }) + "received: "
+            + (if len(got) == 0 { "none\n" } else { "\n" + got }) + note,
+    );
 }
 
-fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(hid) == 0 { return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`"); }
+fn handoff_accept_verb(
+    root: String,
+    seed: String,
+    hid: String,
+    note: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(hid) == 0 {
+        return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`");
+    }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
@@ -606,7 +934,12 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
     let mine = record_identity(root);
     let x = NatsExchange { root: root, mine: mine, pins: connection_pins(p) };
     let line = received_line(p, x.received(), "received", ent);
-    if len(line) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record's inbox" + (if len(x.note) > 0 { " (" + x.note + ")" } else { "" })); }
+    if len(line) == 0 {
+        return fail(
+            "handoff accept: no handoff `" + hid + "` received in this record's inbox"
+                + (if len(x.note) > 0 { " (" + x.note + ")" } else { "" }),
+        );
+    }
     let why = admission_refusal(p, line);
     if len(why) > 0 { return fail("handoff accept: " + hid + " is not admitted — " + why); }
     let e = dna::envelope_of(std::json::find_string_field(line, "envelope"));
@@ -632,7 +965,9 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
         b.string_field("class", std::json::find_string_field(body, "class"));
         b.string_field("fact", std::json::find_string_field(body, "fact"));
         b.end_object();
-        if !append_as(root, "handoff.accepted", ent, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "handoff.accepted", ent, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
     }
     // the acceptance goes back into the origin's inbox, once by its id
     let ab = std::json::Builder { };
@@ -642,12 +977,43 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
     ab.string_field("origin_record", origin);
     ab.string_field("connection", c.name);
     ab.end_object();
-    let back_line = exchange_key(root).seal(dna::Envelope { id: hid + ".accepted", sender: mine, recipient: origin, kind: "accepted", entity: ent, body: ab.result(), author: who });
-    if len(back_line) == 0 { return fail("handoff accept: " + hid + " is accepted here, but this record has no exchange key to sign its acceptance with (`hale dna upgrade` provisions it)"); }
+    let back_line = exchange_key(root).seal(
+        dna::Envelope {
+            id: hid + ".accepted",
+            sender: mine,
+            recipient: origin,
+            kind: "accepted",
+            entity: ent,
+            body: ab.result(),
+            author: who,
+        },
+    );
+    if len(back_line) == 0 {
+        return fail(
+            "handoff accept: " + hid
+                + " is accepted here, but this record has no exchange key to sign its acceptance with (`hale dna upgrade` provisions it)",
+        );
+    }
     let back = x.deliver(c.url, origin, hid + ".accepted", back_line);
-    if !back.ok { return fail("handoff accept: " + hid + " is accepted here, but the acceptance could not reach record " + short(origin) + " (" + back.why + "); `hale dna handoff accept " + hid + "` again delivers it"); }
-    if already { return answer("handoff " + hid + " was already accepted here; its acceptance is delivered to record " + short(origin) + " again\n"); }
-    return answer("handoff " + hid + " accepted by " + who + " under connection `" + c.name + "`: " + std::json::find_string_field(body, "kind") + " " + std::json::find_string_field(body, "subject") + " from record " + short(origin) + "; that record settles it when it reads this acceptance\n");
+    if !back.ok {
+        return fail(
+            "handoff accept: " + hid
+                + " is accepted here, but the acceptance could not reach record " + short(origin)
+                + " (" + back.why + "); `hale dna handoff accept " + hid + "` again delivers it",
+        );
+    }
+    if already {
+        return answer(
+            "handoff " + hid + " was already accepted here; its acceptance is delivered to record "
+                + short(origin) + " again\n",
+        );
+    }
+    return answer(
+        "handoff " + hid + " accepted by " + who + " under connection `" + c.name + "`: "
+            + std::json::find_string_field(body, "kind") + " "
+            + std::json::find_string_field(body, "subject") + " from record " + short(origin)
+            + "; that record settles it when it reads this acceptance\n",
+    );
 }
 
 // Every connection in force: the acceptances its other record sent to this
@@ -671,7 +1037,10 @@ fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
         names = if nl < 0 { "" } else { names[(nl + 1)..len(names)] };
         if len(name) == 0 { continue; }
         let c = connection_of(p, name);
-        if len(c.closed) > 0 { out = out + "  " + name + ": closed — nothing admitted from it\n"; continue; }
+        if len(c.closed) > 0 {
+            out = out + "  " + name + ": closed — nothing admitted from it\n";
+            continue;
+        }
         if !connection_live(c) { continue; }
         let mut rest = lines;
         while len(rest) > 0 {
@@ -685,19 +1054,30 @@ fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
             let ent = env.entity;
             let body = env.body;
             if std::json::find_string_field(body, "origin_record") != mine { continue; }
-            if !has_row(p, "handoff.published", ent, "\"connection\": \"" + name + "\"") { continue; }
+            if !has_row(p, "handoff.published", ent, "\"connection\": \"" + name + "\"") {
+                continue;
+            }
             let mut kind = "";
             let mut subject = "";
             let mut i = 0;
             while i < p.rows() {
                 let e = p.row(i);
-                if e.kind == "handoff.published" && e.entity == ent { kind = std::json::find_string_field(e.body, "kind"); subject = std::json::find_string_field(e.body, "subject"); }
+                if e.kind == "handoff.published" && e.entity == ent {
+                    kind = std::json::find_string_field(e.body, "kind");
+                    subject = std::json::find_string_field(e.body, "subject");
+                }
                 i = i + 1;
             }
             // each row on its own, so a crash between the two is completed at
             // the next sync instead of suppressing it (#637)
             let peer_row = p.has_row("handoff.accepted_by_peer", ent);
-            let transfer = kind == "task" && !has_row(p, "task.transfer_accepted", subject, "\"handoff\": \"" + ent[8..len(ent)] + "\"");
+            let transfer = kind == "task"
+                && !has_row(
+                    p,
+                    "task.transfer_accepted",
+                    subject,
+                    "\"handoff\": \"" + ent[8..len(ent)] + "\"",
+                );
             if peer_row && !transfer { continue; }
             let by = std::json::find_string_field(body, "by");
             let b = std::json::Builder { };
@@ -709,12 +1089,17 @@ fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
             b.string_field("note", std::json::find_string_field(body, "note"));
             b.end_object();
             if !peer_row {
-                if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "", memory) { return fail("the record refused the append"); }
+                if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "", memory) {
+                    return fail("the record refused the append");
+                }
             }
             if transfer {
-                if !append_as(root, "task.transfer_accepted", subject, b.result(), "", memory) { return fail("the record refused the append"); }
+                if !append_as(root, "task.transfer_accepted", subject, b.result(), "", memory) {
+                    return fail("the record refused the append");
+                }
             }
-            out = out + "  " + ent[8..len(ent)] + ": " + kind + " " + subject + " accepted by " + by + " in record " + short(c.peer) + "\n";
+            out = out + "  " + ent[8..len(ent)] + ": " + kind + " " + subject + " accepted by " + by
+                + " in record " + short(c.peer) + "\n";
             n = n + 1;
         }
     }

@@ -23,16 +23,39 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(Floats, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "f", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            Floats,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "f",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
     run() {
         // protobuf: the double's eight bytes, every one of them
-        let edges = [0.1 + 0.2, 99.999995, 1e-300, 5e-324, 1.7976931348623157e308, -0.0, 1.0 / 0.0, 0.0 - 1.0 / 0.0];
+        let edges = [
+            0.1 + 0.2,
+            99.999995,
+            1e-300,
+            5e-324,
+            1.7976931348623157e308,
+                -0.0,
+            1.0 / 0.0,
+            0.0 - 1.0 / 0.0
+        ];
         for x in edges {
-            let back = __api_pb_decode_Reading(__api_pb_encode_Reading(Reading { x: x })) or Reading { x: 7.0 };
-            std::test::assert(same(back.x, x), "protobuf round trip of " + std::str::__float_text(x));
+            let back = __api_pb_decode_Reading(
+                __api_pb_encode_Reading(Reading { x: x }),
+            ) or Reading { x: 7.0 };
+            std::test::assert(
+                same(back.x, x),
+                "protobuf round trip of " + std::str::__float_text(x),
+            );
         }
-        let nan = __api_pb_decode_Reading(__api_pb_encode_Reading(Reading { x: 0.0 / 0.0 })) or Reading { x: 7.0 };
+        let nan = __api_pb_decode_Reading(
+            __api_pb_encode_Reading(Reading { x: 0.0 / 0.0 }),
+        ) or Reading { x: 7.0 };
         std::test::assert(std::str::__float_text(nan.x) == "nan", "NaN crosses protobuf");
         json_round_trips();
     }
@@ -43,7 +66,20 @@ fn same(a: Float, b: Float) -> Bool {
 }
 
 fn json_round_trips() {
-    let edges = [0.1 + 0.2, 99.999995, 100.0 / 3.0, 1e-300, 1e300, 5e-324, 2.2250738585072014e-308, 1.7976931348623157e308, -0.0, 100.0, 1059438285926254.25, 0.1];
+    let edges = [
+        0.1 + 0.2,
+        99.999995,
+        100.0 / 3.0,
+        1e-300,
+        1e300,
+        5e-324,
+        2.2250738585072014e-308,
+        1.7976931348623157e308,
+            -0.0,
+        100.0,
+        1059438285926254.25,
+        0.1
+    ];
     for x in edges {
         let r = Reading { x: x };
         let text = Reading::api_encode(r);
@@ -51,16 +87,31 @@ fn json_round_trips() {
             std::test::assert(false, "JSON did not read back " + text + ": " + err.kind);
             return;
         };
-        std::test::assert(same(back.x, x), "JSON round trip of " + std::str::__float_text(x) + " gave " + std::str::__float_text(back.x));
+        std::test::assert(
+            same(back.x, x),
+            "JSON round trip of " + std::str::__float_text(x) + " gave "
+                + std::str::__float_text(back.x),
+        );
         std::test::assert(back.x == x, "the same double: " + text);
     }
-    std::test::assert_eq_str(Reading::api_encode(Reading { x: 99.999995 }), "{\"x\":99.999995,\"xs\":[]}", "the text written");
-    std::test::assert_eq_str(Reading::api_encode(Reading { x: 0.1 + 0.2 }), "{\"x\":0.30000000000000004,\"xs\":[]}", "seventeen digits where they are needed");
+    std::test::assert_eq_str(
+        Reading::api_encode(Reading { x: 99.999995 }),
+        "{\"x\":99.999995,\"xs\":[]}",
+        "the text written",
+    );
+    std::test::assert_eq_str(
+        Reading::api_encode(Reading { x: 0.1 + 0.2 }),
+        "{\"x\":0.30000000000000004,\"xs\":[]}",
+        "seventeen digits where they are needed",
+    );
     let mut r = Reading { x: 1.0 };
     push(r.xs, 1.0 / 3.0) or discard;
     push(r.xs, 1e21) or discard;
     let back = Reading::api_decode(Reading::api_encode(r)) or Reading { x: 0.0 };
-    std::test::assert(same(at(back.xs, 0) or 0.0, 1.0 / 3.0), "a list element crosses as the same double");
+    std::test::assert(
+        same(at(back.xs, 0) or 0.0, 1.0 / 3.0),
+        "a list element crosses as the same double",
+    );
     std::test::assert(same(at(back.xs, 1) or 0.0, 1e21), "and a large one");
     // NaN and the infinities: not JSON numbers, refused on the way back
     let nan_text = Reading::api_encode(Reading { x: 0.0 / 0.0 });

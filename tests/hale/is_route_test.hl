@@ -76,7 +76,11 @@ fn main() {
     let r3 = api.handle(std::http::Request {
         method: "POST", path: "/users/7", body: "riley"
     });
-    std::test::assert_eq_str(r3.body, "rename:7:riley", "method routing + capture after method-misses");
+    std::test::assert_eq_str(
+        r3.body,
+        "rename:7:riley",
+        "method routing + capture after method-misses",
+    );
 
     // Trailing-slash tolerance rides the shared matcher.
     let r4 = api.handle(std::http::Request {

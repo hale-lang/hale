@@ -38,7 +38,10 @@ fn json_str(s: String) -> String {
 /// A concern on the wire: one JSON object.
 locus ConcernJson {
     fn encode(c: Concern) -> Bytes fallible(CodecError) {
-        return std::bytes::from_string("{\"id\":" + json_str(c.id) + ",\"source\":" + json_str(c.source) + ",\"what\":" + json_str(c.what) + ",\"severity\":" + to_string(c.severity) + "}");
+        return std::bytes::from_string(
+            "{\"id\":" + json_str(c.id) + ",\"source\":" + json_str(c.source) + ",\"what\":"
+                + json_str(c.what) + ",\"severity\":" + to_string(c.severity) + "}",
+        );
     }
     fn decode(b: Bytes) -> Concern fallible(CodecError) {
         let t = std::str::from_bytes(b);
@@ -51,7 +54,9 @@ locus ConcernJson {
     }
 }
 
-fn env_or_empty(name: String) -> String { return if std::env::var_exists(name) { std::env::var(name) } else { "" }; }
+fn env_or_empty(name: String) -> String {
+    return if std::env::var_exists(name) { std::env::var(name) } else { "" };
+}
 
 locus Mailer {
     params { sent: Int = 0; backlog: Int = 0; }
@@ -71,7 +76,15 @@ main locus TrioWorker {
     // the application's own account: its user and the vault's entry holding
     // its password, as its node names them (HALE_DNA_NATS_USER_APP,
     // HALE_DNA_NATS_VAULT_APP), presented on CONNECT alone (GH #989)
-    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker", user: env_or_empty("HALE_DNA_NATS_USER_APP"), credential: std::secret::Credential { vault: env_or_empty("HALE_DNA_NATS_VAULT_APP") } } codec(ConcernJson { }); }
+    bindings {
+        WorkerConcerns: nats::NatsPublisher {
+            url: env_or_empty("HALE_DNA_NATS_URL_APP"),
+            subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".",
+            name: "trio-worker",
+            user: env_or_empty("HALE_DNA_NATS_USER_APP"),
+            credential: std::secret::Credential { vault: env_or_empty("HALE_DNA_NATS_VAULT_APP") }
+        } codec(ConcernJson { });
+    }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);
@@ -82,10 +95,20 @@ main locus TrioWorker {
         while true {
             std::time::sleep(100ms);
             self.windows = self.windows + 1;
-            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 && std::env::var_exists("HALE_DNA_NATS_URL_APP") {
+            if self.windows % 20 == 0
+                && self.raised < 3
+                && self.mailer.backlog > 0
+                && std::env::var_exists("HALE_DNA_NATS_URL_APP")
+            {
                 self.raised = self.raised + 1;
                 // an id is this concern's alone: a repeat is a replay
-                WorkerConcerns <- Concern { id: "backlog-" + to_string(std::time::nanos(std::time::current())) + "-" + to_string(self.raised), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+                WorkerConcerns <- Concern {
+                    id: "backlog-" + to_string(std::time::nanos(std::time::current())) + "-"
+                        + to_string(self.raised),
+                    source: "org/trio/worker",
+                    what: "mail backlog behind fulfilment",
+                    severity: 2,
+                };
                 println("worker: concern raised (", self.raised, "/3)");
             }
         }

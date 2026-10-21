@@ -20,10 +20,20 @@ const DESCRIBED_CONTRACTS: String = "Patch Assessment";
 
 fn output_contract(name: String) -> OutputContract {
     if name == "Patch" {
-        return OutputContract { name: name, shape: "a commit on the Work's base in a scratch worktree, handed back as `result_ref: commit:<sha>` with the commit's patch as a receipt", hands: "read edit check test fmt patch", validators: "check test fmt" };
+        return OutputContract {
+            name: name,
+            shape: "a commit on the Work's base in a scratch worktree, handed back as `result_ref: commit:<sha>` with the commit's patch as a receipt",
+            hands: "read edit check test fmt patch",
+            validators: "check test fmt",
+        };
     }
     if name == "Assessment" {
-        return OutputContract { name: name, shape: "a verdict and its reasons, naming by id the practices it rests on", hands: "record_status record_history org_chart", validators: "" };
+        return OutputContract {
+            name: name,
+            shape: "a verdict and its reasons, naming by id the practices it rests on",
+            hands: "record_status record_history org_chart",
+            validators: "",
+        };
     }
     return OutputContract { name: name };
 }

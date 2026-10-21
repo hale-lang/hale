@@ -31,7 +31,11 @@ locus __StdObserveScrape {
         oid: Int = 0;
     }
     run() {
-        std::http::Server { host: self.host, port: self.port, handler: __StdObserveScrapePage { path: self.path } };
+        std::http::Server {
+            host: self.host,
+            port: self.port,
+            handler: __StdObserveScrapePage { path: self.path },
+        };
     }
 }
 
@@ -92,7 +96,16 @@ fn __observe_render() -> String {
                 k = k + 1;
             }
         }
-        __metrics_render_series(b, first, ns, kind, name, labels, std::observe::__snap_num(i, 0), h);
+        __metrics_render_series(
+            b,
+            first,
+            ns,
+            kind,
+            name,
+            labels,
+            std::observe::__snap_num(i, 0),
+            h,
+        );
         i = i + 1;
     }
     return std::str::from_bytes(b.finish() or raise);
@@ -120,7 +133,10 @@ locus __StdObserveOtlp {
         // resolved at birth: where batches go, and the resource they carry
         url: String = "";
         resource: String = "";
-        client: std::http::Client = std::http::Client { timeout_ms: self.timeout_ms, max_retries: 0 };
+        client: std::http::Client = std::http::Client {
+            timeout_ms: self.timeout_ms,
+            max_retries: 0,
+        };
         // the param's number, which the compiler writes (`observe_expand`)
         oid: Int = 0;
     }
@@ -162,7 +178,11 @@ locus __StdObserveOtlp {
                 } else {
                     let body = __otlp_body(self.resource, n, opening);
                     let mut sent = false;
-                    let resp = self.client.post(self.url, std::bytes::from_string(body), "application/json") or {
+                    let resp = self.client.post(
+                        self.url,
+                        std::bytes::from_string(body),
+                        "application/json",
+                    ) or {
                         std::http::ClientResponse { status: 0, body: b"" }
                     };
                     sent = resp.status >= 200 && resp.status < 300;
@@ -201,7 +221,8 @@ fn __otlp_str_attr(key: String, value: String) -> String {
 }
 
 fn __otlp_int_attr(key: String, value: Int) -> String {
-    return "{\"key\":\"" + __json_escape_string(key) + "\",\"value\":{\"intValue\":\"" + to_string(value) + "\"}}";
+    return "{\"key\":\"" + __json_escape_string(key) + "\",\"value\":{\"intValue\":\""
+        + to_string(value) + "\"}}";
 }
 
 // The resource: the service, the build's identity, and
@@ -216,7 +237,11 @@ fn __otlp_resource(service: String, extra: String) -> String {
         let pair = __metrics_tok_at(extra, ",", i);
         let eq = std::str::index_of(pair, "=");
         if eq > 0 {
-            out = out + "," + __otlp_str_attr(std::str::trim(pair[0..eq]), std::str::trim(pair[(eq + 1)..len(pair)]));
+            out = out + ","
+                + __otlp_str_attr(
+                    std::str::trim(pair[0..eq]),
+                    std::str::trim(pair[(eq + 1)..len(pair)]),
+                );
         }
         i = i + 1;
     }
@@ -225,8 +250,10 @@ fn __otlp_resource(service: String, extra: String) -> String {
 
 // One OTLP log record.
 fn __otlp_record(ts_ns: Int, severity: Int, word: String, body: String, attrs: String) -> String {
-    return "{\"timeUnixNano\":\"" + to_string(ts_ns) + "\",\"severityNumber\":" + to_string(severity)
-        + ",\"severityText\":\"" + word + "\",\"body\":{\"stringValue\":\"" + __json_escape_string(body)
+    return "{\"timeUnixNano\":\"" + to_string(ts_ns) + "\",\"severityNumber\":"
+        + to_string(severity)
+        + ",\"severityText\":\"" + word + "\",\"body\":{\"stringValue\":\""
+        + __json_escape_string(body)
         + "\"},\"attributes\":[" + attrs + "]}";
 }
 
@@ -240,14 +267,25 @@ fn __otlp_body(resource: String, n: Int, start: Bool) -> String {
     if start {
         let ident = __otlp_str_attr("hale.model_hash", std::observe::__event_str(0, 10))
             + "," + __otlp_str_attr("hale.entity_id_digest", std::observe::__event_str(0, 11));
-        b.append(std::bytes::from_string(__otlp_record(std::time::unix(std::time::current()) * 1000000000, 9, "INFO", "hale.start", ident)));
+        b.append(
+            std::bytes::from_string(
+                __otlp_record(
+                    std::time::unix(std::time::current()) * 1000000000,
+                    9,
+                    "INFO",
+                    "hale.start",
+                    ident,
+                ),
+            ),
+        );
         first = false;
     }
     let mut i = 0;
     while i < n {
         let kind = std::observe::__event_int(i, 0);
         let type_name = std::observe::__event_str(i, 0);
-        let mut attrs = __otlp_str_attr("hale.locus", type_name) + "," + __otlp_int_attr("hale.instance", std::observe::__event_int(i, 2));
+        let mut attrs = __otlp_str_attr("hale.locus", type_name) + ","
+            + __otlp_int_attr("hale.instance", std::observe::__event_int(i, 2));
         let mut body = "locus.birth";
         let mut severity = 9;
         let mut word = "INFO";
@@ -267,7 +305,11 @@ fn __otlp_body(resource: String, n: Int, start: Bool) -> String {
         if !first {
             b.append(std::bytes::from_string(","));
         }
-        b.append(std::bytes::from_string(__otlp_record(std::observe::__event_int(i, 1), severity, word, body, attrs)));
+        b.append(
+            std::bytes::from_string(
+                __otlp_record(std::observe::__event_int(i, 1), severity, word, body, attrs),
+            ),
+        );
         first = false;
         i = i + 1;
     }

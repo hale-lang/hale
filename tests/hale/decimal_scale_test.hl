@@ -22,14 +22,30 @@ fn main() {
     let price: Decimal<2> = 19.99d;
     let whole: Decimal<0> = 7d;
     let plain = 1.5d;
-    std::test::assert_eq_str("" + wei, "0.000000000000000001", "a Decimal<18> holds eighteen places");
+    std::test::assert_eq_str(
+        "" + wei,
+        "0.000000000000000001",
+        "a Decimal<18> holds eighteen places",
+    );
     std::test::assert_eq_str("" + price, "19.99", "a Decimal<2> holds two");
     std::test::assert_eq_str("" + whole, "7", "a Decimal<0> is whole");
     std::test::assert_eq_str("" + plain, "1.5", "plain Decimal is scale 9, as before");
-    std::test::assert_eq_str(s(WEI), "0.000000000000000001", "a const takes its ascription's scale");
-    std::test::assert_eq_str("" + tail_scale(), "2.5001", "a fn's tail takes the return type's scale");
+    std::test::assert_eq_str(
+        s(WEI),
+        "0.000000000000000001",
+        "a const takes its ascription's scale",
+    );
+    std::test::assert_eq_str(
+        "" + tail_scale(),
+        "2.5001",
+        "a fn's tail takes the return type's scale",
+    );
     let fee = Fee { amount: 0.000000000000000003d };
-    std::test::assert_eq_str(s(fee.amount), "0.000000000000000003", "a field takes its type's scale");
+    std::test::assert_eq_str(
+        s(fee.amount),
+        "0.000000000000000003",
+        "a field takes its type's scale",
+    );
     std::test::assert_eq_str("" + fee.cents, "0.25", "and a field default its own");
     let neg: Decimal<18> = -0.000000000000000009d;
     std::test::assert_eq_str(s(neg), "-0.000000000000000009", "a negated literal");
@@ -39,7 +55,11 @@ fn main() {
     let a: Decimal<18> = 1.5d;
     std::test::assert_eq_str(s(a + wei), "1.500000000000000001", "a sum is exact at 18 places");
     std::test::assert_eq_str(s(a * a), "2.25", "a product");
-    std::test::assert_eq_str(s(1d / 3d * a), "0.499999999999999999", "1/3 at scale 18 truncates past the 18th place");
+    std::test::assert_eq_str(
+        s(1d / 3d * a),
+        "0.499999999999999999",
+        "1/3 at scale 18 truncates past the 18th place",
+    );
     std::test::assert_eq_str(s(half(wei)), "0", "half a unit truncates to zero");
     std::test::assert_eq_str(s((0d - 1d) / 3d), "-0.333333333333333333", "toward zero");
     std::test::assert_eq_str("" + price * 3d, "59.97", "Decimal<2> times a literal");
@@ -54,7 +74,11 @@ fn main() {
     std::test::assert_eq_str("" + max(a, 2d), "2", "max takes the other operand's scale");
     std::test::assert_eq_str("" + abs(neg), "0.000000000000000009", "abs keeps the scale");
     if a > 1d {
-        std::test::assert_eq_str("compared", "compared", "a literal compares at the other side's scale");
+        std::test::assert_eq_str(
+            "compared",
+            "compared",
+            "a literal compares at the other side's scale",
+        );
     } else {
         std::test::assert_eq_str("not", "compared", "1.5 > 1 at scale 18");
     }
@@ -71,12 +95,20 @@ fn main() {
     std::test::assert_eq_str("" + filled[2], "0.07", "a repeated literal");
     // An `if` or a `match` joins its arms as an operator joins operands.
     let chosen = if a > 2d { price } else { 0.05d };
-    std::test::assert_eq_str("" + chosen, "0.05", "an if's literal arm takes the typed arm's scale");
+    std::test::assert_eq_str(
+        "" + chosen,
+        "0.05",
+        "an if's literal arm takes the typed arm's scale",
+    );
     let picked = match whole {
         7d -> 0.000000000000000003d,
         _ -> a,
     };
-    std::test::assert_eq_str(s(picked), "0.000000000000000003", "a match's literal arm takes the typed arm's scale");
+    std::test::assert_eq_str(
+        s(picked),
+        "0.000000000000000003",
+        "a match's literal arm takes the typed arm's scale",
+    );
 
     // rescale: widening is exact; narrowing says what becomes of the
     // dropped digits.
@@ -86,13 +118,29 @@ fn main() {
     std::test::assert_eq_str("" + (third.rescale(2) or trunc), "0.33", "narrowing, truncated");
     std::test::assert_eq_str("" + (third.rescale(2) or ceil), "0.34", "narrowing, ceiling");
     let two_thirds: Decimal<18> = 2d / 3d;
-    std::test::assert_eq_str("" + (two_thirds.rescale(2) or half_even), "0.67", "narrowing, half-even");
+    std::test::assert_eq_str(
+        "" + (two_thirds.rescale(2) or half_even),
+        "0.67",
+        "narrowing, half-even",
+    );
     std::test::assert_eq_str("" + (neg.rescale(9) or floor), "-0.000000001", "floor goes down");
-    std::test::assert_eq_str("" + (a.rescale(2) or 0d), "1.5", "an exact narrowing keeps the value");
-    std::test::assert_eq_str("" + (third.rescale(2) or 9d), "9", "the refusal path: a nonzero dropped digit takes the fallback");
+    std::test::assert_eq_str(
+        "" + (a.rescale(2) or 0d),
+        "1.5",
+        "an exact narrowing keeps the value",
+    );
+    std::test::assert_eq_str(
+        "" + (third.rescale(2) or 9d),
+        "9",
+        "the refusal path: a nonzero dropped digit takes the fallback",
+    );
     let lost = third.rescale(4) or {
         std::test::assert_eq_str(err.kind, "Decimal<4>", "the InexactError names the target");
-        std::test::assert_eq_int(err.divisor, 100000000000000, "and the power of ten it divided by");
+        std::test::assert_eq_int(
+            err.divisor,
+            100000000000000,
+            "and the power of ten it divided by",
+        );
             -1d
     };
     std::test::assert_eq_str("" + lost, "-1", "refused, not truncated");
@@ -101,10 +149,18 @@ fn main() {
     // format(d, places) is the fixed-places surface, places clamped at S.
     std::test::assert_eq_str(std::decimal::format(price, 1), "20.0", "format rounds half-up");
     std::test::assert_eq_str(std::decimal::format(price, 4), "19.99", "places clamp at the scale");
-    std::test::assert_eq_str(std::decimal::format(third, 18), "0.333333333333333333", "eighteen places");
+    std::test::assert_eq_str(
+        std::decimal::format(third, 18),
+        "0.333333333333333333",
+        "eighteen places",
+    );
     std::test::assert_eq_str(f"{price:.1}", "20.0", "an f-string precision");
     let big: Decimal<0> = 170141183460469231731687303715884105727d;
-    std::test::assert_eq_str("" + big, "170141183460469231731687303715884105727", "the whole i128 at scale 0");
+    std::test::assert_eq_str(
+        "" + big,
+        "170141183460469231731687303715884105727",
+        "the whole i128 at scale 0",
+    );
 
     // parse_decimal takes the scale of the place its result flows into.
     let p: Decimal<18> = std::str::parse_decimal("0.123456789012345678") or raise;
@@ -115,7 +171,15 @@ fn main() {
     std::test::assert_eq_str("" + r, "1.23", "trailing zeros past the scale are the same value");
     let plain_parse = std::str::parse_decimal("0.123456789012") or 0d;
     std::test::assert_eq_str("" + plain_parse, "0", "unannotated, a parse is scale 9");
-    let ranged: Decimal<18> = std::str::range_parse_decimal("x=0.000000000000000042;", 2, 22) or raise;
+    let ranged: Decimal<18> = std::str::range_parse_decimal(
+        "x=0.000000000000000042;",
+        2,
+        22,
+    ) or raise;
     std::test::assert_eq_str(s(ranged), "0.000000000000000042", "range_parse_decimal at scale 18");
-    std::test::assert_eq_str(s((std::str::parse_decimal("2") or 0d) * a), "3", "a parse in an operand takes the other side's scale");
+    std::test::assert_eq_str(
+        s((std::str::parse_decimal("2") or 0d) * a),
+        "3",
+        "a parse in an operand takes the other side's scale",
+    );
 }

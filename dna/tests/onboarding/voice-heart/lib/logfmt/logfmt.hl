@@ -46,7 +46,9 @@ fn env_severity() -> Int {
 
 /// The record of one event.
 fn record(e: std::log::LogEvent) -> String {
-    return "time=" + std::time::iso8601(std::time::time_from_unix(e.ts)) + " level=" + level_name(e.level) + " " + std::log::kv("logger", e.path) + " " + std::log::kv("msg", e.msg) + (if len(e.fields) > 0 { " " + e.fields } else { "" });
+    return "time=" + std::time::iso8601(std::time::time_from_unix(e.ts)) + " level="
+        + level_name(e.level) + " " + std::log::kv("logger", e.path) + " "
+        + std::log::kv("msg", e.msg) + (if len(e.fields) > 0 { " " + e.fields } else { "" });
 }
 
 /// Writes every logger's events as records.

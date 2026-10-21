@@ -20,50 +20,144 @@ fn event_at(script: String, n: Int) -> String {
 }
 
 fn main() {
-    let c = node::static_config("{\"text\": \"hello from voice\", \"chunk_chars\": 8, \"first_output_ms\": 5}");
+    let c = node::static_config(
+        "{\"text\": \"hello from voice\", \"chunk_chars\": 8, \"first_output_ms\": 5}",
+    );
     std::test::assert_eq_str(c.problem, "", "a valid config");
     std::test::assert(len(node::static_config("{}").problem) > 0, "text is required");
     std::test::assert(len(node::static_config("{\"text\": \"\"}").problem) > 0, "and not empty");
-    std::test::assert(len(node::static_config("{\"text\": \"x\", \"chunk_chars\": 0}").problem) > 0, "chunks of at least one character");
+    std::test::assert(
+        len(node::static_config("{\"text\": \"x\", \"chunk_chars\": 0}").problem) > 0,
+        "chunks of at least one character",
+    );
 
     // the tool-call drill
-    let tc = node::static_config("{\"text\": \"unused\", \"tool_call\": {\"name\": \"lookup\", \"arguments\": \"{\\\"q\\\": 1}\"}}");
+    let tc = node::static_config(
+        "{\"text\": \"unused\", \"tool_call\": {\"name\": \"lookup\", \"arguments\": \"{\\\"q\\\": 1}\"}}",
+    );
     std::test::assert_eq_str(tc.problem, "", "a tool call drill");
-    std::test::assert(len(node::static_config("{\"text\": \"x\", \"tool_call\": {}}").problem) > 0, "names its tool");
-    let called = node::run_static("resp_t", "echo-1", "echo", "{\"model\": \"echo-1\", \"input\": \"hi\"}", tc);
+    std::test::assert(
+        len(node::static_config("{\"text\": \"x\", \"tool_call\": {}}").problem) > 0,
+        "names its tool",
+    );
+    let called = node::run_static(
+        "resp_t",
+        "echo-1",
+        "echo",
+        "{\"model\": \"echo-1\", \"input\": \"hi\"}",
+        tc,
+    );
     std::test::assert_eq_str(called.outcome, "served", "served");
-    std::test::assert(std::str::contains(called.script, "\"type\":\"response.function_call_arguments.done\""), "the call's arguments, streamed");
-    std::test::assert(std::str::contains(called.script, "{\"type\":\"function_call\",\"id\":\"fc_t\",\"call_id\":\"call_t\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\": 1}\",\"status\":\"completed\"}"), "and the call as its output item");
+    std::test::assert(
+        std::str::contains(called.script, "\"type\":\"response.function_call_arguments.done\""),
+        "the call's arguments, streamed",
+    );
+    std::test::assert(
+        std::str::contains(
+            called.script,
+            "{\"type\":\"function_call\",\"id\":\"fc_t\",\"call_id\":\"call_t\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\": 1}\",\"status\":\"completed\"}",
+        ),
+        "and the call as its output item",
+    );
     std::test::assert(!std::str::contains(called.script, "unused"), "instead of the text");
 
-    let run = node::run_static("resp_abc", "echo-1", "echo", "{\"model\": \"echo-1\", \"input\": \"hello there\", \"metadata\": {\"k\": \"v\"}}", c);
+    let run = node::run_static(
+        "resp_abc",
+        "echo-1",
+        "echo",
+        "{\"model\": \"echo-1\", \"input\": \"hello there\", \"metadata\": {\"k\": \"v\"}}",
+        c,
+    );
     std::test::assert_eq_str(run.outcome, "served", "served");
     std::test::assert_eq_str(run.model, "echo", "the result names the engine's model");
     std::test::assert_eq_int(run.input_tokens, 3, "eleven characters in");
     std::test::assert_eq_int(run.output_tokens, 4, "sixteen out");
     std::test::assert(std::str::contains(run.script, "pause 5\n"), "the first output waits");
-    let types = ["response.created", "response.in_progress", "response.output_item.added", "response.content_part.added", "response.output_text.delta", "response.output_text.delta", "response.output_text.done", "response.content_part.done", "response.output_item.done", "response.completed"];
+    let types = [
+        "response.created",
+        "response.in_progress",
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.output_text.delta",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.content_part.done",
+        "response.output_item.done",
+        "response.completed"
+    ];
     let mut i = 0;
     while i < 10 {
         let ev = event_at(run.script, i);
-        std::test::assert_eq_str(std::json::find_string_field(ev, "type"), types[i], "event " + to_string(i));
-        std::test::assert_eq_int(std::json::find_int_field(ev, "sequence_number"), i, "numbered in order");
+        std::test::assert_eq_str(
+            std::json::find_string_field(ev, "type"),
+            types[i],
+            "event " + to_string(i),
+        );
+        std::test::assert_eq_int(
+            std::json::find_int_field(ev, "sequence_number"),
+            i,
+            "numbered in order",
+        );
         i = i + 1;
     }
-    std::test::assert_eq_str(std::json::find_string_field(event_at(run.script, 4), "delta"), "hello fr", "chunks of eight");
+    std::test::assert_eq_str(
+        std::json::find_string_field(event_at(run.script, 4), "delta"),
+        "hello fr",
+        "chunks of eight",
+    );
     let done = std::json::find_field_raw(event_at(run.script, 9), "response");
-    std::test::assert_eq_str(std::json::find_string_field(done, "id"), "resp_abc", "the request id is the response's");
-    std::test::assert_eq_str(std::json::find_string_field(done, "model"), "echo-1", "the catalog's model");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(done, "metadata"), "k"), "v", "the metadata, echoed");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(done, "usage"), "total_tokens"), 7, "its usage");
-    std::test::assert(std::str::contains(node::result_message("resp_abc", run, 5, 9), "\"engine_ms\":9"), "the result carries the timing");
+    std::test::assert_eq_str(
+        std::json::find_string_field(done, "id"),
+        "resp_abc",
+        "the request id is the response's",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(done, "model"),
+        "echo-1",
+        "the catalog's model",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(done, "metadata"), "k"),
+        "v",
+        "the metadata, echoed",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(std::json::find_field_raw(done, "usage"), "total_tokens"),
+        7,
+        "its usage",
+    );
+    std::test::assert(
+        std::str::contains(node::result_message("resp_abc", run, 5, 9), "\"engine_ms\":9"),
+        "the result carries the timing",
+    );
 
-    let cut = node::run_static("resp_x", "echo-1", "echo-1", "{\"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": \"hi\"}], \"max_output_tokens\": 2}", c);
+    let cut = node::run_static(
+        "resp_x",
+        "echo-1",
+        "echo-1",
+        "{\"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": \"hi\"}], \"max_output_tokens\": 2}",
+        c,
+    );
     std::test::assert_eq_str(cut.outcome, "incomplete", "a cap the text exceeds");
     std::test::assert_eq_int(cut.output_tokens, 2, "cut at the cap");
-    std::test::assert(std::str::contains(cut.script, "\"type\":\"response.incomplete\""), "ends incomplete");
-    std::test::assert(std::str::contains(cut.script, "\"reason\":\"max_output_tokens\""), "and says why");
+    std::test::assert(
+        std::str::contains(cut.script, "\"type\":\"response.incomplete\""),
+        "ends incomplete",
+    );
+    std::test::assert(
+        std::str::contains(cut.script, "\"reason\":\"max_output_tokens\""),
+        "and says why",
+    );
 
-    let wide = node::run_static("resp_u", "m", "m", "{\"input\": \"x\"}", node::static_config("{\"text\": \"héllo\", \"chunk_chars\": 2}"));
-    std::test::assert(std::str::contains(wide.script, "\"delta\":\"hé\""), "a chunk never splits a character");
+    let wide = node::run_static(
+        "resp_u",
+        "m",
+        "m",
+        "{\"input\": \"x\"}",
+        node::static_config("{\"text\": \"héllo\", \"chunk_chars\": 2}"),
+    );
+    std::test::assert(
+        std::str::contains(wide.script, "\"delta\":\"hé\""),
+        "a chunk never splits a character",
+    );
 }

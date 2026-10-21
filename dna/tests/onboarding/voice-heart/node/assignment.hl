@@ -23,7 +23,10 @@ type NodeSeats { items: bounded[NodeSeat; 16]; version: Int = -1; max_in_flight:
 /// Apply `assignment` (its JSON) within `capabilities` and `local`.
 @bounded_by(assignment)
 fn apply_assignment(assignment: String, capabilities: String, local: String) -> NodeSeats {
-    let mut out = NodeSeats { version: std::json::find_int_field(assignment, "version"), max_in_flight: std::json::find_int_field(assignment, "max_in_flight") };
+    let mut out = NodeSeats {
+        version: std::json::find_int_field(assignment, "version"),
+        max_in_flight: std::json::find_int_field(assignment, "max_in_flight"),
+    };
     let paused = std::json::find_bool_field(local, "paused");
     let held = std::json::find_field_raw(local, "paused_seats");
     let mut it = std::json::array_first(std::json::find_field_raw(assignment, "seats"));
@@ -33,16 +36,22 @@ fn apply_assignment(assignment: String, capabilities: String, local: String) -> 
             id: std::json::find_string_field(s, "id"),
             engine: std::json::find_string_field(s, "engine"),
             config: std::str::trim(std::json::find_field_raw(s, "config")),
-            concurrency: if std::json::string_field(s, "concurrency").kind == "number" { std::json::find_int_field(s, "concurrency") } else { 1 }
+            concurrency: if std::json::string_field(s, "concurrency").kind == "number" {
+                std::json::find_int_field(s, "concurrency")
+            } else {
+                1
+            }
         };
         let kind = engine_kind(capabilities, seat.engine);
-        let enabled = std::json::string_field(s, "enabled").kind != "bool" || std::json::find_bool_field(s, "enabled");
+        let enabled = std::json::string_field(s, "enabled").kind != "bool"
+            || std::json::find_bool_field(s, "enabled");
         if len(kind) == 0 {
             seat.status = "refused";
             seat.reason = "this node offers no engine " + seat.engine;
         } else if kind != "static" {
             seat.status = "refused";
-            seat.reason = "engine " + seat.engine + " is of kind " + kind + ", which this build does not run";
+            seat.reason = "engine " + seat.engine + " is of kind " + kind
+                + ", which this build does not run";
         } else if len(static_config(seat.config).problem) > 0 {
             seat.status = "refused";
             seat.reason = static_config(seat.config).problem;
@@ -64,7 +73,9 @@ fn apply_assignment(assignment: String, capabilities: String, local: String) -> 
 fn engine_kind(capabilities: String, id: String) -> String {
     let mut it = std::json::array_first(std::json::find_field_raw(capabilities, "engines"));
     while !it.done {
-        if std::json::find_string_field(it.element, "id") == id { return std::json::find_string_field(it.element, "kind"); }
+        if std::json::find_string_field(it.element, "id") == id {
+            return std::json::find_string_field(it.element, "kind");
+        }
         it = std::json::array_next(it);
     }
     return "";
@@ -104,7 +115,11 @@ fn states_json(seats: NodeSeats, busy: String) -> String {
     for s in seats.items {
         if !first { out.append_str(", "); }
         first = false;
-        out.append_str("{\"id\": " + q(s.id) + ", \"status\": " + q(s.status) + ", \"reason\": " + (if len(s.reason) > 0 { q(s.reason) } else { "null" }) + ", \"in_flight\": " + (if s.id == busy { "1" } else { "0" }) + "}");
+        out.append_str(
+            "{\"id\": " + q(s.id) + ", \"status\": " + q(s.status) + ", \"reason\": "
+                + (if len(s.reason) > 0 { q(s.reason) } else { "null" }) + ", \"in_flight\": "
+                + (if s.id == busy { "1" } else { "0" }) + "}",
+        );
     }
     let b = out.snapshot() or b"";
     return "[" + std::str::from_bytes(b) + "]";

@@ -25,7 +25,11 @@ main locus App {
     params { gw: Gateway = Gateway { router: RouterV2 { } }; }
     run() {
         std::test::assert_eq_int(self.gw.handle(1), 201, "ctor override designates the slot");
-        std::test::assert_eq_int(self.gw.router.route(0), 200, "direct call through the field sees the override");
+        std::test::assert_eq_int(
+            self.gw.router.route(0),
+            200,
+            "direct call through the field sees the override",
+        );
     }
 }
 

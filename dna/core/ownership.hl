@@ -30,8 +30,12 @@ locus MembershipRows { capacity { heap rows of Membership; } }
 fn strip_blanks(s: String) -> String {
     let mut a = 0;
     let mut b = len(s);
-    while a < b && (s[a..(a + 1)] == " " || s[a..(a + 1)] == "\t" || s[a..(a + 1)] == "\r") { a = a + 1; }
-    while b > a && (s[(b - 1)..b] == " " || s[(b - 1)..b] == "\t" || s[(b - 1)..b] == "\r") { b = b - 1; }
+    while a < b && (s[a..(a + 1)] == " " || s[a..(a + 1)] == "\t" || s[a..(a + 1)] == "\r") {
+        a = a + 1;
+    }
+    while b > a && (s[(b - 1)..b] == " " || s[(b - 1)..b] == "\t" || s[(b - 1)..b] == "\r") {
+        b = b - 1;
+    }
     return s[a..b];
 }
 // `list` with `word` added once, space-separated.
@@ -89,7 +93,9 @@ locus Ownership {
         memberships: MembershipRows = MembershipRows { };
     }
     birth() {
-        if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) { self.me = std::env::var(self.me_env); }
+        if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) {
+            self.me = std::env::var(self.me_env);
+        }
     }
     @bounded_by(self.graph)
     fn load() {
@@ -101,8 +107,15 @@ locus Ownership {
             let nl = std::str::index_of(two, "\n");
             let node = if nl < 0 { two } else { two[0..nl] };
             let holder = if nl < 0 { "" } else { trim_nl(two[(nl + 1)..len(two)]) };
-            if std::str::starts_with(node, "position:") && std::str::starts_with(holder, "organization:") {
-                self.positions.push(Owned { position: position_name(node[9..len(node)]), owner: holder[13..len(holder)] });
+            if std::str::starts_with(node, "position:")
+                && std::str::starts_with(holder, "organization:")
+            {
+                self.positions.push(
+                    Owned {
+                        position: position_name(node[9..len(node)]),
+                        owner: holder[13..len(holder)],
+                    },
+                );
             } else if std::str::starts_with(node, "organization:") {
                 self.join(node[13..len(node)], holder);
             }
@@ -116,7 +129,10 @@ locus Ownership {
         while i < self.memberships.len() {
             let m = self.memberships.get(i) or Membership { };
             if m.owner == owner {
-                self.memberships.set(i, Membership { owner: owner, members: word_add(m.members, person) }) or discard;
+                self.memberships.set(
+                    i,
+                    Membership { owner: owner, members: word_add(m.members, person) },
+                ) or discard;
                 return;
             }
             i = i + 1;
@@ -215,14 +231,27 @@ locus Ownership {
     fn why_not(position: String) -> String {
         let p = position_name(position);
         let owner = self.owner_of(p);
-        if len(owner) == 0 { return "`" + p + "` has no owner: no organization holds it or a position above it in the graph; no controller admits it"; }
-        if len(self.me) == 0 { return "`" + p + "` is owned by " + owner + ", and this body names no owner (HALE_DNA_OWNER)"; }
+        if len(owner) == 0 {
+            return "`" + p
+                + "` has no owner: no organization holds it or a position above it in the graph; no controller admits it";
+        }
+        if len(self.me) == 0 {
+            return "`" + p + "` is owned by " + owner
+                + ", and this body names no owner (HALE_DNA_OWNER)";
+        }
         return "`" + p + "` is owned by " + owner + ", not " + self.me;
     }
     fn describe() -> String {
         self.load();
         if !self.shared() { return "one owner"; }
-        return "owners " + self.owners() + (if len(self.me) > 0 { " (this body: " + self.me + ")" } else { " (this body names none)" });
+        return "owners " + self.owners()
+            + (
+                if len(self.me) > 0 {
+                    " (this body: " + self.me + ")"
+                } else {
+                    " (this body names none)"
+                }
+            );
     }
 }
 

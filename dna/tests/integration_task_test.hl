@@ -44,7 +44,9 @@ fn moved(version: String) -> String {
     return "<!doctype html>
 <html><head><title>Changelog</title></head>
 <body><h1>Changelog</h1>
-<ul><li>" + version + ": the charge's currency is required</li><li>v1.2.0: charges take an idempotency key</li></ul>
+<ul><li>"
+        + version
+        + ": the charge's currency is required</li><li>v1.2.0: charges take an idempotency key</li></ul>
 </body></html>
 ";
 }
@@ -57,11 +59,17 @@ fn toolchain() -> String {
 }
 
 fn sh(script: String, dir: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n" + dir + "\n" + script);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n"
+            + dir + "\n" + script,
+    );
 }
 
 fn journal(repo: String) -> dna::RoutedJournal {
-    return dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    return dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
 }
 
 const LEG: String = "position:app/dev#1";
@@ -70,7 +78,11 @@ const LEG: String = "position:app/dev#1";
 const WATCHED: String = "standard/upstream-watched/changelog";
 
 fn dna_cli(repo: String, args: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + repo + "\n" + toolchain() + "\ndna\n" + args);
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+            + repo + "\n" + toolchain() + "\ndna\n" + args,
+    );
 }
 
 main locus App {
@@ -114,7 +126,11 @@ main locus App {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "knowledge.proposed" && std::str::starts_with(std::json::find_string_field(e.body, "name"), name) { n = n + 1; }
+            if e.kind == "knowledge.proposed"
+                && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+            {
+                n = n + 1;
+            }
             i = i + 1;
         }
         return n;
@@ -125,7 +141,11 @@ main locus App {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "knowledge.proposed" && std::str::starts_with(std::json::find_string_field(e.body, "name"), name) { out = e.body; }
+            if e.kind == "knowledge.proposed"
+                && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+            {
+                out = e.body;
+            }
             i = i + 1;
         }
         return out;
@@ -133,20 +153,58 @@ main locus App {
     // The standard pack's template adopted for the changelog, naming the
     // codebase, and the Board's ratification of it.
     fn adopt() {
-        let applied = dna_cli(self.repo, "pack\napply\nstandard\n--set\nintegration=changelog\n--set\nposition=app/dev\n--set\nsource=file://" + self.upstream + "/changelog.html\n--set\nkind=changelog\n--set\nevery=1h\n--set\ncodebase=client\n--as\nada");
-        std::test::assert(applied.code == 0 && std::str::contains(applied.stdout, "+ practice " + WATCHED + "\n"), "the template is proposed: " + applied.stdout + applied.stderr);
-        let review = std::json::find_string_field(self.last_body("batch.proposed", ""), "review_id");
-        std::test::assert(len(review) > 0, "as one Review: " + self.last_body("batch.proposed", ""));
-        std::test::assert(self.d.journal.append(self.d.journal.revision(), "review.settled", review, "approve by ada").ok, "the Board approves it");
+        let applied = dna_cli(
+            self.repo,
+            "pack\napply\nstandard\n--set\nintegration=changelog\n--set\nposition=app/dev\n--set\nsource=file://"
+                + self.upstream
+                + "/changelog.html\n--set\nkind=changelog\n--set\nevery=1h\n--set\ncodebase=client\n--as\nada",
+        );
+        std::test::assert(
+            applied.code == 0 && std::str::contains(applied.stdout, "+ practice " + WATCHED + "\n"),
+            "the template is proposed: " + applied.stdout + applied.stderr,
+        );
+        let review = std::json::find_string_field(
+            self.last_body("batch.proposed", ""),
+            "review_id",
+        );
+        std::test::assert(
+            len(review) > 0,
+            "as one Review: " + self.last_body("batch.proposed", ""),
+        );
+        std::test::assert(
+            self.d.journal.append(
+                self.d.journal.revision(),
+                "review.settled",
+                review,
+                "approve by ada",
+            ).ok,
+            "the Board approves it",
+        );
         self.d.ratify_through(review);
         let mut waited = 0;
-        while self.rows("schedule.declared", WATCHED) == 0 && self.rows("schedule.refused", WATCHED) == 0 && waited < 300 { std::time::sleep(100ms); waited = waited + 1; }
-        std::test::assert_eq_int(self.rows("schedule.declared", WATCHED), 1, "the practice declares its schedule: " + self.last_body("schedule.refused", WATCHED));
+        while self.rows("schedule.declared", WATCHED) == 0
+            && self.rows("schedule.refused", WATCHED) == 0
+            && waited < 300
+        {
+            std::time::sleep(100ms);
+            waited = waited + 1;
+        }
+        std::test::assert_eq_int(
+            self.rows("schedule.declared", WATCHED),
+            1,
+            "the practice declares its schedule: " + self.last_body("schedule.refused", WATCHED),
+        );
     }
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
-        while tries < 600 * dna::wait_scale() && self.rows(kind, entity) == 0 { std::time::sleep(25ms); tries = tries + 1; }
-        std::test::assert(self.rows(kind, entity) > 0, what + ": no `" + kind + " " + entity + "` row within the deadline");
+        while tries < 600 * dna::wait_scale() && self.rows(kind, entity) == 0 {
+            std::time::sleep(25ms);
+            tries = tries + 1;
+        }
+        std::test::assert(
+            self.rows(kind, entity) > 0,
+            what + ": no `" + kind + " " + entity + "` row within the deadline",
+        );
     }
     fn open_executions() -> Int {
         let j = journal(self.repo);
@@ -156,8 +214,17 @@ main locus App {
         while i < j.revision() {
             let e = j.read(i);
             let def = std::json::find_string_field(e.body, "definition");
-            if e.kind == "workflow.admitted" && (def == "source-check" || def == "concern-escalate") { admitted = admitted + e.entity + "\n"; open = open + 1; }
-            if e.kind == "workflow.settled" && std::str::contains(admitted, "\n" + e.entity + "\n") { open = open - 1; }
+            if e.kind == "workflow.admitted"
+                && (def == "source-check" || def == "concern-escalate")
+            {
+                admitted = admitted + e.entity + "\n";
+                open = open + 1;
+            }
+            if e.kind == "workflow.settled"
+                && std::str::contains(admitted, "\n" + e.entity + "\n")
+            {
+                open = open - 1;
+            }
             i = i + 1;
         }
         return open;
@@ -168,7 +235,11 @@ main locus App {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "source-check" { n = n + 1; }
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(e.body, "definition") == "source-check"
+            {
+                n = n + 1;
+            }
             i = i + 1;
         }
         return n;
@@ -179,7 +250,11 @@ main locus App {
             std::time::sleep(100ms);
             tries = tries + 1;
         }
-        std::test::assert(self.admitted_checks() >= checks && self.open_executions() == 0, what + ": " + to_string(self.admitted_checks()) + " check(s) admitted, " + to_string(self.open_executions()) + " still open");
+        std::test::assert(
+            self.admitted_checks() >= checks && self.open_executions() == 0,
+            what + ": " + to_string(self.admitted_checks()) + " check(s) admitted, "
+                + to_string(self.open_executions()) + " still open",
+        );
     }
     // The upstream moves to `version`, the occurrence is convened and the
     // check (and the concern and the task it raises) settles.
@@ -196,7 +271,12 @@ main locus App {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "workflow.admitted" && std::str::starts_with(dna::native_json_string(e.body, "request"), "source-changelog-") {
+            if e.kind == "workflow.admitted"
+                && std::str::starts_with(
+                    dna::native_json_string(e.body, "request"),
+                    "source-changelog-",
+                )
+            {
                 k = k + 1;
                 if k == n { return e.entity; }
             }
@@ -219,29 +299,76 @@ main locus App {
     fn leg(task: String, turns: String) -> legs::Performance {
         let work = task + "/wf1/s0/w";
         let attempt = dna::attempt_id_of(work, 0);
-        self.wait_row("effect.relayed", "attempt:" + attempt, "the owner relays the position's Work to legs");
-        let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": " + to_string(std::time::now() + 600) + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"ada\"}";
+        self.wait_row(
+            "effect.relayed",
+            "attempt:" + attempt,
+            "the owner relays the position's Work to legs",
+        );
+        let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": "
+            + to_string(std::time::now() + 600)
+            + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"ada\"}";
         let moved = self.d.journal.refresh();
-        std::test::assert(self.d.journal.append(self.d.journal.revision(), "attempt.claimed", attempt, claim).ok, "the position's holder claims the Work (the lease, as a row)");
-        let reader = ops::HatReader { j: self.d.journal, receipts: dna::MemoryReceipts { repo: self.repo }, knowledge: dna::MemoryKnowledge { repo: self.repo }, ledger_ready: true };
+        std::test::assert(
+            self.d.journal.append(self.d.journal.revision(), "attempt.claimed", attempt, claim).ok,
+            "the position's holder claims the Work (the lease, as a row)",
+        );
+        let reader = ops::HatReader {
+            j: self.d.journal,
+            receipts: dna::MemoryReceipts { repo: self.repo },
+            knowledge: dna::MemoryKnowledge { repo: self.repo },
+            ledger_ready: true,
+        };
         let hat = reader.read(work);
         std::test::assert(hat.ok, "the head gives the leg its hat: " + hat.why);
-        std::test::assert_eq_str(hat.position_id, "position:app/dev", "worn as the owning position");
+        std::test::assert_eq_str(
+            hat.position_id,
+            "position:app/dev",
+            "worn as the owning position",
+        );
         let hat_text = dna::hat_json(hat);
         let rendered = legs::render(hat_text, "agent");
-        let req = dna::ModelRequest { attempt_id: attempt, role: "edit", prompt: rendered, prompt_digest: legs::prompt_digest(rendered), data_class: "internal" };
-        let brief = legs::Brief { work_id: work, attempt_id: attempt, task_id: task, performer_kind: "agent", position: "position:app/dev", hat: hat_text, rendered: rendered, holder: LEG, token: 1 };
+        let req = dna::ModelRequest {
+            attempt_id: attempt,
+            role: "edit",
+            prompt: rendered,
+            prompt_digest: legs::prompt_digest(rendered),
+            data_class: "internal",
+        };
+        let brief = legs::Brief {
+            work_id: work,
+            attempt_id: attempt,
+            task_id: task,
+            performer_kind: "agent",
+            position: "position:app/dev",
+            hat: hat_text,
+            rendered: rendered,
+            holder: LEG,
+            token: 1,
+        };
         let hands = legs::Hands { forge: legs::ForgeBridge { forge: self.forge } };
         let perf = legs::ModelPerformer {
-            router: dna::ModelRouter { quick: dna::FakeModel { name: "quick", turns_dir: turns, price_micros: 0 }, deep: dna::FakeModel { name: "deep", turns_dir: turns, price_micros: 0 }, private: dna::FakeModel { name: "private", turns_dir: turns, price_micros: 0 } },
+            router: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", turns_dir: turns, price_micros: 0 },
+                deep: dna::FakeModel { name: "deep", turns_dir: turns, price_micros: 0 },
+                private: dna::FakeModel { name: "private", turns_dir: turns, price_micros: 0 },
+            },
             effect: "idempotent", repo: self.repo, max_turns: 8
         };
         let done = perf.perform_loop(brief, hands, req, -1, "do");
         hands.git.clean();
         self.d.on_work_submit(dna::WorkSubmission {
-            attempt_id: attempt, holder: LEG, token: 1, disposition: done.disposition, result: done.result, result_ref: done.result_ref,
+            attempt_id: attempt,
+            holder: LEG,
+            token: 1,
+            disposition: done.disposition,
+            result: done.result,
+            result_ref: done.result_ref,
             narrative: done.narrative, evidence_ref: "", calls: done.calls, request: "r-" + attempt,
-            hat_digest: hat.digest, hat_head: hat.head, hat_watermark: hat.watermark, prompt_digest: done.prompt_digest, renderer: done.renderer
+            hat_digest: hat.digest,
+            hat_head: hat.head,
+            hat_watermark: hat.watermark,
+            prompt_digest: done.prompt_digest,
+            renderer: done.renderer
         });
         self.wait_row("attempt.outcome", attempt, "the owner settles the attempt");
         return done;
@@ -250,17 +377,25 @@ main locus App {
     // sync records it.
     fn intake() -> Int {
         let moved = self.d.journal.refresh();
-        let rows = dna::codebase_intake(self.d.journal, self.forge, dna::MemoryReceipts { repo: self.repo }, "client");
+        let rows = dna::codebase_intake(
+            self.d.journal,
+            self.forge,
+            dna::MemoryReceipts { repo: self.repo },
+            "client",
+        );
         return dna::codebase_intake_apply(self.d.journal, rows);
     }
     // The changed-client turns: read the client, rewrite it.
     fn change_turns(name: String, line: String) -> String {
         return self.turns(name,
             "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"client.txt\"}}]}",
-            "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"client.txt\", \"text\": \"" + line + "\\n\"}}]}",
+            "{\"tool_calls\": [{\"name\": \"edit\", \"arguments\": {\"path\": \"client.txt\", \"text\": \""
+                + line + "\\n\"}}]}",
             "{\"content\": \"require the currency in the charge client\"}");
     }
-    fn receipts_of(done: legs::Performance, needle: String) -> Bool { return std::str::contains(done.receipts, needle); }
+    fn receipts_of(done: legs::Performance, needle: String) -> Bool {
+        return std::str::contains(done.receipts, needle);
+    }
 
     run() {
         let receipts = dna::MemoryReceipts { repo: self.repo };
@@ -268,31 +403,90 @@ main locus App {
         // baseline: nothing is asked of anyone and no note is read
         self.adopt();
         let decl = self.last_body("schedule.declared", WATCHED);
-        std::test::assert(std::str::contains(decl, "\"definition\": \"source-check\"") && std::str::contains(decl, "\"convener\": \"position:app/dev\""), "convened by the owning position: " + decl);
+        std::test::assert(
+            std::str::contains(decl, "\"definition\": \"source-check\"")
+                && std::str::contains(decl, "\"convener\": \"position:app/dev\""),
+            "convened by the owning position: " + decl,
+        );
         self.t = std::json::find_int_field(decl, "from") + 3600000;
         self.d.tick(self.t);
         self.settle(1, "the baseline settles");
-        std::test::assert_eq_int(self.proposals("integration/changelog"), 0, "a baseline proposes no note");
+        std::test::assert_eq_int(
+            self.proposals("integration/changelog"),
+            0,
+            "a baseline proposes no note",
+        );
         std::test::assert_eq_str(self.task_of(1), "", "a baseline asks no task");
 
         // ---- a move upstream: a reading, a concern and a task, filed by no person
         self.move_to("v1.3.0", 2);
-        std::test::assert_eq_int(self.rows("reading.recorded", "sources/changelog.changed/"), 1, "the move is a reading");
-        std::test::assert_eq_int(self.rows("concern.raised", "app/dev/changelog"), 1, "and a concern routed to the position");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/changelog.changed/"),
+            1,
+            "the move is a reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/dev/changelog"),
+            1,
+            "and a concern routed to the position",
+        );
         let note1 = self.proposal("integration/changelog");
-        std::test::assert_eq_int(self.proposals("integration/changelog"), 1, "the note is proposed as knowledge: " + note1);
-        std::test::assert(std::str::contains(note1, "\"target\": \"position:app/dev\"") && std::str::contains(note1, "\"kind\": \"concept\""), "bound to the position, for the Board to ratify: " + note1);
-        std::test::assert(std::str::contains(receipts.read(std::json::find_string_field(note1, "digest")), "docs/integrations/changelog.md"), "its provenance names the codebase's note: " + note1);
+        std::test::assert_eq_int(
+            self.proposals("integration/changelog"),
+            1,
+            "the note is proposed as knowledge: " + note1,
+        );
+        std::test::assert(
+            std::str::contains(note1, "\"target\": \"position:app/dev\"")
+                && std::str::contains(note1, "\"kind\": \"concept\""),
+            "bound to the position, for the Board to ratify: " + note1,
+        );
+        std::test::assert(
+            std::str::contains(
+                receipts.read(std::json::find_string_field(note1, "digest")),
+                "docs/integrations/changelog.md",
+            ),
+            "its provenance names the codebase's note: " + note1,
+        );
         let t1 = self.task_of(1);
         std::test::assert(len(t1) > 0, "and a task under the position");
         let adm = self.d.recorded_admission(t1).value.inputs;
-        std::test::assert(std::json::find_string_field(adm, "position") == "position:app/dev" && std::json::find_string_field(adm, "codebase") == "client", "naming the codebase: " + adm);
+        std::test::assert(
+            std::json::find_string_field(adm, "position") == "position:app/dev"
+                && std::json::find_string_field(adm, "codebase") == "client",
+            "naming the codebase: " + adm,
+        );
         let brief1 = std::json::find_field_raw(adm, "integration");
-        std::test::assert(std::json::find_string_field(brief1, "practice") == WATCHED && std::json::find_string_field(brief1, "integration") == "changelog" && std::json::find_string_field(brief1, "codebase") == "client", "from the practice that convened the check: " + brief1);
-        let reading = std::json::find_string_field(self.last_body("reading.recorded", "sources/changelog.changed/"), "id");
-        std::test::assert(std::str::ends_with(std::json::find_string_field(brief1, "reading"), reading), "its brief carries the reading: " + brief1);
-        std::test::assert(std::str::contains(std::json::find_string_field(brief1, "diff"), "+v1.3.0: the charge's currency is required") && std::str::starts_with(std::json::find_string_field(brief1, "diff_receipt"), "sha256:"), "and its diff, the receipt: " + brief1);
-        std::test::assert_eq_str(std::json::find_string_field(brief1, "note"), NOTE, "and the integration's architecture note");
+        std::test::assert(
+            std::json::find_string_field(brief1, "practice") == WATCHED
+                && std::json::find_string_field(brief1, "integration") == "changelog"
+                && std::json::find_string_field(brief1, "codebase") == "client",
+            "from the practice that convened the check: " + brief1,
+        );
+        let reading = std::json::find_string_field(
+            self.last_body("reading.recorded", "sources/changelog.changed/"),
+            "id",
+        );
+        std::test::assert(
+            std::str::ends_with(std::json::find_string_field(brief1, "reading"), reading),
+            "its brief carries the reading: " + brief1,
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(brief1, "diff"),
+                "+v1.3.0: the charge's currency is required",
+            )
+                && std::str::starts_with(
+                    std::json::find_string_field(brief1, "diff_receipt"),
+                    "sha256:",
+                ),
+            "and its diff, the receipt: " + brief1,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(brief1, "note"),
+            NOTE,
+            "and the integration's architecture note",
+        );
         std::test::assert_eq_int(self.rows("workflow.admitted", t1), 1, "one task for one move");
 
         // ---- (a) a leg claims it, is briefed, reads the client through the
@@ -300,16 +494,47 @@ main locus App {
         // unchanged, it is delivered
         let done1 = self.leg(t1, self.change_turns("a", "charge: amount, currency"));
         std::test::assert_eq_str(done1.disposition, "done", "the leg answers: " + done1.narrative);
-        std::test::assert_eq_str(done1.result_ref, "review:#1", "the review opens at the codebase's forge: " + done1.result_ref);
-        std::test::assert(self.receipts_of(done1, "changelog integration") && self.receipts_of(done1, "+v1.3.0: the charge's currency is required"), "the note and the reading's diff are receipts on the answer");
-        std::test::assert(self.receipts_of(done1, "\\\"kind\\\": \\\"file\\\"") && self.receipts_of(done1, "client.txt"), "and the file it read through the hands: " + done1.receipts);
+        std::test::assert_eq_str(
+            done1.result_ref,
+            "review:#1",
+            "the review opens at the codebase's forge: " + done1.result_ref,
+        );
+        std::test::assert(
+            self.receipts_of(done1, "changelog integration")
+                && self.receipts_of(done1, "+v1.3.0: the charge's currency is required"),
+            "the note and the reading's diff are receipts on the answer",
+        );
+        std::test::assert(
+            self.receipts_of(done1, "\\\"kind\\\": \\\"file\\\"")
+                && self.receipts_of(done1, "client.txt"),
+            "and the file it read through the hands: " + done1.receipts,
+        );
         let sources = done1.receipts;
-        std::test::assert(self.receipts_of(done1, "\\\"kind\\\": \\\"note\\\"") && self.receipts_of(done1, dna::source_digest(NOTE)), "the sources are listed by digest: " + sources);
+        std::test::assert(
+            self.receipts_of(done1, "\\\"kind\\\": \\\"note\\\"")
+                && self.receipts_of(done1, dna::source_digest(NOTE)),
+            "the sources are listed by digest: " + sources,
+        );
         let outcome1 = self.last_body("attempt.outcome", dna::attempt_id_of(t1 + "/wf1/s0/w", 0));
-        std::test::assert(std::json::find_string_field(outcome1, "disposition") == "done" && std::str::starts_with(std::json::find_string_field(outcome1, "result_ref"), "review:"), "the owner settles it done on the review: " + outcome1);
-        std::test::assert_eq_int(self.rows("mutation.requested", ""), 0, "the organism's own genome is not touched");
+        std::test::assert(
+            std::json::find_string_field(outcome1, "disposition") == "done"
+                && std::str::starts_with(
+                    std::json::find_string_field(outcome1, "result_ref"),
+                    "review:",
+                ),
+            "the owner settles it done on the review: " + outcome1,
+        );
+        std::test::assert_eq_int(
+            self.rows("mutation.requested", ""),
+            0,
+            "the organism's own genome is not touched",
+        );
         let review1 = self.forge.reviews.get("#1") or dna::MemReview { };
-        std::test::assert_eq_str(review1.candidate, "leg/client/" + t1, "the review is of the leg's branch of the codebase");
+        std::test::assert_eq_str(
+            review1.candidate,
+            "leg/client/" + t1,
+            "the review is of the leg's branch of the codebase",
+        );
         let leg1 = dna::leg_commit_in(review1.body);
         std::test::assert_eq_int(len(leg1), 40, "naming the commit the leg left it at");
         std::test::assert_eq_int(self.intake(), 0, "an open review has no verdict");
@@ -318,38 +543,96 @@ main locus App {
         std::test::assert(self.forge.merge("#1", leg1), "at the leg's own commit");
         std::test::assert_eq_int(self.intake(), 1, "the forge's word is recorded");
         let delivered = self.last_body("task.delivered", t1);
-        std::test::assert(std::json::find_string_field(delivered, "merge_commit") == leg1 && !std::json::find_bool_field(delivered, "edited") && len(std::json::find_string_field(delivered, "edit_receipt")) == 0 && len(std::json::find_string_field(delivered, "comment_receipts")) == 0, "merged unchanged is delivered, with no edit and no comments: " + delivered);
+        std::test::assert(
+            std::json::find_string_field(delivered, "merge_commit") == leg1
+                && !std::json::find_bool_field(delivered, "edited")
+                && len(std::json::find_string_field(delivered, "edit_receipt")) == 0
+                && len(std::json::find_string_field(delivered, "comment_receipts")) == 0,
+            "merged unchanged is delivered, with no edit and no comments: " + delivered,
+        );
         std::test::assert_eq_int(self.intake(), 0, "and recorded once");
 
         // ---- (b) the team edits the leg's pull request before merging it
         self.move_to("v1.4.0", 3);
-        std::test::assert_eq_int(self.proposals("integration/changelog"), 1, "the note, unchanged, is not proposed again");
+        std::test::assert_eq_int(
+            self.proposals("integration/changelog"),
+            1,
+            "the note, unchanged, is not proposed again",
+        );
         let t2 = self.task_of(2);
         std::test::assert(len(t2) > 0 && t2 != t1, "the next move is its own task");
         let done2 = self.leg(t2, self.change_turns("b", "charge: amount, currency, region"));
-        std::test::assert_eq_str(done2.result_ref, "review:#2", "a second review: " + done2.result_ref + done2.narrative);
+        std::test::assert_eq_str(
+            done2.result_ref,
+            "review:#2",
+            "a second review: " + done2.result_ref + done2.narrative,
+        );
         let leg2 = dna::leg_commit_in((self.forge.reviews.get("#2") or dna::MemReview { }).body);
-        let edit = sh("rm -rf team && git clone -q client.git team && cd team && git checkout -q -b edit " + leg2 + " && printf 'charge: amount, currency, region, idempotency_key\\n' > client.txt && git add -A && git -c user.name=ben -c user.email=ben@client commit -q -m 'keep the idempotency key' && git push -q origin edit:trunk", self.scratch);
-        std::test::assert_eq_int(edit.code, 0, "the team edits the branch on top of the leg's commit: " + edit.stderr);
-        let merged2 = dna::trim_nl(sh("git --git-dir client.git rev-parse trunk", self.scratch).stdout);
-        std::test::assert(self.forge.say("#2", "ben", "please keep the idempotency key\nin the charge") && self.forge.merge("#2", merged2), "and merges it");
+        let edit = sh(
+            "rm -rf team && git clone -q client.git team && cd team && git checkout -q -b edit "
+                + leg2
+                + " && printf 'charge: amount, currency, region, idempotency_key\\n' > client.txt && git add -A && git -c user.name=ben -c user.email=ben@client commit -q -m 'keep the idempotency key' && git push -q origin edit:trunk",
+            self.scratch,
+        );
+        std::test::assert_eq_int(
+            edit.code,
+            0,
+            "the team edits the branch on top of the leg's commit: " + edit.stderr,
+        );
+        let merged2 = dna::trim_nl(
+            sh("git --git-dir client.git rev-parse trunk", self.scratch).stdout,
+        );
+        std::test::assert(
+            self.forge.say("#2", "ben", "please keep the idempotency key\nin the charge")
+                && self.forge.merge("#2", merged2),
+            "and merges it",
+        );
         std::test::assert_eq_int(self.intake(), 1, "the verdict is recorded");
         let delivered2 = self.last_body("task.delivered", t2);
-        std::test::assert(std::json::find_bool_field(delivered2, "edited") && std::json::find_string_field(delivered2, "leg_commit") == leg2 && std::json::find_string_field(delivered2, "merge_commit") == merged2, "still delivered, and edited: " + delivered2);
+        std::test::assert(
+            std::json::find_bool_field(delivered2, "edited")
+                && std::json::find_string_field(delivered2, "leg_commit") == leg2
+                && std::json::find_string_field(delivered2, "merge_commit") == merged2,
+            "still delivered, and edited: " + delivered2,
+        );
         let diff = receipts.read(std::json::find_string_field(delivered2, "edit_receipt"));
-        std::test::assert(std::str::contains(diff, "+charge: amount, currency, region, idempotency_key") && std::str::contains(diff, "-charge: amount, currency, region\n"), "the diff from the leg's last commit to the merge commit is a receipt: " + diff);
+        std::test::assert(
+            std::str::contains(diff, "+charge: amount, currency, region, idempotency_key")
+                && std::str::contains(diff, "-charge: amount, currency, region\n"),
+            "the diff from the leg's last commit to the merge commit is a receipt: " + diff,
+        );
         let comment = std::json::find_string_field(delivered2, "comment_receipts");
-        std::test::assert(len(comment) == 64 && !std::str::contains(comment, " ") && std::str::contains(receipts.read(comment), "ben on review #2:\nplease keep the idempotency key\nin the charge"), "and the review's comment is a receipt on the verdict row: " + delivered2);
-        std::test::assert_eq_int(self.rows("task.review_commented", ""), 0, "a comment has no row kind of its own");
+        std::test::assert(
+            len(comment) == 64
+                && !std::str::contains(comment, " ")
+                && std::str::contains(
+                    receipts.read(comment),
+                    "ben on review #2:\nplease keep the idempotency key\nin the charge",
+                ),
+            "and the review's comment is a receipt on the verdict row: " + delivered2,
+        );
+        std::test::assert_eq_int(
+            self.rows("task.review_commented", ""),
+            0,
+            "a comment has no row kind of its own",
+        );
 
         // ---- (c) a pull request closed without merging is refused
         self.move_to("v1.5.0", 4);
         let t3 = self.task_of(3);
         let done3 = self.leg(t3, self.change_turns("c", "charge: amount, currency, region, tz"));
-        std::test::assert_eq_str(done3.result_ref, "review:#3", "a third review: " + done3.result_ref + done3.narrative);
+        std::test::assert_eq_str(
+            done3.result_ref,
+            "review:#3",
+            "a third review: " + done3.result_ref + done3.narrative,
+        );
         std::test::assert(self.forge.close_review("#3", "not now"), "the team closes it");
         std::test::assert_eq_int(self.intake(), 1, "the closing is recorded");
-        std::test::assert(std::str::contains(self.last_body("task.refused", t3), "closed without merging") && self.rows("task.delivered", t3) == 0, "refused, not delivered: " + self.last_body("task.refused", t3));
+        std::test::assert(
+            std::str::contains(self.last_body("task.refused", t3), "closed without merging")
+                && self.rows("task.delivered", t3) == 0,
+            "refused, not delivered: " + self.last_body("task.refused", t3),
+        );
 
         // ---- (d) nothing needs to change: a no-impact brief with receipts,
         // reviewed in the organism, not on the forge
@@ -357,26 +640,68 @@ main locus App {
         let t4 = self.task_of(4);
         let turns4 = self.turns("d",
             "{\"tool_calls\": [{\"name\": \"read\", \"arguments\": {\"path\": \"client.txt\"}}]}",
-            "{\"content\": \"NO IMPACT: client.txt sends the amount only and the upstream's new field is optional for it.\"}", "");
+            "{\"content\": \"NO IMPACT: client.txt sends the amount only and the upstream's new field is optional for it.\"}",
+            "");
         let done4 = self.leg(t4, turns4);
-        std::test::assert(done4.disposition == "done" && std::str::starts_with(done4.result_ref, "brief:"), "the leg answers with a brief: " + done4.result_ref + " " + done4.narrative);
-        std::test::assert(self.receipts_of(done4, "changelog integration") && self.receipts_of(done4, "client.txt") && self.receipts_of(done4, "+v1.6.0: the charge's currency is required"), "with the note, the diff and the file it read as receipts: " + done4.receipts);
+        std::test::assert(
+            done4.disposition == "done" && std::str::starts_with(done4.result_ref, "brief:"),
+            "the leg answers with a brief: " + done4.result_ref + " " + done4.narrative,
+        );
+        std::test::assert(
+            self.receipts_of(done4, "changelog integration")
+                && self.receipts_of(done4, "client.txt")
+                && self.receipts_of(done4, "+v1.6.0: the charge's currency is required"),
+            "with the note, the diff and the file it read as receipts: " + done4.receipts,
+        );
         std::test::assert_eq_int(self.forge.next, 4, "and opens no review at the forge");
         let briefed = self.proposal("integration/changelog/brief/");
         let digest = std::json::find_string_field(briefed, "digest");
-        std::test::assert(len(digest) > 0 && std::str::starts_with(std::json::find_string_field(receipts.read(digest), "provenance"), "brief of task " + t4 + " "), "the brief is put to a Review in the organism, as knowledge naming the task: " + briefed);
-        std::test::assert_eq_int(self.rows("review.requested", "review:" + std::json::find_string_field(briefed, "review_id")), 1, "which is open");
+        std::test::assert(
+            len(digest) > 0
+                && std::str::starts_with(
+                    std::json::find_string_field(receipts.read(digest), "provenance"),
+                    "brief of task " + t4 + " ",
+                ),
+            "the brief is put to a Review in the organism, as knowledge naming the task: "
+                + briefed,
+        );
+        std::test::assert_eq_int(
+            self.rows(
+                "review.requested",
+                "review:" + std::json::find_string_field(briefed, "review_id"),
+            ),
+            1,
+            "which is open",
+        );
         std::test::assert_eq_int(self.rows("task.delivered", t4), 0, "undecided");
-        dna::ReviewVerdict <- dna::Verdict { command_id: "brief/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            command_id: "brief/decision",
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "board-member",
+            authority: "board",
+        };
         self.wait_row("task.delivered", t4, "the Board's verdict is the task's");
-        std::test::assert(std::str::contains(self.last_body("task.delivered", t4), "\"via\": \"brief\""), "delivered by the brief's Review: " + self.last_body("task.delivered", t4));
+        std::test::assert(
+            std::str::contains(self.last_body("task.delivered", t4), "\"via\": \"brief\""),
+            "delivered by the brief's Review: " + self.last_body("task.delivered", t4),
+        );
 
         // ---- the codebase's note changes on its default branch: the next
         // move proposes it again, as a fresh proposal on the same node
-        let renote = sh("rm -rf team && git clone -q client.git team && cd team && printf '%s\\nA second paragraph.\\n' \"$(cat docs/integrations/changelog.md)\" > docs/integrations/changelog.md && git add -A && git -c user.name=ben -c user.email=ben@client commit -q -m note && git push -q origin HEAD:trunk", self.scratch);
+        let renote = sh(
+            "rm -rf team && git clone -q client.git team && cd team && printf '%s\\nA second paragraph.\\n' \"$(cat docs/integrations/changelog.md)\" > docs/integrations/changelog.md && git add -A && git -c user.name=ben -c user.email=ben@client commit -q -m note && git push -q origin HEAD:trunk",
+            self.scratch,
+        );
         std::test::assert_eq_int(renote.code, 0, "the note is edited upstream: " + renote.stderr);
         self.move_to("v1.7.0", 6);
-        std::test::assert_eq_int(self.proposals("integration/changelog") - self.proposals("integration/changelog/brief/"), 2, "a changed note is a fresh proposal on the same node");
+        std::test::assert_eq_int(
+            self.proposals("integration/changelog")
+                - self.proposals("integration/changelog/brief/"),
+            2,
+            "a changed note is a fresh proposal on the same node",
+        );
         dna::scratch_done(self.scratch);
     }
 }
@@ -386,10 +711,21 @@ fn main() {
     let made = dna::grafted(scratch, "app");
     std::test::assert_eq_int(made.code, 0, "an organism grafted: " + made.stdout + made.stderr);
     let repo = scratch + "/app";
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let as_ada = dna::RecordJournal { repo: repo, author: "ada" };
-    std::test::assert(as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok, "ada is a person the record knows");
-    std::test::assert_eq_str(ops::graph_seat(journal(repo), "position:app/dev", "ada"), "", "ada holds app/dev");
+    std::test::assert(
+        as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok,
+        "ada is a person the record knows",
+    );
+    std::test::assert_eq_str(
+        ops::graph_seat(journal(repo), "position:app/dev", "ada"),
+        "",
+        "ada holds app/dev",
+    );
     let spine = dna::kept_spine_dsn(repo);
     std::test::assert(len(spine) > 0, "the clone reaches memory as the spine");
     let projected = ops::MemoryProjection { root: repo, dsn_env: spine }.apply();
@@ -403,11 +739,30 @@ fn main() {
     std::io::fs::write_file(seed + "/client.txt", "charge: amount\n") or discard;
     std::io::fs::write_file(seed + "/test.sh", "grep -q currency client.txt\n") or discard;
     std::io::fs::write_file(seed + "/docs/integrations/changelog.md", NOTE) or discard;
-    let seeded = sh("git init -q -b trunk && git config user.name f && git config user.email f@f && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed client.git", seed);
+    let seeded = sh(
+        "git init -q -b trunk && git config user.name f && git config user.email f@f && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed client.git",
+        seed,
+    );
     std::test::assert_eq_int(seeded.code, 0, "the codebase's repository is made: " + seeded.stderr);
     let bare = scratch + "/client.git";
-    let c = dna::Codebase { present: true, name: "client", repo: bare, build: "true", test: "sh test.sh", branch: "trunk", by: "ada" };
-    std::test::assert(as_ada.append(as_ada.revision(), "codebase.attached", "codebase:client", dna::codebase_body(c)).ok, "the codebase is attached");
+    let c = dna::Codebase {
+        present: true,
+        name: "client",
+        repo: bare,
+        build: "true",
+        test: "sh test.sh",
+        branch: "trunk",
+        by: "ada",
+    };
+    std::test::assert(
+        as_ada.append(
+            as_ada.revision(),
+            "codebase.attached",
+            "codebase:client",
+            dna::codebase_body(c),
+        ).ok,
+        "the codebase is attached",
+    );
 
     // the upstream's changelog, read from a file
     let upstream = scratch + "/upstream";
@@ -417,11 +772,17 @@ fn main() {
     App {
         repo: repo, upstream: upstream, bare: bare, scratch: scratch,
         d: dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: spine } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: spine },
+            },
             knowledge_client: dna::MemoryKnowledge { repo: repo },
             verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo } },
             gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: repo } },
-            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
+            work: dna::WorkSystem {
+                agent: dna::LegRelay { name: "legs" },
+                agent_reconciler: dna::RelayReplay { },
+            },
             org_id: "watch"
         }
     };

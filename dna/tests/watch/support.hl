@@ -12,15 +12,25 @@ fn toolchain() -> String {
 }
 
 fn sh(script: String, dir: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n" + dir + "\n" + script);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && eval \"$2\"\nsh\n"
+            + dir + "\n" + script,
+    );
 }
 
 fn journal(repo: String) -> dna::RoutedJournal {
-    return dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    return dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
 }
 
 fn dna_cli(repo: String, args: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + repo + "\n" + toolchain() + "\ndna\n" + args);
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+            + repo + "\n" + toolchain() + "\ndna\n" + args,
+    );
 }
 
 // How many rows of `kind` name an entity starting with `prefix`.
@@ -70,7 +80,11 @@ fn proposals(repo: String, name: String) -> Int {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && std::str::starts_with(std::json::find_string_field(e.body, "name"), name) { n = n + 1; }
+        if e.kind == "knowledge.proposed"
+            && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+        {
+            n = n + 1;
+        }
         i = i + 1;
     }
     return n;
@@ -83,7 +97,11 @@ fn proposal(repo: String, name: String) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "knowledge.proposed" && std::str::starts_with(std::json::find_string_field(e.body, "name"), name) { out = e.body; }
+        if e.kind == "knowledge.proposed"
+            && std::str::starts_with(std::json::find_string_field(e.body, "name"), name)
+        {
+            out = e.body;
+        }
         i = i + 1;
     }
     return out;
@@ -98,8 +116,13 @@ fn open_executions(repo: String) -> Int {
     while i < j.revision() {
         let e = j.read(i);
         let def = std::json::find_string_field(e.body, "definition");
-        if e.kind == "workflow.admitted" && (def == "source-check" || def == "concern-escalate") { admitted = admitted + e.entity + "\n"; open = open + 1; }
-        if e.kind == "workflow.settled" && std::str::contains(admitted, "\n" + e.entity + "\n") { open = open - 1; }
+        if e.kind == "workflow.admitted" && (def == "source-check" || def == "concern-escalate") {
+            admitted = admitted + e.entity + "\n";
+            open = open + 1;
+        }
+        if e.kind == "workflow.settled" && std::str::contains(admitted, "\n" + e.entity + "\n") {
+            open = open - 1;
+        }
         i = i + 1;
     }
     return open;
@@ -111,7 +134,11 @@ fn admitted_checks(repo: String) -> Int {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "source-check" { n = n + 1; }
+        if e.kind == "workflow.admitted"
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+        {
+            n = n + 1;
+        }
         i = i + 1;
     }
     return n;
@@ -124,7 +151,9 @@ fn task_of(repo: String, prefix: String, n: Int) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "workflow.admitted" && std::str::starts_with(dna::native_json_string(e.body, "request"), prefix) {
+        if e.kind == "workflow.admitted"
+            && std::str::starts_with(dna::native_json_string(e.body, "request"), prefix)
+        {
             k = k + 1;
             if k == n { return e.entity; }
         }
@@ -134,4 +163,6 @@ fn task_of(repo: String, prefix: String, n: Int) -> String {
 }
 
 // The author of the admission of task `task`.
-fn task_author(repo: String, task: String) -> String { return last_author(repo, "workflow.admitted", task); }
+fn task_author(repo: String, task: String) -> String {
+    return last_author(repo, "workflow.admitted", task);
+}

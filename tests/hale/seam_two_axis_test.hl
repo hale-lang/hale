@@ -54,7 +54,9 @@ locus Store {
         return "user " + u.name + " in";
     }
     fn delete_user(u: DeleteUser) -> String fallible(StoreError) {
-        if !std::str::contains(self.users, u.name + ",") { fail StoreError { why: "no user " + u.name }; }
+        if !std::str::contains(self.users, u.name + ",") {
+            fail StoreError { why: "no user " + u.name };
+        }
         return "user " + u.name + " out";
     }
     // the decoder's failure enters the chain here, a member like the rest
@@ -78,8 +80,20 @@ fn main() {
     std::test::assert_eq_str(run(db, "I:orders:7"), "order 7 in", "insert into orders");
     std::test::assert_eq_str(run(db, "I:users:ann"), "user ann in", "insert into users");
     std::test::assert_eq_str(run(db, "D:orders:7"), "order 7 out", "delete from orders");
-    std::test::assert_eq_str(run(db, "D:orders:8"), "refused: no order 8", "the store's failure ends the call");
+    std::test::assert_eq_str(
+        run(db, "D:orders:8"),
+        "refused: no order 8",
+        "the store's failure ends the call",
+    );
     std::test::assert_eq_str(run(db, "D:users:ann"), "user ann out", "delete from users");
-    std::test::assert_eq_str(run(db, "D:users:bob"), "refused: no user bob", "and for the other table");
-    std::test::assert_eq_str(run(db, "X:orders:1"), "bad frame X:orders:1", "the decoder's failure, answered");
+    std::test::assert_eq_str(
+        run(db, "D:users:bob"),
+        "refused: no user bob",
+        "and for the other table",
+    );
+    std::test::assert_eq_str(
+        run(db, "X:orders:1"),
+        "bad frame X:orders:1",
+        "the decoder's failure, answered",
+    );
 }

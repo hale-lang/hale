@@ -29,7 +29,9 @@ main locus App {
         std::test::assert(self.b.color == Color::Green, "an enum field takes the assigned tag");
         self.b.form(Shape::Circle(4));
         match self.b.shape {
-            Shape::Circle(r) -> { std::test::assert_eq_int(r, 4, "a payload enum field is stored too"); },
+            Shape::Circle(r) -> {
+                std::test::assert_eq_int(r, 4, "a payload enum field is stored too");
+            },
             _ -> { std::test::assert(false, "the circle"); },
         }
 
@@ -38,9 +40,15 @@ main locus App {
         let mut refused = false;
         push(self.seen, Color::Red) or { refused = true; };
         std::test::assert(refused, "a full buffer refuses the third");
-        std::test::assert((at(self.seen, 1) or Color::Red) == Color::Blue, "a tag read back is the one pushed");
+        std::test::assert(
+            (at(self.seen, 1) or Color::Red) == Color::Blue,
+            "a tag read back is the one pushed",
+        );
         set(self.seen, 0, Color::Red) or { };
-        std::test::assert((at(self.seen, 0) or Color::Green) == Color::Red, "set overwrites a live slot");
+        std::test::assert(
+            (at(self.seen, 0) or Color::Green) == Color::Red,
+            "set overwrites a live slot",
+        );
         let mut n = 0;
         for c in self.seen {
             if c != Color::Green { n = n + 1; }
@@ -51,7 +59,11 @@ main locus App {
         push(p.picks, Color::Blue) or { };
         let copy = p;
         std::test::assert_eq_int(count(copy.picks), 1, "a whole-struct copy carries the tags");
-        std::test::assert_eq_str(to_string(at(copy.picks, 0) or Color::Red), "Color::Blue", "and prints them");
+        std::test::assert_eq_str(
+            to_string(at(copy.picks, 0) or Color::Red),
+            "Color::Blue",
+            "and prints them",
+        );
     }
 }
 

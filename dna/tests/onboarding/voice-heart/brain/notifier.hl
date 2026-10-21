@@ -40,7 +40,12 @@ locus Notifier {
         // the last trouble, said once each time it changes
         trouble: String = "";
         // a publish's flush waits at most 2 s for its PONG
-        client: nats::NatsClient = nats::NatsClient { name: "voice-brain", timeout: 2s, user: self.user, credential: std::secret::Credential { vault: self.vault } };
+        client: nats::NatsClient = nats::NatsClient {
+            name: "voice-brain",
+            timeout: 2s,
+            user: self.user,
+            credential: std::secret::Credential { vault: self.vault },
+        };
     }
 
     bus {
@@ -73,7 +78,13 @@ locus Notifier {
         }
         let version = self.latest;
         let mut why = "";
-        self.client.pub_msg(self.subjects + ".route", "", std::bytes::from_string("{\"version\": " + to_string(version) + "}")) or { why = self.client.last_error; };
+        self.client.pub_msg(
+            self.subjects + ".route",
+            "",
+            std::bytes::from_string("{\"version\": " + to_string(version) + "}"),
+        ) or {
+            why = self.client.last_error;
+        };
         if len(why) == 0 { self.client.flush() or { why = self.client.last_error; }; }
         if len(why) > 0 {
             self.client.close();
@@ -102,12 +113,18 @@ locus Notifier {
         let place = nats_place(self.url);
         let probe = std::io::tcp::connect_within(place.host, place.port, 2s) or - 1;
         if probe < 0 {
-            self.say("the version's notice: NATS does not answer at " + place.host + ":" + to_string(place.port));
+            self.say(
+                "the version's notice: NATS does not answer at " + place.host + ":"
+                    + to_string(place.port),
+            );
             return false;
         }
         std::io::tcp::close_fd(probe);
         if !self.client.open() {
-            self.say("the version's notice: NATS unreachable at " + self.url + ": " + self.client.last_error);
+            self.say(
+                "the version's notice: NATS unreachable at " + self.url + ": "
+                    + self.client.last_error,
+            );
             return false;
         }
         return true;
@@ -116,7 +133,11 @@ locus Notifier {
     /// Say trouble, or its end, once each time it changes.
     fn say(what: String) {
         if what == self.trouble { return; }
-        if len(what) > 0 { log_warn(what, ""); } else { log_info("the route table's version is told on NATS again", ""); }
+        if len(what) > 0 {
+            log_warn(what, "");
+        } else {
+            log_info("the route table's version is told on NATS again", "");
+        }
         self.trouble = what;
     }
 }
@@ -133,5 +154,8 @@ fn nats_place(url: String) -> NatsPlace {
     if at >= 0 { rest = rest[(at + 1)..len(rest)]; }
     let pc = std::str::index_of(rest, ":");
     if pc < 0 { return NatsPlace { host: rest }; }
-    return NatsPlace { host: rest[0..pc], port: std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222 };
+    return NatsPlace {
+        host: rest[0..pc],
+        port: std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222,
+    };
 }

@@ -30,8 +30,17 @@ locus Kid {
 }
 
 main locus App {
-    params { first: Kid = Kid { tag: 0 }; second: Kid = Kid { tag: 1 }; third: Kid = Kid { tag: 2 }; heard: Int = 0; }
-    placement { first: cooperative(pool = left); second: cooperative(pool = right); third: cooperative(pool = far); }
+    params {
+        first: Kid = Kid { tag: 0 };
+        second: Kid = Kid { tag: 1 };
+        third: Kid = Kid { tag: 2 };
+        heard: Int = 0;
+    }
+    placement {
+        first: cooperative(pool = left);
+        second: cooperative(pool = right);
+        third: cooperative(pool = far);
+    }
     bus { publish Gos; }
     fn trigger(k: Int) {
         Gos <- Go { k: k };

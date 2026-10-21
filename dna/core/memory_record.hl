@@ -27,7 +27,16 @@ const RECORD_SIG_NAMESPACE: String = "hale-dna-record";
 // Whether `author` is a person, whose rows are signed with the person's own
 // key; the organism's parts sign with the record's.
 fn person_author(author: String) -> Bool {
-    if len(author) == 0 || author == "dna" || author == "spine" || author == "host" || author == "ledger" || author == "body" || author == "probe" { return false; }
+    if len(author) == 0
+        || author == "dna"
+        || author == "spine"
+        || author == "host"
+        || author == "ledger"
+        || author == "body"
+        || author == "probe"
+    {
+        return false;
+    }
     return !std::str::starts_with(author, "node/") && !std::str::starts_with(author, "leg/");
 }
 
@@ -47,7 +56,12 @@ fn person_signing_key(repo: String) -> String {
 // `digest` signed with the ssh key at `key`: "ssh:<base64 of the armored
 // signature>", "" when it could not be signed.
 fn ssh_sign(key: String, digest: String) -> String {
-    let r = run_tool("sh\n-c\nt=$(mktemp) && printf '%s' \"$2\" > \"$t\" && ssh-keygen -Y sign -q -f \"$1\" -n " + RECORD_SIG_NAMESPACE + " \"$t\" >/dev/null 2>&1 && base64 < \"$t.sig\" | tr -d '\\n'; s=$?; rm -f \"$t\" \"$t.sig\"; exit $s\nsh\n" + key + "\n" + digest);
+    let r = run_tool(
+        "sh\n-c\nt=$(mktemp) && printf '%s' \"$2\" > \"$t\" && ssh-keygen -Y sign -q -f \"$1\" -n "
+            + RECORD_SIG_NAMESPACE
+            + " \"$t\" >/dev/null 2>&1 && base64 < \"$t.sig\" | tr -d '\\n'; s=$?; rm -f \"$t\" \"$t.sig\"; exit $s\nsh\n"
+            + key + "\n" + digest,
+    );
     if r.code != 0 || len(trim_nl(r.stdout)) == 0 { return ""; }
     return "ssh:" + trim_nl(r.stdout);
 }
@@ -59,7 +73,15 @@ fn ssh_verify(allowed: String, who: String, digest: String, sig: String) -> Bool
     // the lines travel as one argument, tab-joined: an argv is split at
     // its newlines, so a newline in `allowed` would shift every argument;
     // and a blank line among them is skipped without failing the loop
-    let r = run_tool("sh\n-c\nd=$(mktemp -d) && printf '%s\\n' \"$1\" | tr '\\t' '\\n' | while read -r w k; do [ -z \"$w\" ] || printf '%s namespaces=\"" + RECORD_SIG_NAMESPACE + "\" %s\\n' \"$w\" \"$k\"; done > \"$d/allowed\" && printf '%s' \"$4\" | base64 -d > \"$d/sig\" && printf '%s' \"$3\" | ssh-keygen -Y verify -f \"$d/allowed\" -I \"$2\" -n " + RECORD_SIG_NAMESPACE + " -s \"$d/sig\" >/dev/null 2>&1; s=$?; rm -rf \"$d\"; exit $s\nsh\n" + std::str::replace(allowed, "\n", "\t") + "\n" + who + "\n" + digest + "\n" + sig[4..len(sig)]);
+    let r = run_tool(
+        "sh\n-c\nd=$(mktemp -d) && printf '%s\\n' \"$1\" | tr '\\t' '\\n' | while read -r w k; do [ -z \"$w\" ] || printf '%s namespaces=\""
+            + RECORD_SIG_NAMESPACE
+            + "\" %s\\n' \"$w\" \"$k\"; done > \"$d/allowed\" && printf '%s' \"$4\" | base64 -d > \"$d/sig\" && printf '%s' \"$3\" | ssh-keygen -Y verify -f \"$d/allowed\" -I \"$2\" -n "
+            + RECORD_SIG_NAMESPACE
+            + " -s \"$d/sig\" >/dev/null 2>&1; s=$?; rm -rf \"$d\"; exit $s\nsh\n"
+            + std::str::replace(allowed, "\n", "\t") + "\n" + who + "\n" + digest + "\n"
+            + sig[4..len(sig)],
+    );
     return r.code == 0;
 }
 
@@ -75,7 +97,10 @@ locus RecordSigner {
     }
     fn sign(author: String, digest: String) -> String {
         if person_author(author) {
-            if !self.person_key_read { self.person_key = person_signing_key(self.repo); self.person_key_read = true; }
+            if !self.person_key_read {
+                self.person_key = person_signing_key(self.repo);
+                self.person_key_read = true;
+            }
             if len(self.person_key) == 0 { return ""; }
             return ssh_sign(self.person_key, digest);
         }
@@ -131,7 +156,10 @@ locus PqRecord {
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
         let sch = schema_for(self.record_id);
         let ns = self.conn.exec("SET search_path TO " + sch + ", public");
-        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        if !ns.ok {
+            self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail;
+            return false;
+        }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
         self.opened = true;
@@ -163,7 +191,10 @@ locus PqRecord {
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, sig FROM record_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        let rows = self.run_q(
+            "SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, sig FROM record_rows WHERE seq >= $1::bigint ORDER BY seq) t",
+            a,
+        );
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
         // scanned by offset: a tail re-sliced per row copies the rest of the
         // answer each time, and a record of thousands of rows held gigabytes
@@ -175,7 +206,10 @@ locus PqRecord {
             at = end + 1;
             if len(trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
-            if seq != self.rows.len() { self.error = "load: the record's sequence is not contiguous"; return; }
+            if seq != self.rows.len() {
+                self.error = "load: the record's sequence is not contiguous";
+                return;
+            }
             self.rows.push(Event {
                 seq: seq,
                 kind: std::json::find_string_field(line, "kind"),
@@ -202,17 +236,27 @@ locus PqRecord {
     fn refresh() -> Bool {
         self.error = "";
         if !self.opened { self.error = "refresh: the record is not open"; return false; }
-        let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM record_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM record_rows");
+        let n = self.run_one(
+            "SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM record_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM record_rows",
+        );
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
         let row = trim_nl(n.data);
         let count = std::str::parse_int(tab_field(row, 0)) or - 1;
         let first = std::str::parse_int(tab_field(row, 1)) or - 1;
         let last = std::str::parse_int(tab_field(row, 2)) or - 2;
         let head = tab_field(row, 3);
-        if count < 0 || first != 0 || last != count - 1 { self.error = "refresh: the record's sequence is not contiguous"; return false; }
-        if count < self.rows.len() { self.error = "refresh: the record's row count moved backwards"; return false; }
+        if count < 0 || first != 0 || last != count - 1 {
+            self.error = "refresh: the record's sequence is not contiguous";
+            return false;
+        }
+        if count < self.rows.len() {
+            self.error = "refresh: the record's row count moved backwards";
+            return false;
+        }
         if count == self.rows.len() {
-            if head != self.head() { self.error = "refresh: the record's history changed at the same revision"; }
+            if head != self.head() {
+                self.error = "refresh: the record's history changed at the same revision";
+            }
             return false;
         }
         self.load();
@@ -228,7 +272,16 @@ locus PqRecord {
     // read are loaded either way.
     // `self.error` holds only the last failure, replaced whole.
     @bounded_by(self.error)
-    fn insert(expected: Int, prev: String, kind: String, entity: String, body: String, author: String, sig: String, request: String) -> AppendResult {
+    fn insert(
+        expected: Int,
+        prev: String,
+        kind: String,
+        entity: String,
+        body: String,
+        author: String,
+        sig: String,
+        request: String
+    ) -> AppendResult {
         let a = db::Args { };
         a.add(to_string(expected));
         a.add(prev);
@@ -239,12 +292,23 @@ locus PqRecord {
         a.add(sig);
         a.add(request);
         let r = self.run_q("SELECT record_append($1::bigint, $2, $3, $4, $5, $6, $7, $8)", a);
-        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        if !r.ok {
+            self.error = "append: " + r.err.kind + " " + r.err.detail;
+            return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        }
         let out = trim_nl(line_one(r.csv));
         let err = std::json::find_string_field(out, "error");
         self.load();
-        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
-        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        if len(err) == 0 {
+            return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 };
+        }
+        if err == "stale_revision" {
+            return AppendResult {
+                error: "stale_revision",
+                expected: expected,
+                actual: std::json::find_int_field(out, "actual"),
+            };
+        }
         self.error = std::json::find_string_field(out, "why");
         return AppendResult { error: "refused", expected: expected, actual: self.rows.len() };
     }
@@ -257,12 +321,23 @@ locus PqRecord {
         a.add(prev);
         a.add(rows);
         let r = self.run_q("SELECT record_append_rows($1::bigint, $2, $3)", a);
-        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        if !r.ok {
+            self.error = "append: " + r.err.kind + " " + r.err.detail;
+            return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        }
         let out = trim_nl(line_one(r.csv));
         let err = std::json::find_string_field(out, "error");
         self.load();
-        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
-        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        if len(err) == 0 {
+            return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 };
+        }
+        if err == "stale_revision" {
+            return AppendResult {
+                error: "stale_revision",
+                expected: expected,
+                actual: std::json::find_int_field(out, "actual"),
+            };
+        }
         self.error = std::json::find_string_field(out, "why");
         return AppendResult { error: "refused", expected: expected, actual: self.rows.len() };
     }
@@ -304,37 +379,65 @@ locus RecordJournal {
             self.dsn_env = memory_source(self.repo, self.dsn_env);
             if !dsn_set(self.dsn_env) {
                 let refused = kept_dsn_refusal(self.repo);
-                self.failure = if len(refused) > 0 { refused } else { self.dsn_env + " is not set: the record is memory's, and there is none" };
+                self.failure = if len(refused) > 0 {
+                    refused
+                } else {
+                    self.dsn_env + " is not set: the record is memory's, and there is none"
+                };
                 return false;
             }
             self.store.dsn_env = self.dsn_env;
         }
         self.store.scope(who.id);
         self.signer.org = schema_for(who.id);
-        if !self.store.open() { self.failure = "the record is not open: " + self.store.last_error(); return false; }
+        if !self.store.open() {
+            self.failure = "the record is not open: " + self.store.last_error();
+            return false;
+        }
         // the pairing: a record born on a genome is this clone's only when
         // this clone's history holds that genome (a hale.toml copied into
         // another project names a record that is not its own)
         let born = self.store.read(0);
         if self.store.revision() > 0 && born.kind == "record.genesis" {
             let genome = std::json::find_string_field(born.body, "genome");
-            let has_head = run_tool("git\n-C\n" + self.repo + "\nrev-parse\n-q\n--verify\nHEAD").code == 0;
-            if len(genome) > 0 && (!has_head || run_tool("git\n-C\n" + self.repo + "\nmerge-base\n--is-ancestor\n" + genome + "\nHEAD").code != 0) {
-                self.failure = "record " + who.id + " was born on genome " + genome + ", which this clone's history does not hold: the hale.toml naming it was copied from another project";
+            let has_head = run_tool(
+                "git\n-C\n" + self.repo + "\nrev-parse\n-q\n--verify\nHEAD",
+            ).code == 0;
+            if len(genome) > 0
+                && (
+                    !has_head
+                        || run_tool(
+                            "git\n-C\n" + self.repo + "\nmerge-base\n--is-ancestor\n" + genome
+                                + "\nHEAD",
+                        ).code != 0
+                )
+            {
+                self.failure = "record " + who.id + " was born on genome " + genome
+                    + ", which this clone's history does not hold: the hale.toml naming it was copied from another project";
                 return false;
             }
         }
         self.opened = true;
         return true;
     }
-    fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
+    fn last_error() -> String {
+        return if len(self.failure) > 0 { self.failure } else { self.store.last_error() };
+    }
     fn revision() -> Int { if !self.ensure_open() { return 0; } return self.store.revision(); }
     fn head() -> String { if !self.ensure_open() { return "genesis"; } return self.store.head(); }
     fn refresh() -> Bool { if !self.ensure_open() { return false; } return self.store.refresh(); }
-    fn read(i: Int) -> Event { if !self.ensure_open() { return Event { }; } return self.store.read(i); }
-    fn author_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.author_of(i); }
-    fn sig_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.sig_of(i); }
-    fn verify_chain() -> Bool { if !self.ensure_open() { return false; } return self.store.verify_chain(); }
+    fn read(i: Int) -> Event {
+        if !self.ensure_open() { return Event { }; } return self.store.read(i);
+    }
+    fn author_of(i: Int) -> String {
+        if !self.ensure_open() { return ""; } return self.store.author_of(i);
+    }
+    fn sig_of(i: Int) -> String {
+        if !self.ensure_open() { return ""; } return self.store.sig_of(i);
+    }
+    fn verify_chain() -> Bool {
+        if !self.ensure_open() { return false; } return self.store.verify_chain();
+    }
     // The record's identity: what its genome pins (GH #1590).
     fn genesis() -> String { return record_scope(self.repo); }
     // Every row in the record's own line format, oldest first.
@@ -345,33 +448,71 @@ locus RecordJournal {
         let mut i = 0;
         while i < self.store.revision() {
             let e = self.store.read(i);
-            b.append_str(row_line(i, Row { kind: e.kind, entity: e.entity, body: e.body }, self.store.author_of(i)));
+            b.append_str(
+                row_line(
+                    i,
+                    Row { kind: e.kind, entity: e.entity, body: e.body },
+                    self.store.author_of(i),
+                ),
+            );
             i = i + 1;
         }
         return std::str::from_bytes(b.snapshot() or b"");
     }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append_as(expected, kind, entity, body, self.author, false); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append_as(expected, kind, entity, body, self.author, true); }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.append_rows_as(expected, rows, false); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.append_as(expected, kind, entity, body, self.author, false);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.append_as(expected, kind, entity, body, self.author, true);
+    }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return self.append_rows_as(expected, rows, false);
+    }
     // One row in `author`'s name, signed as `author` signs: exactly at
     // `expected` when `exact`, else at the tail once `expected` is the
     // revision held.
     @bounded_by(self.failure)
-    fn append_as(expected: Int, kind: String, entity: String, body: String, author: String, exact: Bool) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+    fn append_as(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String,
+        author: String,
+        exact: Bool
+    ) -> AppendResult {
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         self.failure = "";
         if exact { let moved = self.store.refresh(); }
         let rev = self.store.revision();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         let mut attempt = 0;
         while attempt < 200 {
             let prev = self.store.head();
             let digest = event_digest(prev, kind, entity, body);
             let sig = self.signer.sign(author, digest);
-            let r = self.store.insert(if exact { rev } else { -1 }, prev, kind, entity, body, author, sig, "");
+            let r = self.store.insert(
+                if exact { rev } else { -1 },
+                prev,
+                kind,
+                entity,
+                body,
+                author,
+                sig,
+                "",
+            );
             if r.ok || r.error != "stale_revision" || exact {
                 if r.error == "refused" { self.failure = self.store.last_error(); }
-                return AppendResult { ok: r.ok, revision: r.revision, error: r.error, expected: expected, actual: r.actual };
+                return AppendResult {
+                    ok: r.ok,
+                    revision: r.revision,
+                    error: r.error,
+                    expected: expected,
+                    actual: r.actual,
+                };
             }
             self.retries = self.retries + 1;
             let moved = self.store.refresh();
@@ -386,12 +527,16 @@ locus RecordJournal {
     // revision held. Nothing of a refused batch lands.
     @bounded_by(self.failure)
     fn append_rows_as(expected: Int, rows: RowBatch, exact: Bool) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         self.failure = "";
         if rows.len() == 0 { return AppendResult { ok: true, revision: self.store.revision() }; }
         if exact { let moved = self.store.refresh(); }
         let rev = self.store.revision();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         let mut attempt = 0;
         while attempt < 200 {
             let start = self.store.head();
@@ -417,7 +562,13 @@ locus RecordJournal {
             let r = self.store.insert_rows(if exact { rev } else { -1 }, start, b.result());
             if r.ok || r.error != "stale_revision" || exact {
                 if r.error == "refused" { self.failure = self.store.last_error(); }
-                return AppendResult { ok: r.ok, revision: r.revision, error: r.error, expected: expected, actual: r.actual };
+                return AppendResult {
+                    ok: r.ok,
+                    revision: r.revision,
+                    error: r.error,
+                    expected: expected,
+                    actual: r.actual,
+                };
             }
             self.retries = self.retries + 1;
             let moved = self.store.refresh();
@@ -453,13 +604,20 @@ locus MemoryReceipts {
         if self.opened { return true; }
         let scope = record_scope(self.repo);
         if len(scope) == 0 { self.error = "the record has no identity yet"; return false; }
-        let dialled = if len(self.dsn) > 0 { dial_from_text(self.conn, self.dsn) } else { dial_from_env(self.conn, memory_source(self.repo, self.dsn_env)) };
+        let dialled = if len(self.dsn) > 0 {
+            dial_from_text(self.conn, self.dsn)
+        } else {
+            dial_from_env(self.conn, memory_source(self.repo, self.dsn_env))
+        };
         if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
         let sch = schema_for(scope);
         let ns = self.conn.exec("SET search_path TO " + sch + ", public");
-        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        if !ns.ok {
+            self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail;
+            return false;
+        }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
         self.opened = true;
@@ -558,8 +716,13 @@ fn enrolled_keys(j: RecordJournal) -> String {
         if len(who) == 0 || std::str::contains(who, " ") { continue; }
         let sig = j.sig_of(e.seq);
         let author = j.author_of(e.seq);
-        let by_record = std::str::starts_with(sig, "ed25519:") && !person_author(author) && len(record) > 0 && signature_holds(record, SIG_TAG_ROW, e.digest, sig);
-        let by_person = std::str::starts_with(sig, "ssh:") && out != "\n" && ssh_verify(out[1..len(out)], author, e.digest, sig);
+        let by_record = std::str::starts_with(sig, "ed25519:")
+            && !person_author(author)
+            && len(record) > 0
+            && signature_holds(record, SIG_TAG_ROW, e.digest, sig);
+        let by_person = std::str::starts_with(sig, "ssh:")
+            && out != "\n"
+            && ssh_verify(out[1..len(out)], author, e.digest, sig);
         let bootstrap = out == "\n" && e.kind == "signer.enrolled";
         if !(by_record || by_person || bootstrap) { continue; }
         if e.kind == "signer.enrolled" {
@@ -571,7 +734,9 @@ fn enrolled_keys(j: RecordJournal) -> String {
                 let nl = std::str::index_of(rest, "\n");
                 let line = if nl < 0 { rest } else { rest[0..nl] };
                 rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-                if len(line) > 0 && !std::str::starts_with(line, who + " ") { kept = kept + line + "\n"; }
+                if len(line) > 0 && !std::str::starts_with(line, who + " ") {
+                    kept = kept + line + "\n";
+                }
             }
             out = kept;
         }
@@ -589,8 +754,14 @@ fn row_signer(j: RecordJournal, i: Int) -> Signer {
     let author = j.author_of(i);
     if std::str::starts_with(sig, "ed25519:") {
         let key = record_public_key(j);
-        let ok = len(key) > 0 && !person_author(author) && signature_holds(key, SIG_TAG_ROW, e.digest, sig);
-        return Signer { signed: true, verified: ok, key: if ok { "record " + key[0..12] } else { "" } };
+        let ok = len(key) > 0
+            && !person_author(author)
+            && signature_holds(key, SIG_TAG_ROW, e.digest, sig);
+        return Signer {
+            signed: true,
+            verified: ok,
+            key: if ok { "record " + key[0..12] } else { "" },
+        };
     }
     if std::str::starts_with(sig, "ssh:") {
         let ok = ssh_verify(enrolled_keys(j), author, e.digest, sig);
@@ -624,7 +795,9 @@ locus MemoryRecord {
         self.receipts.dsn = self.dsn;
     }
     fn kind() -> String { return "memory"; }
-    fn why() -> String { return if len(self.last_error) > 0 { self.last_error } else { self.journal.last_error() }; }
+    fn why() -> String {
+        return if len(self.last_error) > 0 { self.last_error } else { self.journal.last_error() };
+    }
     // ---- the genome's git, for what the clone keeps in it (its settings, its remote)
     fn git(args: String) -> RunResult { return run_tool("git\n-C\n" + self.repo + "\n" + args); }
     fn git_ok(args: String) -> Bool { return self.git(args).code == 0; }
@@ -643,7 +816,12 @@ locus MemoryRecord {
         if !self.journal.ensure_open() { return Head { why: self.journal.last_error() }; }
         let moved = self.journal.refresh();
         let err = self.journal.store.last_error();
-        if len(err) > 0 && std::str::starts_with(err, "refresh:") && !std::str::contains(err, "not open") { return Head { why: err }; }
+        if len(err) > 0
+            && std::str::starts_with(err, "refresh:")
+            && !std::str::contains(err, "not open")
+        {
+            return Head { why: err };
+        }
         if self.journal.revision() == 0 { return Head { ok: true, absent: true }; }
         return Head { ok: true, id: self.journal.head() };
     }
@@ -672,7 +850,13 @@ locus MemoryRecord {
         let mut i = 0;
         while i <= at {
             let e = self.journal.read(i);
-            b.append_str(row_line(i, Row { kind: e.kind, entity: e.entity, body: e.body }, self.journal.author_of(i)));
+            b.append_str(
+                row_line(
+                    i,
+                    Row { kind: e.kind, entity: e.entity, body: e.body },
+                    self.journal.author_of(i),
+                ),
+            );
             i = i + 1;
         }
         return std::str::from_bytes(b.snapshot() or b"");
@@ -692,7 +876,14 @@ locus MemoryRecord {
         let at = self.index_of(id);
         if at < 0 { return Row { }; }
         let e = self.journal.read(at);
-        return Row { seq: at, kind: e.kind, entity: e.entity, body: e.body, author: self.journal.author_of(at), id: e.digest };
+        return Row {
+            seq: at,
+            kind: e.kind,
+            entity: e.entity,
+            body: e.body,
+            author: self.journal.author_of(at),
+            id: e.digest,
+        };
     }
     @bounded_by(self.journal)
     fn between(from: String, to: String) -> String {
@@ -716,30 +907,61 @@ locus MemoryRecord {
     // moved past it. `sign` is the record's trust's to decide, not the
     // caller's: every row is signed as its writer signs.
     fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
-        if chain != "journal" { return Appended { error: "io: the record in memory has one chain, not `" + chain + "`" }; }
-        if !self.journal.ensure_open() { return Appended { error: "io: " + self.journal.last_error() }; }
+        if chain != "journal" {
+            return Appended {
+                error: "io: the record in memory has one chain, not `" + chain + "`",
+            };
+        }
+        if !self.journal.ensure_open() {
+            return Appended { error: "io: " + self.journal.last_error() };
+        }
         let moved = self.journal.refresh();
         let head = self.journal.head();
-        if (if len(at) == 0 { "genesis" } else { at }) != head { return Appended { error: "stale" }; }
+        if (if len(at) == 0 { "genesis" } else { at }) != head {
+            return Appended { error: "stale" };
+        }
         let author = if len(row.author) > 0 { row.author } else { self.author };
-        let r = self.journal.append_as(self.journal.revision(), row.kind, row.entity, row.body, author, true);
+        let r = self.journal.append_as(
+            self.journal.revision(),
+            row.kind,
+            row.entity,
+            row.body,
+            author,
+            true,
+        );
         if r.ok { return Appended { ok: true, id: self.journal.head() }; }
         if r.error == "stale_revision" { return Appended { error: "stale" }; }
         return Appended { error: "io: " + self.journal.last_error() };
     }
     // Many rows on top of `at`, made visible together; the id of the last.
     // Stale when the record moved past `at`; nothing of a refused batch lands.
-    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
-        if chain != "journal" { return Appended { error: "io: the record in memory has one chain, not `" + chain + "`" }; }
-        if !self.journal.ensure_open() { return Appended { error: "io: " + self.journal.last_error() }; }
+    fn append_batch(
+        chain: String,
+        at: String,
+        rows: RowBatch,
+        sign: Bool,
+        note: String
+    ) -> Appended {
+        if chain != "journal" {
+            return Appended {
+                error: "io: the record in memory has one chain, not `" + chain + "`",
+            };
+        }
+        if !self.journal.ensure_open() {
+            return Appended { error: "io: " + self.journal.last_error() };
+        }
         let moved = self.journal.refresh();
-        if (if len(at) == 0 { "genesis" } else { at }) != self.journal.head() { return Appended { error: "stale" }; }
+        if (if len(at) == 0 { "genesis" } else { at }) != self.journal.head() {
+            return Appended { error: "stale" };
+        }
         let r = self.journal.append_rows_as(self.journal.revision(), rows, true);
         if r.ok { return Appended { ok: true, id: self.journal.head() }; }
         if r.error == "stale_revision" { return Appended { error: "stale" }; }
         // memory refused it, so none of it landed; an io error may have
         // lost the answer to a batch that did
-        if r.error == "refused" { return Appended { error: "refused: " + self.journal.last_error() }; }
+        if r.error == "refused" {
+            return Appended { error: "refused: " + self.journal.last_error() };
+        }
         return Appended { error: "io: " + self.journal.last_error() };
     }
     fn keep(text: String) -> String {
@@ -778,6 +1000,8 @@ locus MemoryRecord {
     fn own_key() -> String { return record_public_key(self.journal); }
     // ---- the clone's settings (`dna.*` in git config)
     fn setting(name: String) -> String { return trim_nl(self.git_out("config\ndna." + name)); }
-    fn set_setting(name: String, value: String) -> Bool { return self.git_ok("config\ndna." + name + "\n" + value); }
+    fn set_setting(name: String, value: String) -> Bool {
+        return self.git_ok("config\ndna." + name + "\n" + value);
+    }
     fn unset_setting(name: String) -> Bool { return self.git_ok("config\n--unset\ndna." + name); }
 }

@@ -53,7 +53,13 @@ fn __tcp_route(listener: String, shard: Int) -> String {
 // port-0 bind was given — so two listeners never share a default name (two
 // on one explicit host:port, or on one path, cannot both bind). An IPv6
 // host is bracketed, `[::1]:8080`, however it was written.
-fn __tcp_listener_name(name: String, host: String, port: Int, path: String, listen_fd: Int) -> String {
+fn __tcp_listener_name(
+    name: String,
+    host: String,
+    port: Int,
+    path: String,
+    listen_fd: Int
+) -> String {
     if len(name) > 0 {
         return name;
     }
@@ -209,7 +215,13 @@ locus __StdIoTcpAcceptor {
         if self.listen_fd < 0 {
             violate listen_failed;
         }
-        self.listener = __tcp_listener_name(self.name, self.host, self.port, self.path, self.listen_fd);
+        self.listener = __tcp_listener_name(
+            self.name,
+            self.host,
+            self.port,
+            self.path,
+            self.listen_fd,
+        );
         if std::io::tcp::__name_listener(self.listener, self.listen_fd) == 0 {
             self.release_socket();
             violate name_taken;
@@ -443,7 +455,9 @@ fn __http_handle_one_conn(
                 header_end = total - len(carry) + at;
                 // what has come so far, once: the header block and the
                 // body's first bytes
-                let partial = std::http::parse_request(std::str::from_bytes(buf.snapshot() or std::bytes::from_string("")));
+                let partial = std::http::parse_request(
+                    std::str::from_bytes(buf.snapshot() or std::bytes::from_string("")),
+                );
                 need = std::str::parse_int(
                     std::http::header(partial, "Content-Length")) or 0;
             } else {

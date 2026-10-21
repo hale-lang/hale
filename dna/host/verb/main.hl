@@ -27,12 +27,17 @@ fn main() {
     let plan = host::arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
     let a = host::verb_args();
-    if (verb == "practice" || verb == "verdict") && host::has_flag(a, "--request-id") && len(host::flag(a, "--request-id")) == 0 {
+    if (verb == "practice" || verb == "verdict")
+        && host::has_flag(a, "--request-id")
+        && len(host::flag(a, "--request-id")) == 0
+    {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
     }
     let mut ans = host::Answer { ok: false, text: "unknown verb `" + verb + "`" };
-    if (verb == "board" || verb == "review") && !host::organism_here(root, memory) { let s = host::sync_record(root, memory); }
+    if (verb == "board" || verb == "review") && !host::organism_here(root, memory) {
+        let s = host::sync_record(root, memory);
+    }
     if verb == "fleet" { let s = host::sync_record(root, memory); }
     if verb == "status" {
         ans = host::status_verb(root, seed, toolchain, host::has_flag(a, "--json"), memory);
@@ -44,7 +49,11 @@ fn main() {
         else {
             let p = host::open_projection(root, seed, toolchain, memory);
             let id = host::word(a, 0);
-            if len(id) == 0 { ans = host::review_list(p); } else { ans = host::render_review(p, id, host::has_flag(a, "--iris")); }
+            if len(id) == 0 {
+                ans = host::review_list(p);
+            } else {
+                ans = host::render_review(p, id, host::has_flag(a, "--iris"));
+            }
         }
     } else if verb == "board" || verb == "report" || verb == "pressure" || verb == "fleet" {
         let no_head = host::record_refusal(root);
@@ -59,49 +68,177 @@ fn main() {
     }
     if verb == "verdict" && host::has_flag(a, "--evidence") {
         // GH #1161: a gate's run is the forge's, observed by the host
-        ans = host::fail("review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)");
+        ans = host::fail(
+            "review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)",
+        );
     } else if verb == "verdict" {
-        ans = host::verdict_command_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--authority"), host::flag(a, "--comment"), host::flag(a, "--digest"), host::has_flag(a, "--no-wait"), host::flag(a, "--request-id"), memory);
+        ans = host::verdict_command_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--as"),
+            host::flag(a, "--authority"),
+            host::flag(a, "--comment"),
+            host::flag(a, "--digest"),
+            host::has_flag(a, "--no-wait"),
+            host::flag(a, "--request-id"),
+            memory,
+        );
     } else if verb == "raise" {
-        ans = host::pressure_raise(root, host::word(a, 0), host::join_words(host::drop_first_word(a.words)), memory);
+        ans = host::pressure_raise(
+            root,
+            host::word(a, 0),
+            host::join_words(host::drop_first_word(a.words)),
+            memory,
+        );
     } else if verb == "concern-raise" {
         let sev = host::flag(a, "--severity");
-        ans = host::concern_raise(root, host::word(a, 0), host::join_words(host::drop_first_word(a.words)), if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 }, memory);
+        ans = host::concern_raise(
+            root,
+            host::word(a, 0),
+            host::join_words(host::drop_first_word(a.words)),
+            if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 },
+            memory,
+        );
     } else if verb == "task" {
         // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`:
         // the outcome is every word after the subverb (asking is one kind of task)
-        if host::word(a, 0) == "create" { ans = host::task_create_verb(root, host::join_words(host::drop_first_word(a.words)), host::flag(a, "--to"), host::has_flag(a, "--no-wait"), host::flag(a, "--as"), host::has_flag(a, "--judgment"), host::flag(a, "--size"), host::flag(a, "--codebase"), memory); }
+        if host::word(a, 0) == "create" {
+            ans = host::task_create_verb(
+                root,
+                host::join_words(host::drop_first_word(a.words)),
+                host::flag(a, "--to"),
+                host::has_flag(a, "--no-wait"),
+                host::flag(a, "--as"),
+                host::has_flag(a, "--judgment"),
+                host::flag(a, "--size"),
+                host::flag(a, "--codebase"),
+                memory,
+            );
+        }
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
-        else if host::word(a, 0) == "done" { ans = host::task_done_verb(root, seed, host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--note"), host::flag(a, "--evidence"), host::flag(a, "--exception"), host::flag(a, "--authorized-by"), memory); }
-        else if host::word(a, 0) == "reassign" { ans = host::task_reassign_verb(root, seed, host::word(a, 1), host::flag(a, "--to"), host::flag(a, "--as"), memory); }
+        else if host::word(a, 0) == "done" {
+            ans = host::task_done_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--as"),
+                host::flag(a, "--note"),
+                host::flag(a, "--evidence"),
+                host::flag(a, "--exception"),
+                host::flag(a, "--authorized-by"),
+                memory,
+            );
+        }
+        else if host::word(a, 0) == "reassign" {
+            ans = host::task_reassign_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--to"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
         // GH #667: `hale dna task accept <id> [--as <who>] [--note …]`
-        else if host::word(a, 0) == "accept" { ans = host::task_accept_verb(root, seed, host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--note"), memory); }
+        else if host::word(a, 0) == "accept" {
+            ans = host::task_accept_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--as"),
+                host::flag(a, "--note"),
+                memory,
+            );
+        }
         // GH #616: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>`
-        else if host::word(a, 0) == "authorize" { ans = host::task_authorize_verb(root, seed, host::word(a, 1), host::flag(a, "--exception"), host::flag(a, "--as"), memory); }
-        else if host::word(a, 0) == "decide" { ans = host::task_decide_verb(root, seed, host::word(a, 1), host::flag(a, "--decided-by"), host::flag(a, "--via"), host::flag(a, "--evidence"), host::flag(a, "--note"), host::flag(a, "--as"), memory); }
-        else { ans = host::fail("task: `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`, `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]`, `hale dna task accept <id> [--as <who>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`"); }
+        else if host::word(a, 0) == "authorize" {
+            ans = host::task_authorize_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--exception"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
+        else if host::word(a, 0) == "decide" {
+            ans = host::task_decide_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--decided-by"),
+                host::flag(a, "--via"),
+                host::flag(a, "--evidence"),
+                host::flag(a, "--note"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
+        else {
+            ans = host::fail(
+                "task: `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`, `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]`, `hale dna task accept <id> [--as <who>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`",
+            );
+        }
     } else if verb == "effect" {
         // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
-        if host::word(a, 0) == "resolve" { ans = host::effect_resolve_verb(root, seed, host::word(a, 1), host::flag(a, "--outcome"), host::flag(a, "--as"), host::flag(a, "--note"), memory); }
-        else { ans = host::fail("effect: `hale dna effect resolve <key> --outcome ok|failed [--as <who>] [--note …]`"); }
+        if host::word(a, 0) == "resolve" {
+            ans = host::effect_resolve_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--outcome"),
+                host::flag(a, "--as"),
+                host::flag(a, "--note"),
+                memory,
+            );
+        }
+        else {
+            ans = host::fail(
+                "effect: `hale dna effect resolve <key> --outcome ok|failed [--as <who>] [--note …]`",
+            );
+        }
     } else if verb == "retire" {
         // GH #604 rule 5: `hale dna retire <who> [--to <successor>] [--as <by>]`
-        ans = host::retire_verb(root, seed, host::word(a, 0), host::flag(a, "--to"), host::flag(a, "--as"), memory);
+        ans = host::retire_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::flag(a, "--to"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "sync" {
         ans = host::sync_verb(root, memory);
     } else if verb == "candidates" {
         // #649: the candidates the record keeps, whatever the review decided
-        ans = host::candidates_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--why"), host::flag(a, "--as"), memory);
+        ans = host::candidates_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--why"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "ledger" {
         // GH #646 stage 1: the operational memory, adopted by an explicit step
         ans = host::ledger_verb(root, host::word(a, 0));
     } else if verb == "schema-versions" {
         // GH #1653: the versions this toolchain migrates each allocation
         // role to, which the habitat records per allocation
-        ans = host::answer("memory=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\nnerves=" + to_string(dna::NERVES_STREAM_VERSION) + "\n");
+        ans = host::answer(
+            "memory=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\nnerves="
+                + to_string(dna::NERVES_STREAM_VERSION) + "\n",
+        );
     } else if verb == "heart-handover" {
         // GH #1653: what the habitat hands a habitat-scoped heart
-        ans = host::heart_handover_verb(root, host::has_flag(a, "--derive"), host::flag(a, "--with"));
+        ans = host::heart_handover_verb(
+            root,
+            host::has_flag(a, "--derive"),
+            host::flag(a, "--with"),
+        );
     } else if verb == "database-provision" {
         // GH #1653: the `database` heart role, at graft (with --derive, its DSN)
         ans = host::database_provision_verb(root, host::has_flag(a, "--derive"));
@@ -127,10 +264,27 @@ fn main() {
         ans = host::senses_up_verb(root, host::has_flag(a, "--derive"));
     } else if verb == "codebase" {
         // phase 3: a foreign codebase attached, no application row
-        ans = host::codebase_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--repo"), host::flag(a, "--build"), host::flag(a, "--test"), host::flag(a, "--branch"), host::flag(a, "--as"), host::flag(a, "--toolchain"), host::flag(a, "--knowledge"));
+        ans = host::codebase_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--repo"),
+            host::flag(a, "--build"),
+            host::flag(a, "--test"),
+            host::flag(a, "--branch"),
+            host::flag(a, "--as"),
+            host::flag(a, "--toolchain"),
+            host::flag(a, "--knowledge"),
+        );
     } else if verb == "signers" {
         // GH #1590: the people the record admits signed rows from
-        ans = host::signers_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--key"), host::flag(a, "--as"));
+        ans = host::signers_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--key"),
+            host::flag(a, "--as"),
+        );
     } else if verb == "record-genesis" {
         // GH #1590: init's new record, born in memory
         ans = host::record_genesis_verb(root, host::word(a, 0));
@@ -161,62 +315,226 @@ fn main() {
         ans = host::graph_reingest_verb(root, host::word(a, 0), host::flag(a, "--at"), memory);
     } else if verb == "position" {
         // `hale dna position open <name> --mandate "<text>" [--text …] [--under …]`
-        if host::word(a, 0) == "open" { ans = host::position_open_verb(root, seed, host::word(a, 1), host::flag(a, "--mandate"), host::flag(a, "--text"), host::flag(a, "--under"), host::flag(a, "--as"), memory); }
-        else { ans = host::fail("position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`"); }
+        if host::word(a, 0) == "open" {
+            ans = host::position_open_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--mandate"),
+                host::flag(a, "--text"),
+                host::flag(a, "--under"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
+        else {
+            ans = host::fail(
+                "position: `hale dna position open <name> --mandate \"<text>\" [--text <what it is>] [--under <part>] [--as <who>]`",
+            );
+        }
     } else if verb == "apply" {
         // `hale dna apply <file> [--dry-run] [--as <who>] [--on-holes]`: a batch of changes to the structure, one Board Review
-        ans = host::apply_verb(root, seed, host::word(a, 0), host::flag(a, "--steps"), host::has_flag(a, "--dry-run"), host::flag(a, "--as"), host::flag(a, "--pack"), host::flag(a, "--retire-pack"), host::has_flag(a, "--on-holes"), memory);
+        ans = host::apply_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::flag(a, "--steps"),
+            host::has_flag(a, "--dry-run"),
+            host::flag(a, "--as"),
+            host::flag(a, "--pack"),
+            host::flag(a, "--retire-pack"),
+            host::has_flag(a, "--on-holes"),
+            memory,
+        );
     } else if verb == "nursery-sources" {
         // the nurseries the Board trusts (`hale dna nursery list`, and the
         // check `hale dna pack apply --from <git URL>` makes)
         ans = host::nursery_sources_verb(root, memory);
     } else if verb == "vacate" {
         // `hale dna vacate <position> <holder>`: a one-step batch
-        ans = host::vacate_verb(root, seed, host::word(a, 0), host::word(a, 1), host::has_flag(a, "--dry-run"), host::flag(a, "--as"), memory);
+        ans = host::vacate_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::has_flag(a, "--dry-run"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "fill" {
         // GH #1091: `hale dna fill <position> <holder>`, a holder proposed through the organization
-        ans = host::fill_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--as"), memory);
+        ans = host::fill_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "route" {
         // GH #1087: `hale dna route [--json] (<path>… | --diff <range>)`
         ans = host::route_verb(root, a);
     } else if verb == "graph-ingest" {
         // `hale habitat graft` on a repository: what it holds, as the graph (GH #1090)
-        ans = host::graph_ingest_verb(root, host::word(a, 0), host::flag(a, "--rows"), host::flag(a, "--app"), host::flag(a, "--description"), memory);
+        ans = host::graph_ingest_verb(
+            root,
+            host::word(a, 0),
+            host::flag(a, "--rows"),
+            host::flag(a, "--app"),
+            host::flag(a, "--description"),
+            memory,
+        );
     } else if verb == "design-upgrade" {
         // `hale habitat graft` / `hale dna upgrade`: the toolchain's design as proposals
         ans = host::design_upgrade_verb(root, host::word(a, 0), toolchain, memory);
     } else if verb == "library-seed" {
         // `hale habitat graft`: the toolchain's library, each idea bound to its node, as proposals
-        ans = host::library_seed_verb(root, host::word(a, 0), host::word(a, 1), host::has_flag(a, "--upgrade"), toolchain, memory);
+        ans = host::library_seed_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::has_flag(a, "--upgrade"),
+            toolchain,
+            memory,
+        );
     } else if verb == "body" {
         // GH #617: the body lease from the CLI; the body on a server
         let sub = host::word(a, 0);
-        if sub == "provision" { ans = host::body_provision_verb(root, host::word(a, 1), host::flag(a, "--dsn"), host::flag(a, "--dir"), host::has_flag(a, "--dry-run"), host::flag(a, "--as"), memory); }
-        else if sub == "start" || sub == "stop" || sub == "logs" { ans = host::body_ctl_verb(root, sub, host::flag(a, "--body")); }
-        else { ans = host::body_verb(root, sub, host::has_flag(a, "--force"), host::flag(a, "--as"), memory); }
+        if sub == "provision" {
+            ans = host::body_provision_verb(
+                root,
+                host::word(a, 1),
+                host::flag(a, "--dsn"),
+                host::flag(a, "--dir"),
+                host::has_flag(a, "--dry-run"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
+        else if sub == "start" || sub == "stop" || sub == "logs" {
+            ans = host::body_ctl_verb(root, sub, host::flag(a, "--body"));
+        }
+        else {
+            ans = host::body_verb(
+                root,
+                sub,
+                host::has_flag(a, "--force"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
     } else if verb == "practice" {
         // GH #602: `hale dna practice [propose <name> --text <t> [--because …] [--supersedes <digest>]]`
-        ans = host::practice_command_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--text"), host::flag(a, "--because"), host::flag(a, "--supersedes"), host::flag(a, "--as"), host::flag(a, "--request-id"), host::has_flag(a, "--no-wait"), memory);
+        ans = host::practice_command_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--text"),
+            host::flag(a, "--because"),
+            host::flag(a, "--supersedes"),
+            host::flag(a, "--as"),
+            host::flag(a, "--request-id"),
+            host::has_flag(a, "--no-wait"),
+            memory,
+        );
     } else if verb == "connect" {
         // GH #615, #1590: `hale dna connect [<nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <c,…>]`
-        ans = host::connect_verb(root, seed, host::word(a, 0), host::flag(a, "--record"), host::flag(a, "--name"), host::flag(a, "--as"), host::flag(a, "--purpose"), host::flag(a, "--classes"), host::flag(a, "--by"), memory);
+        ans = host::connect_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::flag(a, "--record"),
+            host::flag(a, "--name"),
+            host::flag(a, "--as"),
+            host::flag(a, "--purpose"),
+            host::flag(a, "--classes"),
+            host::flag(a, "--by"),
+            memory,
+        );
     } else if verb == "disconnect" {
-        ans = host::disconnect_verb(root, seed, host::word(a, 0), host::flag(a, "--why"), host::flag(a, "--by"), memory);
+        ans = host::disconnect_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::flag(a, "--why"),
+            host::flag(a, "--by"),
+            memory,
+        );
     } else if verb == "handoff" {
         let sub = host::word(a, 0);
         if len(sub) == 0 { ans = host::handoff_list_verb(root, seed, memory); }
-        else if sub == "accept" { ans = host::handoff_accept_verb(root, seed, host::word(a, 1), host::flag(a, "--note"), host::flag(a, "--as"), memory); }
+        else if sub == "accept" {
+            ans = host::handoff_accept_verb(
+                root,
+                seed,
+                host::word(a, 1),
+                host::flag(a, "--note"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
         else if sub == "sync" { ans = host::handoff_sync_verb(root, seed, memory); }
-        else { ans = host::handoff_publish_verb(root, seed, sub, host::word(a, 1), host::word(a, 2), host::flag(a, "--note"), host::flag(a, "--as"), memory); }
+        else {
+            ans = host::handoff_publish_verb(
+                root,
+                seed,
+                sub,
+                host::word(a, 1),
+                host::word(a, 2),
+                host::flag(a, "--note"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
     } else if verb == "receipt" {
         // GH #606: protected evidence
-        if host::word(a, 0) == "file" { ans = host::receipt_file_verb(root, host::word(a, 1), host::flag(a, "--class"), host::flag(a, "--as"), memory); }
-        else { ans = host::receipt_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--to"), host::flag(a, "--purpose"), host::flag(a, "--as"), host::flag(a, "--why"), host::flag(a, "--policy"), memory); }
+        if host::word(a, 0) == "file" {
+            ans = host::receipt_file_verb(
+                root,
+                host::word(a, 1),
+                host::flag(a, "--class"),
+                host::flag(a, "--as"),
+                memory,
+            );
+        }
+        else {
+            ans = host::receipt_verb(
+                root,
+                host::word(a, 0),
+                host::word(a, 1),
+                host::flag(a, "--to"),
+                host::flag(a, "--purpose"),
+                host::flag(a, "--as"),
+                host::flag(a, "--why"),
+                host::flag(a, "--policy"),
+                memory,
+            );
+        }
     } else if verb == "schedule" {
         // GH #610, #1143: the schedules, declare, and pause/resume as rows
-        ans = host::schedule_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--as"), host::flag(a, "--every"), host::flag(a, "--cron"), host::flag(a, "--definition"), host::flag(a, "--args"), host::flag(a, "--convener"), memory);
+        ans = host::schedule_verb(
+            root,
+            seed,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--as"),
+            host::flag(a, "--every"),
+            host::flag(a, "--cron"),
+            host::flag(a, "--definition"),
+            host::flag(a, "--args"),
+            host::flag(a, "--convener"),
+            memory,
+        );
     } else if verb == "secret" {
-        ans = host::secret_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--body"), host::flag(a, "--as"), memory);
+        ans = host::secret_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::flag(a, "--body"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "profile" {
         ans = host::profile_verb(root, memory);
     } else if verb == "deploy" {
@@ -227,7 +545,18 @@ fn main() {
         ans = host::github_verb(root, seed, host::word(a, 0), memory);
     } else if verb == "models-map" {
         // the model mapping's tables, as rows (dna/core/model_map.hl)
-        ans = host::model_map_verb(root, host::word(a, 0), host::word(a, 1), host::word(a, 2), host::flag(a, "--permit"), host::has_flag(a, "--tools"), host::flag(a, "--price-in"), host::flag(a, "--price-out"), host::flag(a, "--as"), memory);
+        ans = host::model_map_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::word(a, 2),
+            host::flag(a, "--permit"),
+            host::has_flag(a, "--tools"),
+            host::flag(a, "--price-in"),
+            host::flag(a, "--price-out"),
+            host::flag(a, "--as"),
+            memory,
+        );
     } else if verb == "models" {
         ans = host::models_verb(root, std::env::var("HALE_BIN"));
     } else if verb == "work" {
@@ -237,7 +566,10 @@ fn main() {
         ans = host::definitions_verb(root, std::env::var("HALE_BIN"), host::has_flag(a, "--json"));
     }
     if verb == "run" || verb == "dev" || verb == "node" || verb == "body-fence" {
-        ans = host::fail("`" + verb + "` is the host's body (dna/host), which runs until it is stopped; this program answers the one-shot verbs");
+        ans = host::fail(
+            "`" + verb
+                + "` is the host's body (dna/host), which runs until it is stopped; this program answers the one-shot verbs",
+        );
     }
     if ans.ok {
         print(ans.text);

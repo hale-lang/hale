@@ -46,5 +46,8 @@ fn main() {
 
     let t = c.at(1s);
     std::test::assert(t == Time(3ns) + 1s, "bound result");
-    std::test::assert(to_string(c.start()) == "1970-01-01T00:00:00.000000003Z", "the call as a to_string argument");
+    std::test::assert(
+        to_string(c.start()) == "1970-01-01T00:00:00.000000003Z",
+        "the call as a to_string argument",
+    );
 }

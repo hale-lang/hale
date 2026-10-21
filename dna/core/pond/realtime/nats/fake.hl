@@ -61,8 +61,14 @@ locus NatsFake {
     /// runs it on each send; call it to check with no traffic.
     fn audit() {
         if self.oldest_unacked_ns == 0 { return; }
-        if std::time::monotonic_ns() - self.oldest_unacked_ns < self.ack_window_ms * 1000000 { return; }
-        self.note("message " + to_string(self.oldest_unacked_id) + " on " + self.oldest_unacked_subject + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: no acknowledgement");
+        if std::time::monotonic_ns() - self.oldest_unacked_ns < self.ack_window_ms * 1000000 {
+            return;
+        }
+        self.note(
+            "message " + to_string(self.oldest_unacked_id) + " on " + self.oldest_unacked_subject
+                + " unacknowledged after " + to_string(self.ack_window_ms)
+                + " ms: no acknowledgement",
+        );
         violate delivery;
     }
 

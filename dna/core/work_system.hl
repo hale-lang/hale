@@ -58,8 +58,12 @@ locus CapabilityFirstSelection : serves WorkRouting {
     fn decisions() -> Int { return self.decisions; }
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
         self.decisions = self.decisions + 1;
-        if std::str::contains(req.requires, "judgment") { return nth_class("agent,human", attempt_no); }
-        if std::str::contains(req.requires, "analysis") { return nth_class("service,agent", attempt_no); }
+        if std::str::contains(req.requires, "judgment") {
+            return nth_class("agent,human", attempt_no);
+        }
+        if std::str::contains(req.requires, "analysis") {
+            return nth_class("service,agent", attempt_no);
+        }
         return nth_class("software,agent,human", attempt_no);
     }
 }
@@ -72,8 +76,12 @@ locus HumanFirstSelection : serves WorkRouting {
     fn decisions() -> Int { return self.decisions; }
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
         self.decisions = self.decisions + 1;
-        if std::str::contains(req.requires, "judgment") { return nth_class("human,agent", attempt_no); }
-        if std::str::contains(req.requires, "analysis") { return nth_class("human,service", attempt_no); }
+        if std::str::contains(req.requires, "judgment") {
+            return nth_class("human,agent", attempt_no);
+        }
+        if std::str::contains(req.requires, "analysis") {
+            return nth_class("human,service", attempt_no);
+        }
         return nth_class("human,software", attempt_no);
     }
 }
@@ -95,12 +103,25 @@ locus HumanWorkGateway {
     fn perform(req: WorkRequest) -> WorkResult {
         self.delivered = self.delivered + 1;
         if self.answer == "timeout" {
-            return WorkResult { disposition: "timeout", narrative: "no answer within the window", performer: self.operator };
+            return WorkResult {
+                disposition: "timeout",
+                narrative: "no answer within the window",
+                performer: self.operator,
+            };
         }
         if self.answer == "declined" {
-            return WorkResult { disposition: "declined", narrative: "operator declined", performer: self.operator };
+            return WorkResult {
+                disposition: "declined",
+                narrative: "operator declined",
+                performer: self.operator,
+            };
         }
-        return WorkResult { disposition: "done", result: "human:" + req.objective, narrative: "operator answered", performer: self.operator };
+        return WorkResult {
+            disposition: "done",
+            result: "human:" + req.objective,
+            narrative: "operator answered",
+            performer: self.operator,
+        };
     }
 }
 
@@ -124,7 +145,13 @@ locus AgentPerformer {
             data_class: req.data_class
         });
         self.calls_made = self.calls_made + 1;
-        if !c.ok { return WorkResult { disposition: "failed", narrative: "classify refused: " + c.refused, performer: self.name }; }
+        if !c.ok {
+            return WorkResult {
+                disposition: "failed",
+                narrative: "classify refused: " + c.refused,
+                performer: self.name,
+            };
+        }
         self.last_backends = c.backend;
         let s = self.models.ask(ModelRequest {
             attempt_id: req.work_id + "/a" + to_string(req.attempt_no),
@@ -132,7 +159,13 @@ locus AgentPerformer {
             data_class: req.data_class, assurance: 2
         });
         self.calls_made = self.calls_made + 1;
-        if !s.ok { return WorkResult { disposition: "failed", narrative: "synthesize refused: " + s.refused, performer: self.name }; }
+        if !s.ok {
+            return WorkResult {
+                disposition: "failed",
+                narrative: "synthesize refused: " + s.refused,
+                performer: self.name,
+            };
+        }
         self.last_backends = self.last_backends + "," + s.backend;
         return WorkResult {
             disposition: "done",
@@ -163,7 +196,12 @@ locus LegRelay {
     fn identity() -> String { return self.name; }
     fn perform(req: WorkRequest) -> WorkResult {
         self.relayed = self.relayed + 1;
-        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt_id_of(req.work_id, req.attempt_no), leg_relayed: true };
+        return WorkResult {
+            disposition: "pending",
+            performer: self.name,
+            attempt_id: attempt_id_of(req.work_id, req.attempt_no),
+            leg_relayed: true,
+        };
     }
 }
 
@@ -176,7 +214,14 @@ locus LegRelay {
 // the kinds a program hands to legs.
 locus RelayReplay {
     fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
-        return Reconciliation { kind: kind, identity: identity, established: true, performed: false, idempotent: true, why: "a relay never acts; the attempt is asked of a leg again" };
+        return Reconciliation {
+            kind: kind,
+            identity: identity,
+            established: true,
+            performed: false,
+            idempotent: true,
+            why: "a relay never acts; the attempt is asked of a leg again",
+        };
     }
 }
 
@@ -199,7 +244,12 @@ locus EditRelay {
     fn perform(req: WorkRequest) -> WorkResult {
         self.relayed = self.relayed + 1;
         let attempt = req.work_id + "/a" + to_string(req.attempt_no);
-        EditRequested <- EditAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        EditRequested <- EditAsk {
+            scope: self.scope,
+            attempt_id: attempt,
+            performer: self.name,
+            request: req,
+        };
         return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
     }
 }
@@ -218,7 +268,12 @@ locus HumanRelay {
     fn perform(req: WorkRequest) -> WorkResult {
         self.relayed = self.relayed + 1;
         let attempt = req.work_id + "/a" + to_string(req.attempt_no);
-        CaseRequested <- CaseAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        CaseRequested <- CaseAsk {
+            scope: self.scope,
+            attempt_id: attempt,
+            performer: self.name,
+            request: req,
+        };
         return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
     }
 }
@@ -238,7 +293,12 @@ locus OrganismRelay {
     fn perform(req: WorkRequest) -> WorkResult {
         self.relayed = self.relayed + 1;
         let attempt = req.work_id + "/a" + to_string(req.attempt_no);
-        StepRequested <- StepAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        StepRequested <- StepAsk {
+            scope: self.scope,
+            attempt_id: attempt,
+            performer: self.name,
+            request: req,
+        };
         return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
     }
 }
@@ -249,7 +309,11 @@ locus ServicePerformer {
     fn identity() -> String { return self.name; }
     fn perform(req: WorkRequest) -> WorkResult {
         self.calls = self.calls + 1;
-        return WorkResult { disposition: "done", result: "assessment:" + req.objective, performer: self.name };
+        return WorkResult {
+            disposition: "done",
+            result: "assessment:" + req.objective,
+            performer: self.name,
+        };
     }
 }
 
@@ -307,8 +371,12 @@ locus WorkSystem {
     // The identity of the performer a kind selects: what its reply must
     // say it is (card 08).
     fn identity_of(kind: String) -> String {
-        if kind == "edit" { return if self.relayed() { self.edit_relay.identity() } else { self.edit.identity() }; }
-        if kind == "human" { return if self.relayed() { self.human_relay.identity() } else { self.human.identity() }; }
+        if kind == "edit" {
+            return if self.relayed() { self.edit_relay.identity() } else { self.edit.identity() };
+        }
+        if kind == "human" {
+            return if self.relayed() { self.human_relay.identity() } else { self.human.identity() };
+        }
         if kind == "organism" { return self.organism_relay.identity(); }
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
@@ -326,8 +394,20 @@ locus WorkSystem {
         return self.software_reconciler.reconcile(kind, identity, req);
     }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
-        if kind == "edit" { return if self.relayed() { self.edit_relay.perform(req) } else { self.edit.perform(req) }; }
-        if kind == "human" { return if self.relayed() { self.human_relay.perform(req) } else { self.human.perform(req) }; }
+        if kind == "edit" {
+            return if self.relayed() {
+                self.edit_relay.perform(req)
+            } else {
+                self.edit.perform(req)
+            };
+        }
+        if kind == "human" {
+            return if self.relayed() {
+                self.human_relay.perform(req)
+            } else {
+                self.human.perform(req)
+            };
+        }
         if kind == "organism" { return self.organism_relay.perform(req); }
         if kind == "agent" { return self.agent.perform(req); }
         if kind == "service" { return self.service.perform(req); }

@@ -9,19 +9,69 @@ import "../../core" as dna;
 const APP: String = "source-app";
 const BASE: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CANDIDATE: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-fn context() -> api::CommandContext { return api::CommandContext { root: "/project", source: api::Source { ok: true, identity: APP, head: "before", revision: 1 }, principal_mode: "local", principal_name: "alice" }; }
+fn context() -> api::CommandContext {
+    return api::CommandContext {
+        root: "/project",
+        source: api::Source { ok: true, identity: APP, head: "before", revision: 1 },
+        principal_mode: "local",
+        principal_name: "alice",
+    };
+}
 fn command() -> api::CommandRequest {
-    return api::CommandRequest { valid: true, request_id: "source-key", operation: "dna.organization.propose", application_id: APP, target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("base"), expected_principal_mode: "local", expected_principal_name: "alice", source_head: BASE, dependency_source: "none", dependency_digest: dna::digest_of(""), record_head: "before", source_text: "source", rationale: "why" };
+    return api::CommandRequest {
+        valid: true,
+        request_id: "source-key",
+        operation: "dna.organization.propose",
+        application_id: APP,
+        target_kind: "dna.organization.module",
+        target_id: "dna/org/main.hl",
+        subject_digest: dna::digest_of("base"),
+        expected_principal_mode: "local",
+        expected_principal_name: "alice",
+        source_head: BASE,
+        dependency_source: "none",
+        dependency_digest: dna::digest_of(""),
+        record_head: "before",
+        source_text: "source",
+        rationale: "why",
+    };
 }
 fn result(stage: String) -> ops::GovernanceResult {
-    let mut r = ops::GovernanceReceipt { command_id: "command-source", request_id: "source-key", application_id: APP, operation: "dna.organization.propose", principal_mode: "local", principal_name: "alice", target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("base"), fingerprint: dna::digest_of("fingerprint"), state: "recorded", proposal_state: "", organization: ops::OrganizationCommandOutcome { source_head: BASE, source_digest: dna::digest_of("source"), mutation_id: "source-mutation" } };
+    let mut r = ops::GovernanceReceipt {
+        command_id: "command-source",
+        request_id: "source-key",
+        application_id: APP,
+        operation: "dna.organization.propose",
+        principal_mode: "local",
+        principal_name: "alice",
+        target_kind: "dna.organization.module",
+        target_id: "dna/org/main.hl",
+        subject_digest: dna::digest_of("base"),
+        fingerprint: dna::digest_of("fingerprint"),
+        state: "recorded",
+        proposal_state: "",
+        organization: ops::OrganizationCommandOutcome {
+            source_head: BASE,
+            source_digest: dna::digest_of("source"),
+            mutation_id: "source-mutation",
+        },
+    };
     if stage == "verification" { r.state = "refused"; r.organization.proposal_state = "failed"; }
-    else if stage == "uncertain" { r.state = "outcome_unknown"; r.organization.proposal_state = "unknown"; r.organization.application_state = "unknown"; r.organization.restart_handoff_state = "unknown"; }
+    else if stage == "uncertain" {
+        r.state = "outcome_unknown";
+        r.organization.proposal_state = "unknown";
+        r.organization.application_state = "unknown";
+        r.organization.restart_handoff_state = "unknown";
+    }
     else if stage != "recorded" {
-        r.state = "succeeded"; r.organization.proposal_state = "created"; r.organization.candidate_commit = CANDIDATE; r.review_id = "source-mutation";
+        r.state = "succeeded";
+        r.organization.proposal_state = "created";
+        r.organization.candidate_commit = CANDIDATE;
+        r.review_id = "source-mutation";
         r.review_state = "pending"; r.review_subject_digest = CANDIDATE;
         if stage != "created" {
-            r.review_state = "settled"; r.review_outcome = if stage == "declined" { "revise" } else { "approve" };
+            r.review_state = "settled";
+            r.review_outcome = if stage == "declined" { "revise" } else { "approve" };
             r.organization.application_state = stage;
             if stage == "applied" { r.organization.restart_handoff_state = "requested"; }
             if stage == "failed" { r.organization.application_reason_code = "native_apply_failed"; }
@@ -29,72 +79,255 @@ fn result(stage: String) -> ops::GovernanceResult {
             if stage == "unknown" { r.organization.restart_handoff_state = "unknown"; }
         }
     }
-    return ops::GovernanceResult { ok: true, application_id: APP, head: "captured-after", revision: 9, receipt: r };
+    return ops::GovernanceResult {
+        ok: true,
+        application_id: APP,
+        head: "captured-after",
+        revision: 9,
+        receipt: r,
+    };
 }
 locus SourceService {
-    params { writes: Bool = true; calls: Int = 0; value: ops::GovernanceResult = ops::GovernanceResult { }; }
-    fn supported(operation: String, version: String) -> Bool { return version == "1" && (operation != "dna.organization.propose" || self.writes); }
-    fn capability(who: ops::GovernanceContext, operation: String, version: String) -> ops::GovernanceCapability { return ops::GovernanceCapability { available: true, authorized: false, reason: "No ordinary grant." }; }
-    fn submit(who: ops::GovernanceContext, request: ops::GovernanceCommand) -> ops::GovernanceResult { self.calls = self.calls + 1; return self.value; }
-    fn lookup(who: ops::GovernanceContext, id: String) -> ops::GovernanceResult { self.calls = self.calls + 1; return self.value; }
+    params {
+        writes: Bool = true;
+        calls: Int = 0;
+        value: ops::GovernanceResult = ops::GovernanceResult { };
+    }
+    fn supported(operation: String, version: String) -> Bool {
+        return version == "1" && (operation != "dna.organization.propose" || self.writes);
+    }
+    fn capability(
+        who: ops::GovernanceContext,
+        operation: String,
+        version: String
+    ) -> ops::GovernanceCapability {
+        return ops::GovernanceCapability {
+            available: true,
+            authorized: false,
+            reason: "No ordinary grant.",
+        };
+    }
+    fn submit(
+        who: ops::GovernanceContext,
+        request: ops::GovernanceCommand
+    ) -> ops::GovernanceResult {
+        self.calls = self.calls + 1;
+        return self.value;
+    }
+    fn lookup(who: ops::GovernanceContext, id: String) -> ops::GovernanceResult {
+        self.calls = self.calls + 1;
+        return self.value;
+    }
 }
 locus SourceReceiptCases {
     params { }
     // The provider copies the service's typed receipt and its captured
     // Record evidence; it never re-derives or re-reads either.
     fn stage(name: String) {
-        let service = SourceService { value: result(name) }; let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: service, organization_configured: true };
+        let service = SourceService { value: result(name) };
+        let provider = head::PracticeReviewCommands {
+            root: "/project",
+            application_id: APP,
+            service: service,
+            organization_configured: true,
+        };
         let mapped = provider.submit(context(), command()); let receipt = mapped.receipt;
         std::test::assert(mapped.ok, "source stage " + name + ": " + mapped.code);
-        std::test::assert_eq_str(receipt.operation, "dna.organization.propose", "the receipt names its operation");
-        std::test::assert_eq_str(receipt.proposal_state, "", "source receipt has no Practice proposal variant");
-        std::test::assert(receipt.verdict_value == "" && receipt.verdict_state == "", "source receipt is not its Review decision");
-        std::test::assert_eq_str(receipt.organization.source_head, BASE, "original source parent retained");
-        std::test::assert_eq_str(receipt.organization.source_digest, dna::digest_of("source"), "exact submitted source digest retained");
-        std::test::assert_eq_str(receipt.activation_state, "unknown", "application/handoff never infer activation");
-        std::test::assert_eq_str(mapped.source.head, "captured-after", "native outcome source kept");
+        std::test::assert_eq_str(
+            receipt.operation,
+            "dna.organization.propose",
+            "the receipt names its operation",
+        );
+        std::test::assert_eq_str(
+            receipt.proposal_state,
+            "",
+            "source receipt has no Practice proposal variant",
+        );
+        std::test::assert(
+            receipt.verdict_value == "" && receipt.verdict_state == "",
+            "source receipt is not its Review decision",
+        );
+        std::test::assert_eq_str(
+            receipt.organization.source_head,
+            BASE,
+            "original source parent retained",
+        );
+        std::test::assert_eq_str(
+            receipt.organization.source_digest,
+            dna::digest_of("source"),
+            "exact submitted source digest retained",
+        );
+        std::test::assert_eq_str(
+            receipt.activation_state,
+            "unknown",
+            "application/handoff never infer activation",
+        );
+        std::test::assert_eq_str(
+            mapped.source.head,
+            "captured-after",
+            "native outcome source kept",
+        );
         std::test::assert_eq_int(mapped.source.revision, 9, "native outcome revision kept");
         std::test::assert_eq_str(mapped.source.identity, APP, "native outcome application kept");
-        if name == "recorded" { std::test::assert_eq_str(receipt.state, "recorded", "a recorded proposal is not yet created"); }
-        if name == "uncertain" { std::test::assert(receipt.state == "outcome_unknown" && receipt.organization.proposal_state == "unknown", "uncertain admission stays unknown"); }
-        if name == "verification" { std::test::assert(receipt.state == "refused" && receipt.organization.proposal_state == "failed", "failed verification is a refused command"); }
-        if name == "applied" || name == "refused" || name == "declined" || name == "failed" || name == "unknown" {
-            std::test::assert_eq_str(receipt.organization.proposal_state, "created", "later application cannot rewrite created proposal");
-            std::test::assert_eq_str(receipt.state, "succeeded", "outer success means proposal created only");
-            std::test::assert_eq_str(receipt.organization.application_state, name, "actual typed application evidence mapped");
-            std::test::assert_eq_str(receipt.organization.candidate_commit, CANDIDATE, "candidate commit mapped");
+        if name == "recorded" {
+            std::test::assert_eq_str(
+                receipt.state,
+                "recorded",
+                "a recorded proposal is not yet created",
+            );
         }
-        if name == "applied" { std::test::assert_eq_str(receipt.organization.restart_handoff_state, "requested", "restart handoff mapped"); }
-        if name == "failed" { std::test::assert_eq_str(receipt.organization.application_reason_code, "native_apply_failed", "refusal code mapped"); }
+        if name == "uncertain" {
+            std::test::assert(
+                receipt.state == "outcome_unknown"
+                    && receipt.organization.proposal_state == "unknown",
+                "uncertain admission stays unknown",
+            );
+        }
+        if name == "verification" {
+            std::test::assert(
+                receipt.state == "refused" && receipt.organization.proposal_state == "failed",
+                "failed verification is a refused command",
+            );
+        }
+        if name == "applied"
+            || name == "refused"
+            || name == "declined"
+            || name == "failed"
+            || name == "unknown"
+        {
+            std::test::assert_eq_str(
+                receipt.organization.proposal_state,
+                "created",
+                "later application cannot rewrite created proposal",
+            );
+            std::test::assert_eq_str(
+                receipt.state,
+                "succeeded",
+                "outer success means proposal created only",
+            );
+            std::test::assert_eq_str(
+                receipt.organization.application_state,
+                name,
+                "actual typed application evidence mapped",
+            );
+            std::test::assert_eq_str(
+                receipt.organization.candidate_commit,
+                CANDIDATE,
+                "candidate commit mapped",
+            );
+        }
+        if name == "applied" {
+            std::test::assert_eq_str(
+                receipt.organization.restart_handoff_state,
+                "requested",
+                "restart handoff mapped",
+            );
+        }
+        if name == "failed" {
+            std::test::assert_eq_str(
+                receipt.organization.application_reason_code,
+                "native_apply_failed",
+                "refusal code mapped",
+            );
+        }
     }
     fn invalid() {
-        let native = SourceService { }; let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: native, organization_configured: true };
+        let native = SourceService { };
+        let provider = head::PracticeReviewCommands {
+            root: "/project",
+            application_id: APP,
+            service: native,
+            organization_configured: true,
+        };
         let mut foreign = result("created"); foreign.application_id = "another-app";
-        std::test::assert_eq_str(provider.result(context(), foreign).code, "commands_unavailable", "a result for another application is unavailable");
+        std::test::assert_eq_str(
+            provider.result(context(), foreign).code,
+            "commands_unavailable",
+            "a result for another application is unavailable",
+        );
         let mut headless = result("created"); headless.head = "";
-        std::test::assert_eq_str(provider.result(context(), headless).code, "commands_unavailable", "a result without its Record evidence is unavailable");
-        let other = api::CommandContext { root: "/project", source: context().source, principal_mode: "local", principal_name: "bob" };
-        std::test::assert_eq_str(provider.submit(other, command()).code, "command_context_changed", "trusted actor cannot be replaced by expected principal");
-        let moved = api::CommandContext { root: "/elsewhere", source: context().source, principal_mode: "local", principal_name: "alice" };
-        std::test::assert_eq_str(provider.submit(moved, command()).code, "command_context_changed", "a provider serves only the root it was composed for");
-        std::test::assert_eq_str(provider.lookup(moved, "source-key").code, "command_context_changed", "recovery is bound to the same root");
+        std::test::assert_eq_str(
+            provider.result(context(), headless).code,
+            "commands_unavailable",
+            "a result without its Record evidence is unavailable",
+        );
+        let other = api::CommandContext {
+            root: "/project",
+            source: context().source,
+            principal_mode: "local",
+            principal_name: "bob",
+        };
+        std::test::assert_eq_str(
+            provider.submit(other, command()).code,
+            "command_context_changed",
+            "trusted actor cannot be replaced by expected principal",
+        );
+        let moved = api::CommandContext {
+            root: "/elsewhere",
+            source: context().source,
+            principal_mode: "local",
+            principal_name: "alice",
+        };
+        std::test::assert_eq_str(
+            provider.submit(moved, command()).code,
+            "command_context_changed",
+            "a provider serves only the root it was composed for",
+        );
+        std::test::assert_eq_str(
+            provider.lookup(moved, "source-key").code,
+            "command_context_changed",
+            "recovery is bound to the same root",
+        );
         std::test::assert_eq_int(native.calls, 0, "invalid context never dispatches");
     }
     fn disabled() {
         let service = SourceService { writes: false, value: result("created") };
-        let provider = head::PracticeReviewCommands { root: "/project", application_id: APP, service: service, organization_configured: true };
-        std::test::assert(!provider.supported("dna.organization.propose", "1"), "disabled source writes are unsupported");
-        std::test::assert_eq_str(provider.submit(context(), command()).code, "commands_unsupported", "disabled new writes never dispatch");
+        let provider = head::PracticeReviewCommands {
+            root: "/project",
+            application_id: APP,
+            service: service,
+            organization_configured: true,
+        };
+        std::test::assert(
+            !provider.supported("dna.organization.propose", "1"),
+            "disabled source writes are unsupported",
+        );
+        std::test::assert_eq_str(
+            provider.submit(context(), command()).code,
+            "commands_unsupported",
+            "disabled new writes never dispatch",
+        );
         let recovered = provider.lookup(context(), "source-key");
-        std::test::assert(recovered.ok && recovered.receipt.organization.proposal_state == "created", "same namespace source recovery survives disabled writes");
+        std::test::assert(
+            recovered.ok && recovered.receipt.organization.proposal_state == "created",
+            "same namespace source recovery survives disabled writes",
+        );
         std::test::assert_eq_int(service.calls, 1, "only exact lookup dispatched");
-        let unconfigured = head::PracticeReviewCommands { root: "/project", application_id: APP, service: SourceService { value: result("created") } };
-        std::test::assert(!unconfigured.supported("dna.organization.propose", "1"), "an unconfigured source profile is unsupported");
-        std::test::assert(unconfigured.supported("dna.practice.propose", "1"), "ordinary support still delegates to the service");
+        let unconfigured = head::PracticeReviewCommands {
+            root: "/project",
+            application_id: APP,
+            service: SourceService { value: result("created") },
+        };
+        std::test::assert(
+            !unconfigured.supported("dna.organization.propose", "1"),
+            "an unconfigured source profile is unsupported",
+        );
+        std::test::assert(
+            unconfigured.supported("dna.practice.propose", "1"),
+            "ordinary support still delegates to the service",
+        );
     }
 }
 fn main() {
     let cases = SourceReceiptCases { };
-    cases.stage("recorded"); cases.stage("created"); cases.stage("applied"); cases.stage("refused"); cases.stage("declined"); cases.stage("failed"); cases.stage("unknown"); cases.stage("uncertain"); cases.stage("verification");
+    cases.stage("recorded");
+    cases.stage("created");
+    cases.stage("applied");
+    cases.stage("refused");
+    cases.stage("declined");
+    cases.stage("failed");
+    cases.stage("unknown");
+    cases.stage("uncertain");
+    cases.stage("verification");
     cases.invalid(); cases.disabled(); eprintln("PASS Organization receipt adapter conformance");
 }

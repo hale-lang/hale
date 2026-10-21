@@ -27,7 +27,14 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(PbJson, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            PbJson,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     // JSON in, protobuf through, JSON out: the same text.
@@ -37,20 +44,30 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Seat(__api_pb_encode_Seat(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Seat(back), json, what);
     }
 
     run() {
-        self.round("{\"name\":\"a\",\"config\":{\"b\": [1, 2.50],  \"a\":null},\"tags\":[\"x\",{\"y\":1}]}", "a value and a list of them");
+        self.round(
+            "{\"name\":\"a\",\"config\":{\"b\": [1, 2.50],  \"a\":null},\"tags\":[\"x\",{\"y\":1}]}",
+            "a value and a list of them",
+        );
         self.round("{\"name\":\"a\",\"config\":null,\"tags\":[]}", "null");
 
         // a `string` that is no JSON value
         let bad = std::bytes::concat(__api_pb_put_str(1, "a"), __api_pb_put_str(2, "{"));
         let refused = __api_pb_decode_Seat(bad) or {
-            std::test::assert_eq_str(err.kind + ": " + err.field, "wrong_type: config", "malformed JSON text");
+            std::test::assert_eq_str(
+                err.kind + ": " + err.field,
+                "wrong_type: config",
+                "malformed JSON text",
+            );
             return;
         };
         std::test::assert(false, "malformed JSON decoded as " + refused.config.text);

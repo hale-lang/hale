@@ -11,10 +11,33 @@ import "../../operations" as ops;
 
 locus CreateApiCases {
     params { root: String = ""; identity: String = ""; }
-    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
-    fn ask(id: String, record_head: String, outcome: String, to: String) -> api::TaskCreation { return api::TaskCreation { request_id: id, record_head: record_head, outcome: outcome, to: to }; }
+    fn caller() -> std::api::Context {
+        return std::api::Context {
+            caller: std::api::Principal {
+                mode: "unix",
+                name: "uid:1000",
+                uid: 1000,
+                gid: 1000,
+                pid: 1,
+            },
+        };
+    }
+    fn ask(id: String, record_head: String, outcome: String, to: String) -> api::TaskCreation {
+        return api::TaskCreation {
+            request_id: id,
+            record_head: record_head,
+            outcome: outcome,
+            to: to,
+        };
+    }
     fn cli_row(outcome: String, from: String, to: String) -> String {
-        let b = std::json::Builder { }; b.begin_object(); b.string_field("outcome", outcome); b.string_field("from", from); b.string_field("to", to); b.end_object(); return b.result();
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("outcome", outcome);
+        b.string_field("from", from);
+        b.string_field("to", to);
+        b.end_object();
+        return b.result();
     }
     fn last(j: dna::Journal, kind: String) -> dna::Event {
         let refreshed = j.refresh(); let mut found = dna::Event { }; let mut i = 0;
@@ -22,78 +45,302 @@ locus CreateApiCases {
         return found;
     }
     fn run_cases() {
-        let record = dna::MemoryRecord { repo: self.root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
-        std::test::assert_eq_str(dna::memory_fixture(self.root), "", "the record is born in memory (GH #1590)");
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        let record = dna::MemoryRecord { repo: self.root };
+        std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        std::test::assert(
+            record.append(
+                "journal",
+                record.head("journal").id,
+                dna::Row {
+                    kind: "application.observed",
+                    entity: "org",
+                    body: "{}",
+                    author: "test",
+                },
+                false,
+                "",
+            ).ok,
+            "fresh application identity",
+        );
         self.identity = record.identity();
         let codec = ops::AuthorityPolicyCodec { };
-        let policy = codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", self.identity, "local");
+        let policy = codec.decode(
+            "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity
+                + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}",
+            self.identity,
+            "local",
+        );
         std::test::assert(policy.valid, "recover-only authority policy");
-        let native = ops::GovernanceCommands { record: record, authority: ops::FixedAuthority { policy: policy } };
-        let provider = head::PracticeReviewCommands { root: self.root, application_id: self.identity, service: native, people: native };
-        let commands = api::CommandAdmission { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" }, provider: provider };
-        let before = record.head("journal").id; let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
-        let admitted = commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller());
-        std::test::assert(admitted.ok, "any authenticated principal may raise work: " + admitted.code);
+        let native = ops::GovernanceCommands {
+            record: record,
+            authority: ops::FixedAuthority { policy: policy },
+        };
+        let provider = head::PracticeReviewCommands {
+            root: self.root,
+            application_id: self.identity,
+            service: native,
+            people: native,
+        };
+        let commands = api::CommandAdmission {
+            root: self.root,
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=riley\n" },
+            provider: provider,
+        };
+        let before = record.head("journal").id;
+        let outcome = "Confirm the supplier handover\r\né 🧭 <literal & markup>";
+        let admitted = commands.create_task(
+            self.ask("create-1", before, outcome, "org"),
+            self.caller(),
+        );
+        std::test::assert(
+            admitted.ok,
+            "any authenticated principal may raise work: " + admitted.code,
+        );
         let create = admitted.receipt.task_create; let intent = create.intent_id;
-        std::test::assert_eq_str(create.intent_state, "requested", "admitted once its row is in the Ledger");
+        std::test::assert_eq_str(
+            create.intent_state,
+            "requested",
+            "admitted once its row is in the Ledger",
+        );
         // the ask is the Ledger's row (GH #1590): the record does not move
         std::test::assert_eq_str(record.head("journal").id, before, "the record is unmoved");
-        std::test::assert_eq_str(admitted.head, before, "the reply carries the record head it was admitted at");
-        std::test::assert_eq_str(admitted.receipt.subject_digest, before, "the subject is the head the request was prepared against");
-        std::test::assert(admitted.receipt.target_kind == "dna.record" && admitted.receipt.target_id == self.identity, "the target is this Record");
-        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.root }, ledger: dna::MemoryLedger { repo: self.root } }; let row = self.last(journal, "intent.requested");
-        std::test::assert(row.entity == intent && row.digest == create.event_id, "one intent.requested row, entity = intent id, in the Ledger");
+        std::test::assert_eq_str(
+            admitted.head,
+            before,
+            "the reply carries the record head it was admitted at",
+        );
+        std::test::assert_eq_str(
+            admitted.receipt.subject_digest,
+            before,
+            "the subject is the head the request was prepared against",
+        );
+        std::test::assert(
+            admitted.receipt.target_kind == "dna.record"
+                && admitted.receipt.target_id == self.identity,
+            "the target is this Record",
+        );
+        let journal = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.root },
+            ledger: dna::MemoryLedger { repo: self.root },
+        };
+        let row = self.last(journal, "intent.requested");
+        std::test::assert(
+            row.entity == intent && row.digest == create.event_id,
+            "one intent.requested row, entity = intent id, in the Ledger",
+        );
         let cli = self.cli_row(outcome, "riley", "org");
-        std::test::assert(std::str::starts_with(row.body, cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\""), "the row begins with the bytes hale dna ask writes for the same outcome/from/to");
-        std::test::assert(!std::str::contains(row.body, "\"via\"") && !std::str::contains(row.body, "\"intent_id\""), "no via and no intent_id");
+        std::test::assert(
+            std::str::starts_with(
+                row.body,
+                cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\"",
+            ),
+            "the row begins with the bytes hale dna ask writes for the same outcome/from/to",
+        );
+        std::test::assert(
+            !std::str::contains(row.body, "\"via\"")
+                && !std::str::contains(row.body, "\"intent_id\""),
+            "no via and no intent_id",
+        );
         let ledger = dna::MemoryLedger { repo: self.root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         let mut at = ledger.revision() - 1;
         while at >= 0 && ledger.read(at).digest != row.digest { at = at - 1; }
-        std::test::assert_eq_str(ledger.author_of(at), "riley", "the mapped person is the row's author");
-        std::test::assert_eq_str(std::json::find_string_field(row.body, "command_id"), admitted.receipt.command_id, "the row carries the command id");
+        std::test::assert_eq_str(
+            ledger.author_of(at),
+            "riley",
+            "the mapped person is the row's author",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(row.body, "command_id"),
+            admitted.receipt.command_id,
+            "the row carries the command id",
+        );
         let recovered = commands.lookup(api::Lookup { request_id: "create-1" }, self.caller());
-        std::test::assert(recovered.ok && recovered.receipt.command_id == admitted.receipt.command_id && recovered.receipt.task_create.intent_id == intent, "lookup recovers the same ask");
-        std::test::assert_eq_str(commands.create_task(self.ask("create-2", "0000000000000000000000000000000000000000000000000000000000000000", "Another", "org"), self.caller()).code, "stale_subject", "a head the record is not at is a stale subject");
-        std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller()).receipt.task_create.intent_id, intent, "identical retry is lookup");
-        std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome + "!", "org"), self.caller()).code, "request_conflict", "one request identity, one content");
+        std::test::assert(
+            recovered.ok
+                && recovered.receipt.command_id == admitted.receipt.command_id
+                && recovered.receipt.task_create.intent_id == intent,
+            "lookup recovers the same ask",
+        );
+        std::test::assert_eq_str(
+            commands.create_task(
+                self.ask(
+                    "create-2",
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    "Another",
+                    "org",
+                ),
+                self.caller(),
+            ).code,
+            "stale_subject",
+            "a head the record is not at is a stale subject",
+        );
+        std::test::assert_eq_str(
+            commands.create_task(
+                self.ask("create-1", before, outcome, "org"),
+                self.caller(),
+            ).receipt.task_create.intent_id,
+            intent,
+            "identical retry is lookup",
+        );
+        std::test::assert_eq_str(
+            commands.create_task(
+                self.ask("create-1", before, outcome + "!", "org"),
+                self.caller(),
+            ).code,
+            "request_conflict",
+            "one request identity, one content",
+        );
         // the organism answers in the Record; the caller sees it through lookup
-        std::test::assert(journal.append(journal.revision(), "intent.offered", intent, outcome + " (from riley)").ok, "offered");
-        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "create-1" }, self.caller()).receipt.task_create.intent_state, "offered", "offer observed");
-        std::test::assert(journal.append(journal.revision(), "task.born", "org:t1", intent + ": " + outcome).ok, "born");
-        let born = commands.lookup(api::Lookup { request_id: "create-1" }, self.caller()).receipt.task_create;
-        std::test::assert(born.intent_state == "born" && born.task_id == "org:t1", "birth observed with the Task id");
+        std::test::assert(
+            journal.append(
+                journal.revision(),
+                "intent.offered",
+                intent,
+                outcome + " (from riley)",
+            ).ok,
+            "offered",
+        );
+        std::test::assert_eq_str(
+            commands.lookup(
+                api::Lookup { request_id: "create-1" },
+                self.caller(),
+            ).receipt.task_create.intent_state,
+            "offered",
+            "offer observed",
+        );
+        std::test::assert(
+            journal.append(journal.revision(), "task.born", "org:t1", intent + ": " + outcome).ok,
+            "born",
+        );
+        let born = commands.lookup(
+            api::Lookup { request_id: "create-1" },
+            self.caller(),
+        ).receipt.task_create;
+        std::test::assert(
+            born.intent_state == "born" && born.task_id == "org:t1",
+            "birth observed with the Task id",
+        );
         let now = record.head("journal").id;
-        let second = commands.create_task(self.ask("create-3", now, "Another outcome", "org/support"), self.caller()).receipt.task_create;
-        std::test::assert(second.intent_state == "requested" && second.intent_id != intent, "a distinct intent id");
-        std::test::assert(journal.append(journal.revision(), "intent.refused", second.intent_id, "refused: not this organization's to admit").ok, "refused");
+        let second = commands.create_task(
+            self.ask("create-3", now, "Another outcome", "org/support"),
+            self.caller(),
+        ).receipt.task_create;
+        std::test::assert(
+            second.intent_state == "requested" && second.intent_id != intent,
+            "a distinct intent id",
+        );
+        std::test::assert(
+            journal.append(
+                journal.revision(),
+                "intent.refused",
+                second.intent_id,
+                "refused: not this organization's to admit",
+            ).ok,
+            "refused",
+        );
         let refused = commands.lookup(api::Lookup { request_id: "create-3" }, self.caller());
-        std::test::assert(refused.receipt.state == "succeeded" && refused.receipt.task_create.intent_state == "refused", "the organism's refusal is a separate fact on a succeeded command");
-        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "never-sent" }, self.caller()).code, "command_not_found", "no command under an unknown request identity");
-        std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "" }, self.caller()).code, "invalid_query", "lookup needs a request identity");
-        std::test::assert_eq_str(commands.create_task(self.ask("create-4", now, "", "org"), self.caller()).code, "invalid_command", "an empty outcome is refused by the codec");
+        std::test::assert(
+            refused.receipt.state == "succeeded"
+                && refused.receipt.task_create.intent_state == "refused",
+            "the organism's refusal is a separate fact on a succeeded command",
+        );
+        std::test::assert_eq_str(
+            commands.lookup(api::Lookup { request_id: "never-sent" }, self.caller()).code,
+            "command_not_found",
+            "no command under an unknown request identity",
+        );
+        std::test::assert_eq_str(
+            commands.lookup(api::Lookup { request_id: "" }, self.caller()).code,
+            "invalid_query",
+            "lookup needs a request identity",
+        );
+        std::test::assert_eq_str(
+            commands.create_task(self.ask("create-4", now, "", "org"), self.caller()).code,
+            "invalid_command",
+            "an empty outcome is refused by the codec",
+        );
         // a judgment (GH #1144): the row carries `kind` where `hale dna task
         // create --judgment` writes it, and it reads back like any ask
-        let mut judged = self.ask("create-5", record.head("journal").id, "Is the queue bounded?", "org"); judged.kind = "judgment";
+        let mut judged = self.ask(
+            "create-5",
+            record.head("journal").id,
+            "Is the queue bounded?",
+            "org",
+        );
+        judged.kind = "judgment";
         let assessed = commands.create_task(judged, self.caller());
-        std::test::assert(assessed.ok && assessed.receipt.task_create.intent_state == "requested", "a judgment is asked: " + assessed.code);
+        std::test::assert(
+            assessed.ok && assessed.receipt.task_create.intent_state == "requested",
+            "a judgment is asked: " + assessed.code,
+        );
         let judged_row = self.last(journal, "intent.requested");
         let cli_judged = self.cli_row("Is the queue bounded?", "riley", "org");
-        std::test::assert(std::str::starts_with(judged_row.body, cli_judged[0..(len(cli_judged) - 1)] + ", \"kind\": \"judgment\", \"command_format\""), "kind right after the ask's three keys: " + judged_row.body);
-        std::test::assert(commands.lookup(api::Lookup { request_id: "create-5" }, self.caller()).receipt.task_create.intent_id == assessed.receipt.task_create.intent_id, "and it is recovered by lookup");
-        let mut odd = self.ask("create-6", record.head("journal").id, "x", "org"); odd.kind = "change";
-        std::test::assert_eq_str(commands.create_task(odd, self.caller()).code, "invalid_command", "a kind is a judgment or nothing");
+        std::test::assert(
+            std::str::starts_with(
+                judged_row.body,
+                cli_judged[0..(len(cli_judged) - 1)]
+                    + ", \"kind\": \"judgment\", \"command_format\"",
+            ),
+            "kind right after the ask's three keys: " + judged_row.body,
+        );
+        std::test::assert(
+            commands.lookup(
+                api::Lookup { request_id: "create-5" },
+                self.caller(),
+            ).receipt.task_create.intent_id == assessed.receipt.task_create.intent_id,
+            "and it is recovered by lookup",
+        );
+        let mut odd = self.ask("create-6", record.head("journal").id, "x", "org");
+        odd.kind = "change";
+        std::test::assert_eq_str(
+            commands.create_task(odd, self.caller()).code,
+            "invalid_command",
+            "a kind is a judgment or nothing",
+        );
         // recovery is under the provider's own grant: bob, mapped but ungranted, reads nothing
-        let switched = api::CommandAdmission { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: provider };
+        let switched = api::CommandAdmission {
+            root: self.root,
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" },
+            provider: provider,
+        };
         let foreign = switched.lookup(api::Lookup { request_id: "create-1" }, self.caller());
-        std::test::assert(foreign.code == "forbidden" && foreign.receipt.command_id == "", "another principal cannot recover riley's ask: " + foreign.code);
-        let moved = api::CommandContext { root: self.root, source: api::Source { ok: true, identity: self.identity, head: now, revision: 1 }, principal_mode: "local", principal_name: "bob" };
-        std::test::assert_eq_str(provider.submit(moved, api::CommandRequest { valid: true, request_id: "create-4", operation: "dna.task.create", expected_principal_mode: "local", expected_principal_name: "riley" }).code, "command_context_changed", "the expected principal cannot be replaced");
+        std::test::assert(
+            foreign.code == "forbidden" && foreign.receipt.command_id == "",
+            "another principal cannot recover riley's ask: " + foreign.code,
+        );
+        let moved = api::CommandContext {
+            root: self.root,
+            source: api::Source { ok: true, identity: self.identity, head: now, revision: 1 },
+            principal_mode: "local",
+            principal_name: "bob",
+        };
+        std::test::assert_eq_str(
+            provider.submit(
+                moved,
+                api::CommandRequest {
+                    valid: true,
+                    request_id: "create-4",
+                    operation: "dna.task.create",
+                    expected_principal_mode: "local",
+                    expected_principal_name: "riley",
+                },
+            ).code,
+            "command_context_changed",
+            "the expected principal cannot be replaced",
+        );
     }
 }
 fn main() {
     if std::env::var("HALE_COMMAND_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n"
+                + std::env::arg_or(0, ""),
+        );
         print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }

@@ -20,7 +20,11 @@ fn main() {
     std::test::assert_eq_int(std::str::find(v, "&", 3), 3, "a hit at the start offset");
     std::test::assert_eq_int(std::str::find(v, "&", 4), 7, "the next one, indexed into the text");
     std::test::assert_eq_int(std::str::find(v, "&", 8), -1, "none after the last");
-    std::test::assert_eq_int(std::str::find(v, "a=", 1), -1, "a needle before the start is not found");
+    std::test::assert_eq_int(
+        std::str::find(v, "a=", 1),
+            -1,
+        "a needle before the start is not found",
+    );
     std::test::assert_eq_int(std::str::find(v, "&", -5), 3, "a negative start is 0");
     std::test::assert_eq_int(std::str::find(v, "&", 99), -1, "a start past the end finds nothing");
     std::test::assert_eq_int(std::str::find(v, "", 4), 4, "an empty needle is found at the start");
@@ -32,6 +36,14 @@ fn main() {
     std::test::assert_eq_int(count_of("", "x"), 0, "nothing in the empty string");
     std::test::assert_eq_int(count_of("x\ny\n\nz", "\n"), 3, "a line scan");
     // the primitive searches only the `n` bytes it is given
-    std::test::assert_eq_int(std::str::range_index_of("a=1&b=2", 3, "&", 0), -1, "a hit past n is not found");
-    std::test::assert_eq_int(std::str::range_index_of("a=1&b=2", 4, "&", 0), 3, "a hit inside n is");
+    std::test::assert_eq_int(
+        std::str::range_index_of("a=1&b=2", 3, "&", 0),
+            -1,
+        "a hit past n is not found",
+    );
+    std::test::assert_eq_int(
+        std::str::range_index_of("a=1&b=2", 4, "&", 0),
+        3,
+        "a hit inside n is",
+    );
 }

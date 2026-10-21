@@ -3,9 +3,33 @@
 import "../../lib/logfmt" as logfmt;
 
 fn main() {
-    let e = std::log::LogEvent { level: 2, path: "voice.api", msg: "NATS unreachable", fields: std::log::kv("nats", "nats://127.0.0.1:4222") + " " + std::log::kv("error", "connection refused"), ts: 1792386729 };
-    std::test::assert_eq_str(logfmt::record(e), "time=2026-10-19T05:12:09Z level=warn logger=voice.api msg=\"NATS unreachable\" nats=nats://127.0.0.1:4222 error=\"connection refused\"", "a warning, its message quoted");
-    let bare = std::log::LogEvent { level: 1, path: "voice.api", msg: "serving", fields: "", ts: 0 };
-    std::test::assert_eq_str(logfmt::record(bare), "time=1970-01-01T00:00:00Z level=info logger=voice.api msg=serving", "no fields, nothing after the message");
-    std::test::assert(logfmt::severity(5) < logfmt::severity(1) && logfmt::severity(1) < logfmt::severity(3), "trace below info below error");
+    let e = std::log::LogEvent {
+        level: 2,
+        path: "voice.api",
+        msg: "NATS unreachable",
+        fields: std::log::kv("nats", "nats://127.0.0.1:4222") + " "
+            + std::log::kv("error", "connection refused"),
+        ts: 1792386729,
+    };
+    std::test::assert_eq_str(
+        logfmt::record(e),
+        "time=2026-10-19T05:12:09Z level=warn logger=voice.api msg=\"NATS unreachable\" nats=nats://127.0.0.1:4222 error=\"connection refused\"",
+        "a warning, its message quoted",
+    );
+    let bare = std::log::LogEvent {
+        level: 1,
+        path: "voice.api",
+        msg: "serving",
+        fields: "",
+        ts: 0,
+    };
+    std::test::assert_eq_str(
+        logfmt::record(bare),
+        "time=1970-01-01T00:00:00Z level=info logger=voice.api msg=serving",
+        "no fields, nothing after the message",
+    );
+    std::test::assert(
+        logfmt::severity(5) < logfmt::severity(1) && logfmt::severity(1) < logfmt::severity(3),
+        "trace below info below error",
+    );
 }

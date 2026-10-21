@@ -52,7 +52,9 @@ fn count_or(body: String, name: String, otherwise: Int) -> Int fallible(ApiError
 /// An integer field of at least 0, which the body must set.
 fn required_amount(obj: String, name: String) -> Int fallible(ApiError) {
     let raw = std::str::trim(std::json::find_field_raw(obj, name));
-    if kind_of(obj, name) != "number" || !is_integer(raw) { fail invalid("`" + name + "` is a required integer", name); }
+    if kind_of(obj, name) != "number" || !is_integer(raw) {
+        fail invalid("`" + name + "` is a required integer", name);
+    }
     let n = std::str::parse_int(raw) or fail invalid("`" + name + "` is out of range", name);
     if n < 0 { fail invalid("`" + name + "` is at least 0", name); }
     return n;
@@ -121,7 +123,9 @@ fn restriction_of(set: Bool, names: bounded[String; 32]) -> st::Restriction {
 fn accounts_field(body: String) -> st::Restriction fallible(ApiError) {
     let r = restriction_field(body, "accounts") or raise;
     for n in r.names.items {
-        if !is_slug(n) { fail invalid("`accounts` names account ids, and " + n + " is not one", "accounts"); }
+        if !is_slug(n) {
+            fail invalid("`accounts` names account ids, and " + n + " is not one", "accounts");
+        }
     }
     return r;
 }
@@ -146,7 +150,10 @@ fn price_field(body: String) -> PriceField fallible(ApiError) {
 fn time_field(body: String, name: String) -> Time fallible(ApiError) {
     let f = std::json::string_field(body, name);
     if f.kind != "string" { fail invalid("`" + name + "` is an RFC 3339 time", name); }
-    return rfc3339(f.text) or fail invalid("`" + name + "` is an RFC 3339 time (2026-10-17T12:00:00Z, or with an offset)", name);
+    return rfc3339(f.text) or fail invalid(
+        "`" + name + "` is an RFC 3339 time (2026-10-17T12:00:00Z, or with an offset)",
+        name
+    );
 }
 
 type TimeError { text: String = ""; }
@@ -159,19 +166,33 @@ type TimeError { text: String = ""; }
 fn rfc3339(text: String) -> Time fallible(TimeError) {
     let t = std::str::upper(std::str::trim(text));
     if !real_date(t) { fail TimeError { text: text }; }
-    if std::str::ends_with(t, "Z") { return std::time::parse_time(t) or fail TimeError { text: text }; }
+    if std::str::ends_with(t, "Z") {
+        return std::time::parse_time(t) or fail TimeError { text: text };
+    }
     let n = len(t);
     if n < 6 { fail TimeError { text: text }; }
     let sign = t[(n - 6)..(n - 5)];
     let hours = t[(n - 5)..(n - 3)];
     let minutes = t[(n - 2)..n];
-    if (sign != "+" && sign != "-") || t[(n - 3)..(n - 2)] != ":" || !digits(hours) || !digits(minutes) { fail TimeError { text: text }; }
+    if (sign != "+" && sign != "-")
+        || t[(n - 3)..(n - 2)] != ":"
+        || !digits(hours)
+        || !digits(minutes)
+    {
+        fail TimeError { text: text };
+    }
     let hh = std::str::parse_int(hours) or fail TimeError { text: text };
     let mm = std::str::parse_int(minutes) or fail TimeError { text: text };
     if hh > 23 || mm > 59 { fail TimeError { text: text }; }
     let local = std::time::parse_time(t[0..(n - 6)] + "Z") or fail TimeError { text: text };
     let offset = (hh * 60 + mm) * 60 * 1000000000;
-    return std::time::from_nanos(if sign == "+" { std::time::nanos(local) - offset } else { std::time::nanos(local) + offset });
+    return std::time::from_nanos(
+        if sign == "+" {
+            std::time::nanos(local) - offset
+        } else {
+            std::time::nanos(local) + offset
+        },
+    );
 }
 
 /// True when `s` is ASCII digits only, and not empty.
@@ -264,7 +285,11 @@ fn read_project_create(body: String) -> ProjectCreate fallible(ApiError) {
         has_models: !models.any,
         has_accounts: !accounts.any,
         has_budget: budgeted,
-        budget: if budgeted { read_budget_set(std::json::find_field_raw(body, "budget")) or raise } else { BudgetInput { allowance_micros: 0, period: st::Period::month } }
+        budget: if budgeted {
+            read_budget_set(std::json::find_field_raw(body, "budget")) or raise
+        } else {
+            BudgetInput { allowance_micros: 0, period: st::Period::month }
+        }
     };
     c.owners = owners.items;
     c.data_classes = data_classes.items;
@@ -278,8 +303,16 @@ fn read_project_create(body: String) -> ProjectCreate fallible(ApiError) {
 fn read_project_update(body: String, project: String) -> ProjectUpdate fallible(ApiError) {
     object_body(body) or raise;
     if sets(body, "id") { fail invalid("a project's `id` cannot change", "id"); }
-    refuse_field(body, "budget", "a budget has its own endpoint, PUT /admin/v1/projects/{project}/budget") or raise;
-    refuse_field(body, "limits", "limits have their own endpoint, PUT /admin/v1/projects/{project}/limits") or raise;
+    refuse_field(
+        body,
+        "budget",
+        "a budget has its own endpoint, PUT /admin/v1/projects/{project}/budget",
+    ) or raise;
+    refuse_field(
+        body,
+        "limits",
+        "limits have their own endpoint, PUT /admin/v1/projects/{project}/limits",
+    ) or raise;
     let owners = names_field(body, "owners") or raise;
     let data_classes = names_field(body, "data_classes") or raise;
     let models = restriction_field(body, "models") or raise;
@@ -315,7 +348,11 @@ fn read_key_create(body: String, project: String) -> KeyCreate fallible(ApiError
         has_models: !models.any,
         has_accounts: !accounts.any,
         has_expires_at: expires,
-        expires_at: if expires { time_field(body, "expires_at") or raise } else { `1970-01-01T00:00:00Z` }
+        expires_at: if expires {
+            time_field(body, "expires_at") or raise
+        } else {
+            `1970-01-01T00:00:00Z`
+        }
     };
     c.models = models.names.items;
     c.accounts = accounts.names.items;
@@ -343,7 +380,11 @@ fn read_key_update(body: String, project: String, key: String) -> KeyUpdate fall
         clear_accounts: kind_of(body, "accounts") == "null",
         has_limits: sets(body, "limits"),
         has_expires_at: expires,
-        expires_at: if expires { time_field(body, "expires_at") or raise } else { `1970-01-01T00:00:00Z` },
+        expires_at: if expires {
+            time_field(body, "expires_at") or raise
+        } else {
+            `1970-01-01T00:00:00Z`
+        },
         clear_expires_at: expiry == "null"
     };
     u.limits = limits.items;
@@ -402,7 +443,8 @@ fn health_json(h: Health, checks: Bool) -> String {
     if checks {
         let mut each = "";
         for c in h.checks {
-            each = each + (if len(each) > 0 { ", " } else { "" }) + jq(c.name) + ": " + jq(health_name(c.status));
+            each = each + (if len(each) > 0 { ", " } else { "" }) + jq(c.name) + ": "
+                + jq(health_name(c.status));
         }
         out = out + ", \"checks\": {" + each + "}";
     }
@@ -410,9 +452,12 @@ fn health_json(h: Health, checks: Bool) -> String {
 }
 
 fn catalog_model_json(m: CatalogModel) -> String {
-    return "{\"id\": " + jq(m.id) + ", \"owned_by\": " + jq(m.owned_by) + ", \"kind\": " + jq(model_kind_name(m.kind))
-        + jcount_field("context_length", m.context_length) + jcount_field("max_output_tokens", m.max_output_tokens)
-        + ", \"price\": " + st::jprice(m.has_price, m.price) + ", \"seats\": " + st::jnames(m.seats) + ", \"available\": " + jbool(m.available)
+    return "{\"id\": " + jq(m.id) + ", \"owned_by\": " + jq(m.owned_by) + ", \"kind\": "
+        + jq(model_kind_name(m.kind))
+        + jcount_field("context_length", m.context_length)
+        + jcount_field("max_output_tokens", m.max_output_tokens)
+        + ", \"price\": " + st::jprice(m.has_price, m.price) + ", \"seats\": " + st::jnames(m.seats)
+        + ", \"available\": " + jbool(m.available)
         + ", \"created_at\": " + jtime(m.created_at) + "}";
 }
 
@@ -426,9 +471,12 @@ fn catalog_list_json(l: CatalogList) -> String {
 }
 
 fn model_json(m: Model) -> String {
-    return "{\"id\": " + jq(m.id) + ", \"object\": \"model\", \"created\": " + to_string(m.created) + ", \"owned_by\": " + jq(m.owned_by)
-        + ", \"voice\": {\"kind\": " + jq(m.kind) + jcount_field("context_length", m.context_length) + jcount_field("max_output_tokens", m.max_output_tokens)
-        + ", \"data_classes\": " + st::jnames(m.data_classes) + ", \"price\": " + st::jprice(m.has_price, m.price) + ", \"available\": " + jbool(m.available) + "}}";
+    return "{\"id\": " + jq(m.id) + ", \"object\": \"model\", \"created\": " + to_string(m.created)
+        + ", \"owned_by\": " + jq(m.owned_by)
+        + ", \"voice\": {\"kind\": " + jq(m.kind) + jcount_field("context_length", m.context_length)
+        + jcount_field("max_output_tokens", m.max_output_tokens)
+        + ", \"data_classes\": " + st::jnames(m.data_classes) + ", \"price\": "
+        + st::jprice(m.has_price, m.price) + ", \"available\": " + jbool(m.available) + "}}";
 }
 
 fn model_list_json(l: ModelList) -> String {
@@ -441,12 +489,17 @@ fn model_list_json(l: ModelList) -> String {
 }
 
 fn project_json(p: Project) -> String {
-    return "{\"id\": " + jq(p.id) + ", \"name\": " + jq(p.name) + ", \"status\": " + jq(lifecycle_name(p.status))
-        + ", \"owners\": " + st::jnames(p.owners) + ", \"data_classes\": " + st::jnames(p.data_classes)
-        + ", \"models\": " + jnames_or_null(p.has_models, p.models) + ", \"accounts\": " + jnames_or_null(p.has_accounts, p.accounts)
-        + ", \"budget\": " + (if p.has_budget { budget_json(p.budget) } else { "null" }) + ", \"limits\": " + limits_json(p.limits) + ", \"key_count\": " + to_string(p.key_count)
+    return "{\"id\": " + jq(p.id) + ", \"name\": " + jq(p.name) + ", \"status\": "
+        + jq(lifecycle_name(p.status))
+        + ", \"owners\": " + st::jnames(p.owners) + ", \"data_classes\": "
+        + st::jnames(p.data_classes)
+        + ", \"models\": " + jnames_or_null(p.has_models, p.models) + ", \"accounts\": "
+        + jnames_or_null(p.has_accounts, p.accounts)
+        + ", \"budget\": " + (if p.has_budget { budget_json(p.budget) } else { "null" })
+        + ", \"limits\": " + limits_json(p.limits) + ", \"key_count\": " + to_string(p.key_count)
         + ", \"position\": " + jstring_or_null(p.has_position, p.position)
-        + ", \"created_at\": " + jtime(p.created_at) + ", \"archived_at\": " + jtime_or_null(p.has_archived_at, p.archived_at) + "}";
+        + ", \"created_at\": " + jtime(p.created_at) + ", \"archived_at\": "
+        + jtime_or_null(p.has_archived_at, p.archived_at) + "}";
 }
 
 fn project_list_json(l: ProjectList) -> String {
@@ -460,10 +513,15 @@ fn project_list_json(l: ProjectList) -> String {
 
 /// `Key`, or `KeyWithSecret` when the key carries its secret.
 fn key_json(k: Key) -> String {
-    let mut out = "{\"id\": " + jq(k.id) + ", \"project\": " + jq(k.project) + ", \"name\": " + jq(k.name) + ", \"prefix\": " + jq(k.prefix)
-        + ", \"models\": " + jnames_or_null(k.has_models, k.models) + ", \"accounts\": " + jnames_or_null(k.has_accounts, k.accounts) + ", \"limits\": " + limits_json(k.limits)
-        + ", \"created_at\": " + jtime(k.created_at) + (if k.has_created_by { ", \"created_by\": " + jq(k.created_by) } else { "" })
-        + ", \"expires_at\": " + jtime_or_null(k.has_expires_at, k.expires_at) + ", \"last_used_at\": " + jtime_or_null(k.has_last_used_at, k.last_used_at) + ", \"status\": " + jq(key_status_name(k.status))
+    let mut out = "{\"id\": " + jq(k.id) + ", \"project\": " + jq(k.project) + ", \"name\": "
+        + jq(k.name) + ", \"prefix\": " + jq(k.prefix)
+        + ", \"models\": " + jnames_or_null(k.has_models, k.models) + ", \"accounts\": "
+        + jnames_or_null(k.has_accounts, k.accounts) + ", \"limits\": " + limits_json(k.limits)
+        + ", \"created_at\": " + jtime(k.created_at)
+        + (if k.has_created_by { ", \"created_by\": " + jq(k.created_by) } else { "" })
+        + ", \"expires_at\": " + jtime_or_null(k.has_expires_at, k.expires_at)
+        + ", \"last_used_at\": " + jtime_or_null(k.has_last_used_at, k.last_used_at)
+        + ", \"status\": " + jq(key_status_name(k.status))
         + ", \"revoked_at\": " + jtime_or_null(k.has_revoked_at, k.revoked_at);
     if len(k.secret) > 0 { out = out + ", \"secret\": " + jq(k.secret); }
     return out + "}";
@@ -480,6 +538,8 @@ fn key_list_json(l: KeyList) -> String {
 
 /// The contract's error envelope.
 fn error_json(e: ApiError) -> String {
-    return "{\"error\": {\"message\": " + jq(e.message) + ", \"type\": " + jq(e.kind) + ", \"code\": " + jq(error_code_name(e.code))
-        + ", \"param\": " + jstring_or_null(e.has_param, e.param) + (if e.has_voice { ", \"voice\": " + error_voice_json(e.voice) } else { "" }) + "}}";
+    return "{\"error\": {\"message\": " + jq(e.message) + ", \"type\": " + jq(e.kind)
+        + ", \"code\": " + jq(error_code_name(e.code))
+        + ", \"param\": " + jstring_or_null(e.has_param, e.param)
+        + (if e.has_voice { ", \"voice\": " + error_voice_json(e.voice) } else { "" }) + "}}";
 }

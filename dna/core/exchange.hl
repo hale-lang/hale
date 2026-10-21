@@ -112,7 +112,8 @@ fn signed_line(text: String, key: String, sig: String) -> String {
 fn signed_line_holds_as(line: String, tag: String) -> Bool {
     let text = std::json::find_string_field(line, "envelope");
     let key = std::json::find_string_field(line, "key");
-    return len(text) > 0 && signature_holds(key, tag, text, std::json::find_string_field(line, "sig"));
+    return len(text) > 0
+        && signature_holds(key, tag, text, std::json::find_string_field(line, "sig"));
 }
 
 // An envelope's signed line.
@@ -162,7 +163,11 @@ fn tagged_bytes(tag: String, text: String) -> Bytes {
 // Whether `sig` is `key`'s over `text` under `tag`.
 fn signature_holds(key: String, tag: String, text: String, sig: String) -> Bool {
     if !std::str::starts_with(sig, "ed25519:") { return false; }
-    return std::crypto::ed25519_verify(hex_bytes(key), tagged_bytes(tag, text), hex_bytes(sig[8..len(sig)]));
+    return std::crypto::ed25519_verify(
+        hex_bytes(key),
+        tagged_bytes(tag, text),
+        hex_bytes(sig[8..len(sig)]),
+    );
 }
 
 // The record's key, held where the vault holds it: the secret is revealed
@@ -170,10 +175,14 @@ fn signature_holds(key: String, tag: String, text: String, sig: String) -> Bool 
 locus ExchangeKey {
     params { vault: String = ""; }
     fn ready() -> Bool { return std::secret::Credential { vault: self.vault }.ready(); }
-    fn public() -> String { return hex(std::secret::Credential { vault: self.vault }.ed25519_public()); }
+    fn public() -> String {
+        return hex(std::secret::Credential { vault: self.vault }.ed25519_public());
+    }
     // `text` signed under `tag` (`SIG_TAG_*`): "ed25519:<hex>", "" when the key is missing.
     fn sign(tag: String, text: String) -> String {
-        let sig = std::secret::Credential { vault: self.vault }.sign_ed25519(tagged_bytes(tag, text));
+        let sig = std::secret::Credential { vault: self.vault }.sign_ed25519(
+            tagged_bytes(tag, text),
+        );
         if len(sig) == 0 { return ""; }
         return "ed25519:" + hex(sig);
     }
@@ -207,11 +216,22 @@ fn card_text(identity: String, genome: String, key: String) -> String {
 // A card as read: its signature must hold under the key it names, and it
 // must be `record`'s.
 fn card_of(line: String, record: String) -> Card {
-    if !signed_line_holds_as(line, SIG_TAG_CARD) { return Card { why: "the card's signature does not hold" }; }
+    if !signed_line_holds_as(line, SIG_TAG_CARD) {
+        return Card { why: "the card's signature does not hold" };
+    }
     let text = std::json::find_string_field(line, "envelope");
-    let c = Card { ok: true, identity: std::json::find_string_field(text, "identity"), genome: std::json::find_string_field(text, "genome"), key: std::json::find_string_field(text, "key") };
-    if c.key != std::json::find_string_field(line, "key") { return Card { why: "the card names another key than it is signed with" }; }
-    if len(record) > 0 && c.identity != record { return Card { why: "the card is record " + c.identity + "'s, not " + record + "'s" }; }
+    let c = Card {
+        ok: true,
+        identity: std::json::find_string_field(text, "identity"),
+        genome: std::json::find_string_field(text, "genome"),
+        key: std::json::find_string_field(text, "key"),
+    };
+    if c.key != std::json::find_string_field(line, "key") {
+        return Card { why: "the card names another key than it is signed with" };
+    }
+    if len(record) > 0 && c.identity != record {
+        return Card { why: "the card is record " + c.identity + "'s, not " + record + "'s" };
+    }
     return c;
 }
 
@@ -231,11 +251,20 @@ locus MemCards { capacity { heap rows of MemCard; } }
 // a url `mem://<identity>` — a fixture stands two records up and hands
 // between them.
 locus MemExchange {
-    params { identity: String = "mem"; boxes: MemEnvelopes = MemEnvelopes { }; cards: MemCards = MemCards { }; full_at: Int = 0; }
+    params {
+        identity: String = "mem";
+        boxes: MemEnvelopes = MemEnvelopes { };
+        cards: MemCards = MemCards { };
+        full_at: Int = 0;
+    }
     fn kind() -> String { return "memory"; }
-    fn publish_card(identity: String, line: String) { self.cards.push(MemCard { identity: identity, line: line }); }
+    fn publish_card(identity: String, line: String) {
+        self.cards.push(MemCard { identity: identity, line: line });
+    }
     fn card(url: String, record: String) -> Card {
-        if !std::str::starts_with(url, "mem://") { return Card { why: "no record at " + url, unreachable: true }; }
+        if !std::str::starts_with(url, "mem://") {
+            return Card { why: "no record at " + url, unreachable: true };
+        }
         let at = url[6..len(url)];
         let mut i = 0;
         while i < self.cards.len() {
@@ -246,16 +275,22 @@ locus MemExchange {
         return Card { why: "record " + at + " publishes no card" };
     }
     fn deliver(url: String, peer: String, id: String, line: String) -> Delivered {
-        if url != "mem://" + peer { return Delivered { why: "no record " + peer + " at " + url, unreachable: true }; }
+        if url != "mem://" + peer {
+            return Delivered { why: "no record " + peer + " at " + url, unreachable: true };
+        }
         let mut i = 0;
         let mut held = 0;
         while i < self.boxes.len() {
             let m = self.boxes.get(i) or MemEnvelope { };
-            if m.at == peer && m.id == id { return Delivered { ok: true, ref: "mem#" + to_string(i) }; }
+            if m.at == peer && m.id == id {
+                return Delivered { ok: true, ref: "mem#" + to_string(i) };
+            }
             if m.at == peer { held = held + 1; }
             i = i + 1;
         }
-        if self.full_at > 0 && held >= self.full_at { return Delivered { why: "record " + peer + "'s inbox is full", full: true }; }
+        if self.full_at > 0 && held >= self.full_at {
+            return Delivered { why: "record " + peer + "'s inbox is full", full: true };
+        }
         self.boxes.push(MemEnvelope { at: peer, id: id, line: line });
         return Delivered { ok: true, ref: "mem#" + to_string(self.boxes.len() - 1) };
     }

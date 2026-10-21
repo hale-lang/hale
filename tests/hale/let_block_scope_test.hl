@@ -57,13 +57,37 @@ fn picked(x: Int, take: Bool) -> Int {
 }
 
 fn main() {
-    std::test::assert_eq_str(route("given", false), "outer given", "an untaken branch's let leaves the parameter alone");
-    std::test::assert_eq_str(route("given", true), "inner!", "the taken branch reads its own binding");
+    std::test::assert_eq_str(
+        route("given", false),
+        "outer given",
+        "an untaken branch's let leaves the parameter alone",
+    );
+    std::test::assert_eq_str(
+        route("given", true),
+        "inner!",
+        "the taken branch reads its own binding",
+    );
     std::test::assert_eq_int(count(1, false), 2, "the parameter after an untaken branch");
-    std::test::assert_eq_int(count(1, true), 102, "the parameter after a taken branch that shadowed it");
-    std::test::assert_eq_str(label(0), "zero!", "sibling branches, then an outer binding of the same name");
+    std::test::assert_eq_int(
+        count(1, true),
+        102,
+        "the parameter after a taken branch that shadowed it",
+    );
+    std::test::assert_eq_str(
+        label(0),
+        "zero!",
+        "sibling branches, then an outer binding of the same name",
+    );
     std::test::assert_eq_str(label(1), "other!", "the other sibling");
     std::test::assert_eq_int(nested(5), 35, "a loop body's let is the body's");
-    std::test::assert_eq_int(picked(2, true), 82, "a block expression's let is the block's (taken)");
-    std::test::assert_eq_int(picked(2, false), 22, "a block expression's let is the block's (untaken)");
+    std::test::assert_eq_int(
+        picked(2, true),
+        82,
+        "a block expression's let is the block's (taken)",
+    );
+    std::test::assert_eq_int(
+        picked(2, false),
+        22,
+        "a block expression's let is the block's (untaken)",
+    );
 }

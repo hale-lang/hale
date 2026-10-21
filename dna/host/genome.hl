@@ -56,7 +56,9 @@ fn genome_candidates(root: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let name = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::starts_with(name, dna::CANDIDATE_BRANCHES) { out = out + name[len(dna::CANDIDATE_BRANCHES)..len(name)] + "\n"; }
+        if std::str::starts_with(name, dna::CANDIDATE_BRANCHES) {
+            out = out + name[len(dna::CANDIDATE_BRANCHES)..len(name)] + "\n";
+        }
     }
     return out;
 }
@@ -91,8 +93,18 @@ fn genome_root(root: String) -> String {
 }
 
 // Push `src` to the remote's branch `branch`; the error text, "" when it landed.
-fn genome_push_branch(root: String, remote: String, src: String, branch: String, force: Bool) -> String {
-    let r = genome(root, "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/" + branch);
+fn genome_push_branch(
+    root: String,
+    remote: String,
+    src: String,
+    branch: String,
+    force: Bool
+) -> String {
+    let r = genome(
+        root,
+        "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/"
+            + branch,
+    );
     if r.code == 0 { return ""; }
     let e = dna::trim_nl(r.stderr);
     return if len(e) == 0 { "push failed" } else { e };
@@ -163,7 +175,10 @@ fn genome_fetch_default(root: String, remote: String) -> String {
 fn genome_fast_forward(root: String, target: String) -> String {
     let head = genome_commit(root, "HEAD");
     if head == target { return ""; }
-    if genome(root, "merge-base\n--is-ancestor\nHEAD\n" + target).code != 0 { return "the genome here (" + head + ") is not an ancestor of the forge's " + target + "; it is not pulled"; }
+    if genome(root, "merge-base\n--is-ancestor\nHEAD\n" + target).code != 0 {
+        return "the genome here (" + head + ") is not an ancestor of the forge's " + target
+            + "; it is not pulled";
+    }
     let m = genome(root, "merge\n--ff-only\n-q\n" + target);
     if m.code == 0 { return ""; }
     let e = dna::trim_nl(m.stderr);

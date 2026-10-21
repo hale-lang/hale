@@ -57,16 +57,28 @@ fn index_faces(graph: String, cap: Int) -> String {
             let e = std::str::index_of(scan, "\n");
             let row = if e < 0 { scan } else { scan[0..e] };
             scan = if e < 0 { "" } else { scan[(e + 1)..len(scan)] };
-            if std::str::starts_with(row, "meets:contract:") && std::str::contains(row, "\"role\": \"consumer\", \"node\": \"" + id + "\"") {
+            if std::str::starts_with(row, "meets:contract:")
+                && std::str::contains(row, "\"role\": \"consumer\", \"node\": \"" + id + "\"")
+            {
                 let contract = row[15..std::str::index_of(row, "\t")];
-                consumes = consumes + (if len(consumes) > 0 { "\n" } else { "" }) + (if std::str::starts_with(contract, "api:") { contract[4..len(contract)] } else { contract });
+                consumes = consumes + (if len(consumes) > 0 { "\n" } else { "" })
+                    + (
+                        if std::str::starts_with(contract, "api:") {
+                            contract[4..len(contract)]
+                        } else {
+                            contract
+                        }
+                    );
             }
         }
         let mut roles = "";
         let mut it = std::json::array_first(std::json::find_field_raw(body, "roles"));
         while !it.done {
             let r = std::str::trim(it.element);
-            if len(r) >= 3 && std::str::starts_with(r, "\"") { roles = roles + (if len(roles) > 0 { "\n" } else { "" }) + std::json::unescape_string(r[1..(len(r) - 1)]); }
+            if len(r) >= 3 && std::str::starts_with(r, "\"") {
+                roles = roles + (if len(roles) > 0 { "\n" } else { "" })
+                    + std::json::unescape_string(r[1..(len(r) - 1)]);
+            }
             it = std::json::array_next(it);
         }
         faces.begin_object();
@@ -85,11 +97,25 @@ fn index_faces(graph: String, cap: Int) -> String {
 const INDEX_WATCHED: String = "standard/upstream-watched/";
 
 fn index_url_stop(c: String) -> Bool {
-    return c == " " || c == "\n" || c == "\t" || c == "\r" || c == "\"" || c == "<" || c == ">" || c == "`";
+    return c == " "
+        || c == "\n"
+        || c == "\t"
+        || c == "\r"
+        || c == "\""
+        || c == "<"
+        || c == ">"
+        || c == "`";
 }
 
 fn index_url_trail(c: String) -> Bool {
-    return c == "." || c == "," || c == ";" || c == ")" || c == "]" || c == "}" || c == "'" || c == ":";
+    return c == "."
+        || c == ","
+        || c == ";"
+        || c == ")"
+        || c == "]"
+        || c == "}"
+        || c == "'"
+        || c == ":";
 }
 
 // Every http(s) URL in `text`, one a line, each once, at most `cap`.
@@ -106,9 +132,16 @@ fn index_urls(text: String, cap: Int) -> String {
         let mut end = at;
         while end < len(rest) && !index_url_stop(rest[end..(end + 1)]) { end = end + 1; }
         let mut url = rest[at..end];
-        while len(url) > 0 && index_url_trail(url[(len(url) - 1)..len(url)]) { url = url[0..(len(url) - 1)]; }
+        while len(url) > 0 && index_url_trail(url[(len(url) - 1)..len(url)]) {
+            url = url[0..(len(url) - 1)];
+        }
         rest = rest[end..len(rest)];
-        if (std::str::starts_with(url, "http://") && len(url) > 7 || std::str::starts_with(url, "https://") && len(url) > 8) && !std::str::contains(out, url + "\n") {
+        if (
+            std::str::starts_with(url, "http://") && len(url) > 7
+                || std::str::starts_with(url, "https://") && len(url) > 8
+        )
+            && !std::str::contains(out, url + "\n")
+        {
             out = out + url + "\n";
             found = found + 1;
         }
@@ -177,19 +210,31 @@ fn index_last_reading(j: dna::Journal, name: String) -> IndexReading {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "source-check" && std::json::find_string_field(std::json::find_string_field(e.body, "inputs"), "name") == name {
+        if e.kind == "workflow.admitted"
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+            && std::json::find_string_field(
+                std::json::find_string_field(e.body, "inputs"),
+                "name",
+            ) == name
+        {
             let request = std::json::find_string_field(e.body, "request");
             tasks = tasks + e.entity + "\t" + index_after_last(request, "@") + "\n";
         }
         if e.kind == "attempt.admitted" {
             let task = std::json::find_string_field(e.body, "task_id");
-            if std::str::contains(tasks, "\n" + task + "\t") { attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\t" + task + "\n"; }
+            if std::str::contains(tasks, "\n" + task + "\t") {
+                attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\t"
+                    + task + "\n";
+            }
         }
         if e.kind == "attempt.outcome" && std::str::contains(attempts, "\n" + e.entity + "\t") {
             let rest = attempts[(std::str::index_of(attempts, "\n" + e.entity + "\t") + len(e.entity) + 2)..len(attempts)];
             let task = rest[0..std::str::index_of(rest, "\n")];
             let row = tasks[(std::str::index_of(tasks, "\n" + task + "\t") + len(task) + 2)..len(tasks)];
-            out = IndexReading { result: std::json::find_string_field(e.body, "result"), at: std::str::parse_int(row[0..std::str::index_of(row, "\n")]) or 0 };
+            out = IndexReading {
+                result: std::json::find_string_field(e.body, "result"),
+                at: std::str::parse_int(row[0..std::str::index_of(row, "\n")]) or 0,
+            };
         }
         i = i + 1;
     }
@@ -223,7 +268,10 @@ fn index_organisms(j: dna::Journal, cap: Int) -> String {
             let name = std::json::find_string_field(e.body, "name");
             out.begin_object();
             out.string_field("name", if len(name) > 0 { name } else { e.entity });
-            out.string_field("state", if len(face) > 0 && index_answers(face) { "up" } else { "grafted" });
+            out.string_field(
+                "state",
+                if len(face) > 0 && index_answers(face) { "up" } else { "grafted" },
+            );
             out.string_field("face", face);
             out.string_field("head", std::json::find_string_field(e.body, "head"));
             out.end_object();
@@ -241,7 +289,9 @@ fn index_taken(ms: Int) -> String {
 }
 
 fn index_reading(result: String) -> String {
-    if std::str::starts_with(result, "sha256:") { return dna::short_digest(result[7..len(result)]); }
+    if std::str::starts_with(result, "sha256:") {
+        return dna::short_digest(result[7..len(result)]);
+    }
     return result;
 }
 
@@ -254,7 +304,10 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
     let held = ledger.ready();
     if held { let caught_up = ledger.refresh(); }
-    let routed = dna::RoutedJournal { record: dna::RecordJournal { repo: root, author: "api" }, ledger: ledger };
+    let routed = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root, author: "api" },
+        ledger: ledger,
+    };
     let receipts = dna::MemoryReceipts { repo: root };
     let graph = dna::record_graph_bodies(j, receipts);
 
@@ -281,7 +334,9 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
         let body = line[(tab + 1)..len(line)];
         let text = std::json::find_string_field(body, "text");
         let source = std::json::find_string_field(body, "source");
-        if std::str::starts_with(id, "purpose:") && len(purpose) == 0 { purpose = if len(text) > 0 { text } else { std::json::find_string_field(body, "name") }; }
+        if std::str::starts_with(id, "purpose:") && len(purpose) == 0 {
+            purpose = if len(text) > 0 { text } else { std::json::find_string_field(body, "name") };
+        }
         if std::str::starts_with(id, "position:") && n_positions < cap {
             positions.begin_object();
             positions.string_field("name", id[9..len(id)]);
@@ -344,7 +399,9 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
         let e = j.read(i);
         if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
         if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
-        if e.kind == "knowledge.proposed" && len(std::json::find_string_field(e.body, "name")) > 0 { proposed = proposed + e.entity + "\n"; }
+        if e.kind == "knowledge.proposed" && len(std::json::find_string_field(e.body, "name")) > 0 {
+            proposed = proposed + e.entity + "\n";
+        }
         i = i + 1;
     }
     let watched = std::json::Builder { };
@@ -355,8 +412,14 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
         let nl = std::str::index_of(digests, "\n");
         let digest = digests[0..nl];
         digests = digests[(nl + 1)..len(digests)];
-        if !std::str::contains(ratified, "\n" + digest + "\n") || std::str::contains(retired, "\n" + digest + "\n") { continue; }
-        let doc = receipts.read(if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest });
+        if !std::str::contains(ratified, "\n" + digest + "\n")
+            || std::str::contains(retired, "\n" + digest + "\n")
+        {
+            continue;
+        }
+        let doc = receipts.read(
+            if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest },
+        );
         if len(doc) == 0 { continue; }
         let name = dna::native_json_string(doc, "name");
         let text = dna::native_json_string(doc, "text");
@@ -389,5 +452,16 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     }
     watched.end_array();
     links.end_array();
-    return RecordIndex { ok: true, revision: j.revision(), purpose: purpose, positions: positions.result(), codebases: codebases.result(), watched: watched.result(), contracts: contracts.result(), links: links.result(), organisms: index_organisms(j, cap), faces: index_faces(graph, cap) };
+    return RecordIndex {
+        ok: true,
+        revision: j.revision(),
+        purpose: purpose,
+        positions: positions.result(),
+        codebases: codebases.result(),
+        watched: watched.result(),
+        contracts: contracts.result(),
+        links: links.result(),
+        organisms: index_organisms(j, cap),
+        faces: index_faces(graph, cap),
+    };
 }

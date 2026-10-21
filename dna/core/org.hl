@@ -98,7 +98,11 @@ locus Leader {
     fn on_optimize(req: OptimizeRequest) {
         self.optimizations = self.optimizations + 1;
         let brief = self.brief("optimize: is the organization's machinery still right?");
-        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", "optimize") } else { "" };
+        let pkg_bindings = if len(self.last_package) > 0 {
+            self.knowledge.bindings_for("org", "optimize")
+        } else {
+            ""
+        };
         let prompt = "You are the leader of this project: its architect. This is the optimize pass: walk the machinery, not the work. By your charter, the purpose, the law and the ratified practices above, and by the record's signals below, say whether the organization's structure, routing, review policy and knowledge still fit — and propose ONE small change with its reasoning, or say the state is clean.\n"
             + "SIGNALS\n" + req.signals + "\n"
             + "Answer with these lines, then your reasoning:\n"
@@ -110,7 +114,10 @@ locus Leader {
         });
         let text = if r.ok { r.output } else { "" };
         let proposal = plan_line(text, "proposal");
-        let none = len(proposal) == 0 || std::str::lower(proposal) == "none" || std::str::lower(proposal) == "none." || std::str::lower(proposal) == "clean";
+        let none = len(proposal) == 0
+            || std::str::lower(proposal) == "none"
+            || std::str::lower(proposal) == "none."
+            || std::str::lower(proposal) == "clean";
         OrgReviewed <- OrgReview {
             org: req.org, task: req.task, signals: req.signals,
             proposal: if none { "" } else { proposal },
@@ -128,10 +135,15 @@ locus Leader {
     // parse. One plan per ask; bounded by the Tasks the Board admits.
     fn on_plan(req: PlanRequest) {
         let brief = self.brief(req.objective);
-        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", req.objective) } else { "" };
+        let pkg_bindings = if len(self.last_package) > 0 {
+            self.knowledge.bindings_for("org", req.objective)
+        } else {
+            ""
+        };
         let prompt = "You are the leader of this project: its architect. An ask has entered. Say what it is, by your charter, the purpose, the law and the ratified practices above; do not widen it.\n"
             + "Ask: " + req.objective + "\n"
-            + "Target named by the asker: " + (if len(req.target) > 0 { req.target } else { "(none)" }) + "\n"
+            + "Target named by the asker: "
+            + (if len(req.target) > 0 { req.target } else { "(none)" }) + "\n"
             + "Answer with these lines, then one line of reasoning:\n"
             + "kind: organism | appendage | product | person\n"
             + "  (organism: this organization's own program under dna/org, its positions, laws and purpose, the Board's to decide; appendage: the software this organization runs for its own work, the application's own sources such as main.hl and its loci; product: software it ships to others; person: a job for a human, not a change to source)\n"
@@ -148,8 +160,18 @@ locus Leader {
         let text = if r.ok { r.output } else { "" };
         let kind = plan_line(text, "kind");
         let class = plan_line(text, "class");
-        let known_kind = kind == "organism" || kind == "appendage" || kind == "product" || kind == "person";
-        let known_class = class == "docs" || class == "refactor" || class == "feature" || class == "application" || class == "organization" || class == "constitutional" || class == "process-policy" || class == "topology";
+        let known_kind = kind == "organism"
+            || kind == "appendage"
+            || kind == "product"
+            || kind == "person";
+        let known_class = class == "docs"
+            || class == "refactor"
+            || class == "feature"
+            || class == "application"
+            || class == "organization"
+            || class == "constitutional"
+            || class == "process-policy"
+            || class == "topology";
         let parsed = known_kind && known_class;
         let target = plan_line(text, "target");
         let assignee = plan_line(text, "assignee");
@@ -159,7 +181,11 @@ locus Leader {
             org: req.org, task_id: req.task_id, work_id: req.work_id,
             kind: if known_kind { kind } else { "appendage" },
             change_class: if parsed { class } else { "application" },
-            target: if parsed && len(target) > 0 && target != "(none)" { target } else { req.target },
+            target: if parsed && len(target) > 0 && target != "(none)" {
+                target
+            } else {
+                req.target
+            },
             count: if count > 0 { count } else { 1 },
             narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
             package: self.last_package, by: self.name, parsed: parsed,
@@ -181,7 +207,10 @@ locus Leader {
         if len(law) > 0 { out = out + "LAW\n" + law + "\n"; }
         let pkg = self.knowledge.package_for("org", query);
         self.last_package = if pkg.included_n > 0 { pkg.digest } else { "" };
-        if pkg.included_n > 0 { out = out + "PRACTICES (ratified knowledge for org, package " + pkg.digest + "):\n" + pkg.text + "\n"; }
+        if pkg.included_n > 0 {
+            out = out + "PRACTICES (ratified knowledge for org, package " + pkg.digest + "):\n"
+                + pkg.text + "\n";
+        }
         self.last_brief = out;
         return out;
     }
@@ -206,10 +235,15 @@ locus Leader {
         let source = self.source.diff(req.base_commit, req.subject_digest);
         let semantic = self.receipts.read(req.diff_text);
         let brief = self.brief(req.question);
-        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", req.question) } else { "" };
+        let pkg_bindings = if len(self.last_package) > 0 {
+            self.knowledge.bindings_for("org", req.question)
+        } else {
+            ""
+        };
         let prompt = "You are the leader of this project: its architect. Decide the change under review by your charter, the purpose, the law and the ratified practices above the diffs.\n"
             + "Question: " + req.question + "\n"
-            + "Class: " + req.change_class + " · disposition under the grant: " + req.disposition + "\n"
+            + "Class: " + req.change_class + " · disposition under the grant: " + req.disposition
+            + "\n"
             + "Evidence: " + req.evidence + "\nMagnitude: " + req.magnitude + "\n"
             + "Answer with one word first — approve, revise or reject — then why.";
         let context = brief + "SOURCE DIFF\n" + source + "\nSEMANTIC DIFF\n" + semantic;
@@ -223,14 +257,22 @@ locus Leader {
         });
         self.decisions = self.decisions + 1;
         let verdict = if !r.ok { "abstain" } else { first_word(r.output) };
-        let v = if verdict == "approve" || verdict == "revise" || verdict == "reject" { verdict } else { "abstain" };
+        let v = if verdict == "approve" || verdict == "revise" || verdict == "reject" {
+            verdict
+        } else {
+            "abstain"
+        };
         if v == "approve" { self.approved = self.approved + 1; }
         if v == "revise" { self.revised = self.revised + 1; }
         self.last = req.review_id + ": " + v + " (" + r.backend + ")";
         ReviewVerdict <- Verdict {
             review_id: req.review_id, subject_digest: req.subject_digest, verdict: v,
             reviewer: self.name, authority: "leader",
-            comment: if r.ok { "model " + r.backend + ": " + trim_nl(r.output) } else { "model refused: " + r.refused }
+            comment: if r.ok {
+                "model " + r.backend + ": " + trim_nl(r.output)
+            } else {
+                "model refused: " + r.refused
+            }
         };
     }
 }

@@ -12,7 +12,9 @@
 // deferred reclaim waited for the re-run, and the re-run's failure
 // waited for the owner's thread.
 
-fn gate(what: String) -> String { return "/tmp/hale-fd-restart-in-place-" + what + "-" + to_string(std::process::pid()); }
+fn gate(what: String) -> String {
+    return "/tmp/hale-fd-restart-in-place-" + what + "-" + to_string(std::process::pid());
+}
 
 locus Kid {
     params { tag: Int = 0; runs: Int = 0; name: String = ""; }
@@ -26,7 +28,9 @@ locus Kid {
         println("ev kid-run " + to_string(self.tag) + " " + to_string(self.runs));
         if self.tag == 0 && self.runs == 1 {
             let until = std::time::monotonic_ns() + 5000000000;
-            while !std::io::fs::file_exists(gate("start")) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+            while !std::io::fs::file_exists(gate("start")) && std::time::monotonic_ns() < until {
+                std::time::sleep(1ms);
+            }
             violate fuse;
         }
     }

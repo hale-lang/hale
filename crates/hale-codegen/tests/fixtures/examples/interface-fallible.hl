@@ -5,7 +5,9 @@ type E { kind: String = ""; }
 interface Store {
     fn put(k: String) -> Int fallible(E);
 }
-locus Mem { fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; } }
+locus Mem {
+    fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; }
+}
 fn keep(s: Store, k: String) -> Int { return s.put(k) or 0; }
 fn main() {
     let m = Mem { };

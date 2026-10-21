@@ -167,7 +167,9 @@ locus NatsFramer {
         let b = self.rx.view();
         let nl = std::bytes::find_byte(b, 0, 10);
         if nl < 0 {
-            if n > MAX_CONTROL_LINE { self.stop("a control line longer than ", to_string(MAX_CONTROL_LINE) + " bytes"); }
+            if n > MAX_CONTROL_LINE {
+                self.stop("a control line longer than ", to_string(MAX_CONTROL_LINE) + " bytes");
+            }
             return false;
         }
         let end = if nl > 0 && (std::bytes::at(b, nl - 1) or 0) == 13 { nl - 1 } else { nl };
@@ -177,7 +179,10 @@ locus NatsFramer {
         if op == "MSG" {
             // MSG <subject> <sid> [reply] <size>
             let count = token_count(line);
-            if count != 4 && count != 5 { self.stop("MSG with " + to_string(count) + " fields: ", line); return false; }
+            if count != 4 && count != 5 {
+                self.stop("MSG with " + to_string(count) + " fields: ", line);
+                return false;
+            }
             let size = std::str::parse_int(token_at(line, count - 1)) or - 1;
             if size < 0 { self.stop("MSG size is not a number: ", line); return false; }
             if n < body + size + 2 { return false; }
@@ -192,10 +197,16 @@ locus NatsFramer {
         if op == "HMSG" {
             // HMSG <subject> <sid> [reply] <header size> <total size>
             let count = token_count(line);
-            if count != 5 && count != 6 { self.stop("HMSG with " + to_string(count) + " fields: ", line); return false; }
+            if count != 5 && count != 6 {
+                self.stop("HMSG with " + to_string(count) + " fields: ", line);
+                return false;
+            }
             let hsize = std::str::parse_int(token_at(line, count - 2)) or - 1;
             let total = std::str::parse_int(token_at(line, count - 1)) or - 1;
-            if hsize < 0 || total < hsize { self.stop("HMSG sizes do not add up: ", line); return false; }
+            if hsize < 0 || total < hsize {
+                self.stop("HMSG sizes do not add up: ", line);
+                return false;
+            }
             if n < body + total + 2 { return false; }
             self.frame.op = "HMSG";
             self.frame.subject = token_at(line, 1);

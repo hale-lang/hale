@@ -30,8 +30,21 @@ fn answer(text: String) -> Answer {
 // at all), so a host's relay and a verb waiting for its answer see the
 // Ledger as it is now (GH #986: no head publishes beside the body any
 // more, so this read is the only way a head's row reaches the organism).
-fn open_projection(root: String, seed: String, toolchain: String, memory: dna::Memory) -> Projection {
-    let p = Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::RecordJournal { repo: root, author: "host" }, ledger: memory.ledger } };
+fn open_projection(
+    root: String,
+    seed: String,
+    toolchain: String,
+    memory: dna::Memory
+) -> Projection {
+    let p = Projection {
+        root: root,
+        seed: seed,
+        toolchain: toolchain,
+        j: dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root, author: "host" },
+            ledger: memory.ledger,
+        },
+    };
     let moved = p.j.refresh();
     return p;
 }
@@ -52,7 +65,13 @@ fn record_refusal(root: String) -> String {
 
 // ---- status ---------------------------------------------------------
 
-fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory: dna::Memory) -> Answer {
+fn status_verb(
+    root: String,
+    seed: String,
+    toolchain: String,
+    json: Bool,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, toolchain, memory);
@@ -62,7 +81,20 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory
     // pieces, and who runs it — never a stored label
     let now = std::time::now();
     let gap = credential_gap(p);
-    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is in the vault where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n" + "genome:     " + genome_line(p) + "\n");
+    return answer(
+        p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       "
+            + body_line(root, now, memory)
+            + (
+                if len(gap) > 0 {
+                    "; no credential for the model (none of " + gap
+                        + " is in the vault where the body runs): `hale dna secret set <NAME> [--body <user@host>]`"
+                } else {
+                    ""
+                }
+            )
+            + "\n" + "memory:     " + routing_line(root, memory) + "\n" + "genome:     "
+            + genome_line(p) + "\n",
+    );
 }
 
 // GH #1026: the genome each node runs, from its last `node.started` row,
@@ -72,7 +104,11 @@ fn genome_line(p: Projection) -> String {
     let mut i = 0;
     while i < p.j.revision() {
         let e = p.j.read(i);
-        if (e.kind == "node.started" || e.kind == "node.build_failed") && !std::str::contains("\n" + holders, "\n" + e.entity + "\n") { holders = holders + e.entity + "\n"; }
+        if (e.kind == "node.started" || e.kind == "node.build_failed")
+            && !std::str::contains("\n" + holders, "\n" + e.entity + "\n")
+        {
+            holders = holders + e.entity + "\n";
+        }
         i = i + 1;
     }
     if len(holders) == 0 { return "no node has recorded the genome it runs"; }
@@ -88,7 +124,10 @@ fn genome_line(p: Projection) -> String {
         let mut k = 0;
         while k < p.j.revision() {
             let e = p.j.read(k);
-            if e.entity == who && e.kind == "node.build_failed" { failed = std::json::find_string_field(e.body, "sha"); fallback = true; }
+            if e.entity == who && e.kind == "node.build_failed" {
+                failed = std::json::find_string_field(e.body, "sha");
+                fallback = true;
+            }
             if e.entity == who && e.kind == "node.started" {
                 running = std::json::find_string_field(e.body, "sha");
                 if !fallback { failed = ""; }
@@ -96,7 +135,15 @@ fn genome_line(p: Projection) -> String {
             }
             k = k + 1;
         }
-        out = out + (if len(out) > 0 { "; " } else { "" }) + (if len(running) > 0 { short(running) } else { "none yet" }) + " on " + who + (if len(failed) > 0 && failed != running { " (" + short(failed) + " did not build)" } else { "" });
+        out = out + (if len(out) > 0 { "; " } else { "" })
+            + (if len(running) > 0 { short(running) } else { "none yet" }) + " on " + who
+            + (
+                if len(failed) > 0 && failed != running {
+                    " (" + short(failed) + " did not build)"
+                } else {
+                    ""
+                }
+            );
     }
     return out;
 }
@@ -139,7 +186,13 @@ fn profile_name(root: String, memory: dna::Memory) -> String {
     let l = body_lease_read(root, memory);
     let live = l.ok && body_live(l, std::time::now());
     let here = live && holder_host(l.holder) == this_host();
-    let mut name = if live && !here { "remote body" } else if live { "local body" } else { "no body" };
+    let mut name = if live && !here {
+        "remote body"
+    } else if live {
+        "local body"
+    } else {
+        "no body"
+    };
     if len(fleet_name(root)) > 0 { name = name + " + fleet"; }
     if forge_kind(root) != "none" { name = name + " + " + forge_kind(root); }
     return name + " (detected)";
@@ -152,16 +205,60 @@ fn profile_verb(root: String, memory: dna::Memory) -> Answer {
     let remote = genome_remote(root);
     let url = if len(remote) > 0 { rec(root).remote_url(remote) } else { "" };
     let mut out = "profile:     " + profile_name(root, memory) + "\n";
-    out = out + "record:      " + record_identity(root) + ", in memory (every clone and body reads and writes it there)\n";
-    out = out + "genome:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
+    out = out + "record:      " + record_identity(root)
+        + ", in memory (every clone and body reads and writes it there)\n";
+    out = out + "genome:      "
+        + (
+            if len(remote) == 0 {
+                "this clone only (no remote; `git remote add origin …` shares it)"
+            } else {
+                "shared over " + remote + " (" + url + ")"
+            }
+        )
+        + "\n";
     out = out + "body:        " + body_line(root, now, memory) + "\n";
     out = out + "head:        this clone (" + root + "); hosted head: none\n";
     let fleet = fleet_name(root);
-    out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
+    out = out + "fleet:       "
+        + (
+            if len(fleet) == 0 {
+                "none (`[dna] fleet = \"<name>\"` in hale.toml names one)"
+            } else {
+                fleet
+            }
+        )
+        + "\n";
     let owner = std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER");
     let compose = len(dna::allocation_key(root)) > 0;
-    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "the local habitat's allocation " + dna::allocation_service(root, "memory") + " (compose project " + dna::local_habitat_project() + "; `hale habitat migrate` brings it up)" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
-    out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
+    out = out + "memory:      "
+        + (
+            if owner {
+                "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)"
+            } else if compose {
+                "the local habitat's allocation " + dna::allocation_service(root, "memory")
+                    + " (compose project " + dna::local_habitat_project()
+                    + "; `hale habitat migrate` brings it up)"
+            } else {
+                "none"
+            }
+        )
+        + (
+            if dna::dsn_set(dna::HEAD_DSN_ENV) {
+                "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)"
+            } else {
+                ""
+            }
+        )
+        + "\n";
+    out = out + "trust:       " + trust_mode(root)
+        + (
+            if trust_mode(root) == "signed" {
+                " (rows from the record are admitted only with a signature git verifies)"
+            } else {
+                " (every writer to the record is trusted)"
+            }
+        )
+        + "\n";
     // GH #648: the forge the host found, whichever it is
     out = out + "github:      " + forge_name(root) + "\n";
     out = out + "connections: none\n";
@@ -179,12 +276,25 @@ fn body_lease_take(root: String, holder: String, token: Int, memory: dna::Memory
         let cur = body_lease_read(root, memory);
         if !cur.ok { return false; }
         if !cur.present || cur.holder != holder || cur.token != token { return !cur.present; }
-        if body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha, memory) { return true; }
+        if body_lease_write(
+            root,
+            BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 },
+            cur.sha,
+            memory,
+        ) {
+            return true;
+        }
     }
     return false;
 }
 
-fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: dna::Memory) -> Answer {
+fn body_verb(
+    root: String,
+    sub: String,
+    force: Bool,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
@@ -204,26 +314,63 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
         // asked for the lease to be taken should not be told to ask again
         // because the clock crossed the TTL between their reading and
         // their claim (a CI runner did exactly that).
-        if !body_live(cur, now) && !force { return answer("body: " + body_line(root, now, memory) + "\n"); }
-        if body_live(cur, now) && !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
+        if !body_live(cur, now) && !force {
+            return answer("body: " + body_line(root, now, memory) + "\n");
+        }
+        if body_live(cur, now) && !force {
+            return fail(
+                "body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL))
+                    + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)",
+            );
+        }
         // the body renews its lease every few seconds: a claim that read
         // the lease just before a renewal reads it again and claims the
         // renewed one, a few times, before giving up
-        if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while claiming; try again"); }
-        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + owner_json(root) + "}", who, memory);
+        if !body_lease_take(root, cur.holder, cur.token, memory) {
+            return fail("body: the lease moved while claiming; try again");
+        }
+        let ok = append_as(
+            root,
+            "body.claimed",
+            cur.holder,
+            "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": "
+                + quote(cur.holder) + ", \"by\": " + quote(who) + owner_json(root) + "}",
+            who,
+            memory,
+        );
         let s = sync_record(root, memory);
-        return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
+        return answer(
+            "body: the lease of " + cur.holder + " was taken by " + who
+                + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n",
+        );
     }
     if sub == "release" {
         if !cur.present { return answer("body: " + body_line(root, now, memory) + "\n"); }
         let mine = body_holder(root);
-        if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
-        if !body_lease_take(root, cur.holder, cur.token, memory) { return fail("body: the lease moved while releasing; try again"); }
-        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + owner_json(root) + "}", who, memory);
+        if cur.holder != mine && !force {
+            return fail(
+                "body: the lease is held by " + cur.holder + ", not this clone (" + mine
+                    + "); `hale dna body release --force` releases another's",
+            );
+        }
+        if !body_lease_take(root, cur.holder, cur.token, memory) {
+            return fail("body: the lease moved while releasing; try again");
+        }
+        let ok = append_as(
+            root,
+            "body.released",
+            cur.holder,
+            "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + owner_json(root)
+                + "}",
+            who,
+            memory,
+        );
         let s = sync_record(root, memory);
         return answer("body: released the lease of " + cur.holder + " (body.released)\n");
     }
-    return fail("body: `hale dna body`, `body claim [--force]`, `body release [--force]`, `body provision <user@host> [--dsn …] [--dir …] [--dry-run]`, `body start|stop|logs [--body <user@host>]`");
+    return fail(
+        "body: `hale dna body`, `body claim [--force]`, `body release [--force]`, `body provision <user@host> [--dsn …] [--dir …] [--dry-run]`, `body start|stop|logs [--body <user@host>]`",
+    );
 }
 
 // ---- history --------------------------------------------------------
@@ -246,7 +393,9 @@ fn looks_like_id(t: String) -> Bool {
 }
 
 fn mentions(e: dna::Event, id: String) -> Bool {
-    return e.entity == id || std::str::ends_with(e.entity, ":" + id) || std::str::contains(e.body, id);
+    return e.entity == id
+        || std::str::ends_with(e.entity, ":" + id)
+        || std::str::contains(e.body, id);
 }
 
 fn strip_prefixes(entity: String) -> String {
@@ -283,7 +432,13 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
                     let mut k = 0;
                     while k <= len(e.body) {
                         let ch = if k < len(e.body) { e.body[k..(k + 1)] } else { " " };
-                        if ch == ":" || ch == " " || ch == "\n" || ch == "\t" || ch == "," || ch == "\"" {
+                        if ch == ":"
+                            || ch == " "
+                            || ch == "\n"
+                            || ch == "\t"
+                            || ch == ","
+                            || ch == "\""
+                        {
                             if looks_like_id(tok) && !has(ids, tok) { ids = ids + tok + "\n"; }
                             tok = "";
                         } else {
@@ -296,7 +451,8 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
             }
         }
     }
-    let mut out = "record " + short(record_identity(root)) + " — " + to_string(n) + " event(s), " + p.chain_line() + "\n";
+    let mut out = "record " + short(record_identity(root)) + " — " + to_string(n) + " event(s), "
+        + p.chain_line() + "\n";
     let mut lines = "";
     let mut selected = 0;
     let mut i = 0;
@@ -305,26 +461,46 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
         if len(entity) == 0 || mentioned_by_any(e, ids) {
             selected = selected + 1;
             let b = if len(e.body) > 96 { e.body[0..96] + "…" } else { e.body };
-            lines = lines + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + std::str::pad_right(e.kind, 22, " ") + " " + std::str::pad_right(e.entity, 28, " ") + " " + b + "\n";
+            lines = lines + std::str::pad_left(to_string(e.seq), 5, " ") + "  "
+                + std::str::pad_right(e.kind, 22, " ") + " "
+                + std::str::pad_right(e.entity, 28, " ") + " " + b + "\n";
             // GH #611: an attempt's own history shows what each of its
             // model calls sent, from the receipt, never re-composed. A
             // wider history names the calls and leaves the bodies to the
             // attempt's (an editor's prompt carries whole files).
             if len(entity) > 0 && e.entity == entity && e.kind == "model.called" {
                 let bodies = std::json::find_string_field(e.body, "bodies");
-                lines = lines + body_block(root, "prompt", std::json::find_string_field(e.body, "prompt_digest"), bodies);
-                lines = lines + body_block(root, "context", std::json::find_string_field(e.body, "context_digest"), bodies);
+                lines = lines
+                    + body_block(
+                        root,
+                        "prompt",
+                        std::json::find_string_field(e.body, "prompt_digest"),
+                        bodies,
+                    );
+                lines = lines
+                    + body_block(
+                        root,
+                        "context",
+                        std::json::find_string_field(e.body, "context_digest"),
+                        bodies,
+                    );
             }
         }
         i = i + 1;
     }
-    if len(entity) > 0 { out = out + "history of " + entity + ": " + to_string(selected) + " event(s)\n"; }
+    if len(entity) > 0 {
+        out = out + "history of " + entity + ": " + to_string(selected) + " event(s)\n";
+    }
     // GH #946: what the entity's model calls cost, summed from their
     // `model.called` rows — the task's own, its attempts', the plan's
     // and the verdict's — by position and by backend; the API reads the
     // same projection. Nothing when no call was made.
     let usage = ops::Usage { j: p.j };
-    out = out + ops::usage_text(if len(entity) > 0 { "usage of " + entity } else { "usage" }, usage.under(entity));
+    out = out
+        + ops::usage_text(
+            if len(entity) > 0 { "usage of " + entity } else { "usage" },
+            usage.under(entity),
+        );
     return answer(out + lines);
 }
 
@@ -335,16 +511,27 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
 fn body_block(root: String, what: String, digest: String, bodies: String) -> String {
     if len(digest) == 0 { return ""; }
     let pad = "       ";
-    if std::str::starts_with(bodies, "withheld") { return pad + what + " " + digest + " " + bodies + ": no body is stored\n"; }
-    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    if std::str::starts_with(bodies, "withheld") {
+        return pad + what + " " + digest + " " + bodies + ": no body is stored\n";
+    }
+    let hexd = if std::str::starts_with(digest, "sha256:") {
+        digest[7..len(digest)]
+    } else {
+        digest
+    };
     let r = receipt_read(root, hexd);
     let redacted = redaction_line(root, digest);
     if !r.present && len(redacted) > 0 { return pad + what + " " + digest + " " + redacted + "\n"; }
     if !r.present {
-        let why = if len(bodies) == 0 { " (the call was recorded before prompts were receipts)" } else { "" };
+        let why = if len(bodies) == 0 {
+            " (the call was recorded before prompts were receipts)"
+        } else {
+            ""
+        };
         return pad + what + " " + digest + " is not among the record's receipts" + why + "\n";
     }
-    return pad + what + " " + digest + " (" + to_string(len(r.text)) + " bytes)\n" + r.text + "\n" + pad + "end of " + what + "\n";
+    return pad + what + " " + digest + " (" + to_string(len(r.text)) + " bytes)\n" + r.text + "\n"
+        + pad + "end of " + what + "\n";
 }
 
 fn mentioned_by_any(e: dna::Event, ids: String) -> Bool {
@@ -370,7 +557,8 @@ fn review_list(p: Projection) -> Answer {
         if r.state == "pending" && !seeded_group(r.group) {
             out = out + "  " + r.id + " needs " + r.required_authority + " — " + r.question + "\n";
             if r.is_mutation {
-                out = out + "      " + r.change_class + " · candidate " + short(r.candidate_commit) + " · evidence " + r.evidence + " · disposition " + r.disposition + "\n";
+                out = out + "      " + r.change_class + " · candidate " + short(r.candidate_commit)
+                    + " · evidence " + r.evidence + " · disposition " + r.disposition + "\n";
             }
         }
         i = i + 1;
@@ -379,8 +567,16 @@ fn review_list(p: Projection) -> Answer {
     // practice (a Review pins one digest and settles with one outcome),
     // each listed under its own heading so the Board can read it as a set
     let ordered = p.review_ids_in_order();
-    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design") + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using") + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes") + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds") + seeded_listing(p, ordered, "positions") + seeded_listing(p, ordered, "changes") + seeded_listing(p, ordered, "ingest");
-    return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`, or every group above in turn with `hale dna review all approve`\n");
+    out = out + seeded_listing(p, ordered, "purpose") + seeded_listing(p, ordered, "design")
+        + seeded_listing(p, ordered, "operating") + seeded_listing(p, ordered, "using")
+        + seeded_listing(p, ordered, "library") + seeded_listing(p, ordered, "holes")
+        + seeded_listing(p, ordered, "practices") + seeded_listing(p, ordered, "holds")
+        + seeded_listing(p, ordered, "positions") + seeded_listing(p, ordered, "changes")
+        + seeded_listing(p, ordered, "ingest");
+    return answer(
+        out
+            + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`, or every group above in turn with `hale dna review all approve`\n",
+    );
 }
 
 // The groups whose Reviews are listed together and may be decided in turn
@@ -388,7 +584,19 @@ fn review_list(p: Projection) -> Answer {
 // practices (`design`, `operating`, `using`), the toolchain's library (`library`), and a repository's holes, its marked
 // practices and proposed holders (GH #1091), the positions opened at run
 // time, the batches of changes `hale dna apply` proposes, and a re-ingest.
-fn seeded_group(group: String) -> Bool { return group == "purpose" || group == "design" || group == "operating" || group == "using" || group == "library" || group == "holes" || group == "practices" || group == "holds" || group == "positions" || group == "changes" || group == "ingest"; }
+fn seeded_group(group: String) -> Bool {
+    return group == "purpose"
+        || group == "design"
+        || group == "operating"
+        || group == "using"
+        || group == "library"
+        || group == "holes"
+        || group == "practices"
+        || group == "holds"
+        || group == "positions"
+        || group == "changes"
+        || group == "ingest";
+}
 
 // The pending Reviews of one seeded family, under its heading ("" when none).
 fn seeded_listing(p: Projection, ids: String, family: String) -> String {
@@ -405,9 +613,34 @@ fn seeded_listing(p: Projection, ids: String, family: String) -> String {
         i = i + 1;
     }
     if count == 0 { return ""; }
-    let what = if family == "purpose" { "the declared purpose, the Board's to ratify first" } else { to_string(count) + (if family == "holes" { " hole(s) the repository leaves" } else if family == "practices" { " practice(s) its documents mark" } else if family == "holds" { " proposed holder(s)" } else if family == "positions" { " position(s) to open, each with its mandate" } else if family == "changes" { " batch(es) of changes to the organization, each ratified whole" } else if family == "ingest" { " re-ingest(s) of the repository's graph at a commit" } else if family == "library" { " library family Review(s), each ratifying the ideas it names, bound to their node" } else { " seeded practice(s)" }) + ", each its own Review" };
+    let what = if family == "purpose" {
+        "the declared purpose, the Board's to ratify first"
+    } else {
+        to_string(count)
+            + (
+                if family == "holes" {
+                    " hole(s) the repository leaves"
+                } else if family == "practices" {
+                    " practice(s) its documents mark"
+                } else if family == "holds" {
+                    " proposed holder(s)"
+                } else if family == "positions" {
+                    " position(s) to open, each with its mandate"
+                } else if family == "changes" {
+                    " batch(es) of changes to the organization, each ratified whole"
+                } else if family == "ingest" {
+                    " re-ingest(s) of the repository's graph at a commit"
+                } else if family == "library" {
+                    " library family Review(s), each ratifying the ideas it names, bound to their node"
+                } else {
+                    " seeded practice(s)"
+                }
+            )
+            + ", each its own Review"
+    };
     return "  " + family + " — " + what + ":\n" + lines
-        + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review " + family + " approve|reject`\n";
+        + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review "
+        + family + " approve|reject`\n";
 }
 
 fn pending_ids(p: Projection) -> String {
@@ -437,10 +670,14 @@ fn magnitude_facets(raw: String) -> String {
         let k = rest[0..sp];
         rest = rest[(sp + 1)..len(rest)];
         if std::str::contains(bools, k + " ") {
-            if std::json::find_bool_field(raw, k) { out = out + (if len(out) > 0 { ", " } else { "" }) + k; }
+            if std::json::find_bool_field(raw, k) {
+                out = out + (if len(out) > 0 { ", " } else { "" }) + k;
+            }
         } else {
             let v = std::json::find_int_field(raw, k);
-            if v != 0 { out = out + (if len(out) > 0 { ", " } else { "" }) + k + " " + to_string(v); }
+            if v != 0 {
+                out = out + (if len(out) > 0 { ", " } else { "" }) + k + " " + to_string(v);
+            }
         }
     }
     if len(out) == 0 { return "nothing moved in the model"; }
@@ -487,7 +724,8 @@ fn signers_shown(signers: String) -> String {
         let w = dna::nth_word(signers, i);
         let eq = std::str::index_of(w, "=");
         let held = std::str::replace(w[(eq + 1)..len(w)], ",", ", ");
-        out = out + (if i > 0 { ", " } else { "" }) + w[0..eq] + " (" + (if len(held) > 0 { held } else { "held by nobody" }) + ")";
+        out = out + (if i > 0 { ", " } else { "" }) + w[0..eq] + " ("
+            + (if len(held) > 0 { held } else { "held by nobody" }) + ")";
         i = i + 1;
     }
     return out;
@@ -499,7 +737,12 @@ fn signers_shown(signers: String) -> String {
 // subject has neither.
 fn review_targets(r: ReviewRow) -> String {
     let mut out = if dna::is_node_target(r.target) { r.target } else { "" };
-    if r.is_mutation && r.change_class == "organization" && !std::str::contains(" " + out + " ", " system:dna ") { out = out + (if len(out) > 0 { " " } else { "" }) + "system:dna"; }
+    if r.is_mutation
+        && r.change_class == "organization"
+        && !std::str::contains(" " + out + " ", " system:dna ")
+    {
+        out = out + (if len(out) > 0 { " " } else { "" }) + "system:dna";
+    }
     return out;
 }
 
@@ -514,15 +757,29 @@ fn review_knowledge(root: String, r: ReviewRow) -> String {
     let targets = review_targets(r);
     if len(targets) == 0 { return ""; }
     let k = dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV, budget: 8 };
-    if !k.ready() { return "  knowledge for " + targets + ": not read (no memory: " + dna::HEAD_DSN_ENV + " is not set)\n"; }
+    if !k.ready() {
+        return "  knowledge for " + targets + ": not read (no memory: " + dna::HEAD_DSN_ENV
+            + " is not set)\n";
+    }
     let pkg = k.package_for(targets, r.question);
-    if len(pkg.error) > 0 { return "  knowledge for " + targets + ": not read (" + pkg.error + ")\n"; }
+    if len(pkg.error) > 0 {
+        return "  knowledge for " + targets + ": not read (" + pkg.error + ")\n";
+    }
     if pkg.included_n == 0 { return "  knowledge for " + targets + ": none ratified\n"; }
-    let mut out = "  knowledge for " + targets + " (" + to_string(pkg.included_n) + " idea(s), package " + short(pkg.digest) + "):\n";
+    let mut out = "  knowledge for " + targets + " (" + to_string(pkg.included_n)
+        + " idea(s), package " + short(pkg.digest) + "):\n";
     let mut it = std::json::array_first(pkg.practices);
     while !it.done {
         let name = std::json::find_string_field(it.element, "name");
-        out = out + "    - " + (if len(name) > 0 { name } else { short(std::json::find_string_field(it.element, "id")) }) + "\n";
+        out = out + "    - "
+            + (
+                if len(name) > 0 {
+                    name
+                } else {
+                    short(std::json::find_string_field(it.element, "id"))
+                }
+            )
+            + "\n";
         it = std::json::array_next(it);
     }
     return out;
@@ -532,70 +789,145 @@ fn review_knowledge(root: String, r: ReviewRow) -> String {
 @bounded_by(p)
 fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     let r = p.review_of(id);
-    if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
+    if len(r.id) == 0 {
+        return fail(
+            "no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p)
+                + ")",
+        );
+    }
     let mut out = "review " + id + " [" + r.state + "]: " + r.question + "\n";
     // GH #1089: a routed Review names its signers and gates, not an authority
     let routed = routed_of(p, id);
     let signers = dna::native_json_string(routed, "signers");
     let gates = dna::native_json_string(routed, "gates");
     let why = dna::native_json_string(routed, "why");
-    out = out + "  needs " + (if len(signers) > 0 { "every one of " + signers_shown(signers) } else { r.required_authority + (if len(why) > 0 { " (the fallback: " + why + ")" } else { "" }) }) + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
-    if len(gates) > 0 { out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ") + " at the candidate, as the forge reports it (`hale dna github sync`)\n"; }
+    out = out + "  needs "
+        + (
+            if len(signers) > 0 {
+                "every one of " + signers_shown(signers)
+            } else {
+                r.required_authority
+                    + (if len(why) > 0 { " (the fallback: " + why + ")" } else { "" })
+            }
+        )
+        + " · candidate " + r.subject_digest
+        + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
+    if len(gates) > 0 {
+        out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ")
+            + " at the candidate, as the forge reports it (`hale dna github sync`)\n";
+    }
     // what it still awaits, as its last signature said
     let mut awaiting = "";
     let mut k = 0;
     while k < p.rows() {
         let e = p.row(k);
-        if e.kind == "review.signed" && e.entity == id { awaiting = dna::native_json_string(e.body, "awaiting"); }
+        if e.kind == "review.signed" && e.entity == id {
+            awaiting = dna::native_json_string(e.body, "awaiting");
+        }
         // GH #1161: each gate run the host observed at the forge
-        if e.kind == "gate.observed" && e.entity == id { out = out + "  ran: " + dna::native_json_string(e.body, "gate") + " " + dna::native_json_string(e.body, "conclusion") + " at " + short(dna::native_json_string(e.body, "sha")) + " (" + dna::native_json_string(e.body, "url") + ")\n"; }
+        if e.kind == "gate.observed" && e.entity == id {
+            out = out + "  ran: " + dna::native_json_string(e.body, "gate") + " "
+                + dna::native_json_string(e.body, "conclusion") + " at "
+                + short(dna::native_json_string(e.body, "sha")) + " ("
+                + dna::native_json_string(e.body, "url") + ")\n";
+        }
         k = k + 1;
     }
-    if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 { out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n"; }
-    if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
+    if len(signers) > 0 && r.state == "pending" && len(awaiting) > 0 {
+        out = out + "  awaits " + std::str::replace(awaiting, " ", ", ") + "\n";
+    }
+    if r.refusal_count > 0 {
+        out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: ");
+    }
     if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
     out = out + review_knowledge(p.root, r);
     // a family Review names the ideas it ratifies, from its document
     if r.group == "library" && len(r.subject_digest) > 0 {
-        let doc = receipt_read(p.root, if std::str::starts_with(r.subject_digest, "sha256:") { r.subject_digest[7..len(r.subject_digest)] } else { r.subject_digest });
+        let doc = receipt_read(
+            p.root,
+            if std::str::starts_with(r.subject_digest, "sha256:") {
+                r.subject_digest[7..len(r.subject_digest)]
+            } else {
+                r.subject_digest
+            },
+        );
         if doc.present {
-            out = out + "  ratifies " + to_string(std::json::find_int_field(doc.text, "count")) + " idea(s), each bound to " + r.target + ":\n";
+            out = out + "  ratifies " + to_string(std::json::find_int_field(doc.text, "count"))
+                + " idea(s), each bound to " + r.target + ":\n";
             let mut rest = dna::native_json_string(doc.text, "ideas");
             while len(rest) > 0 {
                 let nl = std::str::index_of(rest, "\n");
                 let line = if nl < 0 { rest } else { rest[0..nl] };
                 rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
                 let sp = std::str::index_of(line, " ");
-                if sp > 0 { out = out + "    - " + line[0..sp] + "  " + short(line[(sp + 1)..len(line)]) + "\n"; }
+                if sp > 0 {
+                    out = out + "    - " + line[0..sp] + "  " + short(line[(sp + 1)..len(line)])
+                        + "\n";
+                }
             }
         }
     }
     if !r.is_mutation {
-        return answer(out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>]\n");
+        return answer(
+            out + "decide: hale dna review " + id
+                + " approve|revise|reject|abstain [--as <you>] [--comment <c>]\n",
+        );
     }
-    out = out + "  mutation " + r.mutation_id + " (" + r.change_class + ") by " + r.author + " · disposition under the grant: " + r.disposition + " · shape " + r.candidate_shape + "\n";
-    if len(r.magnitude_raw) > 0 { out = out + "  magnitude: " + magnitude_facets(r.magnitude_raw) + "\n"; }
-    out = out + "\nsource diff (git " + short(r.base_commit) + " .. " + short(r.candidate_commit) + "):\n";
+    out = out + "  mutation " + r.mutation_id + " (" + r.change_class + ") by " + r.author
+        + " · disposition under the grant: " + r.disposition + " · shape " + r.candidate_shape
+        + "\n";
+    if len(r.magnitude_raw) > 0 {
+        out = out + "  magnitude: " + magnitude_facets(r.magnitude_raw) + "\n";
+    }
+    out = out + "\nsource diff (git " + short(r.base_commit) + " .. " + short(r.candidate_commit)
+        + "):\n";
     let d = genome_diff(p.root, r.base_commit, r.candidate_commit);
-    if d.code == 0 { out = out + indent_lines(dna::trim_nl(d.stdout), "  "); } else { out = out + "  (git diff failed: " + dna::trim_nl(d.stderr) + ")\n"; }
+    if d.code == 0 {
+        out = out + indent_lines(dna::trim_nl(d.stdout), "  ");
+    } else {
+        out = out + "  (git diff failed: " + dna::trim_nl(d.stderr) + ")\n";
+    }
     out = out + "\nsemantic diff (hale model diff, baseline .. candidate):\n";
     let sem = receipt_read(p.root, r.diff_text);
-    if sem.present { out = out + indent_lines(dna::trim_nl(sem.text), "  "); } else { out = out + "  (no semantic diff receipt " + r.diff_text + ")\n"; }
+    if sem.present {
+        out = out + indent_lines(dna::trim_nl(sem.text), "  ");
+    } else {
+        out = out + "  (no semantic diff receipt " + r.diff_text + ")\n";
+    }
     out = out + "\nevidence (" + r.evidence + "):\n";
-    out = out + "  " + std::str::pad_right("step", 10, " ") + " " + std::str::pad_right("ok", 6, " ") + " " + std::str::pad_right("code", 5, " ") + " " + std::str::pad_right("receipt", 14, " ") + " bytes\n";
+    out = out + "  " + std::str::pad_right("step", 10, " ") + " "
+        + std::str::pad_right("ok", 6, " ") + " " + std::str::pad_right("code", 5, " ") + " "
+        + std::str::pad_right("receipt", 14, " ") + " bytes\n";
     let mut i = 0;
     while i < p.rows() {
         let e = p.row(i);
-        if std::str::starts_with(e.kind, "evidence.") && e.entity == r.candidate_commit && e.kind != "evidence.magnitude" {
+        if std::str::starts_with(e.kind, "evidence.")
+            && e.entity == r.candidate_commit
+            && e.kind != "evidence.magnitude"
+        {
             let ok = if std::json::find_bool_field(e.body, "ok") { "yes" } else { "NO" };
-            out = out + "  " + std::str::pad_right(e.kind[9..len(e.kind)], 10, " ") + " " + std::str::pad_right(ok, 6, " ") + " " + std::str::pad_right(to_string(std::json::find_int_field(e.body, "code")), 5, " ") + " " + std::str::pad_right(short(std::json::find_string_field(e.body, "output_digest")), 14, " ") + " " + to_string(std::json::find_int_field(e.body, "bytes")) + "\n";
+            out = out + "  " + std::str::pad_right(e.kind[9..len(e.kind)], 10, " ") + " "
+                + std::str::pad_right(ok, 6, " ") + " "
+                + std::str::pad_right(to_string(std::json::find_int_field(e.body, "code")), 5, " ")
+                + " "
+                + std::str::pad_right(
+                    short(std::json::find_string_field(e.body, "output_digest")),
+                    14,
+                    " ",
+                )
+                + " " + to_string(std::json::find_int_field(e.body, "bytes")) + "\n";
         }
         i = i + 1;
     }
-    out = out + "  receipts: in memory, by digest (`hale dna receipt show <digest> --purpose <p>` for a protected one)\n\n";
-    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]\n";
+    out = out
+        + "  receipts: in memory, by digest (`hale dna receipt show <digest> --purpose <p>` for a protected one)\n\n";
+    out = out + "decide: hale dna review " + id
+        + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest "
+        + short(r.candidate_commit) + "]\n";
     if iris {
-        if len(r.diff_json) == 0 { return fail("--iris: this review has no semantic diff document"); }
+        if len(r.diff_json) == 0 {
+            return fail("--iris: this review has no semantic diff document");
+        }
         let doc = receipt_read(p.root, r.diff_json);
         if !doc.present { return fail("--iris: no diff receipt " + r.diff_json); }
         std::io::fs::mkdir(p.root + "/.hale/dna/scratch") or discard;
@@ -603,8 +935,14 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         let wrote = write_text(doc_path, doc.text) or false;
         if !wrote { return fail("--iris: cannot write " + doc_path); }
         let hale = std::env::var("HALE_BIN");
-        let launched = dna::run_tool("sh\n-c\ncd " + p.root + " || exit 1; nohup " + hale + " iris --diff " + doc_path + " >/dev/null 2>&1 & echo $!");
-        out = out + "iris: review perspective [4] on " + r.diff_json + " (pid " + dna::trim_nl(launched.stdout) + "); iris shows the diff, the verdict is given with hale dna review " + id + " approve|revise|reject|abstain\n";
+        let launched = dna::run_tool(
+            "sh\n-c\ncd " + p.root + " || exit 1; nohup " + hale + " iris --diff " + doc_path
+                + " >/dev/null 2>&1 & echo $!",
+        );
+        out = out + "iris: review perspective [4] on " + r.diff_json + " (pid "
+            + dna::trim_nl(launched.stdout)
+            + "); iris shows the diff, the verdict is given with hale dna review " + id
+            + " approve|revise|reject|abstain\n";
     }
     return answer(out);
 }
@@ -620,16 +958,27 @@ fn board_verb(p: Projection) -> Answer {
     let mut i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        if r.state == "pending" && (r.required_authority == "board" || r.required_authority == "maintainer") {
+        if r.state == "pending"
+            && (r.required_authority == "board" || r.required_authority == "maintainer")
+        {
             mine = mine + 1;
-            let why = if r.is_mutation { " — " + r.change_class + " · " + (if len(r.seed) == 0 { "the application" } else { r.seed }) + " · disposition " + r.disposition } else { "" };
+            let why = if r.is_mutation {
+                " — " + r.change_class + " · "
+                    + (if len(r.seed) == 0 { "the application" } else { r.seed })
+                    + " · disposition " + r.disposition
+            } else {
+                ""
+            };
             lines = lines + "  " + r.id + "  " + r.question + why + "\n";
         }
         if r.state == "pending" && r.required_authority == "leader" { leaders = leaders + 1; }
         i = i + 1;
     }
     let mut out = "board: " + to_string(mine) + " review(s) need your verdict\n" + lines;
-    if leaders > 0 { out = out + "leader: " + to_string(leaders) + " review(s) inside the grant, being decided\n"; }
+    if leaders > 0 {
+        out = out + "leader: " + to_string(leaders)
+            + " review(s) inside the grant, being decided\n";
+    }
     // GH #616: a handed Task a reported decision could not settle
     let tids = p.task_ids();
     let ntasks = list_len(tids);
@@ -637,7 +986,10 @@ fn board_verb(p: Projection) -> Answer {
     let mut k = 0;
     while k < ntasks {
         let t = p.task_of(nth(tids, k));
-        if t.state == "handed" && len(t.waiting) > 0 { waits = waits + "  " + t.id + " (" + t.assignee + ") waits on a native decision: " + t.waiting + "\n"; }
+        if t.state == "handed" && len(t.waiting) > 0 {
+            waits = waits + "  " + t.id + " (" + t.assignee + ") waits on a native decision: "
+                + t.waiting + "\n";
+        }
         k = k + 1;
     }
     if len(waits) > 0 { out = out + "tasks waiting:\n" + waits; }
@@ -652,7 +1004,9 @@ fn board_verb(p: Projection) -> Answer {
                 let mut k = 0;
                 while k < p.rows() {
                     let c = p.row(k);
-                    if c.kind == "appendage.candidate" && c.entity == e.entity && len(cand) == 0 { cand = " → " + c.body; }
+                    if c.kind == "appendage.candidate" && c.entity == e.entity && len(cand) == 0 {
+                        cand = " → " + c.body;
+                    }
                     k = k + 1;
                 }
                 out = out + "  " + e.entity + ": " + e.body + cand + "\n";
@@ -661,18 +1015,26 @@ fn board_verb(p: Projection) -> Answer {
         }
     }
     let last = p.last_of("report.filed");
-    if last.seq >= 0 { out = out + "last report (#" + to_string(last.seq) + "): " + last.body + "\n"; }
+    if last.seq >= 0 {
+        out = out + "last report (#" + to_string(last.seq) + "): " + last.body + "\n";
+    }
     let grant = p.count("grant.changed");
     if grant > 0 { out = out + "grant changes: " + to_string(grant) + "\n"; }
     // GH #617: a missing credential surfaces here at once, not on a task hours later
     let gap = credential_gap(p);
-    if len(gap) > 0 { out = out + "body: no credential for the model (none of " + gap + " is in the vault where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there\n"; }
+    if len(gap) > 0 {
+        out = out + "body: no credential for the model (none of " + gap
+            + " is in the vault where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there\n";
+    }
     // GH #989: each secret the organism requires that the vault lacks (the
     // model's keys are the body's to report, above)
     out = out + secrets_board(p.root);
     // GH #989: the closures the organism absorbed, the latest few
     out = out + violations_board(p);
-    return answer(out + "decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one\n");
+    return answer(
+        out
+            + "decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one\n",
+    );
 }
 
 // The latest violations the organism absorbed (GH #989, `violation.recorded`:
@@ -682,14 +1044,18 @@ fn board_verb(p: Projection) -> Answer {
 fn violations_board(p: Projection) -> String {
     let total = p.count(dna::VIOLATION_KIND);
     if total == 0 { return ""; }
-    let mut out = "violations: " + to_string(total) + " recorded, each absorbed by its owner (the latest last)\n";
+    let mut out = "violations: " + to_string(total)
+        + " recorded, each absorbed by its owner (the latest last)\n";
     let mut shown = 0;
     let mut i = p.rows() - 1;
     let mut lines = "";
     while i >= 0 && shown < 5 {
         let e = p.row(i);
         if e.kind == dna::VIOLATION_KIND {
-            lines = "  " + std::json::find_string_field(e.body, "kind") + " " + std::json::find_string_field(e.body, "subject") + " (" + std::json::find_string_field(e.body, "owner") + "): " + std::json::find_string_field(e.body, "detail") + "\n" + lines;
+            lines = "  " + std::json::find_string_field(e.body, "kind") + " "
+                + std::json::find_string_field(e.body, "subject") + " ("
+                + std::json::find_string_field(e.body, "owner") + "): "
+                + std::json::find_string_field(e.body, "detail") + "\n" + lines;
             shown = shown + 1;
         }
         i = i - 1;
@@ -718,20 +1084,39 @@ fn report_verb(p: Projection, memory: dna::Memory) -> Answer {
     while i < p.rows() {
         let e = p.row(i);
         if e.kind == "mutation.proposed" { proposed = proposed + 1; }
-        if e.kind == "review.requested" { reviewed = reviewed + 1; if std::str::contains(e.body, "\"required_authority\": \"board\"") { escalated = escalated + 1; } }
+        if e.kind == "review.requested" {
+            reviewed = reviewed + 1;
+            if std::str::contains(e.body, "\"required_authority\": \"board\"") {
+                escalated = escalated + 1;
+            }
+        }
         if e.kind == "mutation.applied" { applied = applied + 1; }
         if e.kind == "mutation.retained" { retained = retained + 1; }
         if e.kind == "mutation.rolled_back" { rolled = rolled + 1; }
         if e.kind == "mutation.rejected" { rejected = rejected + 1; }
         if e.kind == "pressure.raised" { pressure = pressure + 1; }
         if e.kind == "appendage.proposed" { proposals = proposals + 1; }
-        if e.kind == "model.called" { calls = calls + 1; cost = cost + std::json::find_int_field(e.body, "cost_micros"); }
-        if e.kind == "review.settled" { settled = settled + (if len(settled) > 0 { ", " } else { "" }) + e.entity + " " + e.body; }
+        if e.kind == "model.called" {
+            calls = calls + 1;
+            cost = cost + std::json::find_int_field(e.body, "cost_micros");
+        }
+        if e.kind == "review.settled" {
+            settled = settled + (if len(settled) > 0 { ", " } else { "" }) + e.entity + " "
+                + e.body;
+        }
         i = i + 1;
     }
-    let body = "since #" + to_string(since) + ": proposed " + to_string(proposed) + " · reviewed " + to_string(reviewed) + " · applied " + to_string(applied) + " · retained " + to_string(retained) + " · rolled back " + to_string(rolled) + " · rejected " + to_string(rejected) + " · escalated " + to_string(escalated) + " · pressure " + to_string(pressure) + " · proposals " + to_string(proposals) + " · model calls " + to_string(calls) + " (" + to_string(cost) + " µ$) · settled: " + (if len(settled) == 0 { "none" } else { settled });
+    let body = "since #" + to_string(since) + ": proposed " + to_string(proposed) + " · reviewed "
+        + to_string(reviewed) + " · applied " + to_string(applied) + " · retained "
+        + to_string(retained) + " · rolled back " + to_string(rolled) + " · rejected "
+        + to_string(rejected) + " · escalated " + to_string(escalated) + " · pressure "
+        + to_string(pressure) + " · proposals " + to_string(proposals) + " · model calls "
+        + to_string(calls) + " (" + to_string(cost) + " µ$) · settled: "
+        + (if len(settled) == 0 { "none" } else { settled });
     let id = "r" + to_string(p.rows());
-    if !append_as(p.root, "report.filed", id, body, "", memory) { return fail("report: the record refused the append"); }
+    if !append_as(p.root, "report.filed", id, body, "", memory) {
+        return fail("report: the record refused the append");
+    }
     let s = sync_record(p.root, memory);
     return answer("report " + id + " filed: " + body + "\n");
 }
@@ -747,8 +1132,13 @@ fn pressure_list(p: Projection) -> Answer {
         let e = p.row(i);
         if e.kind == "pressure.raised" {
             let count = std::json::find_int_field(e.body, "count");
-            let said = if count > 0 { dna::pressure_what(e.body) + " x" + to_string(count) } else { e.body };
-            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + e.entity + "  " + said + "\n";
+            let said = if count > 0 {
+                dna::pressure_what(e.body) + " x" + to_string(count)
+            } else {
+                e.body
+            };
+            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + e.entity + "  "
+                + said + "\n";
             taken = taken + 1;
         }
         i = i - 1;
@@ -756,8 +1146,12 @@ fn pressure_list(p: Projection) -> Answer {
     i = 0;
     while i < p.rows() {
         let e = p.row(i);
-        if e.kind == "appendage.proposed" || e.kind == "appendage.candidate" || e.kind == "pressure.remeasured" {
-            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + std::str::pad_right(e.kind, 20, " ") + " " + e.entity + "  " + e.body + "\n";
+        if e.kind == "appendage.proposed"
+            || e.kind == "appendage.candidate"
+            || e.kind == "pressure.remeasured"
+        {
+            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  "
+                + std::str::pad_right(e.kind, 20, " ") + " " + e.entity + "  " + e.body + "\n";
         }
         i = i + 1;
     }
@@ -767,7 +1161,9 @@ fn pressure_list(p: Projection) -> Answer {
 // ---- fleet ----------------------------------------------------------
 
 fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
-    if len(fleet) == 0 { return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here"); }
+    if len(fleet) == 0 {
+        return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here");
+    }
     let plan = std::io::fs::read_file(p.root + "/" + plan_rel) or "";
     if len(plan) == 0 { return fail("no plan at " + plan_rel); }
     let mut out = "fleet " + fleet + " (" + plan_rel + ")\n";
@@ -777,7 +1173,10 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
         let mut touched = 0;
         let mut it = std::json::array_first(std::json::find_field_raw(d.body, "touched"));
         while !it.done { touched = touched + 1; it = std::json::array_next(it); }
-        out = out + "last deploy: " + std::json::find_string_field(d.body, "reason") + " " + short(std::json::find_string_field(d.body, "revision")) + " (" + d.entity + ") touching " + to_string(touched) + " — " + (if len(seed) == 0 { "the whole genome" } else { seed }) + "\n";
+        out = out + "last deploy: " + std::json::find_string_field(d.body, "reason") + " "
+            + short(std::json::find_string_field(d.body, "revision")) + " (" + d.entity
+            + ") touching " + to_string(touched) + " — "
+            + (if len(seed) == 0 { "the whole genome" } else { seed }) + "\n";
     } else {
         out = out + "no deploy yet: `hale dna deploy <revision>`\n";
     }
@@ -794,11 +1193,25 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
             i = i - 1;
         }
         if last.seq < 0 {
-            out = out + "  " + std::str::pad_right(id, 12, " ") + " " + std::str::pad_right(if len(node) > 0 { node } else { "-" }, 10, " ") + " never expressed\n";
+            out = out + "  " + std::str::pad_right(id, 12, " ") + " "
+                + std::str::pad_right(if len(node) > 0 { node } else { "-" }, 10, " ")
+                + " never expressed\n";
         } else {
-            let state = if last.kind == "instance.up" { "up" } else { "exited " + to_string(std::json::find_int_field(last.body, "code")) };
+            let state = if last.kind == "instance.up" {
+                "up"
+            } else {
+                "exited " + to_string(std::json::find_int_field(last.body, "code"))
+            };
             let n = std::json::find_string_field(last.body, "node");
-            out = out + "  " + std::str::pad_right(id, 12, " ") + " " + std::str::pad_right(if len(n) > 0 { n } else { if len(node) > 0 { node } else { "-" } }, 10, " ") + " " + std::str::pad_right(state, 8, " ") + " rev " + short(std::json::find_string_field(last.body, "revision")) + " model " + short(std::json::find_string_field(last.body, "model_hash")) + "\n";
+            out = out + "  " + std::str::pad_right(id, 12, " ") + " "
+                + std::str::pad_right(
+                    if len(n) > 0 { n } else { if len(node) > 0 { node } else { "-" } },
+                    10,
+                    " ",
+                )
+                + " " + std::str::pad_right(state, 8, " ") + " rev "
+                + short(std::json::find_string_field(last.body, "revision")) + " model "
+                + short(std::json::find_string_field(last.body, "model_hash")) + "\n";
         }
         it = std::json::array_next(it);
     }
@@ -815,36 +1228,112 @@ fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
 // [--price-in <micros>] [--price-out <micros>]` says which model fills a
 // category today (prices per 1k tokens, in micro-dollars). `models map`
 // lists both as the record holds them now.
-fn model_map_verb(root: String, sub: String, key: String, value: String, permit: String, tools: Bool, price_in: String, price_out: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn model_map_verb(
+    root: String,
+    sub: String,
+    key: String,
+    value: String,
+    permit: String,
+    tools: Bool,
+    price_in: String,
+    price_out: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "rule" {
-        let known = key == "default" || (std::str::starts_with(key, "position:") && len(key) > 9) || (std::str::starts_with(key, "contract:") && len(key) > 9) || (std::str::starts_with(key, "task:") && len(key) > 5);
-        if !known { return fail("models rule: a selector is `default`, `position:<name>`, `contract:<Name>` or `task:<id>`"); }
-        if !dna::model_size_known(value) { return fail("models rule: a size is one of " + dna::MODEL_SIZES); }
+        let known = key == "default"
+            || (std::str::starts_with(key, "position:") && len(key) > 9)
+            || (std::str::starts_with(key, "contract:") && len(key) > 9)
+            || (std::str::starts_with(key, "task:") && len(key) > 5);
+        if !known {
+            return fail(
+                "models rule: a selector is `default`, `position:<name>`, `contract:<Name>` or `task:<id>`",
+            );
+        }
+        if !dna::model_size_known(value) {
+            return fail("models rule: a size is one of " + dna::MODEL_SIZES);
+        }
         let permitted = std::str::trim(permit);
-        if dna::words_in_both(permitted, dna::MODEL_SIZES) != permitted { return fail("models rule: --permit names sizes, one space apart, each one of " + dna::MODEL_SIZES + ": `" + permitted + "`"); }
+        if dna::words_in_both(permitted, dna::MODEL_SIZES) != permitted {
+            return fail(
+                "models rule: --permit names sizes, one space apart, each one of "
+                    + dna::MODEL_SIZES + ": `" + permitted + "`",
+            );
+        }
         let s0 = sync_record(root, memory);
-        if !append_as(root, "model.rule", key, "{\"size\": " + quote(value) + ", \"permit\": " + quote(std::str::trim(permit)) + ", \"by\": " + quote(who) + "}", who, memory) { return fail("the record refused the append"); }
+        if !append_as(
+            root,
+            "model.rule",
+            key,
+            "{\"size\": " + quote(value) + ", \"permit\": " + quote(std::str::trim(permit))
+                + ", \"by\": " + quote(who) + "}",
+            who,
+            memory,
+        ) {
+            return fail("the record refused the append");
+        }
         let s1 = sync_record(root, memory);
-        return answer("model.rule " + key + ": " + value + (if len(std::str::trim(permit)) > 0 { " (may move to " + std::str::trim(permit) + ")" } else { "" }) + "\n");
+        return answer(
+            "model.rule " + key + ": " + value
+                + (
+                    if len(std::str::trim(permit)) > 0 {
+                        " (may move to " + std::str::trim(permit) + ")"
+                    } else {
+                        ""
+                    }
+                )
+                + "\n",
+        );
     }
     if sub == "category" {
         let dot = std::str::index_of(key, ".");
-        if dot < 0 || !dna::word_in(key[0..dot], dna::MODEL_MODES) || !dna::model_size_known(key[(dot + 1)..len(key)]) { return fail("models category: a category is `<mode>.<size>`, the mode one of " + dna::MODEL_MODES + " and the size one of " + dna::MODEL_SIZES); }
-        if len(value) == 0 { return fail("models category " + key + ": name the model the gateway serves for it"); }
+        if dot < 0
+            || !dna::word_in(key[0..dot], dna::MODEL_MODES)
+            || !dna::model_size_known(key[(dot + 1)..len(key)])
+        {
+            return fail(
+                "models category: a category is `<mode>.<size>`, the mode one of "
+                    + dna::MODEL_MODES + " and the size one of " + dna::MODEL_SIZES,
+            );
+        }
+        if len(value) == 0 {
+            return fail("models category " + key + ": name the model the gateway serves for it");
+        }
         let pin = std::str::parse_int(if len(price_in) > 0 { price_in } else { "0" }) or - 1;
         let pout = std::str::parse_int(if len(price_out) > 0 { price_out } else { "0" }) or - 1;
-        if pin < 0 || pout < 0 { return fail("models category: --price-in and --price-out are micro-dollars per 1k tokens, whole numbers"); }
-        if dna::word_in(key[0..dot], "tools do") && !tools { return fail("models category " + key + ": a `" + key[0..dot] + "` Work needs a model that returns tool calls; say so with --tools"); }
+        if pin < 0 || pout < 0 {
+            return fail(
+                "models category: --price-in and --price-out are micro-dollars per 1k tokens, whole numbers",
+            );
+        }
+        if dna::word_in(key[0..dot], "tools do") && !tools {
+            return fail(
+                "models category " + key + ": a `" + key[0..dot]
+                    + "` Work needs a model that returns tool calls; say so with --tools",
+            );
+        }
         let s0 = sync_record(root, memory);
-        let body = "{\"model\": " + quote(value) + ", \"tool_calls\": " + (if tools { "true" } else { "false" }) + ", \"input_micros_per_1k\": " + to_string(pin) + ", \"output_micros_per_1k\": " + to_string(pout) + ", \"by\": " + quote(who) + "}";
-        if !append_as(root, "model.category", key, body, who, memory) { return fail("the record refused the append"); }
+        let body = "{\"model\": " + quote(value) + ", \"tool_calls\": "
+            + (if tools { "true" } else { "false" }) + ", \"input_micros_per_1k\": "
+            + to_string(pin) + ", \"output_micros_per_1k\": " + to_string(pout) + ", \"by\": "
+            + quote(who) + "}";
+        if !append_as(root, "model.category", key, body, who, memory) {
+            return fail("the record refused the append");
+        }
         let s1 = sync_record(root, memory);
-        return answer("model.category " + key + ": " + value + (if tools { " (tool calls)" } else { "" }) + "\n");
+        return answer(
+            "model.category " + key + ": " + value + (if tools { " (tool calls)" } else { "" })
+                + "\n",
+        );
     }
-    if len(sub) > 0 && sub != "map" { return fail("models: `models map`, `models rule <selector> <size> [--permit <sizes>]`, or `models category <mode>.<size> <model> [--tools] [--price-in <micros>] [--price-out <micros>]`"); }
+    if len(sub) > 0 && sub != "map" {
+        return fail(
+            "models: `models map`, `models rule <selector> <size> [--permit <sizes>]`, or `models category <mode>.<size> <model> [--tools] [--price-in <micros>] [--price-out <micros>]`",
+        );
+    }
     let s = sync_record(root, memory);
     let p = open_projection(root, ".", "", memory);
     let mut rules = "";
@@ -854,18 +1343,43 @@ fn model_map_verb(root: String, sub: String, key: String, value: String, permit:
     while i >= 0 {
         let e = p.row(i);
         let id = e.kind + " " + e.entity;
-        if (e.kind == "model.rule" || e.kind == "model.category") && !std::str::contains(seen, "\n" + id + "\n") {
+        if (e.kind == "model.rule" || e.kind == "model.category")
+            && !std::str::contains(seen, "\n" + id + "\n")
+        {
             seen = seen + id + "\n";
             if e.kind == "model.rule" {
                 let permitted = std::json::find_string_field(e.body, "permit");
-                rules = "  " + e.entity + " -> " + std::json::find_string_field(e.body, "size") + (if len(permitted) > 0 { " (may move to " + permitted + ")" } else { "" }) + "  by " + std::json::find_string_field(e.body, "by") + "\n" + rules;
+                rules = "  " + e.entity + " -> " + std::json::find_string_field(e.body, "size")
+                    + (if len(permitted) > 0 { " (may move to " + permitted + ")" } else { "" })
+                    + "  by " + std::json::find_string_field(e.body, "by") + "\n" + rules;
             } else {
-                categories = "  " + e.entity + " = " + std::json::find_string_field(e.body, "model") + (if std::str::trim(std::json::find_field_raw(e.body, "tool_calls")) == "true" { " (tool calls)" } else { "" }) + "  by " + std::json::find_string_field(e.body, "by") + "\n" + categories;
+                categories = "  " + e.entity + " = " + std::json::find_string_field(e.body, "model")
+                    + (
+                        if std::str::trim(
+                            std::json::find_field_raw(e.body, "tool_calls"),
+                        ) == "true" {
+                            " (tool calls)"
+                        } else {
+                            ""
+                        }
+                    )
+                    + "  by " + std::json::find_string_field(e.body, "by") + "\n" + categories;
             }
         }
         i = i - 1;
     }
-    return answer("model rules (the organism's: which size a kind of work needs)\n" + (if len(rules) > 0 { rules } else { "  none: every Work is `standard`\n" }) + "model categories (the habitat's: which model fills each)\n" + (if len(categories) > 0 { categories } else { "  none: `hale dna models category <mode>.<size> <model>` names one\n" }));
+    return answer(
+        "model rules (the organism's: which size a kind of work needs)\n"
+            + (if len(rules) > 0 { rules } else { "  none: every Work is `standard`\n" })
+            + "model categories (the habitat's: which model fills each)\n"
+            + (
+                if len(categories) > 0 {
+                    categories
+                } else {
+                    "  none: `hale dna models category <mode>.<size> <model>` names one\n"
+                }
+            ),
+    );
 }
 
 // `hale dna models`: the catalog (dna/org/models.hl) built beside a
@@ -876,19 +1390,26 @@ fn model_map_verb(root: String, sub: String, key: String, value: String, permit:
 fn models_verb(root: String, hale: String) -> Answer {
     let src = root + "/dna/org/models.hl";
     let catalog = std::io::fs::read_file(src) or "";
-    if len(catalog) == 0 { return fail("no catalog at dna/org/models.hl (run `hale dna upgrade`)"); }
+    if len(catalog) == 0 {
+        return fail("no catalog at dna/org/models.hl (run `hale dna upgrade`)");
+    }
     let dir = root + "/.hale/dna/probe";
     std::io::fs::mkdir(root + "/.hale") or discard;
     std::io::fs::mkdir(root + "/.hale/dna") or discard;
     std::io::fs::mkdir(dir) or discard;
     let w1 = write_text(dir + "/models.hl", catalog) or false;
-    let w2 = write_text(dir + "/main.hl", "// generated by `hale dna models`: the catalog's probe\nfn main() { print(probe_catalog()); }\n") or false;
+    let w2 = write_text(
+        dir + "/main.hl",
+        "// generated by `hale dna models`: the catalog's probe\nfn main() { print(probe_catalog()); }\n",
+    ) or false;
     if !w1 || !w2 { return fail("cannot write " + dir); }
     let b = dna::run_tool(hale + "\nbuild\n" + dir);
     if b.code != 0 { return fail("the catalog does not build:\n" + b.stderr + b.stdout); }
     let r = dna::run_tool(dir + "/probe");
     if r.code != 0 { return fail("the probe failed:\n" + r.stderr + r.stdout); }
-    let head = "catalog dna/org/models.hl\n" + std::str::pad_right("backend", 10, " ") + "  " + std::str::pad_right("slot", 8, " ") + "  " + std::str::pad_right("model", 28, " ") + "  answer\n";
+    let head = "catalog dna/org/models.hl\n" + std::str::pad_right("backend", 10, " ") + "  "
+        + std::str::pad_right("slot", 8, " ") + "  " + std::str::pad_right("model", 28, " ")
+        + "  answer\n";
     return answer(head + r.stdout);
 }
 
@@ -904,8 +1425,12 @@ fn models_verb(root: String, hale: String) -> Answer {
 // signal reaches the leg, which drains and ends its own children.
 fn work_verb(root: String, hale: String) -> Answer {
     let performers = std::io::fs::read_file(root + "/dna/org/work.hl") or "";
-    if len(performers) == 0 { return fail("no performers at dna/org/work.hl (run `hale dna upgrade`)"); }
-    if !std::io::fs::file_exists(root + "/vendor/dna/legs/verbs.hl") { return fail("no legs seed at vendor/dna/legs (run `hale dna upgrade`)"); }
+    if len(performers) == 0 {
+        return fail("no performers at dna/org/work.hl (run `hale dna upgrade`)");
+    }
+    if !std::io::fs::file_exists(root + "/vendor/dna/legs/verbs.hl") {
+        return fail("no legs seed at vendor/dna/legs (run `hale dna upgrade`)");
+    }
     let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
     // the leg is a main locus: a signal drains it, and a loop ends its
     // children before the process does
@@ -914,8 +1439,13 @@ fn work_verb(root: String, hale: String) -> Answer {
     // from (the performers, the catalog, the vendored seed): a verb finds
     // the leg built, a change builds it again, and two legs at once build
     // apart and keep the first that lands
-    let seed = dna::run_tool("sh\n-c\ncat \"$1\"/*.hl 2>/dev/null | sha256sum | cut -c1-16\nsh\n" + root + "/vendor/dna/legs");
-    let key = dna::digest_of(performers + "\n" + catalog + "\n" + main_text + "\n" + dna::trim_nl(seed.stdout))[7..23];
+    let seed = dna::run_tool(
+        "sh\n-c\ncat \"$1\"/*.hl 2>/dev/null | sha256sum | cut -c1-16\nsh\n" + root
+            + "/vendor/dna/legs",
+    );
+    let key = dna::digest_of(
+        performers + "\n" + catalog + "\n" + main_text + "\n" + dna::trim_nl(seed.stdout),
+    )[7..23];
     let legs = root + "/.hale/dna/legs";
     let dir = legs + "/" + key;
     std::io::fs::mkdir(root + "/.hale") or discard;
@@ -924,15 +1454,27 @@ fn work_verb(root: String, hale: String) -> Answer {
     if !std::io::fs::file_exists(dir + "/" + key) {
         let building = dir + "." + to_string(std::process::pid());
         std::io::fs::mkdir(building) or discard;
-        let w0 = if len(catalog) > 0 { write_text(building + "/models.hl", catalog) or false } else { true };
+        let w0 = if len(catalog) > 0 {
+            write_text(building + "/models.hl", catalog) or false
+        } else {
+            true
+        };
         let w1 = w0 && (write_text(building + "/work.hl", performers) or false);
         let w2 = write_text(building + "/main.hl", main_text) or false;
         if !w1 || !w2 { return fail("cannot write " + building); }
         let b = dna::run_tool(hale + "\nbuild\n" + building);
-        if b.code != 0 { let gone = dna::run_tool("rm\n-rf\n" + building); return fail("the leg does not build:\n" + b.stderr + b.stdout); }
+        if b.code != 0 {
+            let gone = dna::run_tool("rm\n-rf\n" + building);
+            return fail("the leg does not build:\n" + b.stderr + b.stdout);
+        }
         // the binary is named after its directory: into place under the key, the first to land kept
-        let named = dna::run_tool("sh\n-c\nmv \"$1/$(basename \"$1\")\" \"$1/$2\" && (mv -n \"$1\" \"$3\" 2>/dev/null || rm -rf \"$1\")\nsh\n" + building + "\n" + key + "\n" + dir);
-        if named.code != 0 || !std::io::fs::file_exists(dir + "/" + key) { return fail("the leg was built but could not be put in place: " + named.stderr); }
+        let named = dna::run_tool(
+            "sh\n-c\nmv \"$1/$(basename \"$1\")\" \"$1/$2\" && (mv -n \"$1\" \"$3\" 2>/dev/null || rm -rf \"$1\")\nsh\n"
+                + building + "\n" + key + "\n" + dir,
+        );
+        if named.code != 0 || !std::io::fs::file_exists(dir + "/" + key) {
+            return fail("the leg was built but could not be put in place: " + named.stderr);
+        }
     }
     return answer("{\"leg\": " + dna::record_json_quote(dir + "/" + key) + "}");
 }
@@ -949,7 +1491,9 @@ fn work_verb(root: String, hale: String) -> Answer {
 fn definitions_verb(root: String, hale: String, json: Bool) -> Answer {
     let src = root + "/dna/org/workflows.hl";
     let catalog = std::io::fs::read_file(src) or "";
-    if len(catalog) == 0 { return fail("no workflow catalog at dna/org/workflows.hl (run `hale dna upgrade`)"); }
+    if len(catalog) == 0 {
+        return fail("no workflow catalog at dna/org/workflows.hl (run `hale dna upgrade`)");
+    }
     // a directory of this process's own: the CLI and a head's catalog may
     // list at the same time
     let name = "definitions-" + to_string(std::process::pid());
@@ -958,18 +1502,36 @@ fn definitions_verb(root: String, hale: String, json: Bool) -> Answer {
     std::io::fs::mkdir(root + "/.hale/dna") or discard;
     std::io::fs::mkdir(dir) or discard;
     let own = std::io::fs::read_file(root + "/dna/org/own_workflows.hl") or "";
-    if len(own) == 0 { return fail("no project definitions at dna/org/own_workflows.hl (run `hale dna upgrade`)"); }
+    if len(own) == 0 {
+        return fail("no project definitions at dna/org/own_workflows.hl (run `hale dna upgrade`)");
+    }
     let w0 = write_text(dir + "/own_workflows.hl", own) or false;
     let w1 = w0 && (write_text(dir + "/workflows.hl", catalog) or false);
     // a project definition the catalog refused fails the listing, saying why
     let show = if json { "c.encode()" } else { "dna::definitions_listing(c)" };
-    let w2 = write_text(dir + "/main.hl", "// generated by `hale dna definitions`: the catalog, listed\nimport \"vendor/dna\" as dna;\nfn main() { let c = workflows(); print(" + show + "); if len(c.refused) > 0 { eprintln(\"the project's own definitions were refused (dna/org/own_workflows.hl): \" + c.refused); std::process::exit(1); } }\n") or false;
+    let w2 = write_text(
+        dir + "/main.hl",
+        "// generated by `hale dna definitions`: the catalog, listed\nimport \"vendor/dna\" as dna;\nfn main() { let c = workflows(); print("
+            + show
+            + "); if len(c.refused) > 0 { eprintln(\"the project's own definitions were refused (dna/org/own_workflows.hl): \" + c.refused); std::process::exit(1); } }\n",
+    ) or false;
     if !w1 || !w2 { return fail("cannot write " + dir); }
     let b = dna::run_tool(hale + "\nbuild\n" + dir);
-    if b.code != 0 { let failed = dna::run_tool("rm\n-rf\n" + dir); return fail("the catalog does not build:\n" + b.stderr + b.stdout); }
+    if b.code != 0 {
+        let failed = dna::run_tool("rm\n-rf\n" + dir);
+        return fail("the catalog does not build:\n" + b.stderr + b.stdout);
+    }
     let r = dna::run_tool(dir + "/" + name);
     let gone = dna::run_tool("rm\n-rf\n" + dir);
-    if r.code != 0 { return fail(if len(r.stderr) > 0 { dna::trim_nl(r.stderr) } else { "the catalog could not be listed:\n" + r.stdout }); }
+    if r.code != 0 {
+        return fail(
+            if len(r.stderr) > 0 {
+                dna::trim_nl(r.stderr)
+            } else {
+                "the catalog could not be listed:\n" + r.stdout
+            },
+        );
+    }
     return answer(if json { r.stdout + "\n" } else { "catalog dna/org/workflows.hl\n" + r.stdout });
 }
 
@@ -1025,29 +1587,46 @@ fn shell_path(dir: String) -> String {
 fn unit_text(name: String, dir: String) -> String {
     // systemd expands %h, not $HOME
     let wd = if std::str::starts_with(dir, "$HOME/") { "%h/" + dir[6..len(dir)] } else { dir };
-    return "[Unit]\nDescription=hale dna body for " + name + "\nAfter=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n\n[Service]\nWorkingDirectory=" + wd + "\nEnvironment=PATH=%h/.hale/bin:/usr/local/bin:/usr/bin:/bin\nEnvironment=HALE_BIN=%h/.hale/bin/hale\nEnvironmentFile=-%h/.config/hale-dna/" + name + ".env\nExecStart=%h/.hale/bin/hale dna dev . --no-iris\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n";
+    return "[Unit]\nDescription=hale dna body for " + name
+        + "\nAfter=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=5\n\n[Service]\nWorkingDirectory="
+        + wd
+        + "\nEnvironment=PATH=%h/.hale/bin:/usr/local/bin:/usr/bin:/bin\nEnvironment=HALE_BIN=%h/.hale/bin/hale\nEnvironmentFile=-%h/.config/hale-dna/"
+        + name
+        + ".env\nExecStart=%h/.hale/bin/hale dna dev . --no-iris\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n";
 }
 
 // The script the body runs, in order: the toolchain the lock pins (or
 // stop), the clone (or a fetch into one that exists), vendor and the
 // record, the database (compose, or the DSN into the body's env
 // file), the unit, enabled and started.
-fn provision_script(name: String, pin: String, remote_url: String, dir: String, dsn: String) -> String {
+fn provision_script(
+    name: String,
+    pin: String,
+    remote_url: String,
+    dir: String,
+    dsn: String
+) -> String {
     let infra = ReferenceInfrastructure { };
-    let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR=" + shell_path(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
+    let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR="
+        + shell_path(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
     // `hale --version` has a second line since GH #726 (the embedded
     // DNA source's digest), so the version is field 2 of the FIRST
     // line — over both lines this read installed the toolchain again
     // on every provision.
-    s = s + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk 'NR==1{print $2}' || true)\n";
-    s = s + "if [ \"$have\" != \"$PIN\" ]; then echo \"installing hale $PIN\"; HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\" >/dev/null; fi\n";
-    s = s + "\"$HOME/.hale/bin/hale\" --version | head -1 | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
+    s = s
+        + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk 'NR==1{print $2}' || true)\n";
+    s = s
+        + "if [ \"$have\" != \"$PIN\" ]; then echo \"installing hale $PIN\"; HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\" >/dev/null; fi\n";
+    s = s
+        + "\"$HOME/.hale/bin/hale\" --version | head -1 | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
     s = s + "export PATH=\"$HOME/.hale/bin:$PATH\"\n";
-    s = s + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
+    s = s
+        + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
     // GH #989: upgrade again once the record is here: a fresh clone has no
     // record identity until it syncs, and the organism's secrets are
     // provisioned under the identity's names
-    s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true) && hale dna upgrade . >/dev/null\n";
+    s = s
+        + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true) && hale dna upgrade . >/dev/null\n";
     // GH #647: the database's and the supervisor's parts are theirs to
     // write; a body with another supervisor or another database gets
     // another implementation's, not another `if`
@@ -1058,53 +1637,132 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
 }
 
 // `hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run] [--as <who>]`
-fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: String, dry: Bool, who_flag: String, memory: dna::Memory) -> Answer {
+fn body_provision_verb(
+    root: String,
+    target: String,
+    dsn: String,
+    dir_flag: String,
+    dry: Bool,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    if len(target) == 0 { return fail("body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`"); }
+    if len(target) == 0 {
+        return fail(
+            "body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`",
+        );
+    }
     let remote = genome_remote(root);
-    if len(remote) == 0 { return fail("body provision: the genome has no remote; the body clones the genome from one (`git remote add origin <url>`) — nothing was written"); }
+    if len(remote) == 0 {
+        return fail(
+            "body provision: the genome has no remote; the body clones the genome from one (`git remote add origin <url>`) — nothing was written",
+        );
+    }
     let url = rec(root).remote_url(remote);
-    if !(std::str::contains(url, "://") || (std::str::contains(url, "@") && std::str::contains(url, ":"))) { return fail("body provision: the genome's remote is local to this machine (" + url + "); the body must reach it — `git remote set-url " + remote + " <ssh or https url>` first. Nothing was written"); }
+    if !(
+        std::str::contains(url, "://")
+            || (std::str::contains(url, "@") && std::str::contains(url, ":"))
+    ) {
+        return fail(
+            "body provision: the genome's remote is local to this machine (" + url
+                + "); the body must reach it — `git remote set-url " + remote
+                + " <ssh or https url>` first. Nothing was written",
+        );
+    }
     let pin = lock_toolchain(root);
-    if len(pin) == 0 { return fail("body provision: hale.lock pins no toolchain (`hale dna upgrade` writes it); the body installs exactly what the lock pins — nothing was written"); }
+    if len(pin) == 0 {
+        return fail(
+            "body provision: hale.lock pins no toolchain (`hale dna upgrade` writes it); the body installs exactly what the lock pins — nothing was written",
+        );
+    }
     let name = project_name(root);
     let dir = if len(dir_flag) > 0 { dir_flag } else { "$HOME/dna/" + name };
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let script = provision_script(body_key(root), pin, url, dir, dsn);
     if dry {
-        return answer("body provision (dry run): nothing was written. On " + target + " this would run:\n" + indent_lines(script, "    ") + "\nthen here: git config dna.body " + target + "; a `body.provisioned` row in the record\n");
+        return answer(
+            "body provision (dry run): nothing was written. On " + target + " this would run:\n"
+                + indent_lines(script, "    ") + "\nthen here: git config dna.body " + target
+                + "; a `body.provisioned` row in the record\n",
+        );
     }
     // 1. reachable, and the pieces a body is made of: stop before writing anything otherwise
     let scratch_dir = root + "/.hale/dna";
-    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
+    let infra = ReferenceInfrastructure {
+        root: root,
+        target: target,
+        local: LocalTransport { scratch: scratch_dir },
+        ssh: SshTransport { scratch: scratch_dir },
+    };
     let probe = infra.probe(target);
-    if !probe.reachable { return fail("body provision: " + transport_kind() + " " + target + " is not reachable (" + probe.why + "); nothing was written"); }
+    if !probe.reachable {
+        return fail(
+            "body provision: " + transport_kind() + " " + target + " is not reachable (" + probe.why
+                + "); nothing was written",
+        );
+    }
     let lacks = infra.missing(probe.facts, dsn);
-    if len(lacks) > 0 { return fail("body provision: " + target + " " + lacks + " — nothing was written"); }
+    if len(lacks) > 0 {
+        return fail("body provision: " + target + " " + lacks + " — nothing was written");
+    }
     // 2. the script, in the body's shell, through the transport
     let r = infra.run_at(script, "");
-    if r.code != 0 { return fail("body provision on " + target + " stopped (" + to_string(r.code) + "):\n" + indent_lines(r.stdout + r.stderr, "    ")); }
+    if r.code != 0 {
+        return fail(
+            "body provision on " + target + " stopped (" + to_string(r.code) + "):\n"
+                + indent_lines(r.stdout + r.stderr, "    "),
+        );
+    }
     // 3. remembered here, and in the record — the target and the pin, never a credential
     let c1 = rec(root).set_setting("body", target);
     let c2 = rec(root).set_setting("body.dir", dir);
-    let row = append_as(root, "body.provisioned", target, "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": " + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}", who, memory);
+    let row = append_as(
+        root,
+        "body.provisioned",
+        target,
+        "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": "
+            + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}",
+        who,
+        memory,
+    );
     let s = sync_record(root, memory);
-    return answer("body provision: " + target + "\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n    dna.body = " + target + " (start/stop/logs go there); the body takes the lease when its unit starts\n");
+    return answer(
+        "body provision: " + target + "\n" + indent_lines(dna::trim_nl(r.stdout), "    ")
+            + "\n    dna.body = " + target
+            + " (start/stop/logs go there); the body takes the lease when its unit starts\n",
+    );
 }
 
 // `hale dna body start|stop|logs` on the provisioned body, over ssh.
 fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
     let target = body_target(root, body_flag);
-    if len(target) == 0 { return fail("body " + sub + ": no body is known here (`hale dna body provision <user@host>` sets `dna.body`; `--body <user@host>` names one)"); }
+    if len(target) == 0 {
+        return fail(
+            "body " + sub
+                + ": no body is known here (`hale dna body provision <user@host>` sets `dna.body`; `--body <user@host>` names one)",
+        );
+    }
     // GH #647: the supervisor is the infrastructure's; the host names the unit
     let scratch_dir = root + "/.hale/dna";
-    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
+    let infra = ReferenceInfrastructure {
+        root: root,
+        target: target,
+        local: LocalTransport { scratch: scratch_dir },
+        ssh: SshTransport { scratch: scratch_dir },
+    };
     let key = body_key(root);
-    if sub == "logs" { let text = infra.logs(key, 200); return answer("body logs on " + target + ":\n" + indent_lines(dna::trim_nl(text), "    ") + "\n"); }
+    if sub == "logs" {
+        let text = infra.logs(key, 200);
+        return answer(
+            "body logs on " + target + ":\n" + indent_lines(dna::trim_nl(text), "    ") + "\n",
+        );
+    }
     let ok = if sub == "stop" { infra.stop(key) } else { infra.start(key) };
     if !ok { return fail("body " + sub + " on " + target + ": " + infra.last); }
-    return answer("body " + sub + " on " + target + ":\n" + indent_lines(infra.last, "    ") + "\n");
+    return answer(
+        "body " + sub + " on " + target + ":\n" + indent_lines(infra.last, "    ") + "\n",
+    );
 }
 
 // ---- secrets (GH #617 ask 4, GH #989) --------------------------------
@@ -1129,14 +1787,45 @@ fn secret_name_ok(name: String) -> Bool {
     return true;
 }
 
-fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn secret_verb(
+    root: String,
+    sub: String,
+    name: String,
+    body_flag: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
-    if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
-    if !secret_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not a secret's name (A-Z, 0-9, _)"); }
+    if sub != "set" && sub != "rotate" {
+        return fail(
+            "secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`",
+        );
+    }
+    if std::str::contains(name, "=") {
+        return fail(
+            "secret " + sub
+                + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin",
+        );
+    }
+    if !secret_name_ok(name) {
+        return fail("secret " + sub + ": `" + name + "` is not a secret's name (A-Z, 0-9, _)");
+    }
     // GH #989: a slot the organism requires, and no other name
-    if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " " + legs_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl or dna/org/work.hl names: " + std::str::trim(catalog_credentials(root) + " " + legs_credentials(root)) + "); `hale dna secrets` lists them"); }
+    if name != "FORGE_TOKEN"
+        && name != OIDC_CLIENT_SLOT
+        && !std::str::contains(
+            " " + catalog_credentials(root) + " " + legs_credentials(root) + " ",
+            " " + name + " ",
+        )
+    {
+        return fail(
+            "secret " + sub + ": `" + name
+                + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl or dna/org/work.hl names: "
+                + std::str::trim(catalog_credentials(root) + " " + legs_credentials(root))
+                + "); `hale dna secrets` lists them",
+        );
+    }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
     let p = open_projection(root, ".", "", memory);
@@ -1147,24 +1836,57 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
         if e.kind == "secret.rotated" && e.entity == name { known = true; }
         i = i + 1;
     }
-    if sub == "rotate" && !known { return fail("secret rotate: " + name + " was never set (`hale dna secret set " + name + "` first)"); }
-    eprintln("value for ", name, (if len(target) > 0 { " on " + target } else { " (this machine)" }), ", on one line:");
+    if sub == "rotate" && !known {
+        return fail(
+            "secret rotate: " + name + " was never set (`hale dna secret set " + name + "` first)",
+        );
+    }
+    eprintln(
+        "value for ",
+        name,
+        (if len(target) > 0 { " on " + target } else { " (this machine)" }),
+        ", on one line:",
+    );
     let value = dna::trim_nl(std::io::stdin::read_line());
     if len(value) == 0 { return fail("secret " + sub + ": no value was given on stdin"); }
     // GH #647: the credential is the infrastructure's to keep — the value
     // reaches the body's shell on its stdin through a private file, never
     // in argv, here or over the transport
     let scratch_dir = root + "/.hale/dna";
-    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
-    if !infra.put_credential(slot_vault(root, name), value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
-    let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who, memory);
+    let infra = ReferenceInfrastructure {
+        root: root,
+        target: target,
+        local: LocalTransport { scratch: scratch_dir },
+        ssh: SshTransport { scratch: scratch_dir },
+    };
+    if !infra.put_credential(slot_vault(root, name), value) {
+        return fail(
+            "secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": "
+                + infra.last + "; nothing was recorded",
+        );
+    }
+    let row = append_as(
+        root,
+        "secret.rotated",
+        name,
+        "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": "
+            + quote(who) + "}",
+        who,
+        memory,
+    );
     let s = sync_record(root, memory);
-    return answer("secret " + sub + ": " + name + " is in its slot of the vault, " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A part reads it from the vault where it uses it\n");
+    return answer(
+        "secret " + sub + ": " + name + " is in its slot of the vault, " + infra.last
+            + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name
+            + "; the value is nowhere in the record). A part reads it from the vault where it uses it\n",
+    );
 }
 
 // The model credentials the catalog names (`HostedCredential { key: "X" }`
 // in dna/org/models.hl), space-separated.
-fn catalog_credentials(root: String) -> String { return credentials_named(root + "/dna/org/models.hl"); }
+fn catalog_credentials(root: String) -> String {
+    return credentials_named(root + "/dna/org/models.hl");
+}
 
 // The credentials the legs' own performers present (`dna/org/work.hl`): a
 // leg's model asks with a key of its own, kept in the same vault slots.
@@ -1181,7 +1903,9 @@ fn credentials_named(path: String) -> String {
         let q = std::str::index_of(after, "\"");
         if q < 0 { break; }
         let name = after[0..q];
-        if len(name) > 0 && !std::str::contains(" " + out + " ", " " + name + " ") { out = if len(out) == 0 { name } else { out + " " + name }; }
+        if len(name) > 0 && !std::str::contains(" " + out + " ", " " + name + " ") {
+            out = if len(out) == 0 { name } else { out + " " + name };
+        }
         rest = after[(q + 1)..len(after)];
         at = std::str::index_of(rest, "HostedCredential { key: \"");
     }
@@ -1196,7 +1920,9 @@ fn credential_gap(p: Projection) -> String {
     let mut i = 0;
     while i < p.rows() {
         let e = p.row(i);
-        if e.kind == "body.credential_missing" { missing = std::json::find_string_field(e.body, "any_of"); }
+        if e.kind == "body.credential_missing" {
+            missing = std::json::find_string_field(e.body, "any_of");
+        }
         if e.kind == "body.credential_present" { missing = ""; }
         i = i + 1;
     }
@@ -1207,13 +1933,40 @@ fn credential_gap(p: Projection) -> String {
 // `hale dna schedule [list | pause <id> | resume <id>]`: the schedules
 // the org chart declared, as the record has them; pause and resume are
 // rows in your name that the organism reads at its next tick.
-fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
+fn schedule_verb(
+    root: String,
+    seed: String,
+    sub: String,
+    id: String,
+    who_flag: String,
+    every: String,
+    cron: String,
+    definition: String,
+    args: String,
+    convener: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    if sub == "declare" { return schedule_declare(root, seed, id, who, every, cron, definition, args, convener, memory); }
+    if sub == "declare" {
+        return schedule_declare(
+            root,
+            seed,
+            id,
+            who,
+            every,
+            cron,
+            definition,
+            args,
+            convener,
+            memory,
+        );
+    }
     if sub == "pause" || sub == "resume" {
-        if len(id) == 0 { return fail("schedule " + sub + ": which one? `hale dna schedule` lists them"); }
+        if len(id) == 0 {
+            return fail("schedule " + sub + ": which one? `hale dna schedule` lists them");
+        }
         let s = sync_record(root, memory);
         let p = open_projection(root, ".", "", memory);
         let mut known = false;
@@ -1226,22 +1979,55 @@ fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: 
             if e.entity == id && e.kind == "schedule.resumed" { paused = false; }
             i = i + 1;
         }
-        if !known { return fail("schedule " + sub + ": no schedule `" + id + "` is declared in the record"); }
+        if !known {
+            return fail("schedule " + sub + ": no schedule `" + id + "` is declared in the record");
+        }
         if sub == "pause" && paused { return answer("schedule " + id + " is already paused\n"); }
         if sub == "resume" && !paused { return answer("schedule " + id + " is not paused\n"); }
-        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + (if sub == "resume" { ", \"at\": " + to_string(std::time::nanos(std::time::current()) / 1000000) } else { "" }) + "}", who, memory);
+        let ok = append_as(
+            root,
+            "schedule." + (if sub == "pause" { "paused" } else { "resumed" }),
+            id,
+            "{\"by\": " + quote(who)
+                + (
+                    if sub == "resume" {
+                        ", \"at\": " + to_string(std::time::nanos(std::time::current()) / 1000000)
+                    } else {
+                        ""
+                    }
+                )
+                + "}",
+            who,
+            memory,
+        );
         if !ok { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
-        return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; nothing occurs until it is resumed, and nothing is missed)" } else { "resumed (schedule.resumed)" }) + "\n");
+        return answer(
+            "schedule " + id + " "
+                + (
+                    if sub == "pause" {
+                        "paused (schedule.paused; nothing occurs until it is resumed, and nothing is missed)"
+                    } else {
+                        "resumed (schedule.resumed)"
+                    }
+                )
+                + "\n",
+        );
     }
-    if len(sub) > 0 && sub != "list" { return fail("schedule: `hale dna schedule`, `schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]`, `schedule pause <id>`, or `schedule resume <id>`"); }
+    if len(sub) > 0 && sub != "list" {
+        return fail(
+            "schedule: `hale dna schedule`, `schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]`, `schedule pause <id>`, or `schedule resume <id>`",
+        );
+    }
     let p = open_projection(root, ".", "", memory);
     let mut out = "";
     let mut ids = "\n";
     let mut i = 0;
     while i < p.rows() {
         let e = p.row(i);
-        if e.kind == "schedule.declared" && !std::str::contains(ids, "\n" + e.entity + "\n") { ids = ids + e.entity + "\n"; }
+        if e.kind == "schedule.declared" && !std::str::contains(ids, "\n" + e.entity + "\n") {
+            ids = ids + e.entity + "\n";
+        }
         i = i + 1;
     }
     let mut rest = ids[1..len(ids)];
@@ -1261,21 +2047,43 @@ fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: 
         let mut k = 0;
         while k < p.rows() {
             let e = p.row(k);
-            if e.kind == "workflow.admitted" && std::str::starts_with(dna::native_json_string(e.body, "request"), "sched:" + sid + "@") { occurred = occurred + 1; task = e.entity; }
+            if e.kind == "workflow.admitted"
+                && std::str::starts_with(
+                    dna::native_json_string(e.body, "request"),
+                    "sched:" + sid + "@",
+                )
+            {
+                occurred = occurred + 1;
+                task = e.entity;
+            }
             if e.entity == sid {
                 if e.kind == "schedule.declared" { decl = e.body; }
                 if e.kind == "schedule.paused" { paused = true; }
                 if e.kind == "schedule.resumed" { paused = false; }
                 if e.kind == "schedule.skipped" { skipped = skipped + 1; }
-                if e.kind == "schedule.missed" { missed = missed + std::json::find_int_field(e.body, "count"); }
+                if e.kind == "schedule.missed" {
+                    missed = missed + std::json::find_int_field(e.body, "count");
+                }
             }
             k = k + 1;
         }
         let every_ms = std::json::find_int_field(decl, "every_ms");
-        let when = if every_ms > 0 { "every " + to_string(every_ms) + "ms" } else { "cron `" + std::json::find_string_field(decl, "cron") + "` (UTC)" };
-        out = out + "  " + sid + " [" + (if paused { "paused" } else { "live" }) + "] " + when + " — " + std::json::find_string_field(decl, "definition") + ", convened by " + std::json::find_string_field(decl, "convener") + " · occurred " + to_string(occurred) + ", skipped " + to_string(skipped) + ", missed " + to_string(missed) + (if len(task) > 0 { " · last " + task } else { "" }) + "\n";
+        let when = if every_ms > 0 {
+            "every " + to_string(every_ms) + "ms"
+        } else {
+            "cron `" + std::json::find_string_field(decl, "cron") + "` (UTC)"
+        };
+        out = out + "  " + sid + " [" + (if paused { "paused" } else { "live" }) + "] " + when
+            + " — " + std::json::find_string_field(decl, "definition") + ", convened by "
+            + std::json::find_string_field(decl, "convener") + " · occurred " + to_string(occurred)
+            + ", skipped " + to_string(skipped) + ", missed " + to_string(missed)
+            + (if len(task) > 0 { " · last " + task } else { "" }) + "\n";
     }
-    if n == 0 { return answer("schedules: none declared (a ratified practice declares one, or `hale dna schedule declare`)\n"); }
+    if n == 0 {
+        return answer(
+            "schedules: none declared (a ratified practice declares one, or `hale dna schedule declare`)\n",
+        );
+    }
     return answer("schedules: " + to_string(n) + "\n" + out);
 }
 
@@ -1285,12 +2093,45 @@ fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: 
 // position), answered under the request's id. One projection per poll,
 // for at most sixty seconds.
 @bounded_by(deadline)
-fn schedule_declare(root: String, seed: String, id: String, who: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
-    if len(id) == 0 || len(definition) == 0 || len(convener) == 0 || (len(every) == 0) == (len(cron) == 0) { return fail("usage: hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]"); }
+fn schedule_declare(
+    root: String,
+    seed: String,
+    id: String,
+    who: String,
+    every: String,
+    cron: String,
+    definition: String,
+    args: String,
+    convener: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(id) == 0
+        || len(definition) == 0
+        || len(convener) == 0
+        || (len(every) == 0) == (len(cron) == 0)
+    {
+        return fail(
+            "usage: hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]",
+        );
+    }
     let every_ms = if len(every) > 0 { dna::every_ms_of(every) } else { 0 };
-    if len(every) > 0 && every_ms <= 0 { return fail("schedule declare: --every " + every + " is no interval (a number and ms, s, m, h or d)"); }
-    let position = if std::str::starts_with(convener, "position:") { convener } else { "position:" + convener };
-    let request_id = request_digest_id(root, "s", id + "\n" + to_string(every_ms) + "\n" + cron + "\n" + definition + "\n" + args + "\n" + position + "\n" + who);
+    if len(every) > 0 && every_ms <= 0 {
+        return fail(
+            "schedule declare: --every " + every
+                + " is no interval (a number and ms, s, m, h or d)",
+        );
+    }
+    let position = if std::str::starts_with(convener, "position:") {
+        convener
+    } else {
+        "position:" + convener
+    };
+    let request_id = request_digest_id(
+        root,
+        "s",
+        id + "\n" + to_string(every_ms) + "\n" + cron + "\n" + definition + "\n" + args + "\n"
+            + position + "\n" + who,
+    );
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("request_id", request_id);
@@ -1304,23 +2145,47 @@ fn schedule_declare(root: String, seed: String, id: String, who: String, every: 
     b.end_object();
     if organism_here(root, memory) {
         let before = open_projection(root, seed, "", memory).rows();
-        if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         let deadline = std::time::now() + 60;
         while std::time::now() <= deadline {
             let q = open_projection(root, seed, "", memory);
             let r = find_after(q, before, " schedule.answered ", request_id);
             if r.seq >= 0 {
-                if !std::json::find_bool_field(r.body, "declared") { return fail("schedule declare: refused: " + std::json::find_string_field(r.body, "why")); }
-                return answer("schedule " + id + " declared: " + definition + (if every_ms > 0 { " every " + every } else { " on cron `" + cron + "` (UTC)" }) + ", convened by " + position + "\n");
+                if !std::json::find_bool_field(r.body, "declared") {
+                    return fail(
+                        "schedule declare: refused: " + std::json::find_string_field(r.body, "why"),
+                    );
+                }
+                return answer(
+                    "schedule " + id + " declared: " + definition
+                        + (
+                            if every_ms > 0 {
+                                " every " + every
+                            } else {
+                                " on cron `" + cron + "` (UTC)"
+                            }
+                        )
+                        + ", convened by " + position + "\n",
+                );
             }
             std::time::sleep(150ms);
         }
-        return fail("asked for the schedule, but the organization journaled no answer for " + request_id + " in time");
+        return fail(
+            "asked for the schedule, but the organization journaled no answer for " + request_id
+                + " in time",
+        );
     }
-    if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+    if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) {
+        return fail("the record refused the append");
+    }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
-    return answer("schedule " + id + " asked of the organization in the record by " + who + " (" + request_id + "); it declares it when it hears it\n");
+    return answer(
+        "schedule " + id + " asked of the organization in the record by " + who + " (" + request_id
+            + "); it declares it when it hears it\n",
+    );
 }
 
 // ---- protected evidence (GH #606) --------------------------------------
@@ -1329,34 +2194,67 @@ fn schedule_declare(root: String, seed: String, id: String, who: String, every: 
 // reader for a purpose, as a row in your name; `receipt show <digest>
 // --purpose <p>` reads it from memory in your name (GH #985).
 
-fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String, memory: dna::Memory) -> Answer {
+fn receipt_verb(
+    root: String,
+    sub: String,
+    digest: String,
+    to: String,
+    purpose: String,
+    who_flag: String,
+    why: String,
+    policy: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "disclose" {
-        if len(digest) == 0 || len(to) == 0 || len(purpose) == 0 { return fail("receipt disclose: `hale dna receipt disclose <digest> --to <recipient> --purpose <purpose> [--as <who>]`"); }
+        if len(digest) == 0 || len(to) == 0 || len(purpose) == 0 {
+            return fail(
+                "receipt disclose: `hale dna receipt disclose <digest> --to <recipient> --purpose <purpose> [--as <who>]`",
+            );
+        }
         let s = sync_record(root, memory);
         let p = open_projection(root, ".", "", memory);
         let mut known = false;
         let mut i = 0;
         while i < p.rows() {
             let e = p.row(i);
-            if e.entity == digest && (e.kind == "receipt.classified" || e.kind == "receipt.withheld") { known = true; }
+            if e.entity == digest
+                && (e.kind == "receipt.classified" || e.kind == "receipt.withheld")
+            {
+                known = true;
+            }
             i = i + 1;
         }
-        if !known { return fail("receipt disclose: " + digest + " is not protected evidence in the record (an internal receipt needs no disclosure)"); }
+        if !known {
+            return fail(
+                "receipt disclose: " + digest
+                    + " is not protected evidence in the record (an internal receipt needs no disclosure)",
+            );
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("recipient", to);
         b.string_field("purpose", purpose);
         b.string_field("by", who);
         b.end_object();
-        if !append_as(root, "receipt.disclosed", digest, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "receipt.disclosed", digest, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         let s2 = sync_record(root, memory);
-        return answer("receipt " + digest + " disclosed to " + to + " for " + purpose + " (receipt.disclosed, by " + who + ")\n");
+        return answer(
+            "receipt " + digest + " disclosed to " + to + " for " + purpose
+                + " (receipt.disclosed, by " + who + ")\n",
+        );
     }
     if sub == "hold" || sub == "release-hold" {
-        if len(digest) == 0 || len(why) == 0 { return fail("receipt " + sub + ": `hale dna receipt " + sub + " <digest> --why <why> [--as <who>]`"); }
+        if len(digest) == 0 || len(why) == 0 {
+            return fail(
+                "receipt " + sub + ": `hale dna receipt " + sub
+                    + " <digest> --why <why> [--as <who>]`",
+            );
+        }
         let s = sync_record(root, memory);
         let p = open_projection(root, ".", "", memory);
         let mut held = false;
@@ -1368,25 +2266,39 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             i = i + 1;
         }
         if sub == "hold" && held { return fail("receipt hold: " + digest + " is already held"); }
-        if sub == "release-hold" && !held { return fail("receipt release-hold: " + digest + " is not held"); }
+        if sub == "release-hold" && !held {
+            return fail("receipt release-hold: " + digest + " is not held");
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("by", who);
         b.string_field("why", why);
         b.end_object();
         let kind = if sub == "hold" { "receipt.held" } else { "receipt.hold_released" };
-        if !append_as(root, kind, digest, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, kind, digest, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         let s2 = sync_record(root, memory);
-        return answer("receipt " + digest + " " + (if sub == "hold" { "held" } else { "released from its hold" }) + " (" + kind + ", by " + who + ")\n");
+        return answer(
+            "receipt " + digest + " "
+                + (if sub == "hold" { "held" } else { "released from its hold" }) + " (" + kind
+                + ", by " + who + ")\n",
+        );
     }
     if sub == "redact" {
-        if len(digest) == 0 || len(why) == 0 || len(policy) == 0 { return fail("receipt redact: `hale dna receipt redact <digest> --why <why> --policy <policy> [--as <who>]`"); }
+        if len(digest) == 0 || len(why) == 0 || len(policy) == 0 {
+            return fail(
+                "receipt redact: `hale dna receipt redact <digest> --why <why> --policy <policy> [--as <who>]`",
+            );
+        }
         let s = sync_record(root, memory);
         // the point the hold is read at — the record's head, and the
         // ledger's revision once the organism has adopted it: the
         // redaction lands only there (#636)
         let read_head = record_head(root);
-        if !read_head.ok { return fail("receipt redact: the record's head could not be read: " + read_head.why); }
+        if !read_head.ok {
+            return fail("receipt redact: the record's head could not be read: " + read_head.why);
+        }
         let read_at = read_head.id;
         let ledger_at = ledger_revision(root, memory);
         let p = open_projection(root, ".", "", memory);
@@ -1399,22 +2311,46 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         while i < p.rows() {
             let e = p.row(i);
             if e.entity == digest {
-                if e.kind == "receipt.held" { held = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+                if e.kind == "receipt.held" {
+                    held = std::json::find_string_field(e.body, "by") + ": "
+                        + std::json::find_string_field(e.body, "why");
+                }
                 if e.kind == "receipt.hold_released" { held = ""; }
                 if e.kind == "receipt.redacted" { redacted = true; }
-                if e.kind == "receipt.classified" { classified = true; class = std::json::find_string_field(e.body, "class"); }
-                if e.kind == "receipt.withheld" { withheld = true; class = std::json::find_string_field(e.body, "class"); }
+                if e.kind == "receipt.classified" {
+                    classified = true;
+                    class = std::json::find_string_field(e.body, "class");
+                }
+                if e.kind == "receipt.withheld" {
+                    withheld = true;
+                    class = std::json::find_string_field(e.body, "class");
+                }
             }
             i = i + 1;
         }
-        if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
-        let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        if len(held) > 0 {
+            return fail(
+                "receipt redact: held: " + held + "; redaction waits for the hold's release",
+            );
+        }
+        let local_hex = if std::str::starts_with(digest, "sha256:") {
+            digest[7..len(digest)]
+        } else {
+            digest
+        };
         // a protected body is memory's (GH #985): the redaction is recorded
         // here, at the head the hold was read at, and the body — the spine,
         // the only writer of protected evidence — erases it on its next tick
-        if redacted && !classified && (withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
+        if redacted && !classified && (withheld || !receipt_read(root, local_hex).present) {
+            return fail("receipt redact: " + digest + " is already redacted");
+        }
         if classified {
-            if redacted { return answer("receipt " + digest + ": the redaction is in the record; the body erases it from memory on its next tick\n"); }
+            if redacted {
+                return answer(
+                    "receipt " + digest
+                        + ": the redaction is in the record; the body erases it from memory on its next tick\n",
+                );
+            }
             let b = std::json::Builder { };
             b.begin_object();
             b.string_field("by", who);
@@ -1425,13 +2361,39 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.end_object();
             // the redaction is a row of the Ledger once the record routes
             // the receipt family there (GH #1590), at the point the hold was read
-            let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who, memory);
-            if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
-            if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + ")"); }
+            let landed = append_as_at(
+                root,
+                read_at,
+                ledger_at,
+                "receipt.redacted",
+                digest,
+                b.result(),
+                who,
+                memory,
+            );
+            if landed == "stale_revision" {
+                return fail(
+                    "receipt redact: the record moved while redacting " + digest
+                        + " (a hold may have arrived); nothing was recorded — redact again",
+                );
+            }
+            if len(landed) > 0 {
+                return fail(
+                    "receipt redact: the record refused the redaction of " + digest + " (" + landed
+                        + ")",
+                );
+            }
             let s2 = sync_record(root, memory);
-            return answer("receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n");
+            return answer(
+                "receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who
+                    + " under " + policy + "); the body erases it from memory on its next tick\n",
+            );
         }
-        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let hexd = if std::str::starts_with(digest, "sha256:") {
+            digest[7..len(digest)]
+        } else {
+            digest
+        };
         let had = receipt_read(root, hexd).present;
         if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in memory"); }
         // the decision is in the record before the body goes; a redaction the
@@ -1446,26 +2408,72 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.string_field("class", class);
             b.string_field("store", if withheld { "none (withheld)" } else { "memory" });
             b.end_object();
-            let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who, memory);
-            if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was erased — redact again"); }
-            if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
+            let landed = append_as_at(
+                root,
+                read_at,
+                ledger_at,
+                "receipt.redacted",
+                digest,
+                b.result(),
+                who,
+                memory,
+            );
+            if landed == "stale_revision" {
+                return fail(
+                    "receipt redact: the record moved while redacting " + digest
+                        + " (a hold may have arrived); nothing was erased — redact again",
+                );
+            }
+            if len(landed) > 0 {
+                return fail(
+                    "receipt redact: the record refused the redaction of " + digest + " (" + landed
+                        + "); nothing was erased",
+                );
+            }
         }
         // a head may not erase (memory's erase is the spine's): the redaction
         // is recorded, and the body erases it on its next tick, as a
         // classified one
-        if had && !rec(root).forget(hexd) { return answer("receipt " + digest + " redacted (receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n"); }
-        return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its body erased from memory" }) + "; receipt.redacted, by " + who + " under " + policy + ").\n");
+        if had && !rec(root).forget(hexd) {
+            return answer(
+                "receipt " + digest + " redacted (receipt.redacted, by " + who + " under " + policy
+                    + "); the body erases it from memory on its next tick\n",
+            );
+        }
+        return answer(
+            "receipt " + digest + " redacted ("
+                + (
+                    if withheld {
+                        "withheld, so no body was kept"
+                    } else {
+                        "its body erased from memory"
+                    }
+                )
+                + "; receipt.redacted, by " + who + " under " + policy + ").\n",
+        );
     }
     if sub == "show" {
-        if len(digest) == 0 || len(purpose) == 0 { return fail("receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`"); }
+        if len(digest) == 0 || len(purpose) == 0 {
+            return fail(
+                "receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`",
+            );
+        }
         // read from memory under this head's role, in your name (GH #985)
         let vault = dna::MemoryVault { repo: root, dsn_env: dna::own_dsn_env() };
         let got = vault.read(digest, who, purpose);
         if !got.present { return fail("receipt show: " + got.refused); }
         let s2 = sync_record(root, memory);
-        return answer("receipt " + digest + " (" + got.class + ", " + to_string(len(got.text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + got.text + "\nend of receipt\n");
+        return answer(
+            "receipt " + digest + " (" + got.class + ", " + to_string(len(got.text))
+                + " bytes, disclosed to " + who + " for " + purpose + ")\n" + got.text
+                + "\nend of receipt\n",
+        );
     }
-    if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, `receipt show <digest> --purpose <p>`, `receipt hold|release-hold <digest> --why <w>`, or `receipt redact <digest> --why <w> --policy <p>`"); }
+    if len(sub) > 0 && sub != "list" {
+        return fail(
+            "receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, `receipt show <digest> --purpose <p>`, `receipt hold|release-hold <digest> --why <w>`, or `receipt redact <digest> --why <w> --policy <p>`",
+        );
+    }
     let p = open_projection(root, ".", "", memory);
     let mut out = "";
     let mut n = 0;
@@ -1483,17 +2491,36 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             while k < p.rows() {
                 let f = p.row(k);
                 if f.entity == e.entity {
-                    if f.kind == "receipt.disclosed" { disclosures = disclosures + (if len(disclosures) > 0 { "; " } else { "" }) + "disclosed to " + std::json::find_string_field(f.body, "recipient") + " for " + std::json::find_string_field(f.body, "purpose"); }
+                    if f.kind == "receipt.disclosed" {
+                        disclosures = disclosures + (if len(disclosures) > 0 { "; " } else { "" })
+                            + "disclosed to " + std::json::find_string_field(f.body, "recipient")
+                            + " for " + std::json::find_string_field(f.body, "purpose");
+                    }
                     if f.kind == "receipt.read" { reads = reads + 1; }
                     if f.kind == "receipt.read_refused" { refusals = refusals + 1; }
-                    if f.kind == "receipt.redacted" { redaction = "redacted by " + std::json::find_string_field(f.body, "by") + " under " + std::json::find_string_field(f.body, "policy"); }
-                    if f.kind == "receipt.held" { hold = "held by " + std::json::find_string_field(f.body, "by"); }
+                    if f.kind == "receipt.redacted" {
+                        redaction = "redacted by " + std::json::find_string_field(f.body, "by")
+                            + " under " + std::json::find_string_field(f.body, "policy");
+                    }
+                    if f.kind == "receipt.held" {
+                        hold = "held by " + std::json::find_string_field(f.body, "by");
+                    }
                     if f.kind == "receipt.hold_released" { hold = ""; }
                 }
                 k = k + 1;
             }
-            let state = if len(redaction) > 0 { redaction + (if len(hold) > 0 { " · " + hold } else { "" }) } else if len(hold) > 0 { hold } else if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept in memory" };
-            out = out + "  " + e.entity + " [" + std::json::find_string_field(e.body, "class") + "] " + state + (if len(disclosures) > 0 { " · " + disclosures } else { "" }) + " · read " + to_string(reads) + ", refused " + to_string(refusals) + "\n";
+            let state = if len(redaction) > 0 {
+                redaction + (if len(hold) > 0 { " · " + hold } else { "" })
+            } else if len(hold) > 0 {
+                hold
+            } else if e.kind == "receipt.withheld" {
+                "withheld: " + std::json::find_string_field(e.body, "why")
+            } else {
+                "kept in memory"
+            };
+            out = out + "  " + e.entity + " [" + std::json::find_string_field(e.body, "class")
+                + "] " + state + (if len(disclosures) > 0 { " · " + disclosures } else { "" })
+                + " · read " + to_string(reads) + ", refused " + to_string(refusals) + "\n";
         }
         i = i + 1;
     }
@@ -1514,9 +2541,13 @@ fn redaction_line(root: String, digest: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::contains(line, needle) && std::json::find_string_field(line, "kind") == "receipt.redacted" {
+        if std::str::contains(line, needle)
+            && std::json::find_string_field(line, "kind") == "receipt.redacted"
+        {
             let body = std::json::find_string_field(line, "body");
-            return "redacted by " + std::json::find_string_field(body, "by") + " under " + std::json::find_string_field(body, "policy") + ": " + std::json::find_string_field(body, "why");
+            return "redacted by " + std::json::find_string_field(body, "by") + " under "
+                + std::json::find_string_field(body, "policy") + ": "
+                + std::json::find_string_field(body, "why");
         }
     }
     return "";
@@ -1534,7 +2565,9 @@ fn application_remove_verb(root: String, who_flag: String) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let app = attached_application(root);
-    if len(app) == 0 { return fail("application remove: the record attaches no application (or it was removed)"); }
+    if len(app) == 0 {
+        return fail("application remove: the record attaches no application (or it was removed)");
+    }
     let j = dna::RecordJournal { repo: root };
     let mut entity = "";
     let mut i = 0;
@@ -1549,9 +2582,21 @@ fn application_remove_verb(root: String, who_flag: String) -> Answer {
     b.string_field("name", app);
     b.string_field("by", who);
     b.end_object();
-    if len(record_append(root, "application.detached", entity, b.result(), who)) == 0 { return fail("application remove: the record did not take the `application.detached` row; nothing was revoked"); }
+    if len(record_append(root, "application.detached", entity, b.result(), who)) == 0 {
+        return fail(
+            "application remove: the record did not take the `application.detached` row; nothing was revoked",
+        );
+    }
     let org = dna::schema_for(record_identity(root));
     let revoked = revoke_app_secret(root, org, app);
-    if !revoked.ok { return fail("application remove: `" + app + "` is detached in the record, and its account is not yet revoked: " + revoked.why); }
-    return answer("application remove: `" + app + "` detached (application.detached in the record)\n" + revoked.report);
+    if !revoked.ok {
+        return fail(
+            "application remove: `" + app
+                + "` is detached in the record, and its account is not yet revoked: " + revoked.why,
+        );
+    }
+    return answer(
+        "application remove: `" + app + "` detached (application.detached in the record)\n"
+            + revoked.report,
+    );
 }

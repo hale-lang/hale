@@ -97,7 +97,9 @@ type Inbound {
 /// The acknowledgement of an untyped message, for the conn to write:
 /// `NatsOutbound <- nats_ack(m.reply)` from a locus that publishes
 /// `NatsOutbound`.
-fn nats_ack(reply: String) -> Outbound { return Outbound { subject: reply, data: b"+ACK", ack: true }; }
+fn nats_ack(reply: String) -> Outbound {
+    return Outbound { subject: reply, data: b"+ACK", ack: true };
+}
 
 // What a `NatsConn` receives under its `untyped` prefix, as it arrived,
 // for a subscriber that reads the bytes itself: a family of subjects the

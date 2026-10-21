@@ -44,27 +44,59 @@ fn main() {
     std::test::assert_eq_str(Patch::api_encode(keep), "{}", "absent is no key");
 
     let clear = read("{\"note\":null,\"inner\":null,\"mood\":null}");
-    std::test::assert_eq_str(which(clear.has_note, clear.clear_note), "clear", "null clears a scalar");
-    std::test::assert_eq_str(which(clear.has_inner, clear.clear_inner), "clear", "null clears a record");
-    std::test::assert_eq_str(which(clear.has_mood, clear.clear_mood), "clear", "null clears an enum");
-    std::test::assert_eq_str(Patch::api_encode(clear), "{\"note\":null,\"inner\":null,\"mood\":null}", "a cleared field is null");
+    std::test::assert_eq_str(
+        which(clear.has_note, clear.clear_note),
+        "clear",
+        "null clears a scalar",
+    );
+    std::test::assert_eq_str(
+        which(clear.has_inner, clear.clear_inner),
+        "clear",
+        "null clears a record",
+    );
+    std::test::assert_eq_str(
+        which(clear.has_mood, clear.clear_mood),
+        "clear",
+        "null clears an enum",
+    );
+    std::test::assert_eq_str(
+        Patch::api_encode(clear),
+        "{\"note\":null,\"inner\":null,\"mood\":null}",
+        "a cleared field is null",
+    );
 
     let set = read("{\"note\":\"x\",\"inner\":{\"a\":3},\"mood\":\"Busy\"}");
     std::test::assert_eq_str(which(set.has_note, set.clear_note), "set", "a value sets");
     std::test::assert_eq_str(set.note, "x", "the value");
     std::test::assert_eq_int(set.inner.a, 3, "a record's value");
-    std::test::assert_eq_str(Patch::api_encode(set), "{\"note\":\"x\",\"inner\":{\"a\":3},\"mood\":\"Busy\"}", "a set field is its value");
+    std::test::assert_eq_str(
+        Patch::api_encode(set),
+        "{\"note\":\"x\",\"inner\":{\"a\":3},\"mood\":\"Busy\"}",
+        "a set field is its value",
+    );
 
     // the last of a key sent twice
     let then_set = read("{\"note\":null,\"note\":\"y\"}");
-    std::test::assert_eq_str(which(then_set.has_note, then_set.clear_note), "set", "null, then a value");
+    std::test::assert_eq_str(
+        which(then_set.has_note, then_set.clear_note),
+        "set",
+        "null, then a value",
+    );
     let then_clear = read("{\"note\":\"y\",\"note\":null}");
-    std::test::assert_eq_str(which(then_clear.has_note, then_clear.clear_note), "clear", "a value, then null");
+    std::test::assert_eq_str(
+        which(then_clear.has_note, then_clear.clear_note),
+        "clear",
+        "a value, then null",
+    );
     std::test::assert_eq_str(then_clear.note, "", "a cleared field holds its default");
 
     // set and clear both: written as set
     let both = Patch { note: "z", has_note: true, clear_note: true };
-    std::test::assert_eq_str(Patch::api_encode(both), "{\"note\":\"z\"}", "a value wins over clear");
+    std::test::assert_eq_str(
+        Patch::api_encode(both),
+        "{\"note\":\"z\"}",
+        "a value wins over clear",
+    );
 
     // a presence pair: null is absent
     let plain = Plain::api_decode("{\"note\":null}") or {

@@ -27,7 +27,10 @@ fn hale_bin() -> String {
 fn write_minimal_seed(root: String, greeting: String) {
     dna::run_tool("mkdir\n-p\n" + root + "/app");
     std::io::fs::write_file(root + "/hale.toml", "[deps]\n") or discard;
-    std::io::fs::write_file(root + "/app/main.hl", "fn main() { println(\"" + greeting + "\"); }\n") or discard;
+    std::io::fs::write_file(
+        root + "/app/main.hl",
+        "fn main() { println(\"" + greeting + "\"); }\n",
+    ) or discard;
 }
 
 fn main() {

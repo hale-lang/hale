@@ -232,7 +232,8 @@ fn __api_table_refusal(table: String, known: String) -> String {
             }
             let mut ok = false;
             if std::str::starts_with(m, "uid:") || std::str::starts_with(m, "gid:") {
-                ok = __api_chars_ok(m[4..len(m)], "") && (std::str::parse_int(m[4..len(m)]) or - 1) >= 0;
+                ok = __api_chars_ok(m[4..len(m)], "")
+                    && (std::str::parse_int(m[4..len(m)]) or - 1) >= 0;
             }
             if std::str::starts_with(m, "user:") {
                 ok = __api_chars_ok(m[5..len(m)], "._-@") && len(m) <= 69;
@@ -244,7 +245,8 @@ fn __api_table_refusal(table: String, known: String) -> String {
                 ok = __api_bearer_name_ok(m[7..len(m)]);
             }
             if !ok {
-                return "role `" + role + "`: `" + m + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name>, bearer:<name> or *)";
+                return "role `" + role + "`: `" + m
+                    + "` is not a role member (uid:<n>, gid:<n>, user:<name>, group:<name>, bearer:<name> or *)";
             }
         }
     }
@@ -293,7 +295,11 @@ fn __api_role_members_match(p: std::api::Principal, members: String) -> Bool {
         }
         if std::str::starts_with(m, "gid:") {
             let n = std::str::parse_int(m[4..len(m)]) or - 1;
-            if n >= 0 && (n == p.gid || std::str::contains("," + p.groups + ",", "," + to_string(n) + ",")) {
+            if n >= 0
+                && (
+                    n == p.gid || std::str::contains("," + p.groups + ",", "," + to_string(n) + ",")
+                )
+            {
                 return true;
             }
         }
@@ -338,7 +344,10 @@ fn __api_resolve_role_names(table: String) -> String {
                 let name = m[5..len(m)];
                 let id = std::io::unix::user_id(name);
                 if id < 0 {
-                    __std_log_diag("api roles: role " + role + " names user " + name + ", which this host does not know; it holds nobody");
+                    __std_log_diag(
+                        "api roles: role " + role + " names user " + name
+                            + ", which this host does not know; it holds nobody",
+                    );
                     resolved = "";
                 } else {
                     resolved = "uid:" + to_string(id);
@@ -348,7 +357,10 @@ fn __api_resolve_role_names(table: String) -> String {
                 let name = m[6..len(m)];
                 let id = std::io::unix::group_id(name);
                 if id < 0 {
-                    __std_log_diag("api roles: role " + role + " names group " + name + ", which this host does not know; it holds nobody");
+                    __std_log_diag(
+                        "api roles: role " + role + " names group " + name
+                            + ", which this host does not know; it holds nobody",
+                    );
                     resolved = "";
                 } else {
                     resolved = "gid:" + to_string(id);

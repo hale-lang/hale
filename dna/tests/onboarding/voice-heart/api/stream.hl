@@ -61,7 +61,9 @@ locus EventStream {
     fn open() {
         if self.opened { return; }
         self.opened = true;
-        if self.conn_fd >= 0 { self.w = std::http::SseWriter { conn_fd: self.conn_fd, headers: self.headers }; }
+        if self.conn_fd >= 0 {
+            self.w = std::http::SseWriter { conn_fd: self.conn_fd, headers: self.headers };
+        }
     }
 
     /// One event: `name` "" for an unnamed one (`data:` alone).
@@ -69,7 +71,10 @@ locus EventStream {
         self.open();
         self.sent_ns = std::time::monotonic_ns();
         if self.conn_fd < 0 {
-            self.kept.append_str((if len(name) > 0 { "event: " + name + "\n" } else { "" }) + "data: " + data + "\n\n");
+            self.kept.append_str(
+                (if len(name) > 0 { "event: " + name + "\n" } else { "" }) + "data: " + data
+                    + "\n\n",
+            );
             return;
         }
         if self.gone { return; }
@@ -103,7 +108,9 @@ locus EventStream {
     /// What a seat's events said: the last response object, and the text.
     fn note(event: String) {
         let kind = std::json::find_string_field(event, "type");
-        if kind == "response.output_text.delta" { self.text.append_str(std::json::find_string_field(event, "delta")); }
+        if kind == "response.output_text.delta" {
+            self.text.append_str(std::json::find_string_field(event, "delta"));
+        }
         let response = std::str::trim(std::json::find_field_raw(event, "response"));
         if std::str::starts_with(response, "{") { self.snapshot = response; }
     }
@@ -117,7 +124,12 @@ locus EventStream {
     fn end() -> std::http::Response {
         if self.conn_fd >= 0 { return self.w.end(); }
         let b = self.kept.snapshot() or b"";
-        return std::http::Response { status: 200, content_type: "text/event-stream", headers: self.headers, body: std::str::from_bytes(b) };
+        return std::http::Response {
+            status: 200,
+            content_type: "text/event-stream",
+            headers: self.headers,
+            body: std::str::from_bytes(b),
+        };
     }
 }
 
@@ -145,7 +157,9 @@ fn renumbered(event: String, seq: Int) -> String {
     let mut it = std::json::object_first(event);
     while !it.done {
         let key = std::json::obj_key_string(it, event);
-        if key != "sequence_number" { out.add(jq(key) + ": " + std::str::trim(std::json::obj_value_raw(it, event))); }
+        if key != "sequence_number" {
+            out.add(jq(key) + ": " + std::str::trim(std::json::obj_value_raw(it, event)));
+        }
         it = std::json::object_next(it, event);
     }
     out.add("\"sequence_number\": " + to_string(seq));
@@ -154,18 +168,24 @@ fn renumbered(event: String, seq: Int) -> String {
 
 /// True for the events that end a response.
 fn terminal(kind: String) -> Bool {
-    return kind == "response.completed" || kind == "response.incomplete" || kind == "response.failed";
+    return kind == "response.completed"
+        || kind == "response.incomplete"
+        || kind == "response.failed";
 }
 
 /// True for the events that are output reaching the caller.
 fn output_event(kind: String) -> Bool {
-    return kind == "response.output_text.delta" || kind == "response.function_call_arguments.delta" || kind == "response.refusal.delta";
+    return kind == "response.output_text.delta"
+        || kind == "response.function_call_arguments.delta"
+        || kind == "response.refusal.delta";
 }
 
 /// A chat completion chunk with one choice.
 fn chat_chunk(s: StreamState, delta: String, finish: String, extra: String) -> String {
-    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion.chunk\", \"created\": " + to_string(s.created) + ", \"model\": " + jq(s.model)
-        + ", \"choices\": [{\"index\": 0, \"delta\": " + delta + ", \"finish_reason\": " + (if len(finish) > 0 { jq(finish) } else { "null" }) + "}]" + extra + "}";
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion.chunk\", \"created\": "
+        + to_string(s.created) + ", \"model\": " + jq(s.model)
+        + ", \"choices\": [{\"index\": 0, \"delta\": " + delta + ", \"finish_reason\": "
+        + (if len(finish) > 0 { jq(finish) } else { "null" }) + "}]" + extra + "}";
 }
 
 /// A node's event, as the caller's stream carries it; the state moves on.
@@ -186,16 +206,43 @@ fn forward(out: EventStream, s: StreamState, event: String) -> StreamState {
         st.role_sent = true;
     }
     if kind == "response.output_text.delta" {
-        out.send("", chat_chunk(st, "{\"content\": " + jq(std::json::find_string_field(event, "delta")) + "}", "", ""));
+        out.send(
+            "",
+            chat_chunk(
+                st,
+                "{\"content\": " + jq(std::json::find_string_field(event, "delta")) + "}",
+                "",
+                "",
+            ),
+        );
     } else if kind == "response.output_item.added" {
         let item = std::json::find_field_raw(event, "item");
         if std::json::find_string_field(item, "type") == "function_call" {
             st.tools = st.tools + 1;
-            out.send("", chat_chunk(st, "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1) + ", \"id\": " + jq(std::json::find_string_field(item, "call_id"))
-                    + ", \"type\": \"function\", \"function\": {\"name\": " + jq(std::json::find_string_field(item, "name")) + ", \"arguments\": \"\"}}]}", "", ""));
+            out.send(
+                "",
+                chat_chunk(
+                    st,
+                    "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1) + ", \"id\": "
+                        + jq(std::json::find_string_field(item, "call_id"))
+                        + ", \"type\": \"function\", \"function\": {\"name\": "
+                        + jq(std::json::find_string_field(item, "name"))
+                        + ", \"arguments\": \"\"}}]}",
+                    "",
+                    ""));
         }
     } else if kind == "response.function_call_arguments.delta" && st.tools > 0 {
-        out.send("", chat_chunk(st, "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1) + ", \"function\": {\"arguments\": " + jq(std::json::find_string_field(event, "delta")) + "}}]}", "", ""));
+        out.send(
+            "",
+            chat_chunk(
+                st,
+                "{\"tool_calls\": [{\"index\": " + to_string(st.tools - 1)
+                    + ", \"function\": {\"arguments\": "
+                    + jq(std::json::find_string_field(event, "delta")) + "}}]}",
+                "",
+                "",
+            ),
+        );
     }
     return st;
 }
@@ -206,7 +253,10 @@ fn attempt_event(out: EventStream, s: StreamState, a: Attempt, next_seat: String
     if st.endpoint != "responses" { return st; }
     let one = attempts_json(attempts_of(a).items);
     let attempt = one[1..(len(one) - 1)];
-    out.send("voice:attempt", "{\"type\": \"voice:attempt\", \"sequence_number\": " + to_string(st.seq) + ", \"attempt\": " + attempt
+    out.send(
+        "voice:attempt",
+        "{\"type\": \"voice:attempt\", \"sequence_number\": " + to_string(st.seq)
+            + ", \"attempt\": " + attempt
             + (if len(next_seat) > 0 { ", \"next_seat\": " + jq(next_seat) } else { "" }) + "}");
     st.seq = st.seq + 1;
     return st;
@@ -223,12 +273,30 @@ fn attempts_of(a: Attempt) -> Attempts {
 fn finish_stream(out: EventStream, s: StreamState, terminal_event: String, served: Served) {
     if s.endpoint == "responses" {
         let kind = std::json::find_string_field(terminal_event, "type");
-        out.send(kind, "{\"type\": " + jq(kind) + ", \"response\": " + response_json(served) + ", \"sequence_number\": " + to_string(s.seq) + "}");
+        out.send(
+            kind,
+            "{\"type\": " + jq(kind) + ", \"response\": " + response_json(served)
+                + ", \"sequence_number\": " + to_string(s.seq) + "}",
+        );
     } else {
         let calls = tool_calls_json(served.response);
-        let finish = if len(calls) > 0 { "tool_calls" } else if served.status == "incomplete" { "length" } else { "stop" };
-        out.send("", chat_chunk(s, "{}", finish, ", \"usage\": {\"prompt_tokens\": " + to_string(served.input_tokens) + ", \"completion_tokens\": " + to_string(served.output_tokens)
-                + ", \"total_tokens\": " + to_string(served.input_tokens + served.output_tokens) + "}, \"voice\": " + voice_json(served.voice)));
+        let finish = if len(calls) > 0 {
+            "tool_calls"
+        } else if served.status == "incomplete" {
+            "length"
+        } else {
+            "stop"
+        };
+        out.send(
+            "",
+            chat_chunk(
+                s,
+                "{}",
+                finish,
+                ", \"usage\": {\"prompt_tokens\": " + to_string(served.input_tokens)
+                    + ", \"completion_tokens\": " + to_string(served.output_tokens)
+                    + ", \"total_tokens\": " + to_string(served.input_tokens + served.output_tokens)
+                    + "}, \"voice\": " + voice_json(served.voice)));
     }
     out.send("", "[DONE]");
 }
@@ -238,15 +306,41 @@ fn finish_stream(out: EventStream, s: StreamState, terminal_event: String, serve
 /// came with `voice`; on `/v1/chat/completions` a last chunk finished
 /// `error`, with an `error` object, `usage: null` and `voice`. Then
 /// `[DONE]`.
-fn fail_stream(out: EventStream, s: StreamState, code: String, message: String, voice: VoiceExtension) {
+fn fail_stream(
+    out: EventStream,
+    s: StreamState,
+    code: String,
+    message: String,
+    voice: VoiceExtension
+) {
     let error = "{\"code\": " + jq(code) + ", \"message\": " + jq(message) + "}";
     if s.endpoint == "responses" {
-        out.send("error", "{\"type\": \"error\", \"sequence_number\": " + to_string(s.seq) + ", \"error\": {\"type\": \"server_error\", \"code\": " + jq(code) + ", \"message\": " + jq(message) + ", \"param\": null}}");
+        out.send(
+            "error",
+            "{\"type\": \"error\", \"sequence_number\": " + to_string(s.seq)
+                + ", \"error\": {\"type\": \"server_error\", \"code\": " + jq(code)
+                + ", \"message\": " + jq(message) + ", \"param\": null}}",
+        );
         // a stream a keep-alive opened may have no response yet
         let snapshot = if len(out.snapshot) > 0 { out.snapshot } else { pending_response(s) };
-        out.send("response.failed", "{\"type\": \"response.failed\", \"response\": " + failed_response(snapshot, out.text_so_far(), error, voice) + ", \"sequence_number\": " + to_string(s.seq + 1) + "}");
+        out.send(
+            "response.failed",
+            "{\"type\": \"response.failed\", \"response\": "
+                + failed_response(snapshot, out.text_so_far(), error, voice)
+                + ", \"sequence_number\": " + to_string(s.seq + 1) + "}",
+        );
     } else {
-        out.send("", chat_chunk(s, "{}", "error", ", \"error\": {\"message\": " + jq(message) + ", \"type\": \"server_error\", \"code\": " + jq(code) + "}, \"usage\": null, \"voice\": " + voice_json(voice)));
+        out.send(
+            "",
+            chat_chunk(
+                s,
+                "{}",
+                "error",
+                ", \"error\": {\"message\": " + jq(message)
+                    + ", \"type\": \"server_error\", \"code\": " + jq(code)
+                    + "}, \"usage\": null, \"voice\": " + voice_json(voice),
+            ),
+        );
     }
     out.send("", "[DONE]");
 }
@@ -254,8 +348,10 @@ fn fail_stream(out: EventStream, s: StreamState, code: String, message: String, 
 /// A response object for a stream no seat sent one on: the standard's
 /// defaults, as a node's engine would have begun it.
 fn pending_response(s: StreamState) -> String {
-    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"response\", \"created_at\": " + to_string(s.created) + ", \"completed_at\": null, \"status\": \"in_progress\""
-        + ", \"incomplete_details\": null, \"model\": " + jq(s.model) + ", \"previous_response_id\": null, \"instructions\": null, \"output\": [], \"error\": null"
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"response\", \"created_at\": "
+        + to_string(s.created) + ", \"completed_at\": null, \"status\": \"in_progress\""
+        + ", \"incomplete_details\": null, \"model\": " + jq(s.model)
+        + ", \"previous_response_id\": null, \"instructions\": null, \"output\": [], \"error\": null"
         + ", \"tools\": [], \"tool_choice\": \"auto\", \"truncation\": \"disabled\", \"parallel_tool_calls\": false, \"text\": {\"format\": {\"type\": \"text\"}}"
         + ", \"top_p\": 1, \"presence_penalty\": 0, \"frequency_penalty\": 0, \"top_logprobs\": 0, \"temperature\": 1, \"reasoning\": null, \"usage\": null"
         + ", \"max_output_tokens\": null, \"max_tool_calls\": null, \"store\": false, \"background\": false, \"service_tier\": \"default\", \"metadata\": {}"
@@ -276,7 +372,18 @@ fn failed_response(snapshot: String, text: String, error: String, voice: VoiceEx
             out.add("\"error\": " + error);
         } else if key == "output" {
             let id = "msg_" + std::json::find_string_field(snapshot, "id");
-            out.add("\"output\": " + (if len(text) > 0 { "[{\"type\": \"message\", \"id\": " + jq(id) + ", \"status\": \"incomplete\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": " + jq(text) + ", \"annotations\": []}]}]" } else { "[]" }));
+            out.add(
+                "\"output\": "
+                    + (
+                        if len(text) > 0 {
+                            "[{\"type\": \"message\", \"id\": " + jq(id)
+                                + ", \"status\": \"incomplete\", \"role\": \"assistant\", \"content\": [{\"type\": \"output_text\", \"text\": "
+                                + jq(text) + ", \"annotations\": []}]}]"
+                        } else {
+                            "[]"
+                        }
+                    ),
+            );
         } else if key != "voice" {
             out.add(jq(key) + ": " + value);
         }

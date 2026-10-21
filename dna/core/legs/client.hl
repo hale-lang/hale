@@ -53,12 +53,18 @@ fn command_reply(value: hc::CommandReply) -> Reply {
     if !value.ok && len(value.receipt.state) == 0 {
         return Reply { status: 400, error: value.code };
     }
-    let body = "{\"data\":" + hc::CommandReceipt::api_encode(value.receipt) + ",\"source\":{\"record_head\":" + hc::api_str(value.head) + ",\"record_id\":" + hc::api_str(value.application_id) + ",\"record_revision\":" + hc::api_str(to_string(value.revision)) + "}}";
+    let body = "{\"data\":" + hc::CommandReceipt::api_encode(value.receipt)
+        + ",\"source\":{\"record_head\":" + hc::api_str(value.head) + ",\"record_id\":"
+        + hc::api_str(value.application_id) + ",\"record_revision\":"
+        + hc::api_str(to_string(value.revision)) + "}}";
     return Reply { ok: true, status: 200, body: body };
 }
 
 fn refusal_reply(f: hc::ApiRefusal) -> Reply {
-    return Reply { status: 400, error: (if len(f.kind) > 0 { f.kind } else { "refused" }) + ": " + f.reason };
+    return Reply {
+        status: 400,
+        error: (if len(f.kind) > 0 { f.kind } else { "refused" }) + ": " + f.reason,
+    };
 }
 
 fn server_reply() -> Reply {
@@ -148,21 +154,47 @@ locus Head {
         allowance_member: String = "";
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-        return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
+        return std::http::ClientResponse {
+            status: 0,
+            body: std::bytes::from_string(e.kind + " " + e.detail),
+        };
     }
-    fn http(method: String, url: String, headers: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn http(
+        method: String,
+        url: String,
+        headers: String,
+        body: String
+    ) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = std::http::parse_url(url) or raise;
-        let req = std::http::ClientRequest { method: method, url: u, headers: headers, body: std::bytes::from_string(body) };
+        let req = std::http::ClientRequest {
+            method: method,
+            url: u,
+            headers: headers,
+            body: std::bytes::from_string(body),
+        };
         return std::http::request(req) or raise;
     }
     fn reply(r: std::http::ClientResponse) -> Reply {
         let text = std::str::from_bytes(r.body);
-        if r.status == 0 { return Reply { status: 0, error: "the head at " + self.api + " cannot be reached: " + text }; }
+        if r.status == 0 {
+            return Reply {
+                status: 0,
+                error: "the head at " + self.api + " cannot be reached: " + text,
+            };
+        }
         if r.status < 200 || r.status >= 300 {
             let e = std::json::find_field_raw(text, "error");
             let code = std::json::find_string_field(e, "code");
             let message = std::json::find_string_field(e, "message");
-            return Reply { status: r.status, body: text, error: if len(code) > 0 { code + ": " + message } else { "HTTP " + to_string(r.status) } };
+            return Reply {
+                status: r.status,
+                body: text,
+                error: if len(code) > 0 {
+                    code + ": " + message
+                } else {
+                    "HTTP " + to_string(r.status)
+                },
+            };
         }
         return Reply { ok: true, status: r.status, body: text };
     }
@@ -172,9 +204,12 @@ locus Head {
     // socket, where the kernel vouches for the peer.
     fn get(path: String) -> Reply {
         // never to plain http off this machine
-        let safe = std::str::starts_with(self.api, "https://") || std::str::starts_with(self.api, "http://127.0.0.1:") || std::str::starts_with(self.api, "http://localhost:");
+        let safe = std::str::starts_with(self.api, "https://")
+            || std::str::starts_with(self.api, "http://127.0.0.1:")
+            || std::str::starts_with(self.api, "http://localhost:");
         let token = if safe { std::env::var("HALE_DNA_ID_TOKEN") } else { "" };
-        let headers = "Accept: application/json" + (if len(token) > 0 { "\r\nAuthorization: Bearer " + token } else { "" });
+        let headers = "Accept: application/json"
+            + (if len(token) > 0 { "\r\nAuthorization: Bearer " + token } else { "" });
         let r = self.http("GET", self.api + path, headers, "") or self.transport_failed(err);
         return self.reply(r);
     }
@@ -197,7 +232,10 @@ locus Head {
         self.application = std::json::find_string_field(source, "record_id");
         self.record_head = std::json::find_string_field(source, "record_head");
         self.record_revision = std::json::find_string_field(source, "record_revision");
-        if len(self.application) == 0 { self.error = "the head at " + self.api + " names no application"; return false; }
+        if len(self.application) == 0 {
+            self.error = "the head at " + self.api + " names no application";
+            return false;
+        }
         let mut caps = self.get(self.prefix() + "/capabilities");
         until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         while !caps.ok && head_moved(caps.error) && std::time::monotonic_ns() < until {
@@ -209,15 +247,28 @@ locus Head {
         let principal = std::json::find_field_raw(data, "principal");
         self.principal_mode = std::json::find_string_field(principal, "mode");
         self.principal_name = std::json::find_string_field(principal, "name");
-        if len(self.socket) == 0 { self.socket = std::json::find_string_field(std::json::find_field_raw(data, "api"), "socket"); }
-        if len(self.socket) == 0 { self.error = "the head at " + self.api + " names no socket for its commands (an older head: `hale dna upgrade` the toolchain that serves it)"; return false; }
+        if len(self.socket) == 0 {
+            self.socket = std::json::find_string_field(
+                std::json::find_field_raw(data, "api"),
+                "socket",
+            );
+        }
+        if len(self.socket) == 0 {
+            self.error = "the head at " + self.api
+                + " names no socket for its commands (an older head: `hale dna upgrade` the toolchain that serves it)";
+            return false;
+        }
         // the socket serves the description its peer's person is admitted to
         // (the generated client reads it): a peer that holds no position is
         // listed no claim
         if hc::api_lists(self.socket, "", CLAIM_MEMBER) { self.claim_member = CLAIM_MEMBER; }
-        if hc::api_lists(self.socket, "", ALLOWANCE_MEMBER) { self.allowance_member = ALLOWANCE_MEMBER; }
+        if hc::api_lists(self.socket, "", ALLOWANCE_MEMBER) {
+            self.allowance_member = ALLOWANCE_MEMBER;
+        }
         if len(self.claim_member) == 0 {
-            self.error = "the head's socket lists no `" + CLAIM_MEMBER + "` for " + self.principal_name + ": this peer holds no position the record knows (`git config --local --add dna.unix.member \"uid:<n>=<person>\"`, and a `holds` edge), or the head serves no commands";
+            self.error = "the head's socket lists no `" + CLAIM_MEMBER + "` for "
+                + self.principal_name
+                + ": this peer holds no position the record knows (`git config --local --add dna.unix.member \"uid:<n>=<person>\"`, and a `holds` edge), or the head serves no commands";
             return false;
         }
         self.attached = true;
@@ -233,9 +284,28 @@ locus Head {
     // legs and the owner write moves often; the answer is never the leg's to
     // give up on.
     // `effect_class` is the performer's (GH #946): the claim is filtered on it
-    fn claim(request_id: String, performer_kind: String, performer: String, effect_class: String, capabilities: String, data_classes: String, organizations: String, ttl: Int) -> Reply {
+    fn claim(
+        request_id: String,
+        performer_kind: String,
+        performer: String,
+        effect_class: String,
+        capabilities: String,
+        data_classes: String,
+        organizations: String,
+        ttl: Int
+    ) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Claim { request_id: request_id, record_head: self.record_head, performer_kind: performer_kind, performer: performer, effect_class: effect_class, capabilities: capabilities, data_classes: data_classes, organizations: organizations, ttl: ttl };
+        let req = hc::Claim {
+            request_id: request_id,
+            record_head: self.record_head,
+            performer_kind: performer_kind,
+            performer: performer,
+            effect_class: effect_class,
+            capabilities: capabilities,
+            data_classes: data_classes,
+            organizations: organizations,
+            ttl: ttl,
+        };
         let mut r = claim_reply(self.socket, hc::commands_claim(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
@@ -243,9 +313,21 @@ locus Head {
         }
         return r;
     }
-    fn renew(request_id: String, attempt_id: String, holder: String, token: Int, ttl: Int) -> Reply {
+    fn renew(
+        request_id: String,
+        attempt_id: String,
+        holder: String,
+        token: Int,
+        ttl: Int
+    ) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Renewal { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token, ttl: ttl };
+        let req = hc::Renewal {
+            request_id: request_id,
+            attempt_id: attempt_id,
+            holder: holder,
+            token: token,
+            ttl: ttl,
+        };
         let mut r = renew_reply(self.socket, hc::commands_renew(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
@@ -253,9 +335,21 @@ locus Head {
         }
         return r;
     }
-    fn give_back(request_id: String, attempt_id: String, holder: String, token: Int, why: String) -> Reply {
+    fn give_back(
+        request_id: String,
+        attempt_id: String,
+        holder: String,
+        token: Int,
+        why: String
+    ) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Release { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token, why: why };
+        let req = hc::Release {
+            request_id: request_id,
+            attempt_id: attempt_id,
+            holder: holder,
+            token: token,
+            why: why,
+        };
         let mut r = release_reply(self.socket, hc::commands_release_attempt(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
@@ -265,11 +359,45 @@ locus Head {
     }
     // The outcome: `evidence` and `receipts` travel as JSON arrays in text;
     // the hat fields are empty and -1 when no hat was worn.
-    fn outcome(request_id: String, attempt_id: String, holder: String, token: Int, effect_class: String, disposition: String, result: String, result_ref: String, narrative: String, evidence: String, receipts: String, hat_digest: String, hat_head: String, hat_watermark: Int, prompt_digest: String, renderer: String) -> Reply {
+    fn outcome(
+        request_id: String,
+        attempt_id: String,
+        holder: String,
+        token: Int,
+        effect_class: String,
+        disposition: String,
+        result: String,
+        result_ref: String,
+        narrative: String,
+        evidence: String,
+        receipts: String,
+        hat_digest: String,
+        hat_head: String,
+        hat_watermark: Int,
+        prompt_digest: String,
+        renderer: String
+    ) -> Reply {
         // the hat's five fields travel together or not at all
         let worn = len(hat_digest) > 0;
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Outcome { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token, effect_class: effect_class, disposition: disposition, result: result, result_ref: result_ref, narrative: narrative, evidence: if len(evidence) > 0 { evidence } else { "[]" }, receipts: if len(receipts) > 0 { receipts } else { "[]" }, hat_digest: if worn { hat_digest } else { "" }, hat_head: if worn { hat_head } else { "" }, hat_watermark: if worn { hat_watermark } else { -1 }, prompt_digest: if worn { prompt_digest } else { "" }, renderer: if worn { renderer } else { "" } };
+        let req = hc::Outcome {
+            request_id: request_id,
+            attempt_id: attempt_id,
+            holder: holder,
+            token: token,
+            effect_class: effect_class,
+            disposition: disposition,
+            result: result,
+            result_ref: result_ref,
+            narrative: narrative,
+            evidence: if len(evidence) > 0 { evidence } else { "[]" },
+            receipts: if len(receipts) > 0 { receipts } else { "[]" },
+            hat_digest: if worn { hat_digest } else { "" },
+            hat_head: if worn { hat_head } else { "" },
+            hat_watermark: if worn { hat_watermark } else { -1 },
+            prompt_digest: if worn { prompt_digest } else { "" },
+            renderer: if worn { renderer } else { "" },
+        };
         let mut r = outcome_reply(self.socket, hc::commands_outcome(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
@@ -282,7 +410,12 @@ locus Head {
     // (`granted` with the allowance, or `refused` with why).
     fn allowance(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Allowance { request_id: request_id, attempt_id: attempt_id, holder: holder, token: token };
+        let req = hc::Allowance {
+            request_id: request_id,
+            attempt_id: attempt_id,
+            holder: holder,
+            token: token,
+        };
         let mut r = allowance_reply(self.socket, hc::commands_ask_allowance(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
@@ -292,7 +425,13 @@ locus Head {
     }
     fn friction(request_id: String, position: String, attempt_id: String, text: String) -> Reply {
         let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
-        let req = hc::Friction { request_id: request_id, record_head: self.record_head, position: position, attempt_id: attempt_id, text: text };
+        let req = hc::Friction {
+            request_id: request_id,
+            record_head: self.record_head,
+            position: position,
+            attempt_id: attempt_id,
+            text: text,
+        };
         let mut r = friction_reply(self.socket, hc::commands_file_friction(self.socket, "", req));
         while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);

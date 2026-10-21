@@ -58,7 +58,14 @@ type LinkMsg { kind: String = "none"; json: String = ""; }
 /// Offer `body` and read it to its result: the whole outcome, for an
 /// answer that is not streamed. The seat has `first` from each message to
 /// the next until its first output, and `idle` once output has come.
-fn serve_over(link: Link, node: String, reply_to: String, body: String, first: Duration, idle: Duration) -> ServeOutcome {
+fn serve_over(
+    link: Link,
+    node: String,
+    reply_to: String,
+    body: String,
+    first: Duration,
+    idle: Duration
+) -> ServeOutcome {
     let mut out = link.offer(node, reply_to, body);
     if out.ack != "accepted" { return out; }
     let mut deadline = std::time::monotonic() + first;
@@ -73,7 +80,9 @@ fn serve_over(link: Link, node: String, reply_to: String, body: String, first: D
         } else if m.kind == "lost" {
             done = true;
         }
-        if m.kind == "event" || m.kind == "result" { deadline = std::time::monotonic() + (if out.output { idle } else { first }); }
+        if m.kind == "event" || m.kind == "result" {
+            deadline = std::time::monotonic() + (if out.output { idle } else { first });
+        }
     }
     link.finish();
     return out;
@@ -108,13 +117,27 @@ locus NatsLink {
 
     fn assign(node: String, body: String) -> Bool {
         if len(self.url) == 0 { return false; }
-        let c = nats::NatsClient { url: self.url, name: "voice-api", user: self.user, credential: std::secret::Credential { vault: self.vault } };
+        let c = nats::NatsClient {
+            url: self.url,
+            name: "voice-api",
+            user: self.user,
+            credential: std::secret::Credential { vault: self.vault },
+        };
         if !c.open() {
-            log_warn("NATS unreachable", fields2(std::log::kv("nats", self.url), std::log::kv("error", c.last_error)));
+            log_warn(
+                "NATS unreachable",
+                fields2(std::log::kv("nats", self.url), std::log::kv("error", c.last_error)),
+            );
             return false;
         }
         let mut sent = true;
-        c.pub_msg(self.subjects + ".node." + node + ".assign", "", std::bytes::from_string(body)) or { sent = false; };
+        c.pub_msg(
+            self.subjects + ".node." + node + ".assign",
+            "",
+            std::bytes::from_string(body),
+        ) or {
+            sent = false;
+        };
         c.flush() or { sent = false; };
         c.close();
         return sent;
@@ -124,8 +147,21 @@ locus NatsLink {
     /// event can arrive before the api listens. Each offer is an attempt
     /// of its own, with its own connection, gone when the next replaces it.
     fn offer(node: String, reply_to: String, body: String) -> ServeOutcome {
-        if len(self.url) == 0 { return ServeOutcome { ack: "lost", reason: "no NATS is configured" }; }
-        self.attempt = NatsAttempt { node: node, reply_to: reply_to, request_id: std::json::find_string_field(body, "request_id"), subjects: self.subjects, c: nats::NatsClient { name: "voice-api", user: self.user, credential: std::secret::Credential { vault: self.vault }, inbox_prefix: self.inbox } };
+        if len(self.url) == 0 {
+            return ServeOutcome { ack: "lost", reason: "no NATS is configured" };
+        }
+        self.attempt = NatsAttempt {
+            node: node,
+            reply_to: reply_to,
+            request_id: std::json::find_string_field(body, "request_id"),
+            subjects: self.subjects,
+            c: nats::NatsClient {
+                name: "voice-api",
+                user: self.user,
+                credential: std::secret::Credential { vault: self.vault },
+                inbox_prefix: self.inbox,
+            },
+        };
         return self.attempt.offer(self.url, body);
     }
 
@@ -151,14 +187,23 @@ locus NatsAttempt {
 
     fn offer(url: String, body: String) -> ServeOutcome {
         self.c.url = url;
-        if !self.c.open() { return ServeOutcome { ack: "lost", reason: "NATS unreachable at " + url + ": " + self.c.last_error }; }
+        if !self.c.open() {
+            return ServeOutcome {
+                ack: "lost",
+                reason: "NATS unreachable at " + url + ": " + self.c.last_error,
+            };
+        }
         let sid = self.c.sub_to(self.reply_to + ".>", "") or - 1;
         if sid < 0 {
             let why = self.c.last_error;
             self.c.close();
             return ServeOutcome { ack: "lost", reason: why };
         }
-        let reply = self.c.request(self.subjects + ".node." + self.node + ".serve", std::bytes::from_string(body), 5s) or nats::NatsMsg { };
+        let reply = self.c.request(
+            self.subjects + ".node." + self.node + ".serve",
+            std::bytes::from_string(body),
+            5s,
+        ) or nats::NatsMsg { };
         let ack = std::str::from_bytes(reply.data);
         let mut out = ServeOutcome { ack: std::json::find_string_field(ack, "outcome") };
         if len(ack) > 0 && std::json::find_string_field(ack, "request_id") != self.request_id {
@@ -170,7 +215,10 @@ locus NatsAttempt {
                 let why = self.c.last_error;
                 cancel(self.c, self.subjects, self.node, self.request_id);
                 self.c.close();
-                return ServeOutcome { ack: "unanswered", reason: "node " + self.node + " did not answer: " + why };
+                return ServeOutcome {
+                    ack: "unanswered",
+                    reason: "node " + self.node + " did not answer: " + why,
+                };
             }
             self.c.close();
             out.reason = std::json::find_string_field(ack, "reason");
@@ -188,7 +236,12 @@ locus NatsAttempt {
                 let msg = std::str::from_bytes(self.c.last.data);
                 // a message that names another request is not this one's
                 if std::json::find_string_field(msg, "request_id") == self.request_id {
-                    if self.c.last.subject == self.reply_to + ".event" { return LinkMsg { kind: "event", json: std::str::trim(std::json::find_field_raw(msg, "event")) }; }
+                    if self.c.last.subject == self.reply_to + ".event" {
+                        return LinkMsg {
+                            kind: "event",
+                            json: std::str::trim(std::json::find_field_raw(msg, "event")),
+                        };
+                    }
                     if self.c.last.subject == self.reply_to + ".result" {
                         self.finished = true;
                         return LinkMsg { kind: "result", json: msg };
@@ -203,7 +256,9 @@ locus NatsAttempt {
 
     fn finish() {
         if !self.open { return; }
-        if !self.finished && self.c.connected { cancel(self.c, self.subjects, self.node, self.request_id); }
+        if !self.finished && self.c.connected {
+            cancel(self.c, self.subjects, self.node, self.request_id);
+        }
         self.c.close();
         self.open = false;
     }
@@ -212,7 +267,8 @@ locus NatsAttempt {
 /// `cancel` on the node's subject: the api stopped waiting for the
 /// request, so the seat should stop serving it.
 fn cancel(c: nats::NatsClient, subjects: String, node: String, request_id: String) {
-    let msg = "{\"type\": \"cancel\", \"request_id\": " + jq(request_id) + ", \"reason\": \"abandoned\"}";
+    let msg = "{\"type\": \"cancel\", \"request_id\": " + jq(request_id)
+        + ", \"reason\": \"abandoned\"}";
     c.pub_msg(subjects + ".node." + node + ".cancel", "", std::bytes::from_string(msg)) or discard;
     c.flush() or discard;
 }

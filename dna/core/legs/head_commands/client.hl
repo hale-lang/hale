@@ -52,7 +52,12 @@ fn api_lost(why: String) -> ApiRaw {
 }
 
 fn api_refusal(raw: ApiRaw) -> ApiRefusal {
-    return ApiRefusal { kind: raw.kind, reason: raw.reason, requires: raw.requires, served: raw.served };
+    return ApiRefusal {
+        kind: raw.kind,
+        reason: raw.reason,
+        requires: raw.requires,
+        served: raw.served,
+    };
 }
 
 // A JSON string token.
@@ -108,25 +113,53 @@ fn api_refused(refusal: String, status: Int) -> ApiRaw {
 
 // ---- over HTTP: POST <endpoint>/call/<member>, the body the request's JSON ----
 
-fn api_http_send(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_http_send(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(endpoint + "/call/" + member) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
     let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + digest;
-    let req = std::http::ClientRequest { method: "POST", url: u, headers: headers, body: std::bytes::from_string(payload) };
+    let req = std::http::ClientRequest {
+        method: "POST",
+        url: u,
+        headers: headers,
+        body: std::bytes::from_string(payload),
+    };
     return std::http::request(req) or raise;
 }
 
-fn api_http(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
+fn api_http(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> ApiRaw {
     let lost = std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
-    let r = api_http_send(endpoint, bearer, member, digest, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let r = api_http_send(endpoint, bearer, member, digest, payload) or std::http::ClientResponse {
+        status: 0,
+        body: std::bytes::from_string(err.kind + " " + err.detail),
+    };
     let text = std::str::from_bytes(r.body);
-    if r.status == 0 { return api_lost("the endpoint " + endpoint + " cannot be reached: " + text); }
+    if r.status == 0 {
+        return api_lost("the endpoint " + endpoint + " cannot be reached: " + text);
+    }
     if r.status == 200 { return ApiRaw { outcome: 0, body: text }; }
     if r.status == 422 { return ApiRaw { outcome: 1, body: text }; }
     // a classed handler error names its class (spec/api.md § Error classes)
-    if std::str::contains(std::str::lower(r.headers), "hale-error-class:") { return ApiRaw { outcome: 1, body: text }; }
+    if std::str::contains(std::str::lower(r.headers), "hale-error-class:") {
+        return ApiRaw { outcome: 1, body: text };
+    }
     let refusal = std::json::find_field_raw(text, "refusal");
-    if len(refusal) == 0 { return api_lost("the endpoint answered " + to_string(r.status) + " with no refusal: " + text); }
+    if len(refusal) == 0 {
+        return api_lost(
+            "the endpoint answered " + to_string(r.status) + " with no refusal: " + text,
+        );
+    }
     return api_refused(refusal, r.status);
 }
 
@@ -152,7 +185,8 @@ fn api_unix_exchange(path: String, line: String) -> String {
 }
 
 fn api_unix(path: String, member: String, digest: String, payload: String) -> ApiRaw {
-    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(digest) + "}";
+    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":"
+        + api_str(API_ID) + ",\"digest\":" + api_str(digest) + "}";
     let reply = api_unix_exchange(path, line);
     if len(reply) == 0 { return api_lost("the socket " + path + " gave no answer"); }
     if std::json::find_bool_field(reply, "ok") {
@@ -161,27 +195,51 @@ fn api_unix(path: String, member: String, digest: String, payload: String) -> Ap
     let error = std::json::find_field_raw(reply, "error");
     if len(error) > 0 { return ApiRaw { outcome: 1, body: error }; }
     let refusal = std::json::find_field_raw(reply, "refusal");
-    if len(refusal) == 0 { return api_lost("the socket answered a line that is no outcome: " + reply); }
+    if len(refusal) == 0 {
+        return api_lost("the socket answered a line that is no outcome: " + reply);
+    }
     return api_refused(refusal, 0);
 }
 
 // One call of a member: its request as JSON in, its outcome out, under the
 // member's own digest (which a surface that gained members still admits). A
 // bearer is named for HTTP (and a hub); a socket's caller is its peer.
-fn api_call(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
-    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, digest, payload); }
-    if std::str::starts_with(endpoint, "https://") { return api_lost("TLS is not spoken by this client"); }
-    if std::str::starts_with(endpoint, "ws://") { return api_lost("a hub endpoint carries streams: subscribe to one"); }
-    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, digest, payload); }
+fn api_call(
+    endpoint: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> ApiRaw {
+    if std::str::starts_with(endpoint, "http://") {
+        return api_http(endpoint, bearer, member, digest, payload);
+    }
+    if std::str::starts_with(endpoint, "https://") {
+        return api_lost("TLS is not spoken by this client");
+    }
+    if std::str::starts_with(endpoint, "ws://") {
+        return api_lost("a hub endpoint carries streams: subscribe to one");
+    }
+    if std::str::starts_with(endpoint, "unix:") {
+        return api_unix(endpoint[5..len(endpoint)], member, digest, payload);
+    }
     return api_unix(endpoint, member, digest, payload);
 }
 
 // ---- the description the exposure serves the caller ----
 
-fn api_get(url: String, bearer: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_get(
+    url: String,
+    bearer: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(url) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-    let req = std::http::ClientRequest { method: "GET", url: u, headers: auth + "Accept: application/json", body: std::bytes::from_string("") };
+    let req = std::http::ClientRequest {
+        method: "GET",
+        url: u,
+        headers: auth + "Accept: application/json",
+        body: std::bytes::from_string(""),
+    };
     return std::http::request(req) or raise;
 }
 
@@ -190,14 +248,24 @@ fn api_get(url: String, bearer: String) -> std::http::ClientResponse fallible(st
 // served; "" when it could not be read.
 fn api_describe(endpoint: String, bearer: String) -> String {
     if std::str::starts_with(endpoint, "http://") {
-        let r = api_get(endpoint + "/.description", bearer) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
+        let r = api_get(endpoint + "/.description", bearer) or std::http::ClientResponse {
+            status: 0,
+            body: std::bytes::from_string(""),
+        };
         return if r.status == 200 { std::str::from_bytes(r.body) } else { "" };
     }
     if std::str::starts_with(endpoint, "ws://") {
-        let r = api_get("http://" + endpoint[5..len(endpoint)] + "/.description", bearer) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
+        let r = api_get(
+            "http://" + endpoint[5..len(endpoint)] + "/.description",
+            bearer,
+        ) or std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
         return if r.status == 200 { std::str::from_bytes(r.body) } else { "" };
     }
-    let path = if std::str::starts_with(endpoint, "unix:") { endpoint[5..len(endpoint)] } else { endpoint };
+    let path = if std::str::starts_with(endpoint, "unix:") {
+        endpoint[5..len(endpoint)]
+    } else {
+        endpoint
+    };
     return std::json::find_field_raw(api_unix_exchange(path, "{\"describe\":true}"), "value");
 }
 
@@ -243,7 +311,11 @@ locus ApiWs {
         std::io::tcp::__set_recv_timeout_ns(fd, 100000000);
         self.stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
         let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-        self.stream.send("GET / HTTP/1.1\r\nHost: " + hostport + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + API_WS_KEY + "\r\nSec-WebSocket-Version: 13\r\n" + auth + "\r\n") or discard;
+        self.stream.send(
+            "GET / HTTP/1.1\r\nHost: " + hostport
+                + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "
+                + API_WS_KEY + "\r\nSec-WebSocket-Version: 13\r\n" + auth + "\r\n",
+        ) or discard;
         let until = std::time::monotonic_ns() + API_WAIT_NS;
         let mut head = "";
         while std::time::monotonic_ns() < until && std::str::index_of(head, "\r\n\r\n") < 0 {
@@ -769,391 +841,965 @@ type TaskReassignment {
 }
 
 // Commands::apply_batch, requires position
-type CommandsApplyBatchOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsApplyBatchOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_apply_batch(endpoint: String, bearer: String, request: BatchApplication) -> CommandsApplyBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::apply_batch", "fnv1a64:e38ecf1ff4684bc7", BatchApplication::api_encode(request));
+fn commands_apply_batch(
+    endpoint: String,
+    bearer: String,
+    request: BatchApplication
+) -> CommandsApplyBatchOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::apply_batch",
+        "fnv1a64:e38ecf1ff4684bc7",
+        BatchApplication::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsApplyBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsApplyBatchOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsApplyBatchOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsApplyBatchOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsApplyBatchOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsApplyBatchOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsApplyBatchOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsApplyBatchOutcome::Lost(raw.why);
 }
 
 // Commands::ask_allowance, requires position
-type CommandsAskAllowanceOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsAskAllowanceOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_ask_allowance(endpoint: String, bearer: String, request: Allowance) -> CommandsAskAllowanceOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::ask_allowance", "fnv1a64:7c2e9d7cc5c109eb", Allowance::api_encode(request));
+fn commands_ask_allowance(
+    endpoint: String,
+    bearer: String,
+    request: Allowance
+) -> CommandsAskAllowanceOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::ask_allowance",
+        "fnv1a64:7c2e9d7cc5c109eb",
+        Allowance::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsAskAllowanceOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsAskAllowanceOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsAskAllowanceOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsAskAllowanceOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsAskAllowanceOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsAskAllowanceOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsAskAllowanceOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsAskAllowanceOutcome::Lost(raw.why);
 }
 
 // Commands::bind_knowledge, requires position
-type CommandsBindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsBindKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_bind_knowledge(endpoint: String, bearer: String, request: KnowledgeBind) -> CommandsBindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::bind_knowledge", "fnv1a64:e4ca579d2edc59d3", KnowledgeBind::api_encode(request));
+fn commands_bind_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeBind
+) -> CommandsBindKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::bind_knowledge",
+        "fnv1a64:e4ca579d2edc59d3",
+        KnowledgeBind::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsBindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsBindKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsBindKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsBindKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsBindKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsBindKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsBindKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsBindKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::claim, requires position
-type CommandsClaimOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsClaimOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_claim(endpoint: String, bearer: String, request: Claim) -> CommandsClaimOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::claim", "fnv1a64:9f844c5339bfac9e", Claim::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::claim",
+        "fnv1a64:9f844c5339bfac9e",
+        Claim::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsClaimOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsClaimOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsClaimOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsClaimOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsClaimOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsClaimOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsClaimOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsClaimOutcome::Lost(raw.why);
 }
 
 // Commands::create_task
-type CommandsCreateTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsCreateTaskOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_create_task(endpoint: String, bearer: String, request: TaskCreation) -> CommandsCreateTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::create_task", "fnv1a64:95df90b1c53a887c", TaskCreation::api_encode(request));
+fn commands_create_task(
+    endpoint: String,
+    bearer: String,
+    request: TaskCreation
+) -> CommandsCreateTaskOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::create_task",
+        "fnv1a64:95df90b1c53a887c",
+        TaskCreation::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsCreateTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsCreateTaskOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsCreateTaskOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsCreateTaskOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsCreateTaskOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsCreateTaskOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsCreateTaskOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsCreateTaskOutcome::Lost(raw.why);
 }
 
 // Commands::file_friction, requires position
-type CommandsFileFrictionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsFileFrictionOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_file_friction(endpoint: String, bearer: String, request: Friction) -> CommandsFileFrictionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::file_friction", "fnv1a64:a02a85bc9b5f959d", Friction::api_encode(request));
+fn commands_file_friction(
+    endpoint: String,
+    bearer: String,
+    request: Friction
+) -> CommandsFileFrictionOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::file_friction",
+        "fnv1a64:a02a85bc9b5f959d",
+        Friction::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsFileFrictionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsFileFrictionOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsFileFrictionOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsFileFrictionOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsFileFrictionOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsFileFrictionOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsFileFrictionOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsFileFrictionOutcome::Lost(raw.why);
 }
 
 // Commands::fill, requires position
-type CommandsFillOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsFillOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_fill(endpoint: String, bearer: String, request: HoldFill) -> CommandsFillOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::fill", "fnv1a64:679952e14b20e6b0", HoldFill::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::fill",
+        "fnv1a64:679952e14b20e6b0",
+        HoldFill::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsFillOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsFillOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsFillOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsFillOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsFillOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsFillOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsFillOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsFillOutcome::Lost(raw.why);
 }
 
 // Commands::index
-type CommandsIndexOutcome = enum { Result(RecordIndex), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsIndexOutcome = enum {
+    Result(RecordIndex),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_index(endpoint: String, bearer: String, request: IndexAsk) -> CommandsIndexOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::index", "fnv1a64:6db56a82d365c442", IndexAsk::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::index",
+        "fnv1a64:6db56a82d365c442",
+        IndexAsk::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = RecordIndex::api_decode(raw.body) or { return CommandsIndexOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = RecordIndex::api_decode(raw.body) or {
+            return CommandsIndexOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsIndexOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsIndexOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsIndexOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsIndexOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsIndexOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsIndexOutcome::Lost(raw.why);
 }
 
 // Commands::link_knowledge, requires position
-type CommandsLinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsLinkKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_link_knowledge(endpoint: String, bearer: String, request: KnowledgeLink) -> CommandsLinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::link_knowledge", "fnv1a64:75b5f6fa42977eca", KnowledgeLink::api_encode(request));
+fn commands_link_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeLink
+) -> CommandsLinkKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::link_knowledge",
+        "fnv1a64:75b5f6fa42977eca",
+        KnowledgeLink::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsLinkKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsLinkKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsLinkKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLinkKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsLinkKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsLinkKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsLinkKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::lookup
-type CommandsLookupOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsLookupOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_lookup(endpoint: String, bearer: String, request: Lookup) -> CommandsLookupOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup", "fnv1a64:82a0c63c28df3c88", Lookup::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::lookup",
+        "fnv1a64:82a0c63c28df3c88",
+        Lookup::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsLookupOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsLookupOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsLookupOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsLookupOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLookupOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsLookupOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsLookupOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsLookupOutcome::Lost(raw.why);
 }
 
 // Commands::lookup_knowledge
-type CommandsLookupKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsLookupKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_lookup_knowledge(endpoint: String, bearer: String, request: KnowledgeRecovery) -> CommandsLookupKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup_knowledge", "fnv1a64:cb21d81344ec6a95", KnowledgeRecovery::api_encode(request));
+fn commands_lookup_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeRecovery
+) -> CommandsLookupKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::lookup_knowledge",
+        "fnv1a64:cb21d81344ec6a95",
+        KnowledgeRecovery::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLookupKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsLookupKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsLookupKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsLookupKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLookupKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsLookupKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsLookupKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsLookupKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::open_position, requires position
-type CommandsOpenPositionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsOpenPositionOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_open_position(endpoint: String, bearer: String, request: PositionOpening) -> CommandsOpenPositionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::open_position", "fnv1a64:2c7f3161b00ad886", PositionOpening::api_encode(request));
+fn commands_open_position(
+    endpoint: String,
+    bearer: String,
+    request: PositionOpening
+) -> CommandsOpenPositionOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::open_position",
+        "fnv1a64:2c7f3161b00ad886",
+        PositionOpening::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsOpenPositionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsOpenPositionOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsOpenPositionOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsOpenPositionOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsOpenPositionOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsOpenPositionOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsOpenPositionOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsOpenPositionOutcome::Lost(raw.why);
 }
 
 // Commands::outcome, requires position
-type CommandsOutcomeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsOutcomeOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_outcome(endpoint: String, bearer: String, request: Outcome) -> CommandsOutcomeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::outcome", "fnv1a64:ecf3369e3cd75137", Outcome::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::outcome",
+        "fnv1a64:ecf3369e3cd75137",
+        Outcome::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsOutcomeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsOutcomeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsOutcomeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsOutcomeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsOutcomeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsOutcomeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsOutcomeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsOutcomeOutcome::Lost(raw.why);
 }
 
 // Commands::preview_batch
-type CommandsPreviewBatchOutcome = enum { Result(BatchPreview), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsPreviewBatchOutcome = enum {
+    Result(BatchPreview),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_preview_batch(endpoint: String, bearer: String, request: BatchDraft) -> CommandsPreviewBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::preview_batch", "fnv1a64:ce76b0d262ba415a", BatchDraft::api_encode(request));
+fn commands_preview_batch(
+    endpoint: String,
+    bearer: String,
+    request: BatchDraft
+) -> CommandsPreviewBatchOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::preview_batch",
+        "fnv1a64:ce76b0d262ba415a",
+        BatchDraft::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = BatchPreview::api_decode(raw.body) or { return CommandsPreviewBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = BatchPreview::api_decode(raw.body) or {
+            return CommandsPreviewBatchOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsPreviewBatchOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsPreviewBatchOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsPreviewBatchOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsPreviewBatchOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsPreviewBatchOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsPreviewBatchOutcome::Lost(raw.why);
 }
 
 // Commands::propose, requires position
-type CommandsProposeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsProposeOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_propose(endpoint: String, bearer: String, request: PracticeProposal) -> CommandsProposeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose", "fnv1a64:37956bc7db5b0166", PracticeProposal::api_encode(request));
+fn commands_propose(
+    endpoint: String,
+    bearer: String,
+    request: PracticeProposal
+) -> CommandsProposeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::propose",
+        "fnv1a64:37956bc7db5b0166",
+        PracticeProposal::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsProposeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsProposeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsProposeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsProposeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsProposeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsProposeOutcome::Lost(raw.why);
 }
 
 // Commands::propose_knowledge, requires position
-type CommandsProposeKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsProposeKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_propose_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeProposal) -> CommandsProposeKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_knowledge", "fnv1a64:b2275242f34a6c40", KnowledgeNodeProposal::api_encode(request));
+fn commands_propose_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeNodeProposal
+) -> CommandsProposeKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::propose_knowledge",
+        "fnv1a64:b2275242f34a6c40",
+        KnowledgeNodeProposal::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsProposeKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsProposeKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsProposeKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsProposeKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsProposeKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsProposeKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsProposeKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::propose_organization, requires owner
-type CommandsProposeOrganizationOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsProposeOrganizationOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_propose_organization(endpoint: String, bearer: String, request: OrganizationProposal) -> CommandsProposeOrganizationOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_organization", "fnv1a64:3a14724a68e8d70a", OrganizationProposal::api_encode(request));
+fn commands_propose_organization(
+    endpoint: String,
+    bearer: String,
+    request: OrganizationProposal
+) -> CommandsProposeOrganizationOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::propose_organization",
+        "fnv1a64:3a14724a68e8d70a",
+        OrganizationProposal::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOrganizationOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsProposeOrganizationOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsProposeOrganizationOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsProposeOrganizationOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeOrganizationOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsProposeOrganizationOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsProposeOrganizationOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsProposeOrganizationOutcome::Lost(raw.why);
 }
 
 // Commands::reassign_task, requires owner
-type CommandsReassignTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsReassignTaskOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_reassign_task(endpoint: String, bearer: String, request: TaskReassignment) -> CommandsReassignTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::reassign_task", "fnv1a64:2a776a6c9ff833f9", TaskReassignment::api_encode(request));
+fn commands_reassign_task(
+    endpoint: String,
+    bearer: String,
+    request: TaskReassignment
+) -> CommandsReassignTaskOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::reassign_task",
+        "fnv1a64:2a776a6c9ff833f9",
+        TaskReassignment::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsReassignTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsReassignTaskOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsReassignTaskOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsReassignTaskOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReassignTaskOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsReassignTaskOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsReassignTaskOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsReassignTaskOutcome::Lost(raw.why);
 }
 
 // Commands::release_attempt, requires position
-type CommandsReleaseAttemptOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsReleaseAttemptOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_release_attempt(endpoint: String, bearer: String, request: Release) -> CommandsReleaseAttemptOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::release_attempt", "fnv1a64:a0716ac88babda63", Release::api_encode(request));
+fn commands_release_attempt(
+    endpoint: String,
+    bearer: String,
+    request: Release
+) -> CommandsReleaseAttemptOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::release_attempt",
+        "fnv1a64:a0716ac88babda63",
+        Release::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsReleaseAttemptOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsReleaseAttemptOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsReleaseAttemptOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsReleaseAttemptOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReleaseAttemptOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsReleaseAttemptOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsReleaseAttemptOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsReleaseAttemptOutcome::Lost(raw.why);
 }
 
 // Commands::renew, requires position
-type CommandsRenewOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsRenewOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
 fn commands_renew(endpoint: String, bearer: String, request: Renewal) -> CommandsRenewOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::renew", "fnv1a64:7eaeae02ef9e06ea", Renewal::api_encode(request));
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::renew",
+        "fnv1a64:7eaeae02ef9e06ea",
+        Renewal::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsRenewOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsRenewOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsRenewOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsRenewOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRenewOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsRenewOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsRenewOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsRenewOutcome::Lost(raw.why);
 }
 
 // Commands::retire_knowledge, requires position
-type CommandsRetireKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsRetireKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_retire_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRetirement) -> CommandsRetireKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_knowledge", "fnv1a64:d7882589e9ebde21", KnowledgeNodeRetirement::api_encode(request));
+fn commands_retire_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeNodeRetirement
+) -> CommandsRetireKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::retire_knowledge",
+        "fnv1a64:d7882589e9ebde21",
+        KnowledgeNodeRetirement::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsRetireKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsRetireKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsRetireKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsRetireKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRetireKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsRetireKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsRetireKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsRetireKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::retire_person, requires owner
-type CommandsRetirePersonOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsRetirePersonOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_retire_person(endpoint: String, bearer: String, request: PersonRetirement) -> CommandsRetirePersonOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_person", "fnv1a64:ded629987dd5b96f", PersonRetirement::api_encode(request));
+fn commands_retire_person(
+    endpoint: String,
+    bearer: String,
+    request: PersonRetirement
+) -> CommandsRetirePersonOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::retire_person",
+        "fnv1a64:ded629987dd5b96f",
+        PersonRetirement::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsRetirePersonOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsRetirePersonOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsRetirePersonOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsRetirePersonOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRetirePersonOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsRetirePersonOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsRetirePersonOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsRetirePersonOutcome::Lost(raw.why);
 }
 
 // Commands::revise_knowledge, requires position
-type CommandsReviseKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsReviseKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_revise_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRevision) -> CommandsReviseKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::revise_knowledge", "fnv1a64:a16ef8e0111c4a5b", KnowledgeNodeRevision::api_encode(request));
+fn commands_revise_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeNodeRevision
+) -> CommandsReviseKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::revise_knowledge",
+        "fnv1a64:a16ef8e0111c4a5b",
+        KnowledgeNodeRevision::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsReviseKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsReviseKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsReviseKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsReviseKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReviseKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsReviseKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsReviseKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsReviseKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::unbind_knowledge, requires position
-type CommandsUnbindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsUnbindKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_unbind_knowledge(endpoint: String, bearer: String, request: KnowledgeUnbind) -> CommandsUnbindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unbind_knowledge", "fnv1a64:dc546f9fa7245e33", KnowledgeUnbind::api_encode(request));
+fn commands_unbind_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeUnbind
+) -> CommandsUnbindKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::unbind_knowledge",
+        "fnv1a64:dc546f9fa7245e33",
+        KnowledgeUnbind::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnbindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsUnbindKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsUnbindKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsUnbindKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsUnbindKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsUnbindKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsUnbindKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsUnbindKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::unlink_knowledge, requires position
-type CommandsUnlinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsUnlinkKnowledgeOutcome = enum {
+    Result(KnowledgeReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_unlink_knowledge(endpoint: String, bearer: String, request: KnowledgeUnlink) -> CommandsUnlinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unlink_knowledge", "fnv1a64:25a8cd1734d4cbba", KnowledgeUnlink::api_encode(request));
+fn commands_unlink_knowledge(
+    endpoint: String,
+    bearer: String,
+    request: KnowledgeUnlink
+) -> CommandsUnlinkKnowledgeOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::unlink_knowledge",
+        "fnv1a64:25a8cd1734d4cbba",
+        KnowledgeUnlink::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnlinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = KnowledgeReply::api_decode(raw.body) or {
+            return CommandsUnlinkKnowledgeOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsUnlinkKnowledgeOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsUnlinkKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsUnlinkKnowledgeOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsUnlinkKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsUnlinkKnowledgeOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsUnlinkKnowledgeOutcome::Lost(raw.why);
 }
 
 // Commands::verdict, requires reviewer
-type CommandsVerdictOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
+type CommandsVerdictOutcome = enum {
+    Result(CommandReply),
+    Refusal(ApiRefusal),
+    ServerError,
+    Lost(String)
+};
 
-fn commands_verdict(endpoint: String, bearer: String, request: ReviewDecision) -> CommandsVerdictOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::verdict", "fnv1a64:10a50293d4e7d4d3", ReviewDecision::api_encode(request));
+fn commands_verdict(
+    endpoint: String,
+    bearer: String,
+    request: ReviewDecision
+) -> CommandsVerdictOutcome {
+    let raw = api_call(
+        endpoint,
+        bearer,
+        "Commands::verdict",
+        "fnv1a64:10a50293d4e7d4d3",
+        ReviewDecision::api_encode(request),
+    );
     if raw.outcome == 0 {
-        let value = CommandReply::api_decode(raw.body) or { return CommandsVerdictOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        let value = CommandReply::api_decode(raw.body) or {
+            return CommandsVerdictOutcome::Lost(
+                "the result did not decode: " + err.kind + ": " + err.field,
+            );
+        };
         return CommandsVerdictOutcome::Result(value);
     }
     if raw.outcome == 2 { return CommandsVerdictOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsVerdictOutcome::ServerError; }
-    if raw.outcome == 1 { return CommandsVerdictOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
+    if raw.outcome == 1 {
+        return CommandsVerdictOutcome::Lost(
+            "the member has no handler error, and one came: " + raw.body,
+        );
+    }
     return CommandsVerdictOutcome::Lost(raw.why);
 }

@@ -51,7 +51,9 @@ type SupersededPick { digest: String = ""; why: String = ""; }
 // `declined` or `retired`. An unknown prefix, one that names several
 // practices, and one whose practice is not in force are refused by name.
 @bounded_by(candidates)
-fn superseded_digest(candidates: String, given: String) -> SupersededPick { return superseded_digest_for(candidates, given, true); }
+fn superseded_digest(candidates: String, given: String) -> SupersededPick {
+    return superseded_digest_for(candidates, given, true);
+}
 
 // `superseded_digest`, with whether the request is a fresh one: a replay of
 // a request the record already answered resolves the prefix to the same
@@ -62,7 +64,11 @@ fn superseded_digest(candidates: String, given: String) -> SupersededPick { retu
 fn superseded_digest_for(candidates: String, given: String, fresh: Bool) -> SupersededPick {
     let g = std::str::trim(given);
     let hex = if std::str::starts_with(g, "sha256:") { g[7..len(g)] } else { g };
-    if len(hex) == 0 { return SupersededPick { why: "--supersedes names no digest: give the practice's digest as `hale dna practice` lists it (`sha256:<hex>`)" }; }
+    if len(hex) == 0 {
+        return SupersededPick {
+            why: "--supersedes names no digest: give the practice's digest as `hale dna practice` lists it (`sha256:<hex>`)",
+        };
+    }
     let mut found = "";
     let mut named = "";
     let mut n = 0;
@@ -75,21 +81,40 @@ fn superseded_digest_for(candidates: String, given: String, fresh: Bool) -> Supe
         let sp = std::str::index_of(line, " ");
         if sp < 0 { continue; }
         let raw = line[0..sp];
-        if !std::str::starts_with(raw, hex) || std::str::contains(seen, "\n" + raw + "\n") { continue; }
+        if !std::str::starts_with(raw, hex) || std::str::contains(seen, "\n" + raw + "\n") {
+            continue;
+        }
         seen = seen + raw + "\n";
         n = n + 1;
         found = line;
-        named = named + (if len(named) > 0 { ", " } else { "" }) + "sha256:" + raw[0..(if len(raw) < 12 { len(raw) } else { 12 })];
+        named = named + (if len(named) > 0 { ", " } else { "" }) + "sha256:"
+            + raw[0..(if len(raw) < 12 { len(raw) } else { 12 })];
     }
-    if n == 0 { return SupersededPick { why: "--supersedes " + g + " names no practice the record holds (`hale dna practice` lists them)" }; }
-    if n > 1 { return SupersededPick { why: "--supersedes " + g + " is ambiguous: it begins " + to_string(n) + " practices' digests (" + named + "); give more of the digest" }; }
+    if n == 0 {
+        return SupersededPick {
+            why: "--supersedes " + g
+                + " names no practice the record holds (`hale dna practice` lists them)",
+        };
+    }
+    if n > 1 {
+        return SupersededPick {
+            why: "--supersedes " + g + " is ambiguous: it begins " + to_string(n)
+                + " practices' digests (" + named + "); give more of the digest",
+        };
+    }
     let sp = std::str::index_of(found, " ");
     let raw = found[0..sp];
     let after = found[(sp + 1)..len(found)];
     let sp2 = std::str::index_of(after, " ");
     let state = if sp2 < 0 { after } else { after[0..sp2] };
     let name = if sp2 < 0 { "" } else { after[(sp2 + 1)..len(after)] };
-    if fresh && state != "in-force" { return SupersededPick { why: "--supersedes " + g + " is the practice `" + name + "` (sha256:" + raw + "), which is not in force (" + state + "): only the version in force is superseded" }; }
+    if fresh && state != "in-force" {
+        return SupersededPick {
+            why: "--supersedes " + g + " is the practice `" + name + "` (sha256:" + raw
+                + "), which is not in force (" + state
+                + "): only the version in force is superseded",
+        };
+    }
     return SupersededPick { digest: "sha256:" + raw };
 }
 
@@ -155,12 +180,32 @@ locus Knowledge {
     // provenance kept.
     fn declare(i: Idea) -> Int {
         self.revision = self.revision + 1;
-        self.ideas.push(Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: self.revision, accepted: true });
+        self.ideas.push(
+            Idea {
+                id: i.id,
+                kind: i.kind,
+                text: i.text,
+                author: i.author,
+                provenance: i.provenance,
+                revision: self.revision,
+                accepted: true,
+            },
+        );
         return self.revision;
     }
     // An Attempt may PROPOSE; it cannot write.
     fn propose(i: Idea) -> Int {
-        self.proposals.push(Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: "proposed", revision: 0, accepted: false });
+        self.proposals.push(
+            Idea {
+                id: i.id,
+                kind: i.kind,
+                text: i.text,
+                author: i.author,
+                provenance: "proposed",
+                revision: 0,
+                accepted: false,
+            },
+        );
         return self.proposals.len() - 1;
     }
     fn proposal_count() -> Int { return self.proposals.len(); }
@@ -168,12 +213,36 @@ locus Knowledge {
     // revision. The proposer cannot ratify their own proposal.
     fn distill(proposal: Int, reviewer: String, verdict: String) -> Bool {
         let p = self.proposals.get(proposal) or Idea { };
-        if p.id == "" || p.accepted { self.refused_distill = self.refused_distill + 1; return false; }
+        if p.id == "" || p.accepted {
+            self.refused_distill = self.refused_distill + 1;
+            return false;
+        }
         if reviewer == p.author { self.refused_distill = self.refused_distill + 1; return false; }
         if verdict != "approve" { return false; }
         self.revision = self.revision + 1;
-        self.ideas.push(Idea { id: p.id, kind: p.kind, text: p.text, author: p.author, provenance: "ratified", revision: self.revision, accepted: true });
-        self.proposals.set(proposal, Idea { id: p.id, kind: p.kind, text: p.text, author: p.author, provenance: "proposed", revision: self.revision, accepted: true }) or discard;
+        self.ideas.push(
+            Idea {
+                id: p.id,
+                kind: p.kind,
+                text: p.text,
+                author: p.author,
+                provenance: "ratified",
+                revision: self.revision,
+                accepted: true,
+            },
+        );
+        self.proposals.set(
+            proposal,
+            Idea {
+                id: p.id,
+                kind: p.kind,
+                text: p.text,
+                author: p.author,
+                provenance: "proposed",
+                revision: self.revision,
+                accepted: true,
+            },
+        ) or discard;
         return true;
     }
     fn link(from: String, to: String, rel: String) {
@@ -183,7 +252,9 @@ locus Knowledge {
     fn bind(idea: String, target: String, author: String) -> String {
         let c = classify_binding(author, target);
         if c == "lateral" { self.refused_lateral = self.refused_lateral + 1; return c; }
-        self.bindings.push(KnowledgeBinding { idea: idea, target: target, author: author, class: c });
+        self.bindings.push(
+            KnowledgeBinding { idea: idea, target: target, author: author, class: c },
+        );
         return c;
     }
     fn accepted_count() -> Int { return self.ideas.len(); }
@@ -212,7 +283,8 @@ locus Knowledge {
             let relevant = b.target == target || is_ancestor(b.target, target);
             // The same idea may be bound in several places; the package
             // carries it once.
-            let seen = std::str::contains(included, b.idea + " ") || std::str::contains(omitted_ids, b.idea + " ");
+            let seen = std::str::contains(included, b.idea + " ")
+                || std::str::contains(omitted_ids, b.idea + " ");
             if relevant && !seen {
                 let idea = self.find(b.idea);
                 if idea.accepted {
@@ -227,8 +299,20 @@ locus Knowledge {
             }
             i = i + 1;
         }
-        let d = hex(std::crypto::sha256(std::bytes::from_string(target + "@" + to_string(self.revision) + ":" + included)));
-        return ContextPackage { target: target, revision: self.revision, digest: d, included: included, included_n: n, omitted_n: omitted, data_class: data_class };
+        let d = hex(
+            std::crypto::sha256(
+                std::bytes::from_string(target + "@" + to_string(self.revision) + ":" + included),
+            ),
+        );
+        return ContextPackage {
+            target: target,
+            revision: self.revision,
+            digest: d,
+            included: included,
+            included_n: n,
+            omitted_n: omitted,
+            data_class: data_class,
+        };
     }
 }
 
@@ -247,9 +331,13 @@ fn knowledge_document(i: Idea, target: String) -> String {
     b.append_str(", \"text\": "); b.append_str(record_json_quote(i.text));
     b.append_str(", \"author\": "); b.append_str(record_json_quote(i.author));
     b.append_str(", \"target\": "); b.append_str(record_json_quote(target));
-    b.append_str(", \"provenance\": "); b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
+    b.append_str(", \"provenance\": ");
+    b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
     if len(i.name) > 0 { b.append_str(", \"name\": "); b.append_str(record_json_quote(i.name)); }
-    if len(i.supersedes) > 0 { b.append_str(", \"supersedes\": "); b.append_str(record_json_quote(i.supersedes)); }
+    if len(i.supersedes) > 0 {
+        b.append_str(", \"supersedes\": ");
+        b.append_str(record_json_quote(i.supersedes));
+    }
     if i.law { b.append_str(", \"law\": true"); }
     b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
 }
@@ -270,8 +358,15 @@ fn url_encode(s: String) -> String {
     let mut i = 0;
     while i < n {
         let b = (std::bytes::at(bytes, i) or 0);
-        let plain = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 95 || b == 46;
-        if plain { std::str::builder_append(out, std::str::from_bytes(std::bytes::slice(bytes, i, i + 1))); }
+        let plain = (b >= 48 && b <= 57)
+            || (b >= 65 && b <= 90)
+            || (b >= 97 && b <= 122)
+            || b == 45
+            || b == 95
+            || b == 46;
+        if plain {
+            std::str::builder_append(out, std::str::from_bytes(std::bytes::slice(bytes, i, i + 1)));
+        }
         else { std::str::builder_append(out, "%" + hex_byte(b)); }
         i = i + 1;
     }
@@ -288,7 +383,8 @@ fn hex_byte(b: Int) -> String {
 // package's digest so the receipt says what the model was given.
 fn objective_with(objective: String, p: ContextPackage) -> String {
     if p.included_n == 0 { return objective; }
-    return objective + "\n\nPRACTICES (ratified knowledge for " + p.target + ", package " + p.digest + "):\n" + p.text;
+    return objective + "\n\nPRACTICES (ratified knowledge for " + p.target + ", package " + p.digest
+        + "):\n" + p.text;
 }
 
 // What the evidence names: the package, then the ids it included.

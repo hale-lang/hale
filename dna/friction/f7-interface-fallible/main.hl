@@ -4,5 +4,7 @@ type E { kind: String = ""; }
 interface Store {
     fn put(k: String) -> Int fallible(E);
 }
-locus Mem { fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; } }
+locus Mem {
+    fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; }
+}
 fn main() { let m = Mem { }; println(m.put("a") or 0); }

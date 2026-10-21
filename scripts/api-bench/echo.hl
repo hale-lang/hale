@@ -6,14 +6,35 @@ locus Echo {
 api Bench { rpc Echo::ping; }
 locus Open { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }
 locus Tokens {
-    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "x" }; }
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "x" };
+    }
     fn refused() -> String { return "no"; }
 }
 main locus App {
     params {
         echo: Echo = Echo { };
-        u: api::Exposure = api::serve(Bench, unix::Rpc { path: "/tmp/hale-bench-api.sock", roles: Open { } }, as: "u", receivers: { Echo: self.echo }, bound: 64, on_full: refuse);
-        h: api::Exposure = api::serve(Bench, http::Rpc { bind: "127.0.0.1:18431", codec: json, principals: Tokens { }, roles: Open { } }, as: "h", receivers: { Echo: self.echo }, bound: 64, on_full: refuse);
+        u: api::Exposure = api::serve(
+            Bench,
+            unix::Rpc { path: "/tmp/hale-bench-api.sock", roles: Open { } },
+            as: "u",
+            receivers: { Echo: self.echo },
+            bound: 64,
+            on_full: refuse
+        );
+        h: api::Exposure = api::serve(
+            Bench,
+            http::Rpc {
+                bind: "127.0.0.1:18431",
+                codec: json,
+                principals: Tokens { },
+                roles: Open { },
+            },
+            as: "h",
+            receivers: { Echo: self.echo },
+            bound: 64,
+            on_full: refuse
+        );
     }
 }
 fn main() { App { }; }

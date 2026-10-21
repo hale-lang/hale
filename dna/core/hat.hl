@@ -99,7 +99,9 @@ fn position_in(requires: String) -> String {
 fn hat_kind_of(requires: String) -> String {
     if word_in("position", requires) { return "agent"; }
     if std::str::contains(requires, "edit") { return "edit"; }
-    if std::str::contains(requires, "human") || std::str::contains(requires, "person") { return "human"; }
+    if std::str::contains(requires, "human") || std::str::contains(requires, "person") {
+        return "human";
+    }
     if std::str::contains(requires, "judgment") { return "agent"; }
     if std::str::contains(requires, "analysis") { return "service"; }
     return "software";
@@ -111,7 +113,8 @@ fn hat_kind_of(requires: String) -> String {
 // performer is named by its kind. One id for the edit position, wherever
 // a position is keyed (the hat, usage): `position:editor`.
 fn hat_position_of(kind: String) -> String {
-    return "position:" + (if kind == "edit" { "editor" } else if len(kind) == 0 { "agent" } else { kind });
+    return "position:"
+        + (if kind == "edit" { "editor" } else if len(kind) == 0 { "agent" } else { kind });
 }
 
 // The locus path knowledge is drawn for: the Work's target when it is
@@ -125,7 +128,9 @@ fn hat_knowledge_target(target: String) -> String {
 // bound (`planned` true) speaks. An organism change is `organization`, the
 // Board's; else the class the plan names, else `application`.
 fn admission_edit_class(inputs: String) -> String {
-    if len(inputs) == 0 || std::str::trim(std::json::find_field_raw(inputs, "planned")) != "true" { return "application"; }
+    if len(inputs) == 0 || std::str::trim(std::json::find_field_raw(inputs, "planned")) != "true" {
+        return "application";
+    }
     if std::json::find_string_field(inputs, "kind") == "organism" { return "organization"; }
     let class = std::json::find_string_field(inputs, "class");
     return if len(class) > 0 { class } else { "application" };
@@ -177,7 +182,11 @@ fn hat_languages(j: Journal, receipts: Receipts) -> String {
         rest = body[nl..len(body)];
         if std::str::starts_with(id, prefix) {
             let language = id[len(prefix)..len(id)];
-            if record_graph_has(g.nodes, language) && !std::str::contains(out, " " + language + " ") { out = out + language + " "; }
+            if record_graph_has(g.nodes, language)
+                && !std::str::contains(out, " " + language + " ")
+            {
+                out = out + language + " ";
+            }
         }
     }
     return std::str::trim(out);
@@ -190,7 +199,13 @@ fn hat_languages(j: Journal, receipts: Receipts) -> String {
 // performer's position node, so a mandate bound to the position arrives
 // with the Work. Space-separated; a path matches by prefix and a node id
 // exactly (memory's `BOUND_BY_TARGETS`).
-fn hat_knowledge_targets(j: Journal, receipts: Receipts, target: String, organization: Bool, position: String) -> String {
+fn hat_knowledge_targets(
+    j: Journal,
+    receipts: Receipts,
+    target: String,
+    organization: Bool,
+    position: String
+) -> String {
     let mut out = hat_knowledge_target(target);
     if organization {
         out = out + " system:dna";
@@ -208,7 +223,9 @@ fn hat_node_text(j: Journal, id: String) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "graph.node" && e.entity == id { out = std::json::find_string_field(e.body, "text"); }
+        if e.kind == "graph.node" && e.entity == id {
+            out = std::json::find_string_field(e.body, "text");
+        }
         if e.kind == "graph.retired" && e.entity == id { out = ""; }
         i = i + 1;
     }
@@ -290,12 +307,29 @@ fn hat_compose(j: Journal, w: HatInputs, pkg: ContextPackage, ready: Bool) -> Ha
     let owed = output_contract(w.output_contract);
     // a Go codebase's leg also holds the Go hand
     let cb = task_codebase(j, w.task_id);
-    let grant = owed.hands + (if cb.present && cb.toolchain == "go" && len(owed.hands) > 0 { " go_vet go_test gofmt_check" } else { "" });
+    let grant = owed.hands
+        + (
+            if cb.present && cb.toolchain == "go" && len(owed.hands) > 0 {
+                " go_vet go_test gofmt_check"
+            } else {
+                ""
+            }
+        );
     let hands = tools_json(grant);
     let h = Hat {
-        ok: true, work_id: w.work_id, task_id: w.task_id, step_id: w.step_id, attempt_id: w.attempt_id, performer_kind: w.performer_kind,
+        ok: true,
+        work_id: w.work_id,
+        task_id: w.task_id,
+        step_id: w.step_id,
+        attempt_id: w.attempt_id,
+        performer_kind: w.performer_kind,
         position_id: position, charter: hat_node_text(j, position),
-        objective: w.objective, target: w.target, targets: w.targets, output_contract: w.output_contract, data_class: w.data_class, requires: w.requires,
+        objective: w.objective,
+        target: w.target,
+        targets: w.targets,
+        output_contract: w.output_contract,
+        data_class: w.data_class,
+        requires: w.requires,
         effects: hat_effects_of(w.requires), cost_ceiling: w.cost_ceiling,
         tool_grant: grant, hands: hands, validators: owed.validators,
         model: model_choice_json(model_resolve(j, position, w.output_contract, w.task_id, hands)),

@@ -11,11 +11,15 @@
 // read-before-dissolve new-born-1 new-ran-1 new-dissolved-1`. Before the
 // rule the old `b` was born and run again beside its own dissolve.
 
-fn gate(what: String) -> String { return "/tmp/hale-fd-restart-sibling-" + what + "-" + to_string(std::process::pid()); }
+fn gate(what: String) -> String {
+    return "/tmp/hale-fd-restart-sibling-" + what + "-" + to_string(std::process::pid());
+}
 
 fn wait_for(what: String) {
     let until = std::time::monotonic_ns() + 5000000000;
-    while !std::io::fs::file_exists(gate(what)) && std::time::monotonic_ns() < until { std::time::sleep(1ms); }
+    while !std::io::fs::file_exists(gate(what)) && std::time::monotonic_ns() < until {
+        std::time::sleep(1ms);
+    }
 }
 
 locus Kid {

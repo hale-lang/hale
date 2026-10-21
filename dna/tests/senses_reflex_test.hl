@@ -22,7 +22,11 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -31,7 +35,10 @@ fn source() -> String {
 // allocations in the local habitat, this test file's own (`hale test`
 // gives each file one).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
 // The organism's allocations in the habitat, and `docker compose` on them.
@@ -59,12 +66,17 @@ fn get(url: String) -> String {
 // `entity`, each `entity body` on a line. The record is read whole.
 @bounded_by(repo)
 fn rows(repo: String, kind: String, entity: String) -> String {
-    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == kind && std::str::starts_with(e.entity, entity) { out = out + e.entity + " " + e.body + "\n"; }
+        if e.kind == kind && std::str::starts_with(e.entity, entity) {
+            out = out + e.entity + " " + e.body + "\n";
+        }
         i = i + 1;
     }
     return out;
@@ -99,7 +111,10 @@ fn every_series_has_part(exposition: String) -> Bool {
 main locus App {
     params { app: String = ""; }
     fn log(name: String) -> String { return text_of(self.app + "/" + name + ".log"); }
-    fn logs() -> String { return "--- host\n" + self.log("host") + "\n--- node\n" + text_of(self.app + "/../node.log") + "\n--- reflexes\n" + text_of(self.app + "/../reflexes.log"); }
+    fn logs() -> String {
+        return "--- host\n" + self.log("host") + "\n--- node\n" + text_of(self.app + "/../node.log")
+            + "\n--- reflexes\n" + text_of(self.app + "/../reflexes.log");
+    }
     // Wait until `rows(kind, entity)` has `n` lines, within `secs`.
     fn wait_rows(kind: String, entity: String, n: Int, secs: Int) -> String {
         let deadline = std::time::now() + dna::wait_secs(secs);
@@ -126,8 +141,16 @@ main locus App {
         return dna::run_tool("kill\n-9\n" + pid).code == 0;
     }
     run() {
-        if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("senses_reflex_test: not exercised (docker compose is not on PATH)"); return; }
-        if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("senses_reflex_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); return; }
+        if dna::run_tool("docker\ncompose\nversion").code != 0 {
+            eprintln("senses_reflex_test: not exercised (docker compose is not on PATH)");
+            return;
+        }
+        if dna::local_habitat_project() == dna::developer_habitat_project() {
+            eprintln(
+                "senses_reflex_test: not exercised (outside `hale test`, the local habitat would be the developer's)",
+            );
+            return;
+        }
         let scratch = dna::scratch_root("senses");
         dna::reap_on_exit(scratch);
         let spine_port = dna::free_port(0);
@@ -139,37 +162,79 @@ main locus App {
         let name = "sensing" + to_string(std::process::pid());
         // grafted from the file's habitat, born here on its own backends
         let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--backends\nown");
-        std::test::assert_eq_int(born.code, 0, "the file's habitat is born: " + born.stdout + born.stderr);
+        std::test::assert_eq_int(
+            born.code,
+            0,
+            "the file's habitat is born: " + born.stdout + born.stderr,
+        );
         let made = in_dir(scratch, toolchain() + "\nhabitat\ngraft\n" + name);
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
         let alloc = allocation_of(self.app);
         let compose = text_of(alloc + "/compose.yaml");
-        std::test::assert(std::str::contains(compose, "senses-" + dna::allocation_key(self.app) + ":") && std::str::contains(compose, "retention.time=7d"), "the organism's allocations hold its senses' store, kept a week: " + compose);
+        std::test::assert(
+            std::str::contains(compose, "senses-" + dna::allocation_key(self.app) + ":")
+                && std::str::contains(compose, "retention.time=7d"),
+            "the organism's allocations hold its senses' store, kept a week: " + compose,
+        );
         // this run's parts serve on ports of its own: the store is told so
         let senses_yml = text_of(alloc + "/senses.yml");
-        std::test::assert(std::str::contains(senses_yml, "host.docker.internal:9465") && std::str::contains(senses_yml, "honor_labels: true"), "the allocation names what the store scrapes: " + senses_yml);
-        let told = std::str::replace(std::str::replace(senses_yml, "host.docker.internal:9464", "host.docker.internal:" + to_string(spine_port)), "host.docker.internal:9465", "host.docker.internal:" + to_string(node_port));
+        std::test::assert(
+            std::str::contains(senses_yml, "host.docker.internal:9465")
+                && std::str::contains(senses_yml, "honor_labels: true"),
+            "the allocation names what the store scrapes: " + senses_yml,
+        );
+        let told = std::str::replace(
+            std::str::replace(
+                senses_yml,
+                "host.docker.internal:9464",
+                "host.docker.internal:" + to_string(spine_port),
+            ),
+            "host.docker.internal:9465",
+            "host.docker.internal:" + to_string(node_port),
+        );
         std::io::fs::write_file(alloc + "/senses.yml", told) or discard;
         // the graft brought the store up on the allocation's own list: it
         // reads this one when it starts again
-        let reread = dna::run_tool(compose_of(self.app) + "\nrestart\nsenses-" + dna::allocation_key(self.app));
-        std::test::assert_eq_int(reread.code, 0, "the store restarted on this run's ports: " + reread.stderr);
+        let reread = dna::run_tool(
+            compose_of(self.app) + "\nrestart\nsenses-" + dna::allocation_key(self.app),
+        );
+        std::test::assert_eq_int(
+            reread.code,
+            0,
+            "the store restarted on this run's ports: " + reread.stderr,
+        );
         let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
         std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
         // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
-        let manifest = std::str::replace(text_of(self.app + "/hale.toml"), "\n[dna]\n", "\n[dna]\nfleet = \"production\"\n") + "\n[fleets]\nproduction = \"fleet.plan.json\"\n";
+        let manifest = std::str::replace(
+            text_of(self.app + "/hale.toml"),
+            "\n[dna]\n",
+            "\n[dna]\nfleet = \"production\"\n",
+        )
+            + "\n[fleets]\nproduction = \"fleet.plan.json\"\n";
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";
-        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main\n" + bare);
+        let c0 = in_dir(
+            self.app,
+            "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main\n"
+                + bare,
+        );
         std::test::assert_eq_int(c0.code, 0, "the application and its origin: " + c0.stderr);
         let c1 = dna::clone_repo(bare, edge);
         std::test::assert_eq_int(c1.code, 0, "the node's clone: " + c1.stderr);
         // the clone reaches the record's memory: the head's DSN the
         // application's clone keeps (GH #1590), kept here too
-        let reached = dna::run_tool("sh\n-c\nmkdir -p \"$2/.hale/dna\" && cp \"$1/.hale/dna/memory.env\" \"$2/.hale/dna/memory.env\"\nsh\n" + self.app + "\n" + edge);
-        std::test::assert_eq_int(reached.code, 0, "the node's clone reaches the record's memory: " + reached.stderr);
+        let reached = dna::run_tool(
+            "sh\n-c\nmkdir -p \"$2/.hale/dna\" && cp \"$1/.hale/dna/memory.env\" \"$2/.hale/dna/memory.env\"\nsh\n"
+                + self.app + "\n" + edge,
+        );
+        std::test::assert_eq_int(
+            reached.code,
+            0,
+            "the node's clone reaches the record's memory: " + reached.stderr,
+        );
 
         // ---- the nerves and the store, the organism's allocations
         let nerves = in_dir(self.app, toolchain() + "\ndna\nnerves\nmigrate\n.");
@@ -182,43 +247,151 @@ main locus App {
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
         let senses = in_dir(self.app, toolchain() + "\ndna\nsenses\nup\n.");
         let store = line_value(senses.stdout, "HALE_DNA_SENSES_URL");
-        let up = nerves.code == 0 && len(spine) > 0 && len(reflexes_url) > 0 && len(org) > 0 && senses.code == 0 && len(store) > 0;
+        let up = nerves.code == 0
+            && len(spine) > 0
+            && len(reflexes_url) > 0
+            && len(org) > 0
+            && senses.code == 0
+            && len(store) > 0;
 
         // ---- the organism: the spine, its node, the base deployed
         let reflexes_seed = source() + "/dna/reflexes";
-        let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed + "\n-o\n" + scratch + "/reflexes-bin") } else { dna::RunResult { code: -1 } };
-        let host = if up { dna::trim_nl(in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
-        let reading = up && len(host) > 0 && self.wait_log("the organization reads its facts from the nerves", 300);
-        let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
-        let deployed = if len(node) > 0 { in_dir(self.app, toolchain() + "\ndna\ndeploy\nHEAD") } else { dna::RunResult { code: -1 } };
-        let first_up = if deployed.code == 0 { self.wait_rows("instance.up", "api-0", 1, 180) } else { "" };
+        let built = if up {
+            dna::run_tool(
+                toolchain() + "\nbuild\n" + reflexes_seed + "\n-o\n" + scratch + "/reflexes-bin",
+            )
+        } else {
+            dna::RunResult { code: -1 }
+        };
+        let host = if up {
+            dna::trim_nl(
+                in_dir(
+                    self.app,
+                    "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n"
+                        + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port),
+                ).stdout,
+            )
+        } else {
+            ""
+        };
+        let reading = up
+            && len(host) > 0
+            && self.wait_log("the organization reads its facts from the nerves", 300);
+        let node = if reading {
+            dna::trim_nl(
+                dna::run_tool(
+                    "sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout --foreground 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n"
+                        + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port),
+                ).stdout,
+            )
+        } else {
+            ""
+        };
+        let deployed = if len(node) > 0 {
+            in_dir(self.app, toolchain() + "\ndna\ndeploy\nHEAD")
+        } else {
+            dna::RunResult { code: -1 }
+        };
+        let first_up = if deployed.code == 0 {
+            self.wait_rows("instance.up", "api-0", 1, 180)
+        } else {
+            ""
+        };
         // past the deploy's observation window, so an exit is the reflex's
         std::time::sleep(4s);
-        let readings_up = if len(first_up) > 0 { self.wait_body("http://127.0.0.1:" + to_string(node_port) + "/metrics", "dna_instance_up{part=\"node\",node=\"edge-1\",instance=\"api-0\"}", 30) } else { "" };
+        let readings_up = if len(first_up) > 0 {
+            self.wait_body(
+                "http://127.0.0.1:" + to_string(node_port) + "/metrics",
+                "dna_instance_up{part=\"node\",node=\"edge-1\",instance=\"api-0\"}",
+                30,
+            )
+        } else {
+            ""
+        };
 
         // ---- the instance exits: the node reads it down, the store holds it
         let killed = len(readings_up) > 0 && self.kill_instance(edge);
         let exited = if killed { self.wait_rows("instance.exited", "api-0", 1, 60) } else { "" };
-        let readings_down = if len(exited) > 0 { self.wait_body("http://127.0.0.1:" + to_string(node_port) + "/metrics", "\"} 0", 30) } else { "" };
+        let readings_down = if len(exited) > 0 {
+            self.wait_body("http://127.0.0.1:" + to_string(node_port) + "/metrics", "\"} 0", 30)
+        } else {
+            ""
+        };
         let q = store + "/api/v1/query?query=dna_instance_up";
         let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
 
         // ---- the reflexes fire, the heart lands it, the node acts
-        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout --foreground 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + scratch + "/reflexes-bin\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
-        let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
-        let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
-        let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };
+        let reflexes = if len(stored) > 0 && built.code == 0 {
+            dna::trim_nl(
+                dna::run_tool(
+                    "sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout --foreground 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n"
+                        + scratch + "\n" + scratch + "/reflexes-bin\n" + store + "\n" + reflexes_url
+                        + "\n" + org + "\n" + reflexes_vault,
+                ).stdout,
+            )
+        } else {
+            ""
+        };
+        let fired = if len(reflexes) > 0 {
+            self.wait_rows(
+                "reading.recorded",
+                "reflexes/reflex.fired/instance.down:edge-1:api-0:",
+                1,
+                120,
+            )
+        } else {
+            ""
+        };
+        let acted = if len(fired) > 0 {
+            self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120)
+        } else {
+            ""
+        };
+        let second_up = if len(acted) > 0 {
+            self.wait_rows("instance.up", "api-0", 2, 120)
+        } else {
+            ""
+        };
 
         // ---- a second exit inside the window: a concern
         std::time::sleep(1s);
         let killed_again = count_lines(second_up) >= 2 && self.kill_instance(edge);
-        let fired_twice = if killed_again { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 2, 120) } else { "" };
-        let concern = if count_lines(fired_twice) >= 2 { self.wait_rows("concern.raised", "reflexes/api-0", 1, 180) } else { "" };
+        let fired_twice = if killed_again {
+            self.wait_rows(
+                "reading.recorded",
+                "reflexes/reflex.fired/instance.down:edge-1:api-0:",
+                2,
+                120,
+            )
+        } else {
+            ""
+        };
+        let concern = if count_lines(fired_twice) >= 2 {
+            self.wait_rows("concern.raised", "reflexes/api-0", 1, 180)
+        } else {
+            ""
+        };
 
         // ---- an application cannot speak as the reflexes: its user may not
         // publish on their subjects, so no firing it forges reaches a node
-        let forger = nats::NatsClient { url: app_url, user: app_user, credential: std::secret::Credential { vault: app_vault }, name: "senses-forger", timeout: 2s };
-        let forged = if len(app_url) > 0 && forger.open() { nats::js_publish(forger, org + ".app.reflexes.reflex.fired", std::bytes::from_string("{\"id\": \"forged\", \"node\": \"edge-1\", \"target\": \"api-0\", \"action\": \"restart\"}")) or nats::PubAck { seq: -1 } } else { nats::PubAck { seq: -2 } };
+        let forger = nats::NatsClient {
+            url: app_url,
+            user: app_user,
+            credential: std::secret::Credential { vault: app_vault },
+            name: "senses-forger",
+            timeout: 2s,
+        };
+        let forged = if len(app_url) > 0 && forger.open() {
+            nats::js_publish(
+                forger,
+                org + ".app.reflexes.reflex.fired",
+                std::bytes::from_string(
+                    "{\"id\": \"forged\", \"node\": \"edge-1\", \"target\": \"api-0\", \"action\": \"restart\"}",
+                ),
+            ) or nats::PubAck { seq: -1 }
+        } else {
+            nats::PubAck { seq: -2 }
+        };
         forger.close();
 
         // ---- down, whatever happened
@@ -239,28 +412,95 @@ main locus App {
         let concern_asked = rows(self.app, "concern.requested", "reflexes/");
         let forged_rows = rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged");
         let org_pid = dna::trim_nl(text_of(self.app + "/.hale/dna/org.pid"));
-        let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; kill \"$t\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
+        let stop = dna::run_tool(
+            "sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; kill \"$t\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n"
+                + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10)
+                + "\n" + org_pid,
+        );
         let down = dna::run_tool(compose_of(self.app) + "\ndown\n-v");
 
-        std::test::assert(up, "the organism's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
-        std::test::assert_eq_int(built.code, 0, "the reflexes build (HALE_DNA_SOURCE names the repository): " + built.stderr);
-        std::test::assert(reading, "the organization reads its facts from the nerves: " + self.logs());
-        std::test::assert(deployed.code == 0 && len(first_up) > 0, "the base is deployed and api-0 is up: " + deployed.stdout + deployed.stderr + self.logs());
-        std::test::assert(len(readings_up) > 0 && every_series_has_part(readings_up), "the node serves its readings, every series labelled with its part: " + readings_up);
-        std::test::assert(std::str::contains(readings_up, "dna_pulse_seconds{part=\"node\"}"), "and its pulse: " + readings_up);
-        std::test::assert(killed && len(exited) > 0, "api-0's process exited and the node recorded it: " + self.logs());
-        std::test::assert(len(readings_down) > 0 && every_series_has_part(readings_down), "the node reads it down, `dna_instance_up 0`: " + readings_down);
-        std::test::assert(std::str::contains(stored, "\"success\""), "the store answers the query: " + stored);
-        std::test::assert(len(fired) > 0 && std::str::contains(fired, "restart") && std::str::contains(fired, "api-0"), "the reflex fired, and the heart landed it as a reading row with the restart: " + fired + self.logs());
-        std::test::assert(std::str::contains(acted, "\\\"outcome\\\": \\\"restarted\\\"") || std::str::contains(acted, "\"outcome\": \"restarted\""), "the node restarted api-0 and landed reflex.acted: " + acted + self.logs());
+        std::test::assert(
+            up,
+            "the organism's nerves and store came up: " + nerves.stdout + nerves.stderr
+                + senses.stdout + senses.stderr,
+        );
+        std::test::assert_eq_int(
+            built.code,
+            0,
+            "the reflexes build (HALE_DNA_SOURCE names the repository): " + built.stderr,
+        );
+        std::test::assert(
+            reading,
+            "the organization reads its facts from the nerves: " + self.logs(),
+        );
+        std::test::assert(
+            deployed.code == 0 && len(first_up) > 0,
+            "the base is deployed and api-0 is up: " + deployed.stdout + deployed.stderr
+                + self.logs(),
+        );
+        std::test::assert(
+            len(readings_up) > 0 && every_series_has_part(readings_up),
+            "the node serves its readings, every series labelled with its part: " + readings_up,
+        );
+        std::test::assert(
+            std::str::contains(readings_up, "dna_pulse_seconds{part=\"node\"}"),
+            "and its pulse: " + readings_up,
+        );
+        std::test::assert(
+            killed && len(exited) > 0,
+            "api-0's process exited and the node recorded it: " + self.logs(),
+        );
+        std::test::assert(
+            len(readings_down) > 0 && every_series_has_part(readings_down),
+            "the node reads it down, `dna_instance_up 0`: " + readings_down,
+        );
+        std::test::assert(
+            std::str::contains(stored, "\"success\""),
+            "the store answers the query: " + stored,
+        );
+        std::test::assert(
+            len(fired) > 0
+                && std::str::contains(fired, "restart")
+                && std::str::contains(fired, "api-0"),
+            "the reflex fired, and the heart landed it as a reading row with the restart: " + fired
+                + self.logs(),
+        );
+        std::test::assert(
+            std::str::contains(acted, "\\\"outcome\\\": \\\"restarted\\\"")
+                || std::str::contains(acted, "\"outcome\": \"restarted\""),
+            "the node restarted api-0 and landed reflex.acted: " + acted + self.logs(),
+        );
         std::test::assert(count_lines(second_up) >= 2, "api-0 is up again: " + second_up);
-        std::test::assert(count_lines(fired_twice) >= 2, "a second exit fired again: " + fired_twice + self.logs());
-        std::test::assert(len(concern) > 0, "the second firing inside the window became a concern the organization raised: " + concern_asked + self.logs());
-        std::test::assert_eq_int(forged.seq, -1, "the application's user may not publish a firing (the stream took it at seq " + to_string(forged.seq) + ")");
+        std::test::assert(
+            count_lines(fired_twice) >= 2,
+            "a second exit fired again: " + fired_twice + self.logs(),
+        );
+        std::test::assert(
+            len(concern) > 0,
+            "the second firing inside the window became a concern the organization raised: "
+                + concern_asked + self.logs(),
+        );
+        std::test::assert_eq_int(
+            forged.seq,
+                -1,
+            "the application's user may not publish a firing (the stream took it at seq "
+                + to_string(forged.seq) + ")",
+        );
         std::test::assert_eq_str(forged_rows, "", "and no forged firing was recorded");
-        std::test::assert(len(org_pid) > 0, "the host named its organization's pid: " + self.logs());
-        std::test::assert_eq_str(stop.stdout, "", "the organization went with its host: " + self.logs());
-        std::test::assert_eq_int(down.code, 0, "the allocations' services and volumes go: " + down.stderr);
+        std::test::assert(
+            len(org_pid) > 0,
+            "the host named its organization's pid: " + self.logs(),
+        );
+        std::test::assert_eq_str(
+            stop.stdout,
+            "",
+            "the organization went with its host: " + self.logs(),
+        );
+        std::test::assert_eq_int(
+            down.code,
+            0,
+            "the allocations' services and volumes go: " + down.stderr,
+        );
         dna::scratch_done(scratch);
     }
     fn wait_log(text: String, secs: Int) -> Bool {

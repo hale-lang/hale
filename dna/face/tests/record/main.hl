@@ -7,23 +7,47 @@ import "../../../../dna/api/tests/fixture" as fixtures;
 fn main() {
     let root = std::env::arg_or(1, "");
     let action = std::env::arg_or(2, "seed");
-    std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "browser fixture must own its scratch");
+    std::test::assert(
+        std::str::starts_with(root, "/tmp/hale-face-browser."),
+        "browser fixture must own its scratch",
+    );
     if action == "seed" {
         // Port is unused; supplying it avoids probing sockets during seeding.
         let f = fixtures::Fixture { root: root, port: 1 };
         let count = std::str::parse_int(std::env::arg_or(3, "3")) or 3;
         let command_subject = std::env::arg_or(4, "") == "commands";
         std::test::assert(count >= 0 && count <= 100, "bounded browser fixture size");
-        let p = if count > 0 { f.practice("acceptance/résumé <review>", "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">", if command_subject { "org" } else { "org/support/équipe" }, "org/reviews/決定:α?part=one#fragment", false) } else { fixtures::Practice { } };
+        let p = if count > 0 {
+            f.practice(
+                "acceptance/résumé <review>",
+                "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">",
+                if command_subject { "org" } else { "org/support/équipe" },
+                "org/reviews/決定:α?part=one#fragment",
+                false,
+            )
+        } else {
+            fixtures::Practice { }
+        };
         if count > 0 { f.append("review.settled", p.review_id, "approve by alice"); }
         if command_subject && count > 0 {
             let q = std::json::Builder { };
-            f.append("knowledge.ratified", p.digest, "{\"digest\":" + q.quote(p.digest) + ",\"author\":\"org\",\"target\":\"org\",\"class\":\"goal\"}");
+            f.append(
+                "knowledge.ratified",
+                p.digest,
+                "{\"digest\":" + q.quote(p.digest)
+                    + ",\"author\":\"org\",\"target\":\"org\",\"class\":\"goal\"}",
+            );
         }
         let mut pending = fixtures::Practice { };
         let mut i = 1;
         while i < count {
-            let q = f.practice("practice/" + to_string(i), "Ordinary practice " + to_string(i), "org", "", false);
+            let q = f.practice(
+                "practice/" + to_string(i),
+                "Ordinary practice " + to_string(i),
+                "org",
+                "",
+                false,
+            );
             if i == 1 { pending = q; }
             i = i + 1;
         }
@@ -47,14 +71,34 @@ fn main() {
         // No API child was started by this native fixture.
         f.root = "";
     } else {
-        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
-        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let journal = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
         let manifest = std::io::fs::read_file(root + "/fixture.json") or "";
-        let digest = std::json::find_string_field(manifest, if action == "redact-pending" { "pending_practice" } else { "practice" });
+        let digest = std::json::find_string_field(
+            manifest,
+            if action == "redact-pending" { "pending_practice" } else { "practice" },
+        );
         let result = if action == "redact" || action == "redact-pending" {
-            journal.append(journal.revision(), "receipt.redacted", digest, "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}")
+            journal.append(
+                journal.revision(),
+                "receipt.redacted",
+                digest,
+                "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}",
+            )
         } else {
-            journal.append(journal.revision(), "browser.fixture", "refresh", "another writer advanced the Record")
+            journal.append(
+                journal.revision(),
+                "browser.fixture",
+                "refresh",
+                "another writer advanced the Record",
+            )
         };
         std::test::assert(result.ok, "browser fixture mutation: " + result.error);
     }

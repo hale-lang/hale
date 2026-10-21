@@ -97,7 +97,13 @@ locus Teller {
     /// a second.
     fn say_drops(now: Int) {
         if self.dropped == self.dropped_said || now - self.dropped_said_ns < 1000000000 { return; }
-        log_warn("usage events dropped: the organization's nerves are not taking them", fields2(std::log::kv("dropped_total", to_string(self.dropped)), std::log::kv("queued", to_string(self.queued))));
+        log_warn(
+            "usage events dropped: the organization's nerves are not taking them",
+            fields2(
+                std::log::kv("dropped_total", to_string(self.dropped)),
+                std::log::kv("queued", to_string(self.queued)),
+            ),
+        );
         self.dropped_said = self.dropped;
         self.dropped_said_ns = now;
     }
@@ -105,7 +111,22 @@ locus Teller {
     /// The oldest event, told: dropped from the queue once the stream has
     /// it, kept for the next try otherwise.
     fn tell_one(now: Int) {
-        let e = self.ring.get(self.head) or UsageEvent { id: "", created_at: `1970-01-01T00:00:00Z`, project: "", key: "", requested_model: "", served_model: "", endpoint: "", status: "", data_class: "", seat: "", account: "", price_micros: 0, currency: "", wall_ms: 0 };
+        let e = self.ring.get(self.head) or UsageEvent {
+            id: "",
+            created_at: `1970-01-01T00:00:00Z`,
+            project: "",
+            key: "",
+            requested_model: "",
+            served_model: "",
+            endpoint: "",
+            status: "",
+            data_class: "",
+            seat: "",
+            account: "",
+            price_micros: 0,
+            currency: "",
+            wall_ms: 0,
+        };
         if !self.connected {
             if !self.client.open_as(self.credential) {
                 self.failed(now, "could not connect: " + self.client.last_error);
@@ -113,7 +134,12 @@ locus Teller {
             }
             self.connected = true;
         }
-        let ack = nats::js_publish_id(self.client, self.org + "." + USAGE_SUBJECT, e.id, std::bytes::from_string(UsageEvent::api_encode(e))) or nats::PubAck { seq: -1 };
+        let ack = nats::js_publish_id(
+            self.client,
+            self.org + "." + USAGE_SUBJECT,
+            e.id,
+            std::bytes::from_string(UsageEvent::api_encode(e)),
+        ) or nats::PubAck { seq: -1 };
         if ack.seq < 0 {
             self.client.close();
             self.connected = false;
@@ -125,7 +151,13 @@ locus Teller {
         self.told = self.told + 1;
         self.backoff_ms = 0;
         if len(self.trouble) > 0 {
-            log_info("usage events are told again", fields2(std::log::kv("queued", to_string(self.queued)), std::log::kv("dropped_total", to_string(self.dropped))));
+            log_info(
+                "usage events are told again",
+                fields2(
+                    std::log::kv("queued", to_string(self.queued)),
+                    std::log::kv("dropped_total", to_string(self.dropped)),
+                ),
+            );
             self.trouble = "";
         }
     }
@@ -135,7 +167,13 @@ locus Teller {
         if self.backoff_ms > 5000 { self.backoff_ms = 5000; }
         self.retry_at_ns = now + self.backoff_ms * 1000000;
         if why != self.trouble {
-            log_warn("usage events are not told: " + why, fields2(std::log::kv("queued", to_string(self.queued)), std::log::kv("retry_ms", to_string(self.backoff_ms))));
+            log_warn(
+                "usage events are not told: " + why,
+                fields2(
+                    std::log::kv("queued", to_string(self.queued)),
+                    std::log::kv("retry_ms", to_string(self.backoff_ms)),
+                ),
+            );
             self.trouble = why;
         }
     }

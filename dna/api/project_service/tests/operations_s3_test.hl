@@ -45,13 +45,16 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
 }
 
-fn dna_cli(root: String, args: String) -> dna::RunResult { return in_dir(root, toolchain() + "\ndna\n" + args); }
+fn dna_cli(root: String, args: String) -> dna::RunResult {
+    return in_dir(root, toolchain() + "\ndna\n" + args);
+}
 
 // The rows of `kind` in a record's journal.
 // The rows of `kind` in the record and its Ledger (GH #1590: a body's claim
 // is the Ledger's).
 fn count_rows(repo: String, kind: String) -> Int {
-    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(repo, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
+    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n"
+        + in_dir(repo, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {
@@ -85,15 +88,24 @@ fn item_where(array: String, key: String, value: String) -> String {
     return "";
 }
 
-fn pid_in(path: String) -> Int { return std::str::parse_int(dna::trim_nl(std::io::fs::read_file(path) or "")) or - 1; }
+fn pid_in(path: String) -> Int {
+    return std::str::parse_int(dna::trim_nl(std::io::fs::read_file(path) or "")) or - 1;
+}
 
-fn pid_alive(pid: Int) -> Bool { return pid > 0 && dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0; }
+fn pid_alive(pid: Int) -> Bool {
+    return pid > 0 && dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0;
+}
 
 // The head's child of `name` as its files say it — what the dispatcher
 // hands `s3_children_json`.
 fn child_view(children: String, name: String) -> head::ChildView {
     let p = head::Proc { pid: pid_in(children + "/" + name + ".pid"), dir: children, name: name };
-    return head::ChildView { name: name, pid: p.pid, alive: head::alive(p), exit_code: head::exit_code(p) };
+    return head::ChildView {
+        name: name,
+        pid: p.pid,
+        alive: head::alive(p),
+        exit_code: head::exit_code(p),
+    };
 }
 
 // Whether `needle` is in any file under `dir` (grep's own walk).
@@ -101,13 +113,31 @@ fn anywhere_under(dir: String, needle: String) -> Bool {
     return dna::run_tool("grep\n-rFl\n--\n" + needle + "\n" + dir).code == 0;
 }
 
-fn request(request_id: String, operation: String, application_id: String, arguments: String) -> String {
+fn request(
+    request_id: String,
+    operation: String,
+    application_id: String,
+    arguments: String
+) -> String {
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("request_id", request_id); b.string_field("operation", operation); b.string_field("operation_version", "1");
-    b.begin_object_field("context"); b.string_field("head", "local"); b.string_field("application_id", application_id); b.end_object();
-    b.begin_object_field("target"); b.string_field("kind", "dna.project"); b.string_field("id", application_id); b.end_object();
-    b.begin_object_field("preconditions"); b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", PRINCIPAL); b.end_object(); b.end_object();
+    b.string_field("request_id", request_id);
+    b.string_field("operation", operation);
+    b.string_field("operation_version", "1");
+    b.begin_object_field("context");
+    b.string_field("head", "local");
+    b.string_field("application_id", application_id);
+    b.end_object();
+    b.begin_object_field("target");
+    b.string_field("kind", "dna.project");
+    b.string_field("id", application_id);
+    b.end_object();
+    b.begin_object_field("preconditions");
+    b.begin_object_field("principal");
+    b.string_field("mode", "local");
+    b.string_field("name", PRINCIPAL);
+    b.end_object();
+    b.end_object();
     b.field("arguments", if len(std::str::trim(arguments)) == 0 { "{}" } else { arguments });
     b.end_object();
     return b.result();
@@ -117,7 +147,11 @@ fn request(request_id: String, operation: String, application_id: String, argume
 // committed.
 fn project(parent: String, name: String, user: String) -> String {
     let made = in_dir(parent, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n" + name));
-    std::test::assert_eq_int(made.code, 0, "hale habitat graft " + name + ": " + made.stdout + made.stderr);
+    std::test::assert_eq_int(
+        made.code,
+        0,
+        "hale habitat graft " + name + ": " + made.stdout + made.stderr,
+    );
     let app = parent + "/" + name;
     let g1 = in_dir(app, "git\nconfig\nuser.name\n" + user);
     let g2 = in_dir(app, "git\nconfig\nuser.email\n" + user + "@local");
@@ -137,13 +171,19 @@ fn bare_remote(scratch: String, app: String, name: String) -> String {
     let r2 = in_dir(app, "git\npush\n-q\norigin\nmain");
     std::test::assert_eq_int(r2.code, 0, "pushed " + name + ": " + r2.stderr);
     let synced = dna_cli(app, "sync");
-    std::test::assert_eq_int(synced.code, 0, "synced " + name + ": " + synced.stdout + synced.stderr);
+    std::test::assert_eq_int(
+        synced.code,
+        0,
+        "synced " + name + ": " + synced.stdout + synced.stderr,
+    );
     return url;
 }
 
 // A journal over `state`: a free function, since a method may not
 // return a locus; every use opens its own and lets it go.
-fn open_journal(state: String) -> head::HeadJournal { return head::HeadJournal { state_dir: state }; }
+fn open_journal(state: String) -> head::HeadJournal {
+    return head::HeadJournal { state_dir: state };
+}
 
 // The dispatcher's outcome hook: S3's, over the context of the project
 // the run belongs to.
@@ -171,8 +211,15 @@ locus S3Cases {
 
     fn ctx_for(root: String, id: String, name: String) -> head::HeadContext {
         return head::HeadContext {
-            principal_mode: "local", principal_name: PRINCIPAL, active_id: id, active_root: root, active_name: name,
-            state_dir: self.state, sources_dir: self.sources, children_dir: self.child_dir, hale: toolchain()
+            principal_mode: "local",
+            principal_name: PRINCIPAL,
+            active_id: id,
+            active_root: root,
+            active_name: name,
+            state_dir: self.state,
+            sources_dir: self.sources,
+            children_dir: self.child_dir,
+            hale: toolchain()
         };
     }
 
@@ -181,16 +228,28 @@ locus S3Cases {
     // The env lines every child gets (§2.6 of the contract); HOME, PATH
     // and XDG_* pass through by inheritance.
     fn envs() -> String {
-        return "USER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL + "\nHALE_BIN=" + toolchain() + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off";
+        return "USER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL + "\nHALE_BIN=" + toolchain()
+            + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off";
     }
 
     // Submits `request_id` under the principal and, when planned,
     // executes it as the head would — a run to its end, a child to
     // readiness or its exit, an inline effect at once — and settles it.
-    fn drive(c: head::HeadContext, request_id: String, operation: String, arguments: String) -> head::Receipt {
+    fn drive(
+        c: head::HeadContext,
+        request_id: String,
+        operation: String,
+        arguments: String
+    ) -> head::Receipt {
         let j = open_journal(self.state);
         std::test::assert(head::s3_known(operation), operation + " is an S3 operation");
-        let s = j.submit("local", PRINCIPAL, request(request_id, operation, c.active_id, arguments), head::s3_arguments(operation), "");
+        let s = j.submit(
+            "local",
+            PRINCIPAL,
+            request(request_id, operation, c.active_id, arguments),
+            head::s3_arguments(operation),
+            "",
+        );
         std::test::assert_eq_str(s.code, "", "submitted " + request_id);
         let id = s.receipt.command_id;
         if s.replayed { return s.receipt; }
@@ -211,12 +270,23 @@ locus S3Cases {
             let dir = j.run_dir(id);
             std::io::fs::mkdir(j.runs_dir()) or discard;
             std::io::fs::mkdir(dir) or discard;
-            std::test::assert(head::write_private(dir + "/script.sh", plan.script), "script written for " + request_id);
-            let argv = "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + dir + "/script.sh";
+            std::test::assert(
+                head::write_private(dir + "/script.sh", plan.script),
+                "script written for " + request_id,
+            );
+            let argv = "timeout\n-k\n10\n" + to_string(plan.deadline_secs) + "\nsh\n-e\n" + dir
+                + "/script.sh";
             head::write_cmd(dir, "run", argv);
             let p = head::start(dir, "run", plan.cwd, self.envs() + extra, argv);
             std::test::assert(p.pid > 0, "the run has a pid: " + request_id);
-            j.running(id, "run", p.pid, head::cmd_digest(argv), now + plan.deadline_secs + 15, plan.external);
+            j.running(
+                id,
+                "run",
+                p.pid,
+                head::cmd_digest(argv),
+                now + plan.deadline_secs + 15,
+                plan.external,
+            );
             let mut waited = 0;
             let budget = dna::wait_secs(plan.deadline_secs + 15) * 1000;
             while waited < budget {
@@ -224,7 +294,11 @@ locus S3Cases {
                 std::time::sleep(100ms);
                 waited = waited + 100;
             }
-            std::test::assert_eq_int(j.settle(std::time::now(), outcomes), 1, "the run settled: " + request_id);
+            std::test::assert_eq_int(
+                j.settle(std::time::now(), outcomes),
+                1,
+                "the run settled: " + request_id,
+            );
             return j.find(id);
         }
         // body: a long-lived child, ready or exited
@@ -232,7 +306,14 @@ locus S3Cases {
         head::write_cmd(self.child_dir, kind, plan.argv);
         let p = head::start(self.child_dir, kind, plan.cwd, self.envs() + extra, plan.argv);
         std::test::assert(p.pid > 0, "the " + kind + " child has a pid");
-        j.running(id, kind, p.pid, head::cmd_digest(plan.argv), now + plan.deadline_secs, plan.external);
+        j.running(
+            id,
+            kind,
+            p.pid,
+            head::cmd_digest(plan.argv),
+            now + plan.deadline_secs,
+            plan.external,
+        );
         let mut waited = 0;
         let budget = dna::wait_secs(plan.deadline_secs) * 1000;
         while waited < budget {
@@ -240,13 +321,28 @@ locus S3Cases {
             let alive = head::alive(p);
             if ready || !alive {
                 let tail = std::io::fs::read_file(self.child_dir + "/" + kind + ".log") or "";
-                std::test::assert(j.settle_child(id, alive, ready, head::exit_code(p), tail, std::time::now(), outcomes), "the " + kind + " child settled: " + request_id);
+                std::test::assert(
+                    j.settle_child(
+                        id,
+                        alive,
+                        ready,
+                        head::exit_code(p),
+                        tail,
+                        std::time::now(),
+                        outcomes,
+                    ),
+                    "the " + kind + " child settled: " + request_id,
+                );
                 return j.find(id);
             }
             std::time::sleep(250ms);
             waited = waited + 250;
         }
-        std::test::assert(false, "the " + kind + " child did not become ready within " + to_string(budget / 1000) + "s: " + (std::io::fs::read_file(self.child_dir + "/" + kind + ".log") or ""));
+        std::test::assert(
+            false,
+            "the " + kind + " child did not become ready within " + to_string(budget / 1000) + "s: "
+                + (std::io::fs::read_file(self.child_dir + "/" + kind + ".log") or ""),
+        );
         return j.find(id);
     }
 
@@ -270,19 +366,61 @@ locus S3Cases {
 
     // The table itself.
     fn table_cases() {
-        std::test::assert(head::s3_known("dna.body.local.start") && head::s3_known("dna.body.logs") && head::s3_known("dna.handoff.sync") && !head::s3_known("dna.project.sync") && !head::s3_known(""), "the fourteen names");
-        std::test::assert_eq_str(head::s3_arguments("dna.body.provision"), "target dsn dir dry_run", "provision's allowlist, in fingerprint order");
-        std::test::assert_eq_str(head::s3_arguments("dna.secret.set"), "name source body", "secret's allowlist");
-        std::test::assert_eq_str(head::s3_arguments("dna.connection.propose"), "nerves_url record name position purpose classes", "propose's allowlist");
-        std::test::assert_eq_str(head::s3_arguments("dna.handoff.sync"), "", "no arguments for the handoff sync");
-        let detached = head::HeadContext { principal_name: PRINCIPAL, state_dir: self.state, children_dir: self.child_dir, sources_dir: self.sources, hale: toolchain() };
-        std::test::assert_eq_str(head::s3_available(detached, "dna.body.local.start"), "detached", "nothing is available detached");
+        std::test::assert(
+            head::s3_known("dna.body.local.start")
+                && head::s3_known("dna.body.logs")
+                && head::s3_known("dna.handoff.sync")
+                && !head::s3_known("dna.project.sync")
+                && !head::s3_known(""),
+            "the fourteen names",
+        );
+        std::test::assert_eq_str(
+            head::s3_arguments("dna.body.provision"),
+            "target dsn dir dry_run",
+            "provision's allowlist, in fingerprint order",
+        );
+        std::test::assert_eq_str(
+            head::s3_arguments("dna.secret.set"),
+            "name source body",
+            "secret's allowlist",
+        );
+        std::test::assert_eq_str(
+            head::s3_arguments("dna.connection.propose"),
+            "nerves_url record name position purpose classes",
+            "propose's allowlist",
+        );
+        std::test::assert_eq_str(
+            head::s3_arguments("dna.handoff.sync"),
+            "",
+            "no arguments for the handoff sync",
+        );
+        let detached = head::HeadContext {
+            principal_name: PRINCIPAL,
+            state_dir: self.state,
+            children_dir: self.child_dir,
+            sources_dir: self.sources,
+            hale: toolchain(),
+        };
+        std::test::assert_eq_str(
+            head::s3_available(detached, "dna.body.local.start"),
+            "detached",
+            "nothing is available detached",
+        );
         let refused = head::s3_plan(detached, "dna.handoff.sync", "{}");
-        std::test::assert(!refused.ok && refused.refused == "detached", "a detached plan is refused");
+        std::test::assert(
+            !refused.ok && refused.refused == "detached",
+            "a detached plan is refused",
+        );
         let unknown = head::s3_plan(self.ctx(), "dna.project.sync", "{}");
-        std::test::assert(!unknown.ok && unknown.refused == "invalid_command", "an operation that is not S3's");
+        std::test::assert(
+            !unknown.ok && unknown.refused == "invalid_command",
+            "an operation that is not S3's",
+        );
         let extra = head::s3_plan(self.ctx(), "dna.handoff.sync", "{\"anything\":1}");
-        std::test::assert(!extra.ok && extra.refused == "invalid_command", "a key outside the allowlist");
+        std::test::assert(
+            !extra.ok && extra.refused == "invalid_command",
+            "a key outside the allowlist",
+        );
     }
 
     // `dna.body.provision`: refused without a remote; a dry run over an
@@ -290,18 +428,54 @@ locus S3Cases {
     // nothing here.
     fn provision_cases() {
         let c = self.ctx();
-        let none = self.drive(c, "s3-prov-none", "dna.body.provision", "{\"target\":\"s3@srv\",\"dry_run\":true}");
-        std::test::assert(none.state == "refused" && none.reason_code == "no_remote", "no remote: " + none.reason_code + " " + none.reason);
+        let none = self.drive(
+            c,
+            "s3-prov-none",
+            "dna.body.provision",
+            "{\"target\":\"s3@srv\",\"dry_run\":true}",
+        );
+        std::test::assert(
+            none.state == "refused" && none.reason_code == "no_remote",
+            "no remote: " + none.reason_code + " " + none.reason,
+        );
         let bad = head::s3_plan(c, "dna.body.provision", "{\"target\":\"not a target\"}");
-        std::test::assert(!bad.ok && bad.refused == "target_invalid", "a target that is not user@host");
+        std::test::assert(
+            !bad.ok && bad.refused == "target_invalid",
+            "a target that is not user@host",
+        );
         let r1 = in_dir(self.alpha, "git\nremote\nadd\norigin\ngit@example.invalid:s3/alpha.git");
-        let dry = self.drive(c, "s3-prov-dry", "dna.body.provision", "{\"target\":\"s3@srv\",\"dry_run\":true}");
-        std::test::assert_eq_str(dry.state, "succeeded", "dry run: " + dry.reason_code + " " + dry.reason);
-        std::test::assert(std::json::find_bool_field(dry.outcome, "dry_run") && std::json::find_string_field(dry.outcome, "target") == "s3@srv", "the outcome names the target and the dry run: " + dry.outcome);
+        let dry = self.drive(
+            c,
+            "s3-prov-dry",
+            "dna.body.provision",
+            "{\"target\":\"s3@srv\",\"dry_run\":true}",
+        );
+        std::test::assert_eq_str(
+            dry.state,
+            "succeeded",
+            "dry run: " + dry.reason_code + " " + dry.reason,
+        );
+        std::test::assert(
+            std::json::find_bool_field(dry.outcome, "dry_run")
+                && std::json::find_string_field(dry.outcome, "target") == "s3@srv",
+            "the outcome names the target and the dry run: " + dry.outcome,
+        );
         let preview = std::json::find_string_field(dry.outcome, "preview");
-        std::test::assert(std::str::contains(preview, "body provision (dry run): nothing was written") && std::str::contains(preview, "NAME='alpha-" + self.alpha_id[0..12] + "'") && std::str::contains(preview, "REMOTE='git@example.invalid:s3/alpha.git'"), "the preview is the verb's plan: " + preview);
-        std::test::assert(in_dir(self.alpha, "git\nconfig\ndna.body").code != 0, "dna.body stays unset");
-        std::test::assert_eq_int(count_rows(self.alpha, "body.provisioned"), 0, "no row from a dry run");
+        std::test::assert(
+            std::str::contains(preview, "body provision (dry run): nothing was written")
+                && std::str::contains(preview, "NAME='alpha-" + self.alpha_id[0..12] + "'")
+                && std::str::contains(preview, "REMOTE='git@example.invalid:s3/alpha.git'"),
+            "the preview is the verb's plan: " + preview,
+        );
+        std::test::assert(
+            in_dir(self.alpha, "git\nconfig\ndna.body").code != 0,
+            "dna.body stays unset",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "body.provisioned"),
+            0,
+            "no row from a dry run",
+        );
         std::test::assert(dry.external == false && dry.run_kind == "run", "a dry run is internal");
         let r2 = in_dir(self.alpha, "git\nremote\nremove\norigin");
     }
@@ -310,73 +484,252 @@ locus S3Cases {
     fn models_cases() {
         let c = self.ctx();
         let no = self.drive(c, "s3-models-no", "dna.models.probe", "{\"confirm_spend\":false}");
-        std::test::assert(no.state == "refused" && no.reason_code == "spend_unconfirmed", "spend not confirmed: " + no.reason_code);
+        std::test::assert(
+            no.state == "refused" && no.reason_code == "spend_unconfirmed",
+            "spend not confirmed: " + no.reason_code,
+        );
         let absent = self.drive(c, "s3-models-absent", "dna.models.probe", "{}");
-        std::test::assert(absent.state == "refused" && absent.reason_code == "spend_unconfirmed", "absent is unconfirmed");
+        std::test::assert(
+            absent.state == "refused" && absent.reason_code == "spend_unconfirmed",
+            "absent is unconfirmed",
+        );
         let typed = head::s3_plan(c, "dna.models.probe", "{\"confirm_spend\":\"yes\"}");
-        std::test::assert(!typed.ok && typed.refused == "invalid_command", "confirm_spend is a boolean");
+        std::test::assert(
+            !typed.ok && typed.refused == "invalid_command",
+            "confirm_spend is a boolean",
+        );
         let plan = head::s3_plan(c, "dna.models.probe", "{\"confirm_spend\":true}");
-        std::test::assert(plan.ok && plan.kind == "run" && plan.external && plan.deadline_secs == 300, "confirmed, the probe is a run");
-        std::test::assert(std::str::contains(plan.script, "\"$HALE_BIN\" dna models ") && !std::str::contains(plan.script, ".env"), "the probe reads each key from its slot of the vault, and sources no env file: " + plan.script);
+        std::test::assert(
+            plan.ok && plan.kind == "run" && plan.external && plan.deadline_secs == 300,
+            "confirmed, the probe is a run",
+        );
+        std::test::assert(
+            std::str::contains(plan.script, "\"$HALE_BIN\" dna models ")
+                && !std::str::contains(plan.script, ".env"),
+            "the probe reads each key from its slot of the vault, and sources no env file: "
+                + plan.script,
+        );
     }
 
     // Secrets by source name: the value never enters the head.
     fn secret_cases() {
         let c = self.ctx();
-        std::test::assert_eq_str(head::s3_available(c, "dna.secret.set"), "", "a source exists: the catalog credential is exported");
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.secret.set"),
+            "",
+            "a source exists: the catalog credential is exported",
+        );
         std::io::fs::mkdir(self.root + "/nowhere") or discard;
         std::io::fs::mkdir(self.root + "/nosources") or discard;
-        let bare = head::HeadContext { principal_name: PRINCIPAL, active_id: "x", active_root: self.root + "/nowhere", state_dir: self.state, children_dir: self.child_dir, sources_dir: self.root + "/nosources", hale: toolchain() };
-        std::test::assert_eq_str(head::s3_available(bare, "dna.secret.set"), "source_missing", "no file source and no catalog credential");
+        let bare = head::HeadContext {
+            principal_name: PRINCIPAL,
+            active_id: "x",
+            active_root: self.root + "/nowhere",
+            state_dir: self.state,
+            children_dir: self.child_dir,
+            sources_dir: self.root + "/nosources",
+            hale: toolchain(),
+        };
+        std::test::assert_eq_str(
+            head::s3_available(bare, "dna.secret.set"),
+            "source_missing",
+            "no file source and no catalog credential",
+        );
         // a file source, mode 0600, one line
-        std::test::assert(head::write_private(self.sources + "/openai", FILE_SECRET + "\n"), "the source written");
-        let set = self.drive(c, "s3-secret-file", "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"openai\"}}");
-        std::test::assert_eq_str(set.state, "succeeded", "secret set from a file: " + set.reason_code + " " + set.reason);
-        std::test::assert(std::json::find_string_field(set.outcome, "name") == "OPENAI_API_KEY" && std::json::find_string_field(set.outcome, "where") == "local" && std::json::find_bool_field(set.outcome, "source_consumed"), "the outcome: " + set.outcome);
+        std::test::assert(
+            head::write_private(self.sources + "/openai", FILE_SECRET + "\n"),
+            "the source written",
+        );
+        let set = self.drive(
+            c,
+            "s3-secret-file",
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"openai\"}}",
+        );
+        std::test::assert_eq_str(
+            set.state,
+            "succeeded",
+            "secret set from a file: " + set.reason_code + " " + set.reason,
+        );
+        std::test::assert(
+            std::json::find_string_field(set.outcome, "name") == "OPENAI_API_KEY"
+                && std::json::find_string_field(set.outcome, "where") == "local"
+                && std::json::find_bool_field(set.outcome, "source_consumed"),
+            "the outcome: " + set.outcome,
+        );
         let slot = self.home + "/vault/model-OPENAI_API_KEY";
-        std::test::assert_eq_str(std::io::fs::read_file(slot) or "", FILE_SECRET, "the verb filled the key's slot of the vault");
+        std::test::assert_eq_str(
+            std::io::fs::read_file(slot) or "",
+            FILE_SECRET,
+            "the verb filled the key's slot of the vault",
+        );
         std::test::assert_eq_str(head::mode_of(slot), "600", "the slot is private");
-        std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 1, "exactly one secret.rotated row");
-        std::test::assert(!std::io::fs::file_exists(self.sources + "/openai"), "the file source is consumed");
-        std::test::assert(!anywhere_under(self.state, FILE_SECRET), "the value is in no receipt, log or script of the head");
-        std::test::assert(std::str::contains(set.reason, "value for OPENAI_API_KEY (this machine)"), "the run's log is the receipt's reason");
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "secret.rotated"),
+            1,
+            "exactly one secret.rotated row",
+        );
+        std::test::assert(
+            !std::io::fs::file_exists(self.sources + "/openai"),
+            "the file source is consumed",
+        );
+        std::test::assert(
+            !anywhere_under(self.state, FILE_SECRET),
+            "the value is in no receipt, log or script of the head",
+        );
+        std::test::assert(
+            std::str::contains(set.reason, "value for OPENAI_API_KEY (this machine)"),
+            "the run's log is the receipt's reason",
+        );
         // an env source: the run's shell reads the variable
-        let rotate = self.drive(c, "s3-secret-env", "dna.secret.rotate", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}");
-        std::test::assert_eq_str(rotate.state, "succeeded", "secret rotated from the environment: " + rotate.reason_code + " " + rotate.reason);
-        std::test::assert(!std::json::find_bool_field(rotate.outcome, "source_consumed"), "an env source is not consumed");
-        std::test::assert_eq_str(std::io::fs::read_file(slot) or "", ENV_SECRET, "the slot was refilled");
-        std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 2, "two secret.rotated rows");
-        std::test::assert(!anywhere_under(self.state, ENV_SECRET) && !anywhere_under(self.state, FILE_SECRET), "neither value is anywhere under the head's state");
+        let rotate = self.drive(
+            c,
+            "s3-secret-env",
+            "dna.secret.rotate",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}",
+        );
+        std::test::assert_eq_str(
+            rotate.state,
+            "succeeded",
+            "secret rotated from the environment: " + rotate.reason_code + " " + rotate.reason,
+        );
+        std::test::assert(
+            !std::json::find_bool_field(rotate.outcome, "source_consumed"),
+            "an env source is not consumed",
+        );
+        std::test::assert_eq_str(
+            std::io::fs::read_file(slot) or "",
+            ENV_SECRET,
+            "the slot was refilled",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "secret.rotated"),
+            2,
+            "two secret.rotated rows",
+        );
+        std::test::assert(
+            !anywhere_under(self.state, ENV_SECRET) && !anywhere_under(self.state, FILE_SECRET),
+            "neither value is anywhere under the head's state",
+        );
         // refusals
         std::io::fs::write_file(self.sources + "/loose", "x\n") or discard;
         let chmod = dna::run_tool("chmod\n644\n" + self.sources + "/loose");
-        let loose = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"loose\"}}");
-        std::test::assert(!loose.ok && loose.refused == "source_unsafe", "a 0644 source: " + loose.refused + " " + loose.reason);
-        std::test::assert(head::write_private(self.sources + "/two", "a\nb\n"), "two lines written");
-        let two = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"two\"}}");
-        std::test::assert(!two.ok && two.refused == "source_unsafe", "a two-line source: " + two.reason);
-        let missing = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"absent\"}}");
+        let loose = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"loose\"}}",
+        );
+        std::test::assert(
+            !loose.ok && loose.refused == "source_unsafe",
+            "a 0644 source: " + loose.refused + " " + loose.reason,
+        );
+        std::test::assert(
+            head::write_private(self.sources + "/two", "a\nb\n"),
+            "two lines written",
+        );
+        let two = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"two\"}}",
+        );
+        std::test::assert(
+            !two.ok && two.refused == "source_unsafe",
+            "a two-line source: " + two.reason,
+        );
+        let missing = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"absent\"}}",
+        );
         std::test::assert(!missing.ok && missing.refused == "source_missing", "a missing source");
-        let dotted = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"../etc\"}}");
-        std::test::assert(!dotted.ok && dotted.refused == "source_unsafe", "a source name that leaves the directory");
-        let unset = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"NOT_SET_ANYWHERE_S3\"}}");
-        std::test::assert(!unset.ok && unset.refused == "name_not_env_var", "an env source that is not set: " + unset.reason);
-        let not_catalog = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"HOME\"}}");
-        std::test::assert(!not_catalog.ok && not_catalog.refused == "name_not_env_var", "an env source the catalog does not name");
-        let bad_name = head::s3_plan(c, "dna.secret.set", "{\"name\":\"lower-case\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}");
-        std::test::assert(!bad_name.ok && bad_name.refused == "name_invalid", "a NAME that is not an environment variable name");
-        let with_value = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"value\":\"x\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}");
-        std::test::assert(!with_value.ok && with_value.refused == "invalid_command", "a value key is never taken");
-        let nested_value = head::s3_plan(c, "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\",\"value\":\"x\"}}");
-        std::test::assert(!nested_value.ok && nested_value.refused == "invalid_command", "nor inside the source");
+        let dotted = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"../etc\"}}",
+        );
+        std::test::assert(
+            !dotted.ok && dotted.refused == "source_unsafe",
+            "a source name that leaves the directory",
+        );
+        let unset = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"NOT_SET_ANYWHERE_S3\"}}",
+        );
+        std::test::assert(
+            !unset.ok && unset.refused == "name_not_env_var",
+            "an env source that is not set: " + unset.reason,
+        );
+        let not_catalog = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"HOME\"}}",
+        );
+        std::test::assert(
+            !not_catalog.ok && not_catalog.refused == "name_not_env_var",
+            "an env source the catalog does not name",
+        );
+        let bad_name = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"lower-case\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}",
+        );
+        std::test::assert(
+            !bad_name.ok && bad_name.refused == "name_invalid",
+            "a NAME that is not an environment variable name",
+        );
+        let with_value = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"value\":\"x\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}",
+        );
+        std::test::assert(
+            !with_value.ok && with_value.refused == "invalid_command",
+            "a value key is never taken",
+        );
+        let nested_value = head::s3_plan(
+            c,
+            "dna.secret.set",
+            "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\",\"value\":\"x\"}}",
+        );
+        std::test::assert(
+            !nested_value.ok && nested_value.refused == "invalid_command",
+            "nor inside the source",
+        );
         // the verb's own refusal is the run's failure, and the source stays
-        std::test::assert(head::write_private(self.sources + "/other", "other-value\n"), "another source written");
-        let never = self.drive(c, "s3-secret-never", "dna.secret.rotate", "{\"name\":\"FORGE_TOKEN\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
-        std::test::assert(never.state == "failed" && std::str::contains(never.reason, "was never set"), "rotating a name never set fails with the verb's words: " + never.state + " " + never.reason);
-        std::test::assert(std::io::fs::file_exists(self.sources + "/other") && !std::json::find_bool_field(never.outcome, "source_consumed"), "a failed run consumes nothing");
+        std::test::assert(
+            head::write_private(self.sources + "/other", "other-value\n"),
+            "another source written",
+        );
+        let never = self.drive(
+            c,
+            "s3-secret-never",
+            "dna.secret.rotate",
+            "{\"name\":\"FORGE_TOKEN\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}",
+        );
+        std::test::assert(
+            never.state == "failed" && std::str::contains(never.reason, "was never set"),
+            "rotating a name never set fails with the verb's words: " + never.state + " "
+                + never.reason,
+        );
+        std::test::assert(
+            std::io::fs::file_exists(self.sources + "/other")
+                && !std::json::find_bool_field(never.outcome, "source_consumed"),
+            "a failed run consumes nothing",
+        );
         // a name that is no slot of the organism's is refused by the verb too
-        let stray = self.drive(c, "s3-secret-stray", "dna.secret.rotate", "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
-        std::test::assert(stray.state == "failed" && std::str::contains(stray.reason, "is no slot of the organism's"), "a name that is no slot fails with the verb's words: " + stray.state + " " + stray.reason);
+        let stray = self.drive(
+            c,
+            "s3-secret-stray",
+            "dna.secret.rotate",
+            "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}",
+        );
+        std::test::assert(
+            stray.state == "failed"
+                && std::str::contains(stray.reason, "is no slot of the organism's"),
+            "a name that is no slot fails with the verb's words: " + stray.state + " "
+                + stray.reason,
+        );
         std::io::fs::unlink(self.sources + "/other") or discard;
         std::io::fs::unlink(self.sources + "/loose") or discard;
         std::io::fs::unlink(self.sources + "/two") or discard;
@@ -385,39 +738,106 @@ locus S3Cases {
     // The local body: started in `run` mode, up once the organization is.
     fn body_start_cases() {
         let c = self.ctx();
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "", "a body can start");
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.stop"), "body_not_running", "nothing to stop yet");
-        let seedless = head::HeadContext { principal_name: PRINCIPAL, active_id: "x", active_root: self.root + "/nowhere", state_dir: self.state, children_dir: self.child_dir, sources_dir: self.sources, hale: toolchain() };
-        std::test::assert_eq_str(head::s3_available(seedless, "dna.body.local.start"), "no_seed", "no organization to run");
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.start"),
+            "",
+            "a body can start",
+        );
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.stop"),
+            "body_not_running",
+            "nothing to stop yet",
+        );
+        let seedless = head::HeadContext {
+            principal_name: PRINCIPAL,
+            active_id: "x",
+            active_root: self.root + "/nowhere",
+            state_dir: self.state,
+            children_dir: self.child_dir,
+            sources_dir: self.sources,
+            hale: toolchain(),
+        };
+        std::test::assert_eq_str(
+            head::s3_available(seedless, "dna.body.local.start"),
+            "no_seed",
+            "no organization to run",
+        );
         let fast = head::s3_plan(c, "dna.body.local.start", "{\"mode\":\"fast\"}");
         std::test::assert(!fast.ok && fast.refused == "invalid_command", "mode is run or dev");
         let plan = head::s3_plan(c, "dna.body.local.start", "{\"mode\":\"run\"}");
-        std::test::assert(plan.ok && plan.kind == "body" && plan.deadline_secs == 600 && !plan.external, "a body plan");
-        std::test::assert_eq_str(plan.argv, toolchain() + "\ndna\nrun\n" + self.alpha + "\n--no-iris", "the host's own argv");
+        std::test::assert(
+            plan.ok && plan.kind == "body" && plan.deadline_secs == 600 && !plan.external,
+            "a body plan",
+        );
+        std::test::assert_eq_str(
+            plan.argv,
+            toolchain() + "\ndna\nrun\n" + self.alpha + "\n--no-iris",
+            "the host's own argv",
+        );
         let started = self.drive(c, "s3-body-start", "dna.body.local.start", "{\"mode\":\"run\"}");
-        std::test::assert_eq_str(started.state, "succeeded", "the body is up: " + started.reason_code + " " + started.reason);
+        std::test::assert_eq_str(
+            started.state,
+            "succeeded",
+            "the body is up: " + started.reason_code + " " + started.reason,
+        );
         let pid = std::json::find_int_field(started.outcome, "pid");
-        std::test::assert(pid > 0 && pid == pid_in(self.child_dir + "/body.pid") && pid_alive(pid), "the outcome's pid is the child's: " + started.outcome);
-        std::test::assert(std::json::find_string_field(started.outcome, "mode") == "run" && std::json::find_int_field(started.outcome, "organism_alive_at") > 0, "mode and organism_alive_at: " + started.outcome);
+        std::test::assert(
+            pid > 0 && pid == pid_in(self.child_dir + "/body.pid") && pid_alive(pid),
+            "the outcome's pid is the child's: " + started.outcome,
+        );
+        std::test::assert(
+            std::json::find_string_field(started.outcome, "mode") == "run"
+                && std::json::find_int_field(started.outcome, "organism_alive_at") > 0,
+            "mode and organism_alive_at: " + started.outcome,
+        );
         std::test::assert(count_rows(self.alpha, "body.claimed") >= 1, "the host claimed the body");
         std::test::assert(head::s3_child_ready(c, "body"), "the organization is up");
         let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
-        std::test::assert(std::json::find_string_field(body, "state") == "running" && std::json::find_bool_field(body, "organism_alive") && std::json::find_string_field(body, "mode") == "run" && std::json::find_int_field(body, "pid") == pid, "the children view: " + view);
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "body_running", "a second body is refused");
-        let again = self.drive(c, "s3-body-start-again", "dna.body.local.start", "{\"mode\":\"run\"}");
-        std::test::assert(again.state == "refused" && again.reason_code == "body_running", "refused while it runs: " + again.reason_code);
+        std::test::assert(
+            std::json::find_string_field(body, "state") == "running"
+                && std::json::find_bool_field(body, "organism_alive")
+                && std::json::find_string_field(body, "mode") == "run"
+                && std::json::find_int_field(body, "pid") == pid,
+            "the children view: " + view,
+        );
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.start"),
+            "body_running",
+            "a second body is refused",
+        );
+        let again = self.drive(
+            c,
+            "s3-body-start-again",
+            "dna.body.local.start",
+            "{\"mode\":\"run\"}",
+        );
+        std::test::assert(
+            again.state == "refused" && again.reason_code == "body_running",
+            "refused while it runs: " + again.reason_code,
+        );
         // logs through the local transport under the fixture's home, where
         // a stub on the body's PATH stands in for journalctl (the org's own
         // log is block-buffered while it runs, so it is not what is read)
         let bin = self.home + "/.hale/bin";
         let mk = dna::run_tool("mkdir\n-p\n" + bin);
-        std::io::fs::write_file(bin + "/journalctl", "#!/bin/sh\necho '-- the unit journal, as the stub answers it --'\nexit 0\n") or discard;
+        std::io::fs::write_file(
+            bin + "/journalctl",
+            "#!/bin/sh\necho '-- the unit journal, as the stub answers it --'\nexit 0\n",
+        ) or discard;
         let x = dna::run_tool("chmod\n+x\n" + bin + "/journalctl");
         let logs = self.drive(c, "s3-body-logs", "dna.body.logs", "{\"body\":\"s3@localhost\"}");
-        std::test::assert_eq_str(logs.state, "succeeded", "body logs: " + logs.reason_code + " " + logs.reason);
+        std::test::assert_eq_str(
+            logs.state,
+            "succeeded",
+            "body logs: " + logs.reason_code + " " + logs.reason,
+        );
         let text = std::json::find_string_field(logs.outcome, "text");
-        std::test::assert(std::str::contains(text, "body logs on s3@localhost") && std::str::contains(text, "the unit journal, as the stub answers it"), "the org's log through the transport: " + text);
+        std::test::assert(
+            std::str::contains(text, "body logs on s3@localhost")
+                && std::str::contains(text, "the unit journal, as the stub answers it"),
+            "the org's log through the transport: " + text,
+        );
         std::test::assert(!logs.external, "logs are a read");
     }
 
@@ -427,47 +847,125 @@ locus S3Cases {
         let pid = pid_in(self.child_dir + "/body.pid");
         std::test::assert(pid_alive(pid), "the body runs before the stop");
         let stopped = self.drive(c, "s3-body-stop", "dna.body.local.stop", "{}");
-        std::test::assert(stopped.state == "succeeded" && len(stopped.run_kind) == 0, "stopped: " + stopped.reason_code + " " + stopped.reason);
-        std::test::assert(std::json::find_string_field(stopped.outcome, "released_by") == "host" && std::json::find_int_field(stopped.outcome, "exit_code") == 0, "the host released it on TERM and ended cleanly — a node drains on SIGTERM (GH #986): " + stopped.outcome);
-        std::test::assert(!pid_alive(pid) && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the host and its organization are gone");
-        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.child_dir + "/body.exit") or ""), "0", "the exit is recorded");
-        std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.stop"), "body_not_running", "nothing runs");
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "", "a body can start again");
+        std::test::assert(
+            stopped.state == "succeeded" && len(stopped.run_kind) == 0,
+            "stopped: " + stopped.reason_code + " " + stopped.reason,
+        );
+        std::test::assert(
+            std::json::find_string_field(stopped.outcome, "released_by") == "host"
+                && std::json::find_int_field(stopped.outcome, "exit_code") == 0,
+            "the host released it on TERM and ended cleanly — a node drains on SIGTERM (GH #986): "
+                + stopped.outcome,
+        );
+        std::test::assert(
+            !pid_alive(pid) && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"),
+            "the host and its organization are gone",
+        );
+        std::test::assert_eq_str(
+            dna::trim_nl(std::io::fs::read_file(self.child_dir + "/body.exit") or ""),
+            "0",
+            "the exit is recorded",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "body.released"),
+            1,
+            "the host appended body.released",
+        );
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.stop"),
+            "body_not_running",
+            "nothing runs",
+        );
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.start"),
+            "",
+            "a body can start again",
+        );
         let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
-        std::test::assert(std::json::find_string_field(body, "state") == "exited" && std::json::find_int_field(body, "exit_code") == 0 && !std::json::find_bool_field(body, "organism_alive") && std::json::find_string_field(body, "mode") == "run", "the children view after the stop: " + view);
+        std::test::assert(
+            std::json::find_string_field(body, "state") == "exited"
+                && std::json::find_int_field(body, "exit_code") == 0
+                && !std::json::find_bool_field(body, "organism_alive")
+                && std::json::find_string_field(body, "mode") == "run",
+            "the children view after the stop: " + view,
+        );
         let again = self.drive(c, "s3-body-stop-again", "dna.body.local.stop", "{}");
-        std::test::assert(again.state == "refused" && again.reason_code == "body_not_running", "a second stop is refused");
+        std::test::assert(
+            again.state == "refused" && again.reason_code == "body_not_running",
+            "a second stop is refused",
+        );
     }
 
     // A body the head did not start: seen as external, stopped the same way.
     fn external_cases() {
         let c = self.ctx();
-        let started = in_dir(self.alpha, "sh\n-c\nnohup \"$1\" dna run . --no-iris >\"$2\" 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + self.root + "/external.log");
+        let started = in_dir(
+            self.alpha,
+            "sh\n-c\nnohup \"$1\" dna run . --no-iris >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain() + "\n" + self.root + "/external.log",
+        );
         self.external_host = std::str::parse_int(dna::trim_nl(started.stdout)) or - 1;
         std::test::assert(self.external_host > 0, "a body started by hand: " + started.stderr);
         let mut waited = 0;
         let budget = dna::wait_secs(600) * 1000;
         while waited < budget {
-            if head::s3_child_ready(c, "body") && std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid") { break; }
+            if head::s3_child_ready(c, "body")
+                && std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid")
+            {
+                break;
+            }
             std::time::sleep(250ms);
             waited = waited + 250;
         }
-        std::test::assert(head::s3_child_ready(c, "body"), "the hand-started body is up: " + (std::io::fs::read_file(self.root + "/external.log") or ""));
+        std::test::assert(
+            head::s3_child_ready(c, "body"),
+            "the hand-started body is up: "
+                + (std::io::fs::read_file(self.root + "/external.log") or ""),
+        );
         let org = pid_in(self.alpha + "/.hale/dna/org.pid");
         let view = head::s3_children_json(c, child_view(self.child_dir, "body"));
         let body = std::json::find_field_raw(view, "body");
-        std::test::assert(std::json::find_string_field(body, "state") == "external" && std::json::find_int_field(body, "pid") == org && std::json::find_bool_field(body, "organism_alive"), "an external body: " + view);
-        std::test::assert_eq_str(head::s3_available(c, "dna.body.local.start"), "body_running", "no second body beside an external one");
+        std::test::assert(
+            std::json::find_string_field(body, "state") == "external"
+                && std::json::find_int_field(body, "pid") == org
+                && std::json::find_bool_field(body, "organism_alive"),
+            "an external body: " + view,
+        );
+        std::test::assert_eq_str(
+            head::s3_available(c, "dna.body.local.start"),
+            "body_running",
+            "no second body beside an external one",
+        );
         let stopped = self.drive(c, "s3-body-stop-external", "dna.body.local.stop", "{}");
-        std::test::assert(stopped.state == "succeeded" && std::json::find_string_field(stopped.outcome, "released_by") == "host" && std::json::find_int_field(stopped.outcome, "exit_code") == -1, "stopped through its host: " + stopped.outcome);
+        std::test::assert(
+            stopped.state == "succeeded"
+                && std::json::find_string_field(stopped.outcome, "released_by") == "host"
+                && std::json::find_int_field(stopped.outcome, "exit_code") == -1,
+            "stopped through its host: " + stopped.outcome,
+        );
         let mut left = 0;
-        while left < 30000 && pid_alive(self.external_host) { std::time::sleep(100ms); left = left + 100; }
-        std::test::assert(!pid_alive(self.external_host) && !pid_alive(org) && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the hand-started host ended");
-        std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 2, "its host appended body.released too");
+        while left < 30000 && pid_alive(self.external_host) {
+            std::time::sleep(100ms);
+            left = left + 100;
+        }
+        std::test::assert(
+            !pid_alive(self.external_host)
+                && !pid_alive(org)
+                && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"),
+            "the hand-started host ended",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "body.released"),
+            2,
+            "its host appended body.released too",
+        );
         let after = head::s3_children_json(c, child_view(self.child_dir, "body"));
-        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(after, "body"), "state"), "exited", "no external body any more");
+        std::test::assert_eq_str(
+            std::json::find_string_field(std::json::find_field_raw(after, "body"), "state"),
+            "exited",
+            "no external body any more",
+        );
     }
 
     // A connection to a second record over its nerves (GH #1590), a
@@ -481,101 +979,393 @@ locus S3Cases {
         // exchange and its card)
         let owner = std::env::var("HALE_S3_TEST_MEMORY_OWNER");
         let nats_owner = std::env::var("HALE_DNA_NATS_URL_OWNER");
-        std::test::assert(len(owner) > 0 && len(nats_owner) > 0, "memory and nerves to exchange on (HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_NATS_URL_OWNER)");
+        std::test::assert(
+            len(owner) > 0 && len(nats_owner) > 0,
+            "memory and nerves to exchange on (HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_NATS_URL_OWNER)",
+        );
         self.nerves = dna::nerves_server_url(nats_owner);
-        let am = in_dir(self.alpha, "env\nHALE_DNA_MEMORY_DSN_OWNER=" + owner + "\nHALE_DNA_RECEIPT_KEY=s3-test-receipt-key\n" + toolchain() + "\ndna\nmemory\nmigrate");
-        let bm = in_dir(self.beta, "env\nHALE_DNA_MEMORY_DSN_OWNER=" + owner + "\nHALE_DNA_RECEIPT_KEY=s3-test-receipt-key\n" + toolchain() + "\ndna\nmemory\nmigrate");
-        std::test::assert(am.code == 0 && bm.code == 0, "each record's memory: " + am.stdout + am.stderr + bm.stdout + bm.stderr);
+        let am = in_dir(
+            self.alpha,
+            "env\nHALE_DNA_MEMORY_DSN_OWNER=" + owner
+                + "\nHALE_DNA_RECEIPT_KEY=s3-test-receipt-key\n" + toolchain()
+                + "\ndna\nmemory\nmigrate",
+        );
+        let bm = in_dir(
+            self.beta,
+            "env\nHALE_DNA_MEMORY_DSN_OWNER=" + owner
+                + "\nHALE_DNA_RECEIPT_KEY=s3-test-receipt-key\n" + toolchain()
+                + "\ndna\nmemory\nmigrate",
+        );
+        std::test::assert(
+            am.code == 0 && bm.code == 0,
+            "each record's memory: " + am.stdout + am.stderr + bm.stdout + bm.stderr,
+        );
         let an = dna_cli(self.alpha, "nerves\nmigrate");
         let bn = dna_cli(self.beta, "nerves\nmigrate");
-        std::test::assert(an.code == 0 && bn.code == 0, "each record's nerves, its exchange and its card: " + an.stdout + an.stderr + bn.stdout + bn.stderr);
-        let beta_peer = "\"nerves_url\":\"" + self.nerves + "\",\"record\":\"" + self.beta_id + "\"";
+        std::test::assert(
+            an.code == 0 && bn.code == 0,
+            "each record's nerves, its exchange and its card: " + an.stdout + an.stderr + bn.stdout
+                + bn.stderr,
+        );
+        let beta_peer = "\"nerves_url\":\"" + self.nerves + "\",\"record\":\"" + self.beta_id
+            + "\"";
         // validation
-        let bad_name = head::s3_plan(c, "dna.connection.propose", "{" + beta_peer + ",\"name\":\"Beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}");
-        std::test::assert(!bad_name.ok && bad_name.refused == "name_invalid", "a connection name is lowercase: " + bad_name.reason);
-        let bad_class = head::s3_plan(c, "dna.connection.propose", "{" + beta_peer + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"secret\"]}");
-        std::test::assert(!bad_class.ok && bad_class.refused == "invalid_command" && std::str::contains(bad_class.reason, "not a data class"), "classes are the core's: " + bad_class.reason);
-        let not_array = head::s3_plan(c, "dna.connection.propose", "{" + beta_peer + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":\"internal\"}");
-        std::test::assert(!not_array.ok && not_array.refused == "invalid_command", "classes is an array");
-        let bad_kind = head::s3_plan(c, "dna.handoff.publish", "{\"connection\":\"beta\",\"kind\":\"thing\",\"subject\":\"x\"}");
-        std::test::assert(!bad_kind.ok && bad_kind.refused == "invalid_command", "a handoff is a task or a receipt");
-        let dash = head::s3_plan(c, "dna.connection.close", "{\"name\":\"beta\",\"why\":\"--force\"}");
-        std::test::assert(!dash.ok && dash.refused == "invalid_command", "no argument starts with a dash");
+        let bad_name = head::s3_plan(
+            c,
+            "dna.connection.propose",
+            "{" + beta_peer
+                + ",\"name\":\"Beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}",
+        );
+        std::test::assert(
+            !bad_name.ok && bad_name.refused == "name_invalid",
+            "a connection name is lowercase: " + bad_name.reason,
+        );
+        let bad_class = head::s3_plan(
+            c,
+            "dna.connection.propose",
+            "{" + beta_peer
+                + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"secret\"]}",
+        );
+        std::test::assert(
+            !bad_class.ok
+                && bad_class.refused == "invalid_command"
+                && std::str::contains(bad_class.reason, "not a data class"),
+            "classes are the core's: " + bad_class.reason,
+        );
+        let not_array = head::s3_plan(
+            c,
+            "dna.connection.propose",
+            "{" + beta_peer
+                + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":\"internal\"}",
+        );
+        std::test::assert(
+            !not_array.ok && not_array.refused == "invalid_command",
+            "classes is an array",
+        );
+        let bad_kind = head::s3_plan(
+            c,
+            "dna.handoff.publish",
+            "{\"connection\":\"beta\",\"kind\":\"thing\",\"subject\":\"x\"}",
+        );
+        std::test::assert(
+            !bad_kind.ok && bad_kind.refused == "invalid_command",
+            "a handoff is a task or a receipt",
+        );
+        let dash = head::s3_plan(
+            c,
+            "dna.connection.close",
+            "{\"name\":\"beta\",\"why\":\"--force\"}",
+        );
+        std::test::assert(
+            !dash.ok && dash.refused == "invalid_command",
+            "no argument starts with a dash",
+        );
         // proposed
-        let proposed = self.drive(c, "s3-connect", "dna.connection.propose", "{" + beta_peer + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}");
-        std::test::assert_eq_str(proposed.state, "succeeded", "proposed: " + proposed.reason_code + " " + proposed.reason);
+        let proposed = self.drive(
+            c,
+            "s3-connect",
+            "dna.connection.propose",
+            "{" + beta_peer
+                + ",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}",
+        );
+        std::test::assert_eq_str(
+            proposed.state,
+            "succeeded",
+            "proposed: " + proposed.reason_code + " " + proposed.reason,
+        );
         let text = std::json::find_string_field(proposed.outcome, "text");
-        std::test::assert(std::json::find_string_field(proposed.outcome, "name") == "beta" && std::str::contains(text, "connection beta proposed: record " + self.beta_id[0..12]) && std::str::contains(text, "carrying internal"), "the outcome: " + proposed.outcome);
-        std::test::assert(proposed.external && proposed.run_kind == "run", "a propose crosses to the peer");
+        std::test::assert(
+            std::json::find_string_field(proposed.outcome, "name") == "beta"
+                && std::str::contains(
+                    text,
+                    "connection beta proposed: record " + self.beta_id[0..12],
+                )
+                && std::str::contains(text, "carrying internal"),
+            "the outcome: " + proposed.outcome,
+        );
+        std::test::assert(
+            proposed.external && proposed.run_kind == "run",
+            "a propose crosses to the peer",
+        );
         let d1 = head::s3_project_detail_json(c, self.alpha);
         let conn = item_where(std::json::find_field_raw(d1, "connections"), "name", "beta");
-        std::test::assert(len(conn) > 0 && std::json::find_string_field(conn, "url") == self.nerves && std::json::find_string_field(conn, "position") == "client" && std::json::find_string_field(conn, "purpose") == "the books" && std::json::find_field_raw(conn, "classes") == "[\"internal\"]" && std::json::find_string_field(conn, "state") == "proposed", "the detail lists it as proposed: " + d1);
-        std::test::assert_eq_str(std::json::find_field_raw(d1, "handoffs"), "[]", "no handoffs yet");
+        std::test::assert(
+            len(conn) > 0
+                && std::json::find_string_field(conn, "url") == self.nerves
+                && std::json::find_string_field(conn, "position") == "client"
+                && std::json::find_string_field(conn, "purpose") == "the books"
+                && std::json::find_field_raw(conn, "classes") == "[\"internal\"]"
+                && std::json::find_string_field(conn, "state") == "proposed",
+            "the detail lists it as proposed: " + d1,
+        );
+        std::test::assert_eq_str(
+            std::json::find_field_raw(d1, "handoffs"),
+            "[]",
+            "no handoffs yet",
+        );
         // the Board puts it in force: someone other than its proposer
         let rid = word_after(text, "hale dna review ");
         std::test::assert(std::str::starts_with(rid, "c-beta-"), "its Review: " + text);
-        let own = dna_cli(self.alpha, "review\n" + rid + "\napprove\n--as\n" + PRINCIPAL + "\n--authority\nboard\n--no-wait");
-        std::test::assert_eq_str(std::json::find_string_field(item_where(std::json::find_field_raw(head::s3_project_detail_json(c, self.alpha), "connections"), "name", "beta"), "state"), "proposed", "the proposer's own approval does not put it in force");
-        let approved = dna_cli(self.alpha, "review\n" + rid + "\napprove\n--as\nana\n--authority\nboard\n--no-wait");
-        std::test::assert_eq_int(approved.code, 0, "approved by ana: " + approved.stdout + approved.stderr);
+        let own = dna_cli(
+            self.alpha,
+            "review\n" + rid + "\napprove\n--as\n" + PRINCIPAL + "\n--authority\nboard\n--no-wait",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                item_where(
+                    std::json::find_field_raw(
+                        head::s3_project_detail_json(c, self.alpha),
+                        "connections",
+                    ),
+                    "name",
+                    "beta",
+                ),
+                "state",
+            ),
+            "proposed",
+            "the proposer's own approval does not put it in force",
+        );
+        let approved = dna_cli(
+            self.alpha,
+            "review\n" + rid + "\napprove\n--as\nana\n--authority\nboard\n--no-wait",
+        );
+        std::test::assert_eq_int(
+            approved.code,
+            0,
+            "approved by ana: " + approved.stdout + approved.stderr,
+        );
         let listed = dna_cli(self.alpha, "connect");
-        std::test::assert(std::str::contains(listed.stdout, "connections: 1\n  beta → record ") && std::str::contains(listed.stdout, "in force (approved by ana)"), "the CLI lists it in force: " + listed.stdout + listed.stderr);
-        std::test::assert_eq_str(std::json::find_string_field(item_where(std::json::find_field_raw(head::s3_project_detail_json(c, self.alpha), "connections"), "name", "beta"), "state"), "in_force", "and so does the projection");
+        std::test::assert(
+            std::str::contains(listed.stdout, "connections: 1\n  beta → record ")
+                && std::str::contains(listed.stdout, "in force (approved by ana)"),
+            "the CLI lists it in force: " + listed.stdout + listed.stderr,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                item_where(
+                    std::json::find_field_raw(
+                        head::s3_project_detail_json(c, self.alpha),
+                        "connections",
+                    ),
+                    "name",
+                    "beta",
+                ),
+                "state",
+            ),
+            "in_force",
+            "and so does the projection",
+        );
         // a receipt filed here, handed across
-        std::io::fs::write_file(self.root + "/notes.txt", "ledger notes for the books\n") or discard;
+        std::io::fs::write_file(
+            self.root + "/notes.txt",
+            "ledger notes for the books\n",
+        ) or discard;
         let filed = dna_cli(self.alpha, "receipt\nfile\n" + self.root + "/notes.txt");
         let at = std::str::index_of(filed.stdout, "sha256:");
         std::test::assert(at >= 0, "a receipt filed: " + filed.stdout + filed.stderr);
         let digest = filed.stdout[at..(at + 71)];
-        let handed = self.drive(c, "s3-handoff", "dna.handoff.publish", "{\"connection\":\"beta\",\"kind\":\"receipt\",\"subject\":\"" + digest + "\",\"note\":\"for the books\"}");
-        std::test::assert_eq_str(handed.state, "succeeded", "handed across: " + handed.reason_code + " " + handed.reason);
+        let handed = self.drive(
+            c,
+            "s3-handoff",
+            "dna.handoff.publish",
+            "{\"connection\":\"beta\",\"kind\":\"receipt\",\"subject\":\"" + digest
+                + "\",\"note\":\"for the books\"}",
+        );
+        std::test::assert_eq_str(
+            handed.state,
+            "succeeded",
+            "handed across: " + handed.reason_code + " " + handed.reason,
+        );
         let handed_text = std::json::find_string_field(handed.outcome, "text");
-        std::test::assert(std::str::contains(handed_text, ": receipt " + digest + " [internal] delivered to record " + self.beta_id[0..12]), "the outcome text: " + handed_text);
+        std::test::assert(
+            std::str::contains(
+                handed_text,
+                ": receipt " + digest + " [internal] delivered to record " + self.beta_id[0..12],
+            ),
+            "the outcome text: " + handed_text,
+        );
         let hid_word = word_after(handed_text, "handoff ");
         let hid = hid_word[0..(len(hid_word) - 1)];
-        std::test::assert_eq_str(hid, dna::handoff_id(self.alpha_id, self.beta_id, "receipt", digest), "the handoff's id");
+        std::test::assert_eq_str(
+            hid,
+            dna::handoff_id(self.alpha_id, self.beta_id, "receipt", digest),
+            "the handoff's id",
+        );
         let d2 = head::s3_project_detail_json(c, self.alpha);
         let sent = item_where(std::json::find_field_raw(d2, "handoffs"), "id", hid);
-        std::test::assert(len(sent) > 0 && std::json::find_string_field(sent, "connection") == "beta" && std::json::find_string_field(sent, "kind") == "receipt" && std::json::find_string_field(sent, "subject") == digest && std::json::find_string_field(sent, "state") == "published", "handed across, awaiting acceptance: " + d2);
+        std::test::assert(
+            len(sent) > 0
+                && std::json::find_string_field(sent, "connection") == "beta"
+                && std::json::find_string_field(sent, "kind") == "receipt"
+                && std::json::find_string_field(sent, "subject") == digest
+                && std::json::find_string_field(sent, "state") == "published",
+            "handed across, awaiting acceptance: " + d2,
+        );
         // beta connects back, in force, reads its mailbox, accepts
-        let back = dna_cli(self.beta, "connect\n" + self.nerves + "\n--record\n" + self.alpha_id + "\n--name\nalpha\n--as\nclient\n--purpose\nthe books\n--classes\ninternal\n--by\nnoor");
+        let back = dna_cli(
+            self.beta,
+            "connect\n" + self.nerves + "\n--record\n" + self.alpha_id
+                + "\n--name\nalpha\n--as\nclient\n--purpose\nthe books\n--classes\ninternal\n--by\nnoor",
+        );
         std::test::assert_eq_int(back.code, 0, "beta connects back: " + back.stdout + back.stderr);
-        let back_ok = dna_cli(self.beta, "review\n" + word_after(back.stdout, "hale dna review ") + "\napprove\n--as\nlee\n--authority\nboard\n--no-wait");
-        std::test::assert_eq_int(back_ok.code, 0, "approved by lee: " + back_ok.stdout + back_ok.stderr);
+        let back_ok = dna_cli(
+            self.beta,
+            "review\n" + word_after(back.stdout, "hale dna review ")
+                + "\napprove\n--as\nlee\n--authority\nboard\n--no-wait",
+        );
+        std::test::assert_eq_int(
+            back_ok.code,
+            0,
+            "approved by lee: " + back_ok.stdout + back_ok.stderr,
+        );
         // beta reads its inbox: the envelope arrived on its nerves
         let inbox = dna_cli(self.beta, "handoff");
-        std::test::assert(inbox.code == 0 && std::str::contains(inbox.stdout, hid + " ← receipt") && std::str::contains(inbox.stdout, "admitted under `alpha`"), "received in beta's inbox: " + inbox.stdout + inbox.stderr);
+        std::test::assert(
+            inbox.code == 0
+                && std::str::contains(inbox.stdout, hid + " ← receipt")
+                && std::str::contains(inbox.stdout, "admitted under `alpha`"),
+            "received in beta's inbox: " + inbox.stdout + inbox.stderr,
+        );
         let d3 = head::s3_project_detail_json(cb, self.beta);
         let alpha_conn = item_where(std::json::find_field_raw(d3, "connections"), "name", "alpha");
-        std::test::assert_eq_str(std::json::find_string_field(alpha_conn, "state"), "in_force", "beta's connection back is in force");
-        let accepted = self.drive(cb, "s3-handoff-accept", "dna.handoff.accept", "{\"id\":\"" + hid + "\",\"note\":\"taken on\"}");
-        std::test::assert_eq_str(accepted.state, "succeeded", "accepted there: " + accepted.reason_code + " " + accepted.reason);
-        std::test::assert(std::str::contains(std::json::find_string_field(accepted.outcome, "text"), "handoff " + hid + " accepted by " + PRINCIPAL + " under connection `alpha`"), "the acceptance text: " + accepted.outcome);
-        std::test::assert_eq_str(std::json::find_string_field(item_where(std::json::find_field_raw(head::s3_project_detail_json(cb, self.beta), "handoffs"), "id", hid), "state"), "accepted", "admitted into beta's record");
-        std::test::assert_eq_int(count_rows(self.beta, "handoff.accepted"), 1, "one handoff.accepted row there");
+        std::test::assert_eq_str(
+            std::json::find_string_field(alpha_conn, "state"),
+            "in_force",
+            "beta's connection back is in force",
+        );
+        let accepted = self.drive(
+            cb,
+            "s3-handoff-accept",
+            "dna.handoff.accept",
+            "{\"id\":\"" + hid + "\",\"note\":\"taken on\"}",
+        );
+        std::test::assert_eq_str(
+            accepted.state,
+            "succeeded",
+            "accepted there: " + accepted.reason_code + " " + accepted.reason,
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(accepted.outcome, "text"),
+                "handoff " + hid + " accepted by " + PRINCIPAL + " under connection `alpha`",
+            ),
+            "the acceptance text: " + accepted.outcome,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                item_where(
+                    std::json::find_field_raw(
+                        head::s3_project_detail_json(cb, self.beta),
+                        "handoffs",
+                    ),
+                    "id",
+                    hid,
+                ),
+                "state",
+            ),
+            "accepted",
+            "admitted into beta's record",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.beta, "handoff.accepted"),
+            1,
+            "one handoff.accepted row there",
+        );
         // alpha reads the acceptance
         let synced = self.drive(c, "s3-handoff-sync", "dna.handoff.sync", "{}");
-        std::test::assert_eq_str(synced.state, "succeeded", "handoff sync: " + synced.reason_code + " " + synced.reason);
-        std::test::assert(std::str::contains(std::json::find_string_field(synced.outcome, "text"), "1 acceptance(s) admitted"), "one acceptance read back: " + synced.outcome);
-        std::test::assert_eq_str(std::json::find_string_field(item_where(std::json::find_field_raw(head::s3_project_detail_json(c, self.alpha), "handoffs"), "id", hid), "state"), "accepted_by_peer", "settled here");
-        std::test::assert_eq_int(count_rows(self.alpha, "handoff.accepted_by_peer"), 1, "one row for it");
+        std::test::assert_eq_str(
+            synced.state,
+            "succeeded",
+            "handoff sync: " + synced.reason_code + " " + synced.reason,
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(synced.outcome, "text"),
+                "1 acceptance(s) admitted",
+            ),
+            "one acceptance read back: " + synced.outcome,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                item_where(
+                    std::json::find_field_raw(
+                        head::s3_project_detail_json(c, self.alpha),
+                        "handoffs",
+                    ),
+                    "id",
+                    hid,
+                ),
+                "state",
+            ),
+            "accepted_by_peer",
+            "settled here",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "handoff.accepted_by_peer"),
+            1,
+            "one row for it",
+        );
         // closed
-        let closed = self.drive(c, "s3-disconnect", "dna.connection.close", "{\"name\":\"beta\",\"why\":\"the engagement ended\"}");
-        std::test::assert_eq_str(closed.state, "succeeded", "closed: " + closed.reason_code + " " + closed.reason);
-        std::test::assert_eq_str(std::json::find_string_field(closed.outcome, "name"), "beta", "the outcome names it");
-        std::test::assert_eq_int(count_rows(self.alpha, "connection.closed"), 1, "one connection.closed row");
+        let closed = self.drive(
+            c,
+            "s3-disconnect",
+            "dna.connection.close",
+            "{\"name\":\"beta\",\"why\":\"the engagement ended\"}",
+        );
+        std::test::assert_eq_str(
+            closed.state,
+            "succeeded",
+            "closed: " + closed.reason_code + " " + closed.reason,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(closed.outcome, "name"),
+            "beta",
+            "the outcome names it",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "connection.closed"),
+            1,
+            "one connection.closed row",
+        );
         let d4 = head::s3_project_detail_json(c, self.alpha);
-        std::test::assert_eq_str(std::json::find_string_field(item_where(std::json::find_field_raw(d4, "connections"), "name", "beta"), "state"), "closed", "closed in the projection: " + d4);
-        std::test::assert_eq_str(std::json::find_field_raw(d4, "secrets"), "[\"OPENAI_API_KEY\"]", "the secret names set here, once each");
+        std::test::assert_eq_str(
+            std::json::find_string_field(
+                item_where(std::json::find_field_raw(d4, "connections"), "name", "beta"),
+                "state",
+            ),
+            "closed",
+            "closed in the projection: " + d4,
+        );
+        std::test::assert_eq_str(
+            std::json::find_field_raw(d4, "secrets"),
+            "[\"OPENAI_API_KEY\"]",
+            "the secret names set here, once each",
+        );
         // replayed, a receipt is returned and nothing runs again
-        let replay = self.drive(c, "s3-disconnect", "dna.connection.close", "{\"name\":\"beta\",\"why\":\"the engagement ended\"}");
-        std::test::assert(replay.command_id == closed.command_id && replay.state == "succeeded", "an identical retry is the stored receipt");
-        std::test::assert_eq_int(count_rows(self.alpha, "connection.closed"), 1, "and the verb did not run twice");
+        let replay = self.drive(
+            c,
+            "s3-disconnect",
+            "dna.connection.close",
+            "{\"name\":\"beta\",\"why\":\"the engagement ended\"}",
+        );
+        std::test::assert(
+            replay.command_id == closed.command_id && replay.state == "succeeded",
+            "an identical retry is the stored receipt",
+        );
+        std::test::assert_eq_int(
+            count_rows(self.alpha, "connection.closed"),
+            1,
+            "and the verb did not run twice",
+        );
     }
 
     // Whatever this fixture started and did not stop.
     fn sweep() {
-        let body = head::Proc { pid: pid_in(self.child_dir + "/body.pid"), dir: self.child_dir, name: "body" };
+        let body = head::Proc {
+            pid: pid_in(self.child_dir + "/body.pid"),
+            dir: self.child_dir,
+            name: "body",
+        };
         if head::alive(body) { head::stop_proc(body); }
         if pid_alive(self.external_host) { head::kill_tree(to_string(self.external_host)); }
         let d = self.alpha + "/.hale/dna";
@@ -594,24 +1384,51 @@ fn main() {
         let home = root + "/home";
         std::io::fs::mkdir(home) or discard;
         std::io::fs::mkdir(home + "/dna") or discard;
-        let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
-                + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nHALE_VAULT_DIR=" + home + "/vault\nUSER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL
-                + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
-                + "\nOPENAI_API_KEY=" + ENV_SECRET + "\nHALE_S3_TEST_CLEAN=1\nHALE_S3_TEST_ROOT=" + root
+        let cache = if std::env::var_exists("XDG_CACHE_HOME") {
+            std::env::var("XDG_CACHE_HOME")
+        } else {
+            std::env::var("HOME") + "/.cache"
+        };
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
+                + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache
+                + "\nHALE_VAULT_DIR=" + home + "/vault\nUSER=" + PRINCIPAL + "\nLOGNAME="
+                + PRINCIPAL
+                + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME="
+                + home
+                + "\nOPENAI_API_KEY=" + ENV_SECRET + "\nHALE_S3_TEST_CLEAN=1\nHALE_S3_TEST_ROOT="
+                + root
             // the owner's DSN under a name of the fixture's own: only the
             // connection cases migrate memory with it (GH #1590)
-                + "\nHALE_S3_TEST_MEMORY_OWNER=" + (if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" }) + "\n" + std::env::arg_or(0, ""));
+                + "\nHALE_S3_TEST_MEMORY_OWNER="
+                + (
+                    if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+                        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+                    } else {
+                        ""
+                    }
+                )
+                + "\n" + std::env::arg_or(0, ""));
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
-        if clean.code == 0 { dna::scratch_done(root); } else { eprintln("head S3 fixture kept for inspection: ", root); }
+        if clean.code == 0 {
+            dna::scratch_done(root);
+        } else {
+            eprintln("head S3 fixture kept for inspection: ", root);
+        }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
     let root = std::env::var("HALE_S3_TEST_ROOT");
     // whatever this fixture starts under its root stops when it does,
     // whether it passes, fails an assertion or is killed
     dna::reap_on_exit(root);
-    let cases = S3Cases { root: root, home: root + "/home", state: root + "/state", child_dir: root + "/state/children", sources: root + "/home/.config/hale-dna/sources" };
+    let cases = S3Cases {
+        root: root,
+        home: root + "/home",
+        state: root + "/state",
+        child_dir: root + "/state/children",
+        sources: root + "/home/.config/hale-dna/sources",
+    };
     cases.setup();
     cases.table_cases();
     cases.provision_cases();

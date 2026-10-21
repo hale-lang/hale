@@ -29,8 +29,12 @@ type RecordGraph {
 
 fn record_graph_put(g: RecordGraph, kind: String, id: String) -> RecordGraph {
     let mut out = g;
-    if kind == "graph.node" && !std::str::contains(out.nodes, "\n" + id + "\n") { out.nodes = out.nodes + id + "\n"; }
-    if kind == "graph.edge" && !std::str::contains(out.edges, "\n" + id + "\n") { out.edges = out.edges + id + "\n"; }
+    if kind == "graph.node" && !std::str::contains(out.nodes, "\n" + id + "\n") {
+        out.nodes = out.nodes + id + "\n";
+    }
+    if kind == "graph.edge" && !std::str::contains(out.edges, "\n" + id + "\n") {
+        out.edges = out.edges + id + "\n";
+    }
     return out;
 }
 
@@ -40,13 +44,19 @@ fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "graph.node" || e.kind == "graph.edge" { g = record_graph_put(g, e.kind, e.entity); }
+        if e.kind == "graph.node" || e.kind == "graph.edge" {
+            g = record_graph_put(g, e.kind, e.entity);
+        }
         if e.kind == "graph.retired" {
             g.nodes = std::str::replace(g.nodes, "\n" + e.entity + "\n", "\n");
             g.edges = std::str::replace(g.edges, "\n" + e.entity + "\n", "\n");
         }
         if e.kind == "knowledge.ratified" {
-            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            let raw = if std::str::starts_with(e.entity, "sha256:") {
+                e.entity[7..len(e.entity)]
+            } else {
+                e.entity
+            };
             let doc = receipts.read(raw);
             if len(doc) > 0 && native_json_string(doc, "kind") == "graph" {
                 let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
@@ -69,7 +79,9 @@ fn record_graph(j: Journal, receipts: Receipts) -> RecordGraph {
     return g;
 }
 
-fn record_graph_has(ids: String, id: String) -> Bool { return std::str::contains(ids, "\n" + id + "\n"); }
+fn record_graph_has(ids: String, id: String) -> Bool {
+    return std::str::contains(ids, "\n" + id + "\n");
+}
 
 // The graph the record states with each live row's body: `<id>\t<body>`
 // a line, the latest body of every node and edge (a row, or a ratified
@@ -80,10 +92,16 @@ fn record_graph_bodies(j: Journal, receipts: Receipts) -> String {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "graph.node" || e.kind == "graph.edge" { out = graph_body_put(out, e.entity, e.body); }
+        if e.kind == "graph.node" || e.kind == "graph.edge" {
+            out = graph_body_put(out, e.entity, e.body);
+        }
         if e.kind == "graph.retired" { out = graph_body_drop(out, e.entity); }
         if e.kind == "knowledge.ratified" {
-            let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+            let raw = if std::str::starts_with(e.entity, "sha256:") {
+                e.entity[7..len(e.entity)]
+            } else {
+                e.entity
+            };
             let doc = receipts.read(raw);
             if len(doc) > 0 && native_json_string(doc, "kind") == "graph" {
                 let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
@@ -91,7 +109,13 @@ fn record_graph_bodies(j: Journal, receipts: Receipts) -> String {
                     let k = std::json::find_string_field(it.element, "kind");
                     let id = std::json::find_string_field(it.element, "entity");
                     if k == "graph.retired" { out = graph_body_drop(out, id); }
-                    else if k == "graph.node" || k == "graph.edge" { out = graph_body_put(out, id, std::json::find_string_field(it.element, "body")); }
+                    else if k == "graph.node" || k == "graph.edge" {
+                        out = graph_body_put(
+                            out,
+                            id,
+                            std::json::find_string_field(it.element, "body"),
+                        );
+                    }
                     it = std::json::array_next(it);
                 }
             }
@@ -190,7 +214,12 @@ fn mutation_review_request(j: Journal, review_id: String) -> String {
     let mut out = "";
     while i < n {
         let e = j.read(i);
-        if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"mutation_id\"") { out = e.body; }
+        if e.kind == "review.requested"
+            && e.entity == "review:" + review_id
+            && std::str::contains(e.body, "\"mutation_id\"")
+        {
+            out = e.body;
+        }
         i = i + 1;
     }
     return out;
@@ -203,7 +232,11 @@ fn mutation_disposition(j: Journal, mutation_id: String) -> String {
     let mut out = "";
     while i < n {
         let e = j.read(i);
-        if e.entity == mutation_id && std::str::contains(e.kind, "mutation.") && e.kind != "mutation.worktree" && e.kind != "mutation.candidate" {
+        if e.entity == mutation_id
+            && std::str::contains(e.kind, "mutation.")
+            && e.kind != "mutation.worktree"
+            && e.kind != "mutation.candidate"
+        {
             out = e.kind[9..len(e.kind)];
         }
         i = i + 1;
@@ -233,7 +266,9 @@ fn retirement(j: Journal, who: String) -> RetiredPerson {
     let mut i = 0;
     while i < n {
         let e = j.read(i);
-        if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: native_json_string(e.body, "to") }; }
+        if e.kind == "person.retired" && e.entity == who {
+            out = RetiredPerson { retired: true, successor: native_json_string(e.body, "to") };
+        }
         i = i + 1;
     }
     return out;

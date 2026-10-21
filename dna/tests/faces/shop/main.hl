@@ -32,12 +32,39 @@ main locus Shop {
         orders: Orders = Orders { };
         catalog: Catalog = Catalog { };
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "operator shopper" };
-        office: api::Exposure = api::serve(OrdersSurface, unix::Rpc { path: "/tmp/hale-faces-fixture-orders.sock", roles: self.staff }, as: "office", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
-        front: api::Exposure = api::serve(CatalogSurface, unix::Rpc { path: "/tmp/hale-faces-fixture-catalog.sock", roles: self.staff }, as: "front", receivers: { Catalog: self.catalog }, bound: 8, on_full: refuse);
-        admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "OrdersSurface", port: 1 };
-        product: dna::Face = dna::Face { app: "faces/product", roles: "shopper", consumes: "CatalogSurface", port: 2 };
+        office: api::Exposure = api::serve(
+            OrdersSurface,
+            unix::Rpc { path: "/tmp/hale-faces-fixture-orders.sock", roles: self.staff },
+            as: "office",
+            receivers: { Orders: self.orders },
+            bound: 8,
+            on_full: refuse
+        );
+        front: api::Exposure = api::serve(
+            CatalogSurface,
+            unix::Rpc { path: "/tmp/hale-faces-fixture-catalog.sock", roles: self.staff },
+            as: "front",
+            receivers: { Catalog: self.catalog },
+            bound: 8,
+            on_full: refuse
+        );
+        admin: dna::Face = dna::Face {
+            app: "faces/admin",
+            roles: "operator",
+            consumes: "OrdersSurface",
+            port: 1,
+        };
+        product: dna::Face = dna::Face {
+            app: "faces/product",
+            roles: "shopper",
+            consumes: "CatalogSurface",
+            port: 2,
+        };
     }
-    placement { orders: cooperative(pool = work) where async_io; catalog: cooperative(pool = work) where async_io; }
+    placement {
+        orders: cooperative(pool = work) where async_io;
+        catalog: cooperative(pool = work) where async_io;
+    }
     run() {
         while !self.draining { std::time::sleep(100ms); }
         self.office.stop();

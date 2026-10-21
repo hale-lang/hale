@@ -14,7 +14,14 @@ api Pinger { rpc Echo::on_ping; }
 main locus App {
     params {
         echo: Echo = Echo { };
-        sock: api::Exposure = api::serve(Pinger, unix::Rpc { path: "/tmp/hale-1490-ping.sock" }, as: "ping", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+        sock: api::Exposure = api::serve(
+            Pinger,
+            unix::Rpc { path: "/tmp/hale-1490-ping.sock" },
+            as: "ping",
+            receivers: { Echo: self.echo },
+            bound: 8,
+            on_full: refuse
+        );
     }
     run() {
         while !self.draining { std::time::sleep(100ms); }

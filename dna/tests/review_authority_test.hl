@@ -38,7 +38,12 @@ main locus App {
         };
         boundary: dna::AutonomyBoundary = dna::AutonomyBoundary {
             child: "Support",
-            grant: dna::Grant { child: "Support", classes: "refactor docs", max_magnitude: 12, review: "post" }
+            grant: dna::Grant {
+                child: "Support",
+                classes: "refactor docs",
+                max_magnitude: 12,
+                review: "post",
+            }
         };
     }
     run() {
@@ -50,7 +55,13 @@ main locus App {
         });
         std::test::assert(!agent, "authority-less verdict refused");
         std::test::assert(!self.review.settled, "still open");
-        std::test::assert(std::str::contains(self.review.last_refusal, "authority agent does not satisfy maintainer"), self.review.last_refusal);
+        std::test::assert(
+            std::str::contains(
+                self.review.last_refusal,
+                "authority agent does not satisfy maintainer",
+            ),
+            self.review.last_refusal,
+        );
         // 2. The author cannot review their own candidate, even with authority.
         let selfie = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
@@ -77,7 +88,10 @@ main locus App {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
             verdict: "approve", reviewer: "alice", authority: "maintainer operator"
         });
-        std::test::assert(!compound && !self.review.settled, "a compound authority name is not the authority it contains");
+        std::test::assert(
+            !compound && !self.review.settled,
+            "a compound authority name is not the authority it contains",
+        );
         let ok = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
             verdict: "approve", reviewer: "alice", authority: "maintainer"
@@ -85,7 +99,11 @@ main locus App {
         std::test::assert(ok && self.review.settled, "settled");
         std::test::assert_eq_str(self.review.outcome, "approve", "outcome recorded");
         std::test::assert_eq_str(self.review.decided_by, "alice", "reviewer recorded");
-        std::test::assert_eq_int(self.review.verdict_count(), 2, "abstain + approve kept in lineage");
+        std::test::assert_eq_int(
+            self.review.verdict_count(),
+            2,
+            "abstain + approve kept in lineage",
+        );
         // 6. The Board is the exception to independence: a Review requiring
         //    the Board's authority admits its asker's verdict (governance,
         //    not self-review), where the maintainer's Review above did not.
@@ -93,75 +111,170 @@ main locus App {
             review_id: "r2", subject_digest: "sha256:hold-alice-board",
             verdict: "approve", reviewer: "alice", authority: "board"
         });
-        std::test::assert(own && self.board_review.settled && self.board_review.decided_by == "alice", "the Board ratifies what it asked for: " + self.board_review.last_refusal);
+        std::test::assert(
+            own && self.board_review.settled && self.board_review.decided_by == "alice",
+            "the Board ratifies what it asked for: " + self.board_review.last_refusal,
+        );
         //    The exception is governance's alone: a change to the work that
         //    requires the Board still refuses its author.
         let own_change = self.board_change.consider(dna::Verdict {
             review_id: "r3", subject_digest: "sha256:m9-candidate",
             verdict: "approve", reviewer: "alice", authority: "board"
         });
-        std::test::assert(!own_change && !self.board_change.settled && std::str::contains(self.board_change.last_refusal, "authored the candidate"), "a Board-required change refuses its author: " + self.board_change.last_refusal);
+        std::test::assert(
+            !own_change
+                && !self.board_change.settled
+                && std::str::contains(self.board_change.last_refusal, "authored the candidate"),
+            "a Board-required change refuses its author: " + self.board_change.last_refusal,
+        );
 
         // ---- Disposition is a vector policy -------------------------
         // The disposition is the library's own enum, matched here on the
         // importer's side (GH #534 closed dna/FRICTION.md F.1).
-        let lens = match self.boundary.assess("refactor", dna::Magnitude { loci: 1, law_touched: true }, dna::Evidence { }) {
+        let lens = match self.boundary.assess(
+            "refactor",
+            dna::Magnitude { loci: 1, law_touched: true },
+            dna::Evidence { },
+        ) {
             dna::Disposition::Review -> "blocked-on-a-reviewer",
             dna::Disposition::Release -> "released",
             dna::Disposition::Stage -> "staged",
             dna::Disposition::Escalate -> "escalated",
             dna::Disposition::Deny -> "denied",
         };
-        std::test::assert_eq_str(lens, "blocked-on-a-reviewer", "importer-side match over the library enum");
+        std::test::assert_eq_str(
+            lens,
+            "blocked-on-a-reviewer",
+            "importer-side match over the library enum",
+        );
         let small = dna::Magnitude { loci: 2 };
-        let strong = dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, rollback_rehearsed: true, independent_reviews: 3 };
+        let strong = dna::Evidence {
+            check_clean: true,
+            verify_clean: true,
+            tests_pass: true,
+            replay_ok: true,
+            rollback_rehearsed: true,
+            independent_reviews: 3,
+        };
         let weak = dna::Evidence { check_clean: true };
         // 6. Permitted class, small magnitude, strong evidence, post-review grant -> release.
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", small, strong)), "release", "release inside the envelope");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("refactor", small, strong)),
+            "release",
+            "release inside the envelope",
+        );
         // 7. Same change, weak evidence -> stage (prepare, do not apply).
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", small, weak)), "stage", "insufficient evidence stages");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("refactor", small, weak)),
+            "stage",
+            "insufficient evidence stages",
+        );
         // 8. A class outside the grant -> escalate, however strong the evidence.
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("deploy", small, strong)), "escalate", "class not granted escalates");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("deploy", small, strong)),
+            "escalate",
+            "class not granted escalates",
+        );
         // 9. Hard boundaries: law touched / effects widened / ownership crossed
         //    -> review, and NO evidence score cancels that.
         let law = dna::Magnitude { loci: 1, law_touched: true };
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", law, strong)), "review", "law touched: review regardless of evidence");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("refactor", law, strong)),
+            "review",
+            "law touched: review regardless of evidence",
+        );
         let widen = dna::Magnitude { loci: 1, effects_widened: true };
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", widen, strong)), "review", "effects widened: review regardless of evidence");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("refactor", widen, strong)),
+            "review",
+            "effects widened: review regardless of evidence",
+        );
         let cross = dna::Magnitude { loci: 1, ownership_crossed: true };
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("docs", cross, strong)), "review", "ownership crossed: review");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("docs", cross, strong)),
+            "review",
+            "ownership crossed: review",
+        );
         let blast = dna::Magnitude { loci: 1, irreversible: true, external_blast: 3 };
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("docs", blast, strong)), "review", "irreversible external blast: review");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("docs", blast, strong)),
+            "review",
+            "irreversible external blast: review",
+        );
         // 10. Magnitude over the ceiling escalates even for a permitted class.
         let big = dna::Magnitude { loci: 40 };
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", big, strong)), "escalate", "magnitude ceiling escalates");
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("refactor", big, strong)),
+            "escalate",
+            "magnitude ceiling escalates",
+        );
 
         // ---- Autonomy evolution is asymmetric ------------------------
         // 11. The child cannot expand its own grant.
-        std::test::assert(!self.boundary.expand("Support", "Product", 50, "deploy"), "child self-expansion refused");
+        std::test::assert(
+            !self.boundary.expand("Support", "Product", 50, "deploy"),
+            "child self-expansion refused",
+        );
         std::test::assert_eq_int(self.boundary.expansions_refused, 1, "refusal audited");
-        std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 12, "grant unchanged");
+        std::test::assert_eq_int(
+            self.boundary.current_grant().max_magnitude,
+            12,
+            "grant unchanged",
+        );
         // 12. The parent can.
-        std::test::assert(self.boundary.expand("Product", "Product", 20, "deploy"), "parent expansion admitted");
-        std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 20, "ceiling raised by the parent");
-        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("deploy", small, strong)), "release", "newly granted class releases");
+        std::test::assert(
+            self.boundary.expand("Product", "Product", 20, "deploy"),
+            "parent expansion admitted",
+        );
+        std::test::assert_eq_int(
+            self.boundary.current_grant().max_magnitude,
+            20,
+            "ceiling raised by the parent",
+        );
+        std::test::assert_eq_str(
+            dna::disposition_name(self.boundary.assess("deploy", small, strong)),
+            "release",
+            "newly granted class releases",
+        );
         // 13. Repeated failure contracts the grant automatically.
         self.boundary.note_outcome(false);
         self.boundary.note_outcome(false);
         std::test::assert_eq_int(self.boundary.contractions, 1, "contracted after two failures");
         std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 10, "ceiling halved");
-        std::test::assert_eq_str(self.boundary.current_grant().review, "pre", "review tightened to pre");
-        std::test::assert(self.boundary.audit_count() >= 13, "every decision is in the audit trail");
+        std::test::assert_eq_str(
+            self.boundary.current_grant().review,
+            "pre",
+            "review tightened to pre",
+        );
+        std::test::assert(
+            self.boundary.audit_count() >= 13,
+            "every decision is in the audit trail",
+        );
 
         // An unknown authority name satisfies ONLY itself (the
         // shakeout's finding 3): a substring test let `not-board` pass
         // for `board`, and a Review admitted its verdict.
-        std::test::assert(dna::authority_satisfies("release-captain", "release-captain"), "a custom authority satisfies itself");
-        std::test::assert(!dna::authority_satisfies("not-board", "board"), "a name that merely contains `board` is not the board");
-        std::test::assert(!dna::authority_satisfies("operator-intern", "operator"), "nor a suffix of a custom name");
+        std::test::assert(
+            dna::authority_satisfies("release-captain", "release-captain"),
+            "a custom authority satisfies itself",
+        );
+        std::test::assert(
+            !dna::authority_satisfies("not-board", "board"),
+            "a name that merely contains `board` is not the board",
+        );
+        std::test::assert(
+            !dna::authority_satisfies("operator-intern", "operator"),
+            "nor a suffix of a custom name",
+        );
         std::test::assert(!dna::authority_satisfies("board", "board-of-two"), "nor a prefix");
-        std::test::assert(!dna::authority_satisfies("release-captain", "reviewer"), "an unknown name does not outrank a known one");
-        std::test::assert(!dna::authority_satisfies("reviewer", "release-captain"), "and a known one does not satisfy an unknown");
+        std::test::assert(
+            !dna::authority_satisfies("release-captain", "reviewer"),
+            "an unknown name does not outrank a known one",
+        );
+        std::test::assert(
+            !dna::authority_satisfies("reviewer", "release-captain"),
+            "and a known one does not satisfy an unknown",
+        );
     }
 }
 

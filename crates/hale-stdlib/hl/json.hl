@@ -934,7 +934,11 @@ fn __json_iter_find_field_raw(it: std::json::ArrayIterSpan, json: String, name: 
 
 // Per-iter string-field reader. Strips surrounding quotes +
 // unescapes, mirroring `find_string_field`.
-fn __json_iter_find_string_field(it: std::json::ArrayIterSpan, json: String, name: String) -> String {
+fn __json_iter_find_string_field(
+    it: std::json::ArrayIterSpan,
+    json: String,
+    name: String
+) -> String {
     if it.done { return ""; }
     let raw = __json_find_field_raw_in(json, name, it.cur_start, it.cur_end);
     if len(raw) == 0 { return ""; }

@@ -27,7 +27,9 @@ main locus App {
         std::test::assert_eq_int(init.code, 0, "git init: " + init.stderr);
         std::io::fs::write_file(repo + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
         let git = dna::LocalGit { repo: repo };
         let base = git.head(repo);
@@ -35,7 +37,11 @@ main locus App {
 
         // the gateway over that repository
         self.gate = dna::MutationGateway {
-            workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.wt", base_exec_digest: "exec:abc" },
+            workspaces: dna::IsolatedWorktrees {
+                repo: repo,
+                root: repo + "/.wt",
+                base_exec_digest: "exec:abc",
+            },
             repo: git,
             lease_ttl: 100
         };
@@ -44,7 +50,10 @@ main locus App {
         let lease = self.gate.take("m1", "attempt-a", 10);
         std::test::assert(lease.present, "lease taken");
         let refused = self.gate.open(self.journal, "m1", base, 999, 10);
-        std::test::assert(!refused.ok && refused.refused == "stale or missing lease", "a wrong token opens nothing: " + refused.refused);
+        std::test::assert(
+            !refused.ok && refused.refused == "stale or missing lease",
+            "a wrong token opens nothing: " + refused.refused,
+        );
         let opened = self.gate.open(self.journal, "m1", base, lease.token, 11);
         std::test::assert(opened.ok, "worktree opened: " + opened.refused);
         std::test::assert_eq_str(opened.value, repo + "/.wt/m1", "named by the Mutation");
@@ -57,23 +66,44 @@ main locus App {
         // the worktree holds the repository's vendor/ copy, which this
         // genome's .gitignore does not name: it stays out of the candidate
         std::io::fs::mkdir(opened.value + "/vendor") or discard;
-        std::io::fs::write_file(opened.value + "/vendor/lib.hl", "fn vendored() -> Int { return 1; }\n") or discard;
-        std::io::fs::write_file(opened.value + "/main.hl", "fn main() { println(\"v2\"); }\n") or discard;
+        std::io::fs::write_file(
+            opened.value + "/vendor/lib.hl",
+            "fn vendored() -> Int { return 1; }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            opened.value + "/main.hl",
+            "fn main() { println(\"v2\"); }\n",
+        ) or discard;
         let cand = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 13);
         std::test::assert(cand.ok && len(cand.value) == 40, "candidate committed: " + cand.refused);
         std::test::assert(cand.value != base, "a new commit");
         let d = git.diff(opened.value, base, cand.value);
-        std::test::assert(std::str::contains(d, "+fn main() { println(\"v2\"); }"), "the diff is the edit: " + d);
-        std::test::assert(!std::str::contains(d, "vendor/"), "vendor/ is never part of a candidate: " + d);
+        std::test::assert(
+            std::str::contains(d, "+fn main() { println(\"v2\"); }"),
+            "the diff is the edit: " + d,
+        );
+        std::test::assert(
+            !std::str::contains(d, "vendor/"),
+            "vendor/ is never part of a candidate: " + d,
+        );
         // and a genome that does ignore vendor/ commits its candidates too
         std::io::fs::write_file(opened.value + "/.gitignore", "/vendor/\n") or discard;
         let ignored = git.commit_all(opened.value, "ignore vendor/");
-        std::test::assert(len(ignored) == 40, "a candidate commits with vendor/ ignored: " + git.why());
+        std::test::assert(
+            len(ignored) == 40,
+            "a candidate commits with vendor/ ignored: " + git.why(),
+        );
         let d2 = git.diff(opened.value, cand.value, ignored);
-        std::test::assert(std::str::contains(d2, "+/vendor/") && !std::str::contains(d2, "vendor/lib.hl"), "the .gitignore alone: " + d2);
+        std::test::assert(
+            std::str::contains(d2, "+/vendor/") && !std::str::contains(d2, "vendor/lib.hl"),
+            "the .gitignore alone: " + d2,
+        );
         std::test::assert(!git.contains(repo, cand.value), "not applied yet");
         let cand2 = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 14);
-        std::test::assert(cand2.ok && cand2.replayed && cand2.value == cand.value, "a retried commit replays the same sha");
+        std::test::assert(
+            cand2.ok && cand2.replayed && cand2.value == cand.value,
+            "a retried commit replays the same sha",
+        );
 
         // ---- apply the exact candidate; a retry does not commit twice ---
         let applied = self.gate.apply(self.journal, "m1", cand.value, lease.token, 15);
@@ -81,9 +111,16 @@ main locus App {
         std::test::assert_eq_str(git.head(repo), cand.value, "the repository IS the candidate");
         let log1 = sh("git\n-C\n" + repo + "\nrev-list\n--count\nHEAD");
         let retry = self.gate.apply(self.journal, "m1", cand.value, lease.token, 16);
-        std::test::assert(retry.ok && retry.replayed, "a crashed-and-retried apply reads the Journal");
+        std::test::assert(
+            retry.ok && retry.replayed,
+            "a crashed-and-retried apply reads the Journal",
+        );
         let log2 = sh("git\n-C\n" + repo + "\nrev-list\n--count\nHEAD");
-        std::test::assert_eq_str(dna::trim_nl(log2.stdout), dna::trim_nl(log1.stdout), "exactly one commit landed");
+        std::test::assert_eq_str(
+            dna::trim_nl(log2.stdout),
+            dna::trim_nl(log1.stdout),
+            "exactly one commit landed",
+        );
         std::test::assert_eq_int(git.applied, 1, "the gateway dispatched apply once");
 
         // ---- fencing: an expired lease's token is refused -----------------
@@ -104,7 +141,10 @@ main locus App {
             kinds = kinds + self.journal.read(i).kind + " ";
             i = i + 1;
         }
-        std::test::assert(std::str::contains(kinds, "effect.requested effect.result mutation.worktree"), kinds);
+        std::test::assert(
+            std::str::contains(kinds, "effect.requested effect.result mutation.worktree"),
+            kinds,
+        );
         std::test::assert(std::str::contains(kinds, "mutation.candidate"), kinds);
         std::test::assert(std::str::contains(kinds, "mutation.applied"), kinds);
         std::test::assert_eq_int(self.gate.refusals, 2, "two refusals, both fencing");

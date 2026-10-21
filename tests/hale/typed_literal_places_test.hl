@@ -22,7 +22,11 @@ fn amount(f: Fee) -> String {
 }
 
 fn main() {
-    std::test::assert_eq_str(amount(Fee::Flat(1.25d)), "1.25", "a variant's Decimal takes the field's scale");
+    std::test::assert_eq_str(
+        amount(Fee::Flat(1.25d)),
+        "1.25",
+        "a variant's Decimal takes the field's scale",
+    );
 
     let d = 60s;
     let mut hit = "";

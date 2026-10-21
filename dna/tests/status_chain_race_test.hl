@@ -14,7 +14,10 @@ fn toolchain() -> String {
 }
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir
+            + "\n" + argv,
+    );
 }
 
 // Appends one row after another to the record, through memory's append
@@ -38,7 +41,11 @@ main locus App {
         let app = scratch + "/raced";
         let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
         let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
-        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(app),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let r = dna::MemoryRecord { repo: app };
         let before = r.count("journal");
         std::test::assert(before > 0, "the new record has rows");
@@ -46,7 +53,11 @@ main locus App {
         std::io::fs::write_file(scratch + "/writer.sh", WRITER) or discard;
         let stop = scratch + "/stop";
         let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
-        let started = dna::run_tool("sh\n-c\nsh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + scratch + "/writer.sh\n" + owner + "\n" + dna::schema_for(dna::record_scope(app)) + "\n" + stop);
+        let started = dna::run_tool(
+            "sh\n-c\nsh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + scratch
+                + "/writer.sh\n" + owner + "\n" + dna::schema_for(dna::record_scope(app)) + "\n"
+                + stop,
+        );
         std::test::assert_eq_int(started.code, 0, "the second writer starts");
 
         let mut i = 0;
@@ -54,16 +65,33 @@ main locus App {
             let st = in_dir(app, toolchain() + "\ndna\nstatus\n--json");
             std::test::assert_eq_int(st.code, 0, "status answers: " + st.stderr);
             let journal = std::json::find_field_raw(st.stdout, "journal");
-            std::test::assert_eq_str(std::json::find_string_field(journal, "chain"), "verified", "poll " + to_string(i) + ": a record that grew is not broken: " + journal);
-            std::test::assert(len(std::json::find_string_field(journal, "chain_head")) == 64, "poll " + to_string(i) + ": and names the head it verified: " + journal);
+            std::test::assert_eq_str(
+                std::json::find_string_field(journal, "chain"),
+                "verified",
+                "poll " + to_string(i) + ": a record that grew is not broken: " + journal,
+            );
+            std::test::assert(
+                len(std::json::find_string_field(journal, "chain_head")) == 64,
+                "poll " + to_string(i) + ": and names the head it verified: " + journal,
+            );
             i = i + 1;
         }
-        let stopped = dna::run_tool("sh\n-c\n: > \"$1\"; n=0; while [ ! -e \"$1.done\" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; [ -e \"$1.done\" ]\nsh\n" + stop);
+        let stopped = dna::run_tool(
+            "sh\n-c\n: > \"$1\"; n=0; while [ ! -e \"$1.done\" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; [ -e \"$1.done\" ]\nsh\n"
+                + stop,
+        );
         std::test::assert_eq_int(stopped.code, 0, "the second writer stops");
-        std::test::assert(r.count("journal") > before + 10, "the writer appended while status was polled: " + to_string(r.count("journal") - before) + " row(s)");
+        std::test::assert(
+            r.count("journal") > before + 10,
+            "the writer appended while status was polled: " + to_string(r.count("journal") - before)
+                + " row(s)",
+        );
 
         let quiet = in_dir(app, toolchain() + "\ndna\nstatus");
-        std::test::assert(std::str::contains(quiet.stdout, "chain verified at " + r.head("journal").id[0..12]), "the text line names the verified head: " + quiet.stdout);
+        std::test::assert(
+            std::str::contains(quiet.stdout, "chain verified at " + r.head("journal").id[0..12]),
+            "the text line names the verified head: " + quiet.stdout,
+        );
         dna::scratch_done(scratch);
     }
 }

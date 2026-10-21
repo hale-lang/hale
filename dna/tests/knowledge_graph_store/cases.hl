@@ -10,10 +10,24 @@ locus EdgeResults { capacity { heap rows of dna::KnowledgeEdge; } }
 @form(vec)
 locus BindingResults { capacity { heap rows of dna::KnowledgeBinding; } }
 locus CaptureGraph {
-    params { nodes: NodeResults = NodeResults { }; edges: EdgeResults = EdgeResults { }; bindings: BindingResults = BindingResults { }; budget: Int = 100; }
-    fn node(row: dna::Stored) -> Bool { if self.nodes.len() >= self.budget { return false; } self.nodes.push(row); return true; }
-    fn edge(row: dna::KnowledgeEdge) -> Bool { if self.edges.len() >= self.budget { return false; } self.edges.push(row); return true; }
-    fn binding(row: dna::KnowledgeBinding) -> Bool { if self.bindings.len() >= self.budget { return false; } self.bindings.push(row); return true; }
+    params {
+        nodes: NodeResults = NodeResults { };
+        edges: EdgeResults = EdgeResults { };
+        bindings: BindingResults = BindingResults { };
+        budget: Int = 100;
+    }
+    fn node(row: dna::Stored) -> Bool {
+        if self.nodes.len() >= self.budget { return false; } self.nodes.push(row);
+        return true;
+    }
+    fn edge(row: dna::KnowledgeEdge) -> Bool {
+        if self.edges.len() >= self.budget { return false; } self.edges.push(row);
+        return true;
+    }
+    fn binding(row: dna::KnowledgeBinding) -> Bool {
+        if self.bindings.len() >= self.budget { return false; } self.bindings.push(row);
+        return true;
+    }
 }
 locus GraphPolicy {
     params { hidden: String = "h"; all_hidden: Bool = false; }
@@ -24,7 +38,16 @@ locus GraphPolicy {
 locus MutateGraphPolicy {
     params { other: dna::KnowledgeStore; fired: Bool = false; }
     fn visible(id: String) -> Bool {
-        if !self.fired { self.fired = true; std::test::assert(self.other.upsert(dna::Idea { id: "zz-new", text: "concurrent", provenance: "proposed" }, 0), "concurrent insert"); }
+        if !self.fired {
+            self.fired = true;
+            std::test::assert(
+                self.other.upsert(
+                    dna::Idea { id: "zz-new", text: "concurrent", provenance: "proposed" },
+                    0,
+                ),
+                "concurrent insert",
+            );
+        }
         return true;
     }
 }
@@ -32,11 +55,21 @@ locus MutateGraphPolicy {
 // Another projector lands a row while the read is open: the page keeps the
 // stamp of its own snapshot.
 locus RowGraphPolicy {
-    params { other: dna::KnowledgeStore; seq: Int; prev: String; head: String; fired: Bool = false; }
+    params {
+        other: dna::KnowledgeStore;
+        seq: Int;
+        prev: String;
+        head: String;
+        fired: Bool = false;
+    }
     fn visible(id: String) -> Bool {
         if !self.fired {
             self.fired = true;
-            std::test::assert_eq_int(self.other.begin_row(self.seq, self.prev, self.head), 1, "concurrent row begun");
+            std::test::assert_eq_int(
+                self.other.begin_row(self.seq, self.prev, self.head),
+                1,
+                "concurrent row begun",
+            );
             std::test::assert(self.other.commit_row(), "concurrent row landed");
         }
         return true;
@@ -45,22 +78,107 @@ locus RowGraphPolicy {
 
 locus GraphCases {
     params { }
-    fn expect_ok(page: dna::GraphPage, label: String) { std::test::assert(page.ok, label + ": " + page.error); }
+    fn expect_ok(page: dna::GraphPage, label: String) {
+        std::test::assert(page.ok, label + ": " + page.error);
+    }
     fn populate(store: dna::KnowledgeStore) {
-        std::test::assert(store.upsert(dna::Idea { id: "z", text: "Z text", provenance: "ratified", accepted: true, revision: 11 }, 11), "seed z");
-        std::test::assert(store.upsert(dna::Idea { id: "a", kind: "practice", text: "A\nbody\tquoted \"text\"", author: "org", provenance: "ratified", accepted: true, revision: 8, name: "practice/é", supersedes: "native-predecessor" }, 8), "seed a");
-        std::test::assert(store.upsert(dna::Idea { id: "é", text: "Unicode", provenance: "proposed" }, 0), "seed Unicode");
-        std::test::assert(store.upsert(dna::Idea { id: "h", text: "hidden", provenance: "ratified", accepted: true }, 0), "seed hidden");
-        std::test::assert(store.upsert(dna::Idea { id: "p", text: "retired", provenance: "retired", revision: 12 }, 4), "seed retired");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "a", target: "org", author: "org", class: "goal" }), "seed ancestor binding");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "a", target: "org/child", author: "org\n|é", class: "initiative" }), "seed exact binding");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "h", target: "org", author: "org", class: "goal" }), "seed hidden binding");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "p", target: "org", author: "org", class: "goal" }), "seed retired binding");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r\n|\té" }), "seed native relation");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "z", to: "a", rel: "incoming" }), "seed incoming");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "h", rel: "hidden" }), "seed hidden edge");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }), "seed shorter relation");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "z", to: "é", rel: "unrelated" }), "seed unrelated");
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: "z",
+                    text: "Z text",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 11,
+                },
+                11,
+            ),
+            "seed z",
+        );
+        std::test::assert(
+            store.upsert(
+                dna::Idea {
+                    id: "a",
+                    kind: "practice",
+                    text: "A\nbody\tquoted \"text\"",
+                    author: "org",
+                    provenance: "ratified",
+                    accepted: true,
+                    revision: 8,
+                    name: "practice/é",
+                    supersedes: "native-predecessor",
+                },
+                8,
+            ),
+            "seed a",
+        );
+        std::test::assert(
+            store.upsert(dna::Idea { id: "é", text: "Unicode", provenance: "proposed" }, 0),
+            "seed Unicode",
+        );
+        std::test::assert(
+            store.upsert(
+                dna::Idea { id: "h", text: "hidden", provenance: "ratified", accepted: true },
+                0,
+            ),
+            "seed hidden",
+        );
+        std::test::assert(
+            store.upsert(
+                dna::Idea { id: "p", text: "retired", provenance: "retired", revision: 12 },
+                4,
+            ),
+            "seed retired",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding { idea: "a", target: "org", author: "org", class: "goal" },
+            ),
+            "seed ancestor binding",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding {
+                    idea: "a",
+                    target: "org/child",
+                    author: "org\n|é",
+                    class: "initiative",
+                },
+            ),
+            "seed exact binding",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding { idea: "h", target: "org", author: "org", class: "goal" },
+            ),
+            "seed hidden binding",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding { idea: "p", target: "org", author: "org", class: "goal" },
+            ),
+            "seed retired binding",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r\n|\té" }),
+            "seed native relation",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "z", to: "a", rel: "incoming" }),
+            "seed incoming",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "a", to: "h", rel: "hidden" }),
+            "seed hidden edge",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }),
+            "seed shorter relation",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "z", to: "é", rel: "unrelated" }),
+            "seed unrelated",
+        );
     }
     fn exercise(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
         std::test::assert(store.open(), label + ": open");
@@ -69,143 +187,413 @@ locus GraphCases {
         std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 1, label + ": row 0 begun");
         self.populate(store);
         std::test::assert(store.commit_row(), label + ": row 0 lands");
-        std::test::assert_eq_int(graph.graph_generation(), initial + 14, label + ": each effective graph mutation advances generation");
-        std::test::assert(store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }), label + ": duplicate edge");
-        std::test::assert_eq_int(graph.graph_generation(), initial + 14, label + ": duplicate edge does not change generation");
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            initial + 14,
+            label + ": each effective graph mutation advances generation",
+        );
+        std::test::assert(
+            store.link(dna::KnowledgeEdge { from: "a", to: "z", rel: "r" }),
+            label + ": duplicate edge",
+        );
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            initial + 14,
+            label + ": duplicate edge does not change generation",
+        );
         let policy = GraphPolicy { };
         let first = CaptureGraph { };
         let page = graph.read_graph(dna::GraphQuery { limit: 2 }, policy, first);
         self.expect_ok(page, label + " nodes first");
         std::test::assert(page.has_more && first.nodes.len() == 2, label + ": first visible page");
-        std::test::assert_eq_str((first.nodes.get(0) or dna::Stored { }).idea.id, "a", label + ": node byte order first");
-        std::test::assert_eq_str((first.nodes.get(1) or dna::Stored { }).idea.id, "p", label + ": hidden identity skipped");
+        std::test::assert_eq_str(
+            (first.nodes.get(0) or dna::Stored { }).idea.id,
+            "a",
+            label + ": node byte order first",
+        );
+        std::test::assert_eq_str(
+            (first.nodes.get(1) or dna::Stored { }).idea.id,
+            "p",
+            label + ": hidden identity skipped",
+        );
         std::test::assert_eq_str(page.last_first, "p", label + ": visible cursor");
-        std::test::assert_eq_str(page.last_second + page.last_third, "", label + ": no synthetic node cursor fields");
+        std::test::assert_eq_str(
+            page.last_second + page.last_third,
+            "",
+            label + ": no synthetic node cursor fields",
+        );
         std::test::assert(!page.subject_present, label + ": collection has no exact subject");
         std::test::assert_eq_str(page.record, store.record(), label + ": scope basis");
         std::test::assert_eq_int(page.generation, initial + 14, label + ": generation basis");
         std::test::assert_eq_int(page.watermark, 1, label + ": watermark basis");
         std::test::assert_eq_str(page.projection_head, "head-1", label + ": stamped head basis");
         let detail = first.nodes.get(0) or dna::Stored { };
-        std::test::assert_eq_str(detail.idea.text, "A\nbody\tquoted \"text\"", label + ": native body survives transport");
+        std::test::assert_eq_str(
+            detail.idea.text,
+            "A\nbody\tquoted \"text\"",
+            label + ": native body survives transport",
+        );
         std::test::assert_eq_str(detail.idea.name, "practice/é", label + ": native practice name");
-        std::test::assert_eq_str(detail.idea.supersedes, "native-predecessor", label + ": native supersession");
+        std::test::assert_eq_str(
+            detail.idea.supersedes,
+            "native-predecessor",
+            label + ": native supersession",
+        );
         std::test::assert_eq_int(detail.ratified_seq, 8, label + ": native ratification seq");
         let second = CaptureGraph { };
-        let next = graph.read_graph(dna::GraphQuery { after_first: page.last_first, limit: 2 }, policy, second);
+        let next = graph.read_graph(
+            dna::GraphQuery { after_first: page.last_first, limit: 2 },
+            policy,
+            second,
+        );
         self.expect_ok(next, label + " nodes next");
-        std::test::assert(!next.has_more && second.nodes.len() == 2, label + ": visible final page");
-        std::test::assert_eq_str((second.nodes.get(0) or dna::Stored { }).idea.id, "z", label + ": ASCII precedes UTF-8");
-        std::test::assert_eq_str((second.nodes.get(1) or dna::Stored { }).idea.id, "é", label + ": UTF-8 retained");
+        std::test::assert(
+            !next.has_more && second.nodes.len() == 2,
+            label + ": visible final page",
+        );
+        std::test::assert_eq_str(
+            (second.nodes.get(0) or dna::Stored { }).idea.id,
+            "z",
+            label + ": ASCII precedes UTF-8",
+        );
+        std::test::assert_eq_str(
+            (second.nodes.get(1) or dna::Stored { }).idea.id,
+            "é",
+            label + ": UTF-8 retained",
+        );
         let hidden = CaptureGraph { };
         let unknown = CaptureGraph { };
         let hidden_page = graph.read_graph(dna::GraphQuery { id: "h" }, policy, hidden);
         let unknown_page = graph.read_graph(dna::GraphQuery { id: "absent" }, policy, unknown);
-        self.expect_ok(hidden_page, label + " hidden detail"); self.expect_ok(unknown_page, label + " absent detail");
-        std::test::assert(!hidden_page.subject_present && !unknown_page.subject_present && hidden.nodes.len() == 0 && unknown.nodes.len() == 0 && hidden_page.last_first == "" && unknown_page.last_first == "" && !hidden_page.has_more && !unknown_page.has_more, label + ": hidden and absent have identical empty shape");
+        self.expect_ok(hidden_page, label + " hidden detail");
+        self.expect_ok(unknown_page, label + " absent detail");
+        std::test::assert(
+            !hidden_page.subject_present
+                && !unknown_page.subject_present
+                && hidden.nodes.len() == 0
+                && unknown.nodes.len() == 0
+                && hidden_page.last_first == ""
+                && unknown_page.last_first == ""
+                && !hidden_page.has_more
+                && !unknown_page.has_more,
+            label + ": hidden and absent have identical empty shape",
+        );
         let exact = CaptureGraph { };
         let exact_page = graph.read_graph(dna::GraphQuery { id: "a" }, policy, exact);
         self.expect_ok(exact_page, label + " exact detail");
         std::test::assert(exact_page.subject_present, label + ": exact visible subject exists");
         std::test::assert_eq_int(exact.nodes.len(), 1, label + ": exact native id filter");
         let relevant = CaptureGraph { };
-        self.expect_ok(graph.read_graph(dna::GraphQuery { target: "org/child/grandchild" }, policy, relevant), label + " relevance");
-        std::test::assert_eq_int(relevant.nodes.len(), 1, label + ": relevance requires accepted visible idea and ancestor binding");
+        self.expect_ok(
+            graph.read_graph(dna::GraphQuery { target: "org/child/grandchild" }, policy, relevant),
+            label + " relevance",
+        );
+        std::test::assert_eq_int(
+            relevant.nodes.len(),
+            1,
+            label + ": relevance requires accepted visible idea and ancestor binding",
+        );
         let boundary = CaptureGraph { };
-        self.expect_ok(graph.read_graph(dna::GraphQuery { target: "organization" }, policy, boundary), label + " target boundary");
-        std::test::assert_eq_int(boundary.nodes.len(), 0, label + ": target prefix does not cross component boundary");
+        self.expect_ok(
+            graph.read_graph(dna::GraphQuery { target: "organization" }, policy, boundary),
+            label + " target boundary",
+        );
+        std::test::assert_eq_int(
+            boundary.nodes.len(),
+            0,
+            label + ": target prefix does not cross component boundary",
+        );
         let excluded = CaptureGraph { };
-        let excluded_page = graph.read_graph(dna::GraphQuery { id: "a", target: "elsewhere" }, policy, excluded);
+        let excluded_page = graph.read_graph(
+            dna::GraphQuery { id: "a", target: "elsewhere" },
+            policy,
+            excluded,
+        );
         self.expect_ok(excluded_page, label + " subject outside target");
-        std::test::assert(excluded_page.subject_present && excluded.nodes.len() == 0, label + ": subject presence is independent of relevance");
+        std::test::assert(
+            excluded_page.subject_present && excluded.nodes.len() == 0,
+            label + ": subject presence is independent of relevance",
+        );
         let edges = CaptureGraph { };
-        let edge_page = graph.read_graph(dna::GraphQuery { kind: "edges", id: "a", limit: 2 }, policy, edges);
+        let edge_page = graph.read_graph(
+            dna::GraphQuery { kind: "edges", id: "a", limit: 2 },
+            policy,
+            edges,
+        );
         self.expect_ok(edge_page, label + " edges");
-        std::test::assert(edge_page.subject_present && edge_page.has_more && edges.edges.len() == 2, label + ": both endpoints must be visible");
-        std::test::assert_eq_str((edges.edges.get(0) or dna::KnowledgeEdge { }).rel, "r", label + ": relation tuple prefix ordering");
-        std::test::assert_eq_str(edge_page.last_third, "r\n|\té", label + ": cursor is exact relation including separators");
+        std::test::assert(
+            edge_page.subject_present && edge_page.has_more && edges.edges.len() == 2,
+            label + ": both endpoints must be visible",
+        );
+        std::test::assert_eq_str(
+            (edges.edges.get(0) or dna::KnowledgeEdge { }).rel,
+            "r",
+            label + ": relation tuple prefix ordering",
+        );
+        std::test::assert_eq_str(
+            edge_page.last_third,
+            "r\n|\té",
+            label + ": cursor is exact relation including separators",
+        );
         let more_edges = CaptureGraph { };
-        let edge_next = graph.read_graph(dna::GraphQuery { kind: "edges", id: "a", after_first: edge_page.last_first, after_second: edge_page.last_second, after_third: edge_page.last_third, limit: 2 }, policy, more_edges);
+        let edge_next = graph.read_graph(
+            dna::GraphQuery {
+                kind: "edges",
+                id: "a",
+                after_first: edge_page.last_first,
+                after_second: edge_page.last_second,
+                after_third: edge_page.last_third,
+                limit: 2,
+            },
+            policy,
+            more_edges,
+        );
         self.expect_ok(edge_next, label + " edges cursor");
-        std::test::assert(!edge_next.has_more && more_edges.edges.len() == 1, label + ": only incident stored edges");
-        std::test::assert_eq_str((more_edges.edges.get(0) or dna::KnowledgeEdge { }).from, "z", label + ": native incoming edge");
+        std::test::assert(
+            !edge_next.has_more && more_edges.edges.len() == 1,
+            label + ": only incident stored edges",
+        );
+        std::test::assert_eq_str(
+            (more_edges.edges.get(0) or dna::KnowledgeEdge { }).from,
+            "z",
+            label + ": native incoming edge",
+        );
         let hidden_edges = CaptureGraph { };
-        let hidden_edge_page = graph.read_graph(dna::GraphQuery { kind: "edges", id: "h" }, policy, hidden_edges);
+        let hidden_edge_page = graph.read_graph(
+            dna::GraphQuery { kind: "edges", id: "h" },
+            policy,
+            hidden_edges,
+        );
         self.expect_ok(hidden_edge_page, label + " hidden edges");
-        std::test::assert(!hidden_edge_page.subject_present, label + ": hidden edge subject remains absent");
+        std::test::assert(
+            !hidden_edge_page.subject_present,
+            label + ": hidden edge subject remains absent",
+        );
         let missing_edges = CaptureGraph { };
-        let missing_edge_page = graph.read_graph(dna::GraphQuery { kind: "edges", id: "missing" }, policy, missing_edges);
+        let missing_edge_page = graph.read_graph(
+            dna::GraphQuery { kind: "edges", id: "missing" },
+            policy,
+            missing_edges,
+        );
         self.expect_ok(missing_edge_page, label + " absent edge subject");
-        std::test::assert(!missing_edge_page.subject_present && missing_edges.edges.len() == 0, label + ": missing edge subject has same absent shape");
-        std::test::assert_eq_int(hidden_edges.edges.len(), 0, label + ": hidden requested endpoint does not leak links");
+        std::test::assert(
+            !missing_edge_page.subject_present && missing_edges.edges.len() == 0,
+            label + ": missing edge subject has same absent shape",
+        );
+        std::test::assert_eq_int(
+            hidden_edges.edges.len(),
+            0,
+            label + ": hidden requested endpoint does not leak links",
+        );
         let all_bindings = CaptureGraph { };
-        self.expect_ok(graph.read_graph(dna::GraphQuery { kind: "bindings" }, policy, all_bindings), label + " all bindings");
-        std::test::assert_eq_int(all_bindings.bindings.len(), 3, label + ": binding visibility excludes hidden idea without inventing acceptance rules");
+        self.expect_ok(
+            graph.read_graph(dna::GraphQuery { kind: "bindings" }, policy, all_bindings),
+            label + " all bindings",
+        );
+        std::test::assert_eq_int(
+            all_bindings.bindings.len(),
+            3,
+            label + ": binding visibility excludes hidden idea without inventing acceptance rules",
+        );
         let bindings = CaptureGraph { };
-        let binding_page = graph.read_graph(dna::GraphQuery { kind: "bindings", id: "a", target: "org/child", limit: 1 }, policy, bindings);
+        let binding_page = graph.read_graph(
+            dna::GraphQuery { kind: "bindings", id: "a", target: "org/child", limit: 1 },
+            policy,
+            bindings,
+        );
         self.expect_ok(binding_page, label + " bindings");
-        std::test::assert(binding_page.subject_present && binding_page.has_more && bindings.bindings.len() == 1, label + ": ancestor binding first");
-        std::test::assert_eq_str(binding_page.last_second, "org", label + ": binding target cursor");
+        std::test::assert(
+            binding_page.subject_present && binding_page.has_more && bindings.bindings.len() == 1,
+            label + ": ancestor binding first",
+        );
+        std::test::assert_eq_str(
+            binding_page.last_second,
+            "org",
+            label + ": binding target cursor",
+        );
         let more_bindings = CaptureGraph { };
-        let binding_next = graph.read_graph(dna::GraphQuery { kind: "bindings", id: "a", target: "org/child", after_first: binding_page.last_first, after_second: binding_page.last_second, after_third: binding_page.last_third, limit: 1 }, policy, more_bindings);
+        let binding_next = graph.read_graph(
+            dna::GraphQuery {
+                kind: "bindings",
+                id: "a",
+                target: "org/child",
+                after_first: binding_page.last_first,
+                after_second: binding_page.last_second,
+                after_third: binding_page.last_third,
+                limit: 1,
+            },
+            policy,
+            more_bindings,
+        );
         self.expect_ok(binding_next, label + " bindings cursor");
-        std::test::assert(!binding_next.has_more && more_bindings.bindings.len() == 1, label + ": exact binding final");
-        std::test::assert_eq_str(binding_next.last_third, "org\n|é", label + ": binding author is not joined or normalized");
+        std::test::assert(
+            !binding_next.has_more && more_bindings.bindings.len() == 1,
+            label + ": exact binding final",
+        );
+        std::test::assert_eq_str(
+            binding_next.last_third,
+            "org\n|é",
+            label + ": binding author is not joined or normalized",
+        );
         let reject = CaptureGraph { budget: 1 };
         let rejected = graph.read_graph(dna::GraphQuery { }, policy, reject);
-        std::test::assert(!rejected.ok && rejected.error == "read_limit", label + ": sink refuses whole page");
-        std::test::assert(rejected.last_first == "" && !rejected.has_more, label + ": failed page exposes no partial cursor");
+        std::test::assert(
+            !rejected.ok && rejected.error == "read_limit",
+            label + ": sink refuses whole page",
+        );
+        std::test::assert(
+            rejected.last_first == "" && !rejected.has_more,
+            label + ": failed page exposes no partial cursor",
+        );
         let all_hidden = GraphPolicy { all_hidden: true };
         let empty = CaptureGraph { };
         let hidden_all = graph.read_graph(dna::GraphQuery { limit: 1 }, all_hidden, empty);
         self.expect_ok(hidden_all, label + " all hidden");
-        std::test::assert(!hidden_all.has_more && hidden_all.last_first == "" && empty.nodes.len() == 0, label + ": hidden rows do not produce has_more or cursor");
+        std::test::assert(
+            !hidden_all.has_more && hidden_all.last_first == "" && empty.nodes.len() == 0,
+            label + ": hidden rows do not produce has_more or cursor",
+        );
         let invalid = CaptureGraph { };
-        std::test::assert_eq_str(graph.read_graph(dna::GraphQuery { kind: "edges" }, policy, invalid).error, "invalid_query", label + ": edges require exact node");
-        std::test::assert_eq_str(graph.read_graph(dna::GraphQuery { after_second: "bad" }, policy, invalid).error, "invalid_query", label + ": invalid cursor rejected");
-        std::test::assert_eq_str(graph.read_graph(dna::GraphQuery { limit: 101 }, policy, invalid).error, "invalid_query", label + ": page bound enforced");
+        std::test::assert_eq_str(
+            graph.read_graph(dna::GraphQuery { kind: "edges" }, policy, invalid).error,
+            "invalid_query",
+            label + ": edges require exact node",
+        );
+        std::test::assert_eq_str(
+            graph.read_graph(dna::GraphQuery { after_second: "bad" }, policy, invalid).error,
+            "invalid_query",
+            label + ": invalid cursor rejected",
+        );
+        std::test::assert_eq_str(
+            graph.read_graph(dna::GraphQuery { limit: 101 }, policy, invalid).error,
+            "invalid_query",
+            label + ": page bound enforced",
+        );
         let mut long_key = "x";
         let mut power = 0;
         while power < 13 { long_key = long_key + long_key; power = power + 1; }
-        std::test::assert_eq_str(graph.read_graph(dna::GraphQuery { after_first: long_key }, policy, invalid).error, "read_limit", label + ": cursor byte bound fails explicitly");
-        std::test::assert(store.bind(dna::KnowledgeBinding { idea: "a", target: "org", author: "org", class: "changed" }), label + ": binding class changes");
-        std::test::assert_eq_int(graph.graph_generation(), initial + 15, label + ": existing triple mutation tracked");
+        std::test::assert_eq_str(
+            graph.read_graph(dna::GraphQuery { after_first: long_key }, policy, invalid).error,
+            "read_limit",
+            label + ": cursor byte bound fails explicitly",
+        );
+        std::test::assert(
+            store.bind(
+                dna::KnowledgeBinding { idea: "a", target: "org", author: "org", class: "changed" },
+            ),
+            label + ": binding class changes",
+        );
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            initial + 15,
+            label + ": existing triple mutation tracked",
+        );
         let changed = CaptureGraph { };
-        self.expect_ok(graph.read_graph(dna::GraphQuery { kind: "bindings", id: "a", limit: 1 }, policy, changed), label + " changed binding");
-        std::test::assert_eq_str((changed.bindings.get(0) or dna::KnowledgeBinding { }).class, "changed", label + ": stored binding class authoritative");
+        self.expect_ok(
+            graph.read_graph(
+                dna::GraphQuery { kind: "bindings", id: "a", limit: 1 },
+                policy,
+                changed,
+            ),
+            label + " changed binding",
+        );
+        std::test::assert_eq_str(
+            (changed.bindings.get(0) or dna::KnowledgeBinding { }).class,
+            "changed",
+            label + ": stored binding class authoritative",
+        );
         std::test::assert(store.retire("a", 17), label + ": retire node");
-        std::test::assert_eq_int(graph.graph_generation(), initial + 16, label + ": retire mutation tracked");
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            initial + 16,
+            label + ": retire mutation tracked",
+        );
         let retired = CaptureGraph { };
-        self.expect_ok(graph.read_graph(dna::GraphQuery { target: "org/child" }, policy, retired), label + " retired relevance");
+        self.expect_ok(
+            graph.read_graph(dna::GraphQuery { target: "org/child" }, policy, retired),
+            label + " retired relevance",
+        );
         std::test::assert_eq_int(retired.nodes.len(), 0, label + ": retired idea leaves relevance");
     }
     // GH #1026: one transaction per record row; the stamp moves first, by
     // compare-and-swap on the watermark and then on the head.
     fn lineage(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
         let before = graph.projection_basis();
-        std::test::assert(before.ok && before.watermark == 1 && before.head == "head-1", label + ": the stamp names the row that landed");
+        std::test::assert(
+            before.ok && before.watermark == 1 && before.head == "head-1",
+            label + ": the stamp names the row that landed",
+        );
         let generation = graph.graph_generation();
-        std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 0, label + ": a row already applied is not begun again");
-        std::test::assert_eq_int(store.begin_row(1, "other-head", "head-2"), 0, label + ": a row whose predecessor is not the stamped head is not begun");
-        std::test::assert_eq_int(store.begin_row(2, "head-2", "head-3"), 0, label + ": a row past the next is not begun");
-        std::test::assert_eq_int(store.begin_row(-1, "", "head-0"), -1, label + ": a row that cannot exist is refused as an error");
-        std::test::assert_eq_int(store.begin_row(1, "head-1", ""), -1, label + ": a row with no digest is refused as an error");
-        std::test::assert_eq_int(graph.graph_generation(), generation, label + ": refused rows change nothing");
-        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, label + ": the next row is begun");
-        std::test::assert(store.upsert(dna::Idea { id: "mid-row", text: "inside the row" }, 2), label + ": an effect inside the row");
+        std::test::assert_eq_int(
+            store.begin_row(0, "", "head-1"),
+            0,
+            label + ": a row already applied is not begun again",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "other-head", "head-2"),
+            0,
+            label + ": a row whose predecessor is not the stamped head is not begun",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(2, "head-2", "head-3"),
+            0,
+            label + ": a row past the next is not begun",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(-1, "", "head-0"),
+                -1,
+            label + ": a row that cannot exist is refused as an error",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "head-1", ""),
+                -1,
+            label + ": a row with no digest is refused as an error",
+        );
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            generation,
+            label + ": refused rows change nothing",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "head-1", "head-2"),
+            1,
+            label + ": the next row is begun",
+        );
+        std::test::assert(
+            store.upsert(dna::Idea { id: "mid-row", text: "inside the row" }, 2),
+            label + ": an effect inside the row",
+        );
         store.abort_row();
-        std::test::assert(!store.idea("mid-row").present, label + ": an aborted row lands none of its effects");
-        std::test::assert(graph.projection_basis().watermark == 1 && graph.projection_basis().head == "head-1" && graph.graph_generation() == generation, label + ": nor its stamp, nor a generation");
-        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, label + ": the row is begun again");
+        std::test::assert(
+            !store.idea("mid-row").present,
+            label + ": an aborted row lands none of its effects",
+        );
+        std::test::assert(
+            graph.projection_basis().watermark == 1
+                && graph.projection_basis().head == "head-1"
+                && graph.graph_generation() == generation,
+            label + ": nor its stamp, nor a generation",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "head-1", "head-2"),
+            1,
+            label + ": the row is begun again",
+        );
         std::test::assert(store.commit_row(), label + ": and lands");
         let next = graph.projection_basis();
-        std::test::assert(next.ok && next.watermark == 2 && next.head == "head-2", label + ": the stamp moved one row");
+        std::test::assert(
+            next.ok && next.watermark == 2 && next.head == "head-2",
+            label + ": the stamp moved one row",
+        );
         std::test::assert_eq_int(store.watermark(), 2, label + ": the watermark is the stamp's");
         let policy = GraphPolicy { };
         let stable_sink = CaptureGraph { };
         let stable = graph.read_graph(dna::GraphQuery { }, policy, stable_sink);
         self.expect_ok(stable, label + " stamped page");
-        std::test::assert(stable.projection_head == next.head && stable.watermark == next.watermark, label + ": a page carries the stamp of its own snapshot");
+        std::test::assert(
+            stable.projection_head == next.head && stable.watermark == next.watermark,
+            label + ": a page carries the stamp of its own snapshot",
+        );
     }
     // GH #985: the stores open as the record's spine role; the faults this
     // injects that change a table's shape are the owner's to make, through
@@ -219,61 +607,208 @@ locus GraphCases {
         let sch = dna::schema_for(record);
         std::test::assert(store.open(), "open the fault fixture: " + store.last_error());
         let fresh = store.projection_basis();
-        std::test::assert(fresh.ok && fresh.watermark == 0 && fresh.head == "", "a migrated store is stamped at row 0");
+        std::test::assert(
+            fresh.ok && fresh.watermark == 0 && fresh.head == "",
+            "a migrated store is stamped at row 0",
+        );
         // an effect fails: the row is dropped whole
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')"), "inject an effect failure");
+        std::test::assert(
+            ddl(
+                admin,
+                sch,
+                "ALTER TABLE knowledge_bindings ADD CONSTRAINT binding_fixture_reject CHECK (class <> 'refused-fixture')",
+            ),
+            "inject an effect failure",
+        );
         std::test::assert_eq_int(store.begin_row(0, "", "row-1"), 1, "row 0 begun");
-        std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0), "the first effect");
-        std::test::assert(!store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "refused-fixture" }), "the second effect fails");
+        std::test::assert(
+            store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0),
+            "the first effect",
+        );
+        std::test::assert(
+            !store.bind(
+                dna::KnowledgeBinding {
+                    idea: "failed-binding",
+                    target: "org",
+                    author: "org",
+                    class: "refused-fixture",
+                },
+            ),
+            "the second effect fails",
+        );
         store.abort_row();
-        std::test::assert_eq_str(store.conn.tx_status(), "idle", "the dropped row leaves the connection idle");
-        std::test::assert(!store.idea("failed-binding").present && store.projection_basis().watermark == 0, "nothing of the failed row landed");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject"), "repair the effect fixture");
+        std::test::assert_eq_str(
+            store.conn.tx_status(),
+            "idle",
+            "the dropped row leaves the connection idle",
+        );
+        std::test::assert(
+            !store.idea("failed-binding").present && store.projection_basis().watermark == 0,
+            "nothing of the failed row landed",
+        );
+        std::test::assert(
+            ddl(
+                admin,
+                sch,
+                "ALTER TABLE knowledge_bindings DROP CONSTRAINT binding_fixture_reject",
+            ),
+            "repair the effect fixture",
+        );
         // the watermark's compare-and-swap fails
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '1')"), "inject a watermark failure");
-        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), -1, "a watermark that cannot move is an error");
-        std::test::assert(store.conn.tx_status() == "idle" && store.projection_basis().watermark == 0, "and begins nothing");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT head_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'row-1')"), "inject a head failure");
+        std::test::assert(
+            ddl(
+                admin,
+                sch,
+                "ALTER TABLE knowledge_meta ADD CONSTRAINT watermark_fixture_reject CHECK (key <> 'watermark' OR value <> '1')",
+            ),
+            "inject a watermark failure",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(0, "", "row-1"),
+                -1,
+            "a watermark that cannot move is an error",
+        );
+        std::test::assert(
+            store.conn.tx_status() == "idle" && store.projection_basis().watermark == 0,
+            "and begins nothing",
+        );
+        std::test::assert(
+            ddl(
+                admin,
+                sch,
+                "ALTER TABLE knowledge_meta DROP CONSTRAINT watermark_fixture_reject; ALTER TABLE knowledge_meta ADD CONSTRAINT head_fixture_reject CHECK (key <> 'graph_projection_head' OR value <> 'row-1')",
+            ),
+            "inject a head failure",
+        );
         // the head's compare-and-swap fails after the watermark's moved
-        std::test::assert_eq_int(store.begin_row(0, "", "row-1"), -1, "a head that cannot move is an error");
+        std::test::assert_eq_int(
+            store.begin_row(0, "", "row-1"),
+                -1,
+            "a head that cannot move is an error",
+        );
         let after_head = store.projection_basis();
-        std::test::assert(store.conn.tx_status() == "idle" && after_head.watermark == 0 && after_head.head == "", "and the watermark it moved is rolled back with it");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT head_fixture_reject"), "repair the head fixture");
+        std::test::assert(
+            store.conn.tx_status() == "idle" && after_head.watermark == 0 && after_head.head == "",
+            "and the watermark it moved is rolled back with it",
+        );
+        std::test::assert(
+            ddl(admin, sch, "ALTER TABLE knowledge_meta DROP CONSTRAINT head_fixture_reject"),
+            "repair the head fixture",
+        );
         std::test::assert_eq_int(store.begin_row(0, "", "row-1"), 1, "row 0 begun again");
-        std::test::assert(store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0) && store.bind(dna::KnowledgeBinding { idea: "failed-binding", target: "org", author: "org", class: "goal" }), "its effects");
+        std::test::assert(
+            store.upsert(dna::Idea { id: "failed-binding", text: "the row's first effect" }, 0)
+                && store.bind(
+                    dna::KnowledgeBinding {
+                        idea: "failed-binding",
+                        target: "org",
+                        author: "org",
+                        class: "goal",
+                    },
+                ),
+            "its effects",
+        );
         std::test::assert(store.commit_row(), "the row lands");
         std::test::assert(store.reopen(), "reopen");
         let landed = store.projection_basis();
-        std::test::assert(landed.watermark == 1 && landed.head == "row-1" && store.idea("failed-binding").present, "the row and its stamp survive a reopen");
+        std::test::assert(
+            landed.watermark == 1 && landed.head == "row-1" && store.idea("failed-binding").present,
+            "the row and its stamp survive a reopen",
+        );
         let observer = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
-        std::test::assert(observer.open() && observer.projection_basis().head == "row-1", "another connection reads the same stamp");
+        std::test::assert(
+            observer.open() && observer.projection_basis().head == "row-1",
+            "another connection reads the same stamp",
+        );
         observer.conn.close();
         // an idempotent migration leaves a protocol-2 graph alone
         let generation = store.graph_generation();
         std::test::assert(dna::migrated(owner, record).ok && store.reopen(), "migrate again");
-        std::test::assert(store.projection_basis().head == "row-1" && store.idea("failed-binding").present && store.graph_generation() == generation, "a second migration changes nothing");
+        std::test::assert(
+            store.projection_basis().head == "row-1"
+                && store.idea("failed-binding").present
+                && store.graph_generation() == generation,
+            "a second migration changes nothing",
+        );
         // an unknown protocol marker fails closed
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'").ok, "corrupt the protocol marker");
-        std::test::assert(store.reopen() && !store.projection_basis().ok, "an unknown protocol has no valid stamp");
-        std::test::assert_eq_int(store.begin_row(1, "row-1", "row-2"), 0, "and no row begins over it");
+        std::test::assert(
+            store.conn.exec(
+                "UPDATE knowledge_meta SET value = 'corrupt' WHERE key = 'graph_projection_protocol'",
+            ).ok,
+            "corrupt the protocol marker",
+        );
+        std::test::assert(
+            store.reopen() && !store.projection_basis().ok,
+            "an unknown protocol has no valid stamp",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "row-1", "row-2"),
+            0,
+            "and no row begins over it",
+        );
         std::test::assert_eq_int(store.watermark(), 1, "the refused row moved nothing");
         // version 1's stamped prefix with a pending suffix: the migration
         // empties the graph and stamps row 0, and the projectors rebuild it
-        std::test::assert(store.conn.exec("UPDATE knowledge_meta SET value = '1' WHERE key = 'graph_projection_protocol'; INSERT INTO knowledge_meta (key, value) VALUES ('graph_projection_watermark', '1'), ('graph_projection_pending_watermark', '2'), ('graph_projection_pending_head', 'row-2')").ok, "a version-1 projection");
-        std::test::assert(dna::migrated(owner, record).ok && store.reopen(), "migrate a version-1 projection");
+        std::test::assert(
+            store.conn.exec(
+                "UPDATE knowledge_meta SET value = '1' WHERE key = 'graph_projection_protocol'; INSERT INTO knowledge_meta (key, value) VALUES ('graph_projection_watermark', '1'), ('graph_projection_pending_watermark', '2'), ('graph_projection_pending_head', 'row-2')",
+            ).ok,
+            "a version-1 projection",
+        );
+        std::test::assert(
+            dna::migrated(owner, record).ok && store.reopen(),
+            "migrate a version-1 projection",
+        );
         let migrated = store.projection_basis();
-        std::test::assert(migrated.ok && migrated.watermark == 0 && migrated.head == "", "the migration stamps row 0");
-        std::test::assert(!store.idea("failed-binding").present && store.count("bindings") == 0, "and empties the graph it cannot vouch for");
-        std::test::assert(store.graph_generation() > generation, "moving the generation, so an old page is seen to be old");
-        std::test::assert_eq_str(store.conn.query_one("SELECT count(*) FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head')").data, "0", "version 1's stamp keys are gone");
+        std::test::assert(
+            migrated.ok && migrated.watermark == 0 && migrated.head == "",
+            "the migration stamps row 0",
+        );
+        std::test::assert(
+            !store.idea("failed-binding").present && store.count("bindings") == 0,
+            "and empties the graph it cannot vouch for",
+        );
+        std::test::assert(
+            store.graph_generation() > generation,
+            "moving the generation, so an old page is seen to be old",
+        );
+        std::test::assert_eq_str(
+            store.conn.query_one(
+                "SELECT count(*) FROM knowledge_meta WHERE key IN ('graph_projection_watermark', 'graph_projection_pending_watermark', 'graph_projection_pending_head')",
+            ).data,
+            "0",
+            "version 1's stamp keys are gone",
+        );
         // version 1's lease table is the claims table, its rows kept
-        std::test::assert(ddl(admin, sch, "INSERT INTO claims (key, holder, token, until, present) VALUES ('body', 'a@host:/clone', 4, 99, true); ALTER TABLE claims RENAME COLUMN until TO expires; ALTER TABLE claims RENAME TO ledger_leases; UPDATE memory_meta SET value = '1' WHERE key = 'schema_version'"), "a version-1 lease table");
-        std::test::assert(!store.reopen() && std::str::contains(store.last_error(), "is at version 1; this toolchain needs version " + to_string(dna::MEMORY_SCHEMA_VERSION)), "a version-1 memory is refused at open: " + store.last_error());
+        std::test::assert(
+            ddl(
+                admin,
+                sch,
+                "INSERT INTO claims (key, holder, token, until, present) VALUES ('body', 'a@host:/clone', 4, 99, true); ALTER TABLE claims RENAME COLUMN until TO expires; ALTER TABLE claims RENAME TO ledger_leases; UPDATE memory_meta SET value = '1' WHERE key = 'schema_version'",
+            ),
+            "a version-1 lease table",
+        );
+        std::test::assert(
+            !store.reopen()
+                && std::str::contains(
+                    store.last_error(),
+                    "is at version 1; this toolchain needs version "
+                        + to_string(dna::MEMORY_SCHEMA_VERSION),
+                ),
+            "a version-1 memory is refused at open: " + store.last_error(),
+        );
         std::test::assert(dna::migrated(owner, record).ok, "migrate a version-1 lease table");
         let leases = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(leases.open(), "the claims open: " + leases.last_error());
         let body = leases.current("body");
-        std::test::assert(body.known && body.holder == "a@host:/clone" && body.token == 4 && body.expires == 99 && body.present, "the body lease is a row of `claims`, token and all");
+        std::test::assert(
+            body.known
+                && body.holder == "a@host:/clone"
+                && body.token == 4
+                && body.expires == 99
+                && body.present,
+            "the body lease is a row of `claims`, token and all",
+        );
         leases.conn.close();
         store.conn.close();
         std::test::assert(drop_scope(owner, record), "remove the fault fixture's scope");
@@ -295,87 +830,214 @@ locus GraphCases {
         let other = dna::Pq { conn: dna::pq_conn(spine), record_id: record };
         std::test::assert(other.open(), "second connection");
         let persisted = other.projection_basis();
-        std::test::assert(persisted.ok && persisted.watermark == 2 && persisted.head == "head-2", "projection pair survives second connection and idempotent migration");
+        std::test::assert(
+            persisted.ok && persisted.watermark == 2 && persisted.head == "head-2",
+            "projection pair survives second connection and idempotent migration",
+        );
         std::test::assert(other.reopen(), "reopen projection connection");
-        std::test::assert(other.projection_basis().head == persisted.head && other.projection_basis().watermark == persisted.watermark, "projection pair survives reopen");
+        std::test::assert(
+            other.projection_basis().head == persisted.head
+                && other.projection_basis().watermark == persisted.watermark,
+            "projection pair survives reopen",
+        );
         let generation = store.graph_generation();
         let mutate = MutateGraphPolicy { other: other };
         let captured = CaptureGraph { };
         let page = store.read_graph(dna::GraphQuery { }, mutate, captured);
         self.expect_ok(page, "coherent concurrent graph read");
         std::test::assert_eq_int(page.generation, generation, "snapshot captures prior generation");
-        std::test::assert_eq_int(captured.nodes.len(), 5, "repeatable read excludes concurrent insert");
-        std::test::assert_eq_int(store.graph_generation(), generation + 1, "outside snapshot detects other connection mutation");
-        let direct = other.conn.exec("UPDATE knowledge_bindings SET class = 'external' WHERE idea = 'a' AND target = 'org'");
+        std::test::assert_eq_int(
+            captured.nodes.len(),
+            5,
+            "repeatable read excludes concurrent insert",
+        );
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation + 1,
+            "outside snapshot detects other connection mutation",
+        );
+        let direct = other.conn.exec(
+            "UPDATE knowledge_bindings SET class = 'external' WHERE idea = 'a' AND target = 'org'",
+        );
         std::test::assert(direct.ok, "external SQL mutation");
-        std::test::assert_eq_int(store.graph_generation(), generation + 2, "SQL trigger covers external update");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation + 2,
+            "SQL trigger covers external update",
+        );
         let row_before = store.projection_basis();
         let row_generation = store.graph_generation();
-        let row_policy = RowGraphPolicy { other: other, seq: row_before.watermark, prev: row_before.head, head: "head-3" };
+        let row_policy = RowGraphPolicy {
+            other: other,
+            seq: row_before.watermark,
+            prev: row_before.head,
+            head: "head-3",
+        };
         let row_sink = CaptureGraph { };
         let row_page = store.read_graph(dna::GraphQuery { }, row_policy, row_sink);
         self.expect_ok(row_page, "snapshot during another projector's row");
-        std::test::assert(row_page.watermark == row_before.watermark && row_page.projection_head == row_before.head && row_page.generation == row_generation, "the page keeps the stamp and generation of its own snapshot");
-        std::test::assert(store.projection_basis().head == "head-3" && store.projection_basis().watermark == row_before.watermark + 1, "a basis read after it sees the row that landed");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_edges RENAME TO knowledge_edges_offline"), "induce graph SQL failure");
+        std::test::assert(
+            row_page.watermark == row_before.watermark
+                && row_page.projection_head == row_before.head
+                && row_page.generation == row_generation,
+            "the page keeps the stamp and generation of its own snapshot",
+        );
+        std::test::assert(
+            store.projection_basis().head == "head-3"
+                && store.projection_basis().watermark == row_before.watermark + 1,
+            "a basis read after it sees the row that landed",
+        );
+        std::test::assert(
+            ddl(admin, sch, "ALTER TABLE knowledge_edges RENAME TO knowledge_edges_offline"),
+            "induce graph SQL failure",
+        );
         let sink = CaptureGraph { };
         let policy = GraphPolicy { };
         let failure = store.read_graph(dna::GraphQuery { kind: "edges", id: "a" }, policy, sink);
-        std::test::assert(!failure.ok && failure.error == "read_failed" && len(store.last_error()) > 0, "SQL failure cannot become successful empty graph");
-        std::test::assert_eq_str(store.conn.tx_status(), "idle", "failed graph transaction rolled back");
-        std::test::assert(ddl(admin, sch, "ALTER TABLE knowledge_edges_offline RENAME TO knowledge_edges"), "repair graph table");
+        std::test::assert(
+            !failure.ok && failure.error == "read_failed" && len(store.last_error()) > 0,
+            "SQL failure cannot become successful empty graph",
+        );
+        std::test::assert_eq_str(
+            store.conn.tx_status(),
+            "idle",
+            "failed graph transaction rolled back",
+        );
+        std::test::assert(
+            ddl(admin, sch, "ALTER TABLE knowledge_edges_offline RENAME TO knowledge_edges"),
+            "repair graph table",
+        );
         let recovered = CaptureGraph { };
-        self.expect_ok(store.read_graph(dna::GraphQuery { kind: "edges", id: "a" }, policy, recovered), "graph read recovers after repair");
+        self.expect_ok(
+            store.read_graph(dna::GraphQuery { kind: "edges", id: "a" }, policy, recovered),
+            "graph read recovers after repair",
+        );
         std::test::assert_eq_str(store.last_error(), "", "successful read clears prior error");
         std::test::assert_eq_int(recovered.edges.len(), 3, "recovered graph contains actual links");
         let before_rollback = store.graph_generation();
         std::test::assert(other.conn.begin().ok, "begin external mutation transaction");
-        std::test::assert(other.conn.exec("DELETE FROM knowledge_edges WHERE rel = 'incoming'").ok, "external delete in transaction");
+        std::test::assert(
+            other.conn.exec("DELETE FROM knowledge_edges WHERE rel = 'incoming'").ok,
+            "external delete in transaction",
+        );
         std::test::assert(other.conn.rollback().ok, "rollback external mutation");
-        std::test::assert_eq_int(store.graph_generation(), before_rollback, "rolled back mutation leaves graph generation unchanged");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            before_rollback,
+            "rolled back mutation leaves graph generation unchanged",
+        );
         let prior = store.graph_generation();
         std::test::assert(other.conn.exec("TRUNCATE knowledge_edges").ok, "external truncate");
         std::test::assert_eq_int(store.graph_generation(), prior + 1, "truncate mutation tracked");
         let limited_record = record + "limits";
         let limited_spine = dna::migrated(owner, limited_record);
-        std::test::assert(limited_spine.ok, "the bounded-scan schema is applied: " + limited_spine.why);
+        std::test::assert(
+            limited_spine.ok,
+            "the bounded-scan schema is applied: " + limited_spine.why,
+        );
         let limited = dna::Pq { conn: dna::pq_conn(limited_spine), record_id: limited_record };
         std::test::assert(limited.open(), "open bounded-scan test scope");
-        std::test::assert(limited.conn.exec("INSERT INTO knowledge_ideas (id,kind,text,author,provenance) SELECT 'bulk-' || lpad(n::text, 5, '0'), '', '', '', '' FROM generate_series(1,10001) n").ok, "seed raw scan limit");
+        std::test::assert(
+            limited.conn.exec(
+                "INSERT INTO knowledge_ideas (id,kind,text,author,provenance) SELECT 'bulk-' || lpad(n::text, 5, '0'), '', '', '', '' FROM generate_series(1,10001) n",
+            ).ok,
+            "seed raw scan limit",
+        );
         let hidden = GraphPolicy { all_hidden: true };
         let limited_sink = CaptureGraph { };
         let capped = limited.read_graph(dna::GraphQuery { limit: 1 }, hidden, limited_sink);
-        std::test::assert(!capped.ok && capped.error == "read_limit" && !capped.has_more, "postgres raw scan cap is not successful truncation");
-        std::test::assert(limited.conn.exec("TRUNCATE knowledge_ideas; INSERT INTO knowledge_ideas (id,kind,text,author,provenance) VALUES ('oversized','','','',''); UPDATE knowledge_ideas SET text = repeat('x',8388608)").ok, "seed oversized native body");
+        std::test::assert(
+            !capped.ok && capped.error == "read_limit" && !capped.has_more,
+            "postgres raw scan cap is not successful truncation",
+        );
+        std::test::assert(
+            limited.conn.exec(
+                "TRUNCATE knowledge_ideas; INSERT INTO knowledge_ideas (id,kind,text,author,provenance) VALUES ('oversized','','','',''); UPDATE knowledge_ideas SET text = repeat('x',8388608)",
+            ).ok,
+            "seed oversized native body",
+        );
         let raw_cap = limited.read_graph(dna::GraphQuery { }, hidden, limited_sink);
-        std::test::assert(!raw_cap.ok && raw_cap.error == "read_limit", "postgres rejects oversized input before transport");
-        std::test::assert(limited.link(dna::KnowledgeEdge { from: "oversized", to: "other", rel: "native" }), "postgres oversized subject link");
-        std::test::assert(limited.bind(dna::KnowledgeBinding { idea: "oversized", target: "org", author: "org", class: "goal" }), "postgres oversized subject binding");
+        std::test::assert(
+            !raw_cap.ok && raw_cap.error == "read_limit",
+            "postgres rejects oversized input before transport",
+        );
+        std::test::assert(
+            limited.link(dna::KnowledgeEdge { from: "oversized", to: "other", rel: "native" }),
+            "postgres oversized subject link",
+        );
+        std::test::assert(
+            limited.bind(
+                dna::KnowledgeBinding {
+                    idea: "oversized",
+                    target: "org",
+                    author: "org",
+                    class: "goal",
+                },
+            ),
+            "postgres oversized subject binding",
+        );
         let large_edges = CaptureGraph { };
-        let large_edge_page = limited.read_graph(dna::GraphQuery { kind: "edges", id: "oversized" }, policy, large_edges);
+        let large_edge_page = limited.read_graph(
+            dna::GraphQuery { kind: "edges", id: "oversized" },
+            policy,
+            large_edges,
+        );
         self.expect_ok(large_edge_page, "postgres oversized subject relationship read");
-        std::test::assert(large_edge_page.subject_present && large_edges.edges.len() == 1, "postgres relationship existence reads identity only");
+        std::test::assert(
+            large_edge_page.subject_present && large_edges.edges.len() == 1,
+            "postgres relationship existence reads identity only",
+        );
         let large_bindings = CaptureGraph { };
-        let large_binding_page = limited.read_graph(dna::GraphQuery { kind: "bindings", id: "oversized" }, policy, large_bindings);
+        let large_binding_page = limited.read_graph(
+            dna::GraphQuery { kind: "bindings", id: "oversized" },
+            policy,
+            large_bindings,
+        );
         self.expect_ok(large_binding_page, "postgres oversized subject bindings read");
-        std::test::assert(large_binding_page.subject_present && large_bindings.bindings.len() == 1, "postgres binding existence reads identity only");
-        std::test::assert(limited.conn.exec("UPDATE knowledge_ideas SET text = repeat(chr(1),1500000)").ok, "seed escaped input budget");
+        std::test::assert(
+            large_binding_page.subject_present && large_bindings.bindings.len() == 1,
+            "postgres binding existence reads identity only",
+        );
+        std::test::assert(
+            limited.conn.exec("UPDATE knowledge_ideas SET text = repeat(chr(1),1500000)").ok,
+            "seed escaped input budget",
+        );
         let escaped_cap = limited.read_graph(dna::GraphQuery { }, hidden, limited_sink);
-        std::test::assert(!escaped_cap.ok && escaped_cap.error == "read_limit", "postgres rejects oversized escaped JSON before transport");
+        std::test::assert(
+            !escaped_cap.ok && escaped_cap.error == "read_limit",
+            "postgres rejects oversized escaped JSON before transport",
+        );
         limited.conn.close();
         std::test::assert(drop_scope(owner, limited_record), "remove bounded-scan test scope");
         let malformed_record = record + "malformed";
         let malformed_spine = dna::migrated(owner, malformed_record);
-        std::test::assert(malformed_spine.ok, "the malformed-key schema is applied: " + malformed_spine.why);
-        let malformed = dna::Pq { conn: dna::pq_conn(malformed_spine), record_id: malformed_record };
+        std::test::assert(
+            malformed_spine.ok,
+            "the malformed-key schema is applied: " + malformed_spine.why,
+        );
+        let malformed = dna::Pq {
+            conn: dna::pq_conn(malformed_spine),
+            record_id: malformed_record,
+        };
         std::test::assert(malformed.open(), "open malformed-key test scope");
         std::test::assert(malformed.upsert(dna::Idea { }, 0), "seed empty stored identity");
-        std::test::assert_eq_str(malformed.read_graph(dna::GraphQuery { }, policy, sink).error, "read_failed", "postgres refuses malformed stored identity");
+        std::test::assert_eq_str(
+            malformed.read_graph(dna::GraphQuery { }, policy, sink).error,
+            "read_failed",
+            "postgres refuses malformed stored identity",
+        );
         malformed.conn.close();
         std::test::assert(drop_scope(owner, malformed_record), "remove malformed-key test scope");
         store.conn.close();
-        std::test::assert_eq_int(store.graph_generation(), -1, "closed generation read unavailable");
-        std::test::assert(!store.read_graph(dna::GraphQuery { }, policy, sink).ok, "closed graph read fails");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+                -1,
+            "closed generation read unavailable",
+        );
+        std::test::assert(
+            !store.read_graph(dna::GraphQuery { }, policy, sink).ok,
+            "closed graph read fails",
+        );
         other.conn.close();
         std::test::assert(drop_scope(owner, record), "remove only test-owned schema");
         admin.conn.close();

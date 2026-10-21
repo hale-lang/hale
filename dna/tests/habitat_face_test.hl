@@ -21,7 +21,11 @@ fn toolchain() -> String {
 // `argv` in `dir`, the habitat's memory and nerves its own allocations and
 // the head a fixture's trusted-local one (no provider to sign in through).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
@@ -62,8 +66,16 @@ fn index_with(face: String, needle: String, secs: Int) -> String {
 }
 
 fn main() {
-    if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("habitat_face_test: not exercised (docker compose is not on PATH)"); return; }
-    if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("habitat_face_test: not exercised (outside `hale test`, the habitat would be the developer's)"); return; }
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_face_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_face_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
     let scratch = dna::scratch_root("habitat-face");
     dna::reap_on_exit(scratch);
 
@@ -79,43 +91,111 @@ fn main() {
     // is written into a directory made for it (the unit itself is not seen by
     // this user's systemd, so the start is refused after the write)
     let cfg = scratch + "/fresh-config";
-    let fresh = in_dir(scratch, "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat up\nsh\n" + cfg + "\n" + toolchain());
-    std::test::assert(std::io::fs::file_exists(cfg + "/systemd/user/" + dna::local_habitat_project() + "-face.service") && !std::str::contains(fresh.stderr, "No such file"), "the face's unit is written into a fresh directory: " + fresh.stdout + fresh.stderr);
-    in_dir(scratch, "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat down\nsh\n" + cfg + "\n" + toolchain());
+    let fresh = in_dir(
+        scratch,
+        "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat up\nsh\n" + cfg + "\n" + toolchain(),
+    );
+    std::test::assert(
+        std::io::fs::file_exists(
+            cfg + "/systemd/user/" + dna::local_habitat_project() + "-face.service",
+        )
+            && !std::str::contains(fresh.stderr, "No such file"),
+        "the face's unit is written into a fresh directory: " + fresh.stdout + fresh.stderr,
+    );
+    in_dir(
+        scratch,
+        "sh\n-c\nXDG_CONFIG_HOME=\"$1\" exec \"$2\" habitat down\nsh\n" + cfg + "\n" + toolchain(),
+    );
 
     // ---- up starts the body and the face; status prints the face's address
     let log = scratch + "/up.log";
-    let started = in_dir(scratch, "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + log);
-    std::test::assert(len(dna::trim_nl(started.stdout)) > 0 && logged(log, "body    the habitat's body runs in this process", 600), "the habitat is born and its body runs: " + text_of(log));
-    std::test::assert(std::str::contains(text_of(log), "face    starting (pid "), "up starts the habitat's face: " + text_of(log));
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 600),
+        "the habitat is born and its body runs: " + text_of(log),
+    );
+    std::test::assert(
+        std::str::contains(text_of(log), "face    starting (pid "),
+        "up starts the habitat's face: " + text_of(log),
+    );
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
     let face = face_of(status);
-    std::test::assert(std::str::starts_with(face, "http://127.0.0.1:") && std::str::contains(status, "/ (up, pid "), "status prints the face's address: " + status);
+    std::test::assert(
+        std::str::starts_with(face, "http://127.0.0.1:")
+            && std::str::contains(status, "/ (up, pid "),
+        "status prints the face's address: " + status,
+    );
 
-    let near = (std::str::parse_int(face[17..len(face)]) or 0) - (std::str::parse_int(gamma[17..len(gamma)]) or 0);
-    std::test::assert(near >= 8 || near <= -8, "the habitat's block and gamma's do not overlap: " + face + " " + gamma);
+    let near = (std::str::parse_int(face[17..len(face)]) or 0)
+        - (std::str::parse_int(gamma[17..len(gamma)]) or 0);
+    std::test::assert(
+        near >= 8 || near <= -8,
+        "the habitat's block and gamma's do not overlap: " + face + " " + gamma,
+    );
 
     // ---- two organisms grafted: each is given an address of its own
     let a = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nalpha\n--no-library");
     let b = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbeta\n--no-library");
-    std::test::assert(a.code == 0 && b.code == 0, "both are grafted: " + a.stdout + a.stderr + b.stdout + b.stderr);
+    std::test::assert(
+        a.code == 0 && b.code == 0,
+        "both are grafted: " + a.stdout + a.stderr + b.stdout + b.stderr,
+    );
     let alpha = head_url(scratch + "/alpha");
     let beta = head_url(scratch + "/beta");
-    std::test::assert(std::str::starts_with(alpha, "http://127.0.0.1:") && std::str::starts_with(beta, "http://127.0.0.1:") && alpha != beta && alpha != face && beta != face, "three addresses, one each: " + face + " " + alpha + " " + beta);
+    std::test::assert(
+        std::str::starts_with(alpha, "http://127.0.0.1:")
+            && std::str::starts_with(beta, "http://127.0.0.1:")
+            && alpha != beta
+            && alpha != face
+            && beta != face,
+        "three addresses, one each: " + face + " " + alpha + " " + beta,
+    );
 
     // ---- the habitat's face lists them: name, state, face and head
     let page = index_with(face, "<code>beta</code>", 900);
-    std::test::assert(std::str::contains(page, "Organisms") && std::str::contains(page, "<code>alpha</code>") && std::str::contains(page, "<code>beta</code>"), "the index lists both organisms: " + page + text_of(dna::local_habitat_dir() + "/face.log"));
-    std::test::assert(std::str::contains(page, "<a href=\"" + alpha + "/\"") && std::str::contains(page, "<a href=\"" + beta + "/\""), "with the address of each face: " + page);
-    let alpha_head = "http://127.0.0.1:" + to_string((std::str::parse_int(alpha[17..len(alpha)]) or 0) + 1);
-    let beta_head = "http://127.0.0.1:" + to_string((std::str::parse_int(beta[17..len(beta)]) or 0) + 1);
-    std::test::assert(std::str::contains(page, "<code>" + alpha_head + "</code>") && std::str::contains(page, "<code>" + beta_head + "</code>"), "and of each head: " + page);
-    std::test::assert(std::str::contains(page, "<td>grafted</td>"), "neither organism's face is running: " + page);
-    std::test::assert(std::str::contains(page, "href=\"/styles.css\"") && !std::str::contains(page, "<script"), "the same page as every organism's: the shell's stylesheet, no script");
+    std::test::assert(
+        std::str::contains(page, "Organisms")
+            && std::str::contains(page, "<code>alpha</code>")
+            && std::str::contains(page, "<code>beta</code>"),
+        "the index lists both organisms: " + page + text_of(dna::local_habitat_dir() + "/face.log"),
+    );
+    std::test::assert(
+        std::str::contains(page, "<a href=\"" + alpha + "/\"")
+            && std::str::contains(page, "<a href=\"" + beta + "/\""),
+        "with the address of each face: " + page,
+    );
+    let alpha_head = "http://127.0.0.1:"
+        + to_string((std::str::parse_int(alpha[17..len(alpha)]) or 0) + 1);
+    let beta_head = "http://127.0.0.1:"
+        + to_string((std::str::parse_int(beta[17..len(beta)]) or 0) + 1);
+    std::test::assert(
+        std::str::contains(page, "<code>" + alpha_head + "</code>")
+            && std::str::contains(page, "<code>" + beta_head + "</code>"),
+        "and of each head: " + page,
+    );
+    std::test::assert(
+        std::str::contains(page, "<td>grafted</td>"),
+        "neither organism's face is running: " + page,
+    );
+    std::test::assert(
+        std::str::contains(page, "href=\"/styles.css\"") && !std::str::contains(page, "<script"),
+        "the same page as every organism's: the shell's stylesheet, no script",
+    );
 
     // ---- down stops the face with the body
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
-    std::test::assert(down.code == 0 && std::str::contains(down.stdout, "stopped the habitat's face"), "down stops the face: " + down.stdout + down.stderr);
-    std::test::assert(dna::run_tool("curl\n-s\n-o\n/dev/null\n" + face + "/index").code != 0, "nothing answers at the face's address");
+    std::test::assert(
+        down.code == 0 && std::str::contains(down.stdout, "stopped the habitat's face"),
+        "down stops the face: " + down.stdout + down.stderr,
+    );
+    std::test::assert(
+        dna::run_tool("curl\n-s\n-o\n/dev/null\n" + face + "/index").code != 0,
+        "nothing answers at the face's address",
+    );
     dna::scratch_done(scratch);
 }

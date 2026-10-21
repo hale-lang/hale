@@ -35,7 +35,11 @@ fn main() {
         std::test::assert(false, "a seat: " + err.kind + " " + err.field);
         return;
     };
-    std::test::assert_eq_str(s.config.text, "{\"b\": [1, 2.50, \"x\"],  \"a\":null}", "the value's text as sent");
+    std::test::assert_eq_str(
+        s.config.text,
+        "{\"b\": [1, 2.50, \"x\"],  \"a\":null}",
+        "the value's text as sent",
+    );
     std::test::assert_eq_str(Seat::api_encode(s), text, "written back byte for byte");
 
     // any JSON value: a scalar, `null`, an array; before and after alike
@@ -43,27 +47,55 @@ fn main() {
         std::test::assert(false, "a change: " + err.kind + " " + err.field);
         return;
     };
-    std::test::assert_eq_str(change.before.text + " " + change.after.text, "null \"on\"", "a scalar and null");
+    std::test::assert_eq_str(
+        change.before.text + " " + change.after.text,
+        "null \"on\"",
+        "a scalar and null",
+    );
     let log = Log::api_decode("{\"entries\":[1,{\"k\":true},[]]}") or {
         std::test::assert(false, "a log: " + err.kind + " " + err.field);
         return;
     };
     std::test::assert_eq_int(count(log.entries), 3, "a list of values");
-    std::test::assert_eq_str(Log::api_encode(log), "{\"entries\":[1,{\"k\":true},[]]}", "a list written back");
+    std::test::assert_eq_str(
+        Log::api_encode(log),
+        "{\"entries\":[1,{\"k\":true},[]]}",
+        "a list written back",
+    );
 
     // read-only inspection through the text
-    std::test::assert_eq_str(std::json::find_field_raw(s.config.text, "b"), "[1, 2.50, \"x\"]", "a field read through the cursors");
+    std::test::assert_eq_str(
+        std::json::find_field_raw(s.config.text, "b"),
+        "[1, 2.50, \"x\"]",
+        "a field read through the cursors",
+    );
 
     // the rules
-    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + nested(64) + "}"), "decoded " + nested(64), "64 levels");
-    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + nested(65) + "}"), "wrong_type: config", "65 levels");
+    std::test::assert_eq_str(
+        refused("{\"name\":\"a\",\"config\":" + nested(64) + "}"),
+        "decoded " + nested(64),
+        "64 levels",
+    );
+    std::test::assert_eq_str(
+        refused("{\"name\":\"a\",\"config\":" + nested(65) + "}"),
+        "wrong_type: config",
+        "65 levels",
+    );
     let mut big = "\"";
     while len(big) < 65537 {
         big = big + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     }
     big = big + "\"";
-    std::test::assert_eq_str(refused("{\"name\":\"a\",\"config\":" + big + "}"), "too_long: config", "past 64 KiB");
-    std::test::assert_eq_str(refused("{\"name\":\"a\"}"), "missing_field: config", "a value is required as any field is");
+    std::test::assert_eq_str(
+        refused("{\"name\":\"a\",\"config\":" + big + "}"),
+        "too_long: config",
+        "past 64 KiB",
+    );
+    std::test::assert_eq_str(
+        refused("{\"name\":\"a\"}"),
+        "missing_field: config",
+        "a value is required as any field is",
+    );
 
     // a program's own value
     let v = std::json::Value::parse("[1, 2]") or {
@@ -71,9 +103,13 @@ fn main() {
         return;
     };
     std::test::assert_eq_str(v.text, "[1, 2]", "parse keeps the text");
-    let bad = std::json::Value::parse("{") or { std::json::Value::parse("\"refused\"") or { return; } };
+    let bad = std::json::Value::parse("{") or {
+        std::json::Value::parse("\"refused\"") or { return; }
+    };
     std::test::assert_eq_str(bad.text, "\"refused\"", "malformed text is refused");
-    let deep = std::json::Value::parse(nested(65)) or { std::json::Value::parse("\"refused\"") or { return; } };
+    let deep = std::json::Value::parse(nested(65)) or {
+        std::json::Value::parse("\"refused\"") or { return; }
+    };
     std::test::assert_eq_str(deep.text, "\"refused\"", "65 levels are refused");
     // equal when their texts are
     let same = std::json::Value::parse("[1, 2]") or { return; };

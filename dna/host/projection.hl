@@ -197,7 +197,13 @@ locus Projection {
         let mut i = 0;
         while i < self.rows() {
             let e = self.row(i);
-            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "name") == name && self.has_row("knowledge.ratified", e.entity) && !self.has_row("knowledge.retired", e.entity) { found = e.entity; }
+            if e.kind == "knowledge.proposed"
+                && std::json::find_string_field(e.body, "name") == name
+                && self.has_row("knowledge.ratified", e.entity)
+                && !self.has_row("knowledge.retired", e.entity)
+            {
+                found = e.entity;
+            }
             i = i + 1;
         }
         return found;
@@ -208,24 +214,58 @@ locus Projection {
         while i < self.rows() {
             let e = self.row(i);
             if e.entity == id {
-                if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
-                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); t.obligation = std::json::find_string_field(e.body, "obligation"); t.acceptance = std::json::find_string_field(e.body, "acceptance"); t.acceptance_bound = std::str::contains(e.body, "\"acceptance\":"); t.evidence_required = std::str::trim(std::json::find_field_raw(e.body, "evidence_required")) == "true"; }
+                if e.kind == "task.born" {
+                    t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq };
+                }
+                else if e.kind == "task.handed" && len(t.id) > 0 {
+                    t.state = "handed";
+                    t.detail = e.body;
+                    t.assignee = std::json::find_string_field(e.body, "assignee");
+                    t.obligation = std::json::find_string_field(e.body, "obligation");
+                    t.acceptance = std::json::find_string_field(e.body, "acceptance");
+                    t.acceptance_bound = std::str::contains(e.body, "\"acceptance\":");
+                    t.evidence_required = std::str::trim(
+                        std::json::find_field_raw(e.body, "evidence_required"),
+                    ) == "true";
+                }
                 // GH #604: what a person's completion linked — the evidence, or an authorized exception
-                else if e.kind == "completion.linked" && len(t.id) > 0 { t.evidence = std::json::find_string_field(e.body, "evidence"); }
-                else if e.kind == "completion.excepted" && len(t.id) > 0 { t.exception = std::json::find_string_field(e.body, "why") + " (authorized by " + std::json::find_string_field(e.body, "authorized_by") + ")"; }
+                else if e.kind == "completion.linked" && len(t.id) > 0 {
+                    t.evidence = std::json::find_string_field(e.body, "evidence");
+                }
+                else if e.kind == "completion.excepted" && len(t.id) > 0 {
+                    t.exception = std::json::find_string_field(e.body, "why") + " (authorized by "
+                        + std::json::find_string_field(e.body, "authorized_by") + ")";
+                }
                 // GH #616: a decision someone else made, reported — decided when its practice accepted it, else still handed with the reason
                 else if e.kind == "decision.reported" && len(t.id) > 0 {
                     if std::str::trim(std::json::find_field_raw(e.body, "accepted")) == "true" {
                         t.state = "decided";
                         t.waiting = "";
-                        t.detail = dna::decision_line(std::json::find_string_field(e.body, "reporter"), std::json::find_string_field(e.body, "decider"), std::json::find_string_field(e.body, "channel"), std::json::find_string_field(e.body, "evidence"));
+                        t.detail = dna::decision_line(
+                            std::json::find_string_field(e.body, "reporter"),
+                            std::json::find_string_field(e.body, "decider"),
+                            std::json::find_string_field(e.body, "channel"),
+                            std::json::find_string_field(e.body, "evidence"),
+                        );
                     } else { t.waiting = std::json::find_string_field(e.body, "why"); }
                 }
-                else if e.kind == "task.reassigned" && len(t.id) > 0 { t.assignee = std::json::find_string_field(e.body, "to"); t.detail = e.body; }
+                else if e.kind == "task.reassigned" && len(t.id) > 0 {
+                    t.assignee = std::json::find_string_field(e.body, "to");
+                    t.detail = e.body;
+                }
                 // card 18: an admitted execution's root is settled by its
                 // workflow — the terminal state is the engine's own row
-                else if e.kind == "workflow.settled" && len(t.id) > 0 { t.state = std::json::find_string_field(e.body, "disposition"); t.detail = std::json::find_string_field(e.body, "reason"); }
-                else if std::str::starts_with(e.kind, "task.") && e.kind != "task.resumed" && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
+                else if e.kind == "workflow.settled" && len(t.id) > 0 {
+                    t.state = std::json::find_string_field(e.body, "disposition");
+                    t.detail = std::json::find_string_field(e.body, "reason");
+                }
+                else if std::str::starts_with(e.kind, "task.")
+                    && e.kind != "task.resumed"
+                    && len(t.id) > 0
+                {
+                    t.state = e.kind[5..len(e.kind)];
+                    t.detail = e.body;
+                }
             }
             i = i + 1;
         }
@@ -273,7 +313,11 @@ locus Projection {
                 let kind = e.kind[9..len(e.kind)];
                 if kind == "proposed" {
                     // "task <id> <class>: <objective> (<target>) at <base>"
-                    let rest = if std::str::starts_with(e.body, "task ") { e.body[5..len(e.body)] } else { e.body };
+                    let rest = if std::str::starts_with(e.body, "task ") {
+                        e.body[5..len(e.body)]
+                    } else {
+                        e.body
+                    };
                     let sp = std::str::index_of(rest, " ");
                     let task = if sp < 0 { "" } else { rest[0..sp] };
                     let rest2 = if sp < 0 { rest } else { rest[(sp + 1)..len(rest)] };
@@ -304,8 +348,18 @@ locus Projection {
             let e = self.row(i);
             if e.kind == "review.settled" && e.entity == id {
                 let d = m.disposition;
-                if d == "" || d == "proposed" || d == "review" || d == "stage" || d == "escalate" || d == "release" {
-                    m.disposition = if std::str::starts_with(e.body, "approve") { "reviewed" } else { "rejected" };
+                if d == ""
+                    || d == "proposed"
+                    || d == "review"
+                    || d == "stage"
+                    || d == "escalate"
+                    || d == "release"
+                {
+                    m.disposition = if std::str::starts_with(e.body, "approve") {
+                        "reviewed"
+                    } else {
+                        "rejected"
+                    };
                     m.detail = e.body;
                 }
             }
@@ -405,23 +459,38 @@ locus Projection {
         b.int_field("revision", self.rows());
         b.string_field("chain", if self.chain_ok() { "verified" } else { "BROKEN" });
         let head = self.chain_head();
-        if len(head) > 0 { b.string_field("chain_head", head); } else { b.null_field("chain_head"); }
+        if len(head) > 0 {
+            b.string_field("chain_head", head);
+        } else {
+            b.null_field("chain_head");
+        }
         b.end_object();
         b.begin_object_field("expression");
         let attached = self.first_of("application.attached");
-        if attached.seq >= 0 { b.field("attached", attached.body); } else { b.null_field("attached"); }
+        if attached.seq >= 0 {
+            b.field("attached", attached.body);
+        } else {
+            b.null_field("attached");
+        }
         let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
         if len(current) > 0 {
             b.begin_object_field("current");
             b.string_field("shape_hash", std::json::find_string_field(current, "shape_hash"));
-            b.string_field("artifact_digest", std::json::find_string_field(current, "artifact_digest"));
+            b.string_field(
+                "artifact_digest",
+                std::json::find_string_field(current, "artifact_digest"),
+            );
             b.string_field("verdict", std::json::find_string_field(current, "verdict"));
             b.end_object();
         } else {
             b.null_field("current");
         }
         let bd = self.build_digest();
-        if len(bd) > 0 { b.string_field("build_digest", bd); } else { b.null_field("build_digest"); }
+        if len(bd) > 0 {
+            b.string_field("build_digest", bd);
+        } else {
+            b.null_field("build_digest");
+        }
         b.string_field("toolchain", self.toolchain);
         b.int_field("restarts", self.count("expression.restarted"));
         let rr = self.last_of("expression.restart_requested");
@@ -509,7 +578,11 @@ locus Projection {
                 b.string_field("candidate_commit", r.candidate_commit);
                 b.string_field("candidate_shape", r.candidate_shape);
                 b.string_field("evidence", r.evidence);
-                if len(r.magnitude_raw) > 0 { b.field("magnitude", r.magnitude_raw); } else { b.null_field("magnitude"); }
+                if len(r.magnitude_raw) > 0 {
+                    b.field("magnitude", r.magnitude_raw);
+                } else {
+                    b.null_field("magnitude");
+                }
                 b.string_field("diff_text", r.diff_text);
                 b.string_field("diff_json", r.diff_json);
                 b.string_field("author", r.author);
@@ -569,7 +642,10 @@ locus Projection {
                 if open >= 0 && close > open {
                     let fields = inner[(open + 1)..close];
                     let sep = if len(std::str::trim(fields)) > 0 { ", " } else { "" };
-                    b.value("{" + fields + sep + "\"attempt\": " + quote(e.entity) + ", \"seq\": " + to_string(e.seq) + "}");
+                    b.value(
+                        "{" + fields + sep + "\"attempt\": " + quote(e.entity) + ", \"seq\": "
+                            + to_string(e.seq) + "}",
+                    );
                     taken = taken + 1;
                 }
             }
@@ -595,28 +671,39 @@ locus Projection {
     fn text() -> String {
         self.build();
         let mut out = "organism:   " + self.organism_line() + "\n";
-        out = out + "journal:    " + to_string(self.rows()) + " event(s), " + self.chain_line() + "\n";
+        out = out + "journal:    " + to_string(self.rows()) + " event(s), " + self.chain_line()
+            + "\n";
         let attached = self.first_of("application.attached");
         let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
         let cur_shape = std::json::find_string_field(current, "shape_hash");
         let bd = self.build_digest();
         if attached.seq >= 0 && len(std::json::find_string_field(attached.body, "main")) == 0 {
             // ruling 11: a repository's application is its compose services
-            out = out + "expression: the repository's compose services, attached as " + std::json::find_string_field(attached.body, "name") + "\n";
+            out = out + "expression: the repository's compose services, attached as "
+                + std::json::find_string_field(attached.body, "name") + "\n";
         } else {
-            out = out + "expression: attached " + std::json::find_string_field(attached.body, "main") + " (shape " + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape " + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build " + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
+            out = out + "expression: attached "
+                + std::json::find_string_field(attached.body, "main") + " (shape "
+                + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape "
+                + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build "
+                + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
         }
-        out = out + "intents:    " + to_string(self.count("intent.offered")) + " offered, " + to_string(self.count("intent.refused")) + " refused\n";
+        out = out + "intents:    " + to_string(self.count("intent.offered")) + " offered, "
+            + to_string(self.count("intent.refused")) + " refused\n";
         // GH #664: over a shared record, an intent for a position no
         // controller here owns waits in the record, visibly
         if shared_here(self.root) {
             let mut k = 0;
             while k < self.rows() {
                 let e = self.row(k);
-                if e.kind == "intent.requested" && find_after(self, k + 1, " intent.offered intent.refused ", e.entity).seq < 0 {
+                if e.kind == "intent.requested"
+                    && find_after(self, k + 1, " intent.offered intent.refused ", e.entity).seq < 0
+                {
                     let to = std::json::find_string_field(e.body, "to");
                     if !admits_here(self.root, to) {
-                        out = out + "  " + e.entity + " [unadmitted] " + std::json::find_string_field(e.body, "outcome") + " — " + ownership_note(self.root, to) + "\n";
+                        out = out + "  " + e.entity + " [unadmitted] "
+                            + std::json::find_string_field(e.body, "outcome") + " — "
+                            + ownership_note(self.root, to) + "\n";
                     }
                 }
                 k = k + 1;
@@ -628,34 +715,60 @@ locus Projection {
         let mut i = 0;
         while i < ntasks {
             let t = self.task_of(nth(task_ids, i));
-            let how = if t.state == "decided" { " — " + t.detail } else if t.state == "handed" && len(t.waiting) > 0 { " — waits: " + t.waiting } else if t.state == "done" && len(t.evidence) > 0 { " — evidence " + t.evidence } else if t.state == "done" && len(t.exception) > 0 { " — exception: " + t.exception } else if t.state == "done" && len(t.assignee) > 0 { " — human-reported, no evidence linked" } else { "" };
+            let how = if t.state == "decided" {
+                " — " + t.detail
+            } else if t.state == "handed" && len(t.waiting) > 0 {
+                " — waits: " + t.waiting
+            } else if t.state == "done" && len(t.evidence) > 0 {
+                " — evidence " + t.evidence
+            } else if t.state == "done" && len(t.exception) > 0 {
+                " — exception: " + t.exception
+            } else if t.state == "done" && len(t.assignee) > 0 {
+                " — human-reported, no evidence linked"
+            } else {
+                ""
+            };
             out = out + "  " + t.id + " [" + t.state + "] " + t.outcome + how + "\n";
             i = i + 1;
         }
         let review_ids = self.review_ids();
         let nreviews = list_len(review_ids);
-        out = out + "reviews:    " + to_string(self.pending_reviews()) + " pending of " + to_string(nreviews) + "\n";
+        out = out + "reviews:    " + to_string(self.pending_reviews()) + " pending of "
+            + to_string(nreviews) + "\n";
         i = 0;
         while i < nreviews {
             let r = self.review_of(nth(review_ids, i));
-            let why = if r.state == "pending" { "needs " + r.required_authority + " — " + r.question } else { "settled " + r.settled };
-            let ref = if r.refusal_count > 0 { " (" + to_string(r.refusal_count) + " verdict(s) refused)" } else { "" };
+            let why = if r.state == "pending" {
+                "needs " + r.required_authority + " — " + r.question
+            } else {
+                "settled " + r.settled
+            };
+            let ref = if r.refusal_count > 0 {
+                " (" + to_string(r.refusal_count) + " verdict(s) refused)"
+            } else {
+                ""
+            };
             out = out + "  " + r.id + " [" + r.state + "] " + why + ref + "\n";
             i = i + 1;
         }
         let mutation_ids = self.mutation_ids();
         let nmut = list_len(mutation_ids);
-        out = out + "mutations:  " + to_string(nmut) + " (none applies before a human's verdict on the exact candidate)\n";
+        out = out + "mutations:  " + to_string(nmut)
+            + " (none applies before a human's verdict on the exact candidate)\n";
         i = 0;
         while i < nmut {
             let m = self.mutation_of(nth(mutation_ids, i));
             let task = if len(m.task) > 0 { " · task " + m.task } else { "" };
             let cand = if len(m.candidate) > 0 { " · candidate " + short(m.candidate) } else { "" };
-            out = out + "  " + m.id + " [" + m.disposition + "] " + m.class + ": " + m.objective + task + cand + "\n";
+            out = out + "  " + m.id + " [" + m.disposition + "] " + m.class + ": " + m.objective
+                + task + cand + "\n";
             i = i + 1;
         }
         let deferred = self.count("law.deferred");
-        if deferred > 0 { out = out + "law:        " + to_string(deferred) + " clause(s) deferred at init (see dna_constitution.hl)\n"; }
+        if deferred > 0 {
+            out = out + "law:        " + to_string(deferred)
+                + " clause(s) deferred at init (see dna_constitution.hl)\n";
+        }
         return out;
     }
 }

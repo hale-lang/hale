@@ -92,7 +92,11 @@ fn nerves_token(s: String) -> String {
     let mut i = 0;
     while i < len(s) {
         let c = s[i..(i + 1)];
-        let keep = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_";
+        let keep = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_";
         out = out + (if keep { c } else { "_" });
         i = i + 1;
     }
@@ -106,7 +110,13 @@ fn nerves_prefix_of(org: String, owner: String) -> String {
 }
 
 // The durable an owner's organization reads through.
-fn nerves_durable_of(owner: String) -> String { return if len(owner) == 0 { NERVES_DURABLE } else { NERVES_DURABLE + "_" + nerves_token(owner) }; }
+fn nerves_durable_of(owner: String) -> String {
+    return if len(owner) == 0 {
+        NERVES_DURABLE
+    } else {
+        NERVES_DURABLE + "_" + nerves_token(owner)
+    };
+}
 
 // The organization's stream: its token upper-cased (`dna_<id>` makes
 // `DNA_<ID>`).
@@ -123,7 +133,9 @@ const NERVES_ROLES: String = "owner spine head reflexes exchange";
 // CONNECT and nowhere else — no field, no return, no URL, no environment.
 // It is provisioned by the organism's bootstrap (`hale habitat graft`,
 // `upgrade`: dna/host/secrets.hl) and only consumed here.
-fn nerves_vault_name(org: String, role: String) -> String { return "nats-" + identifier_part(org, 60) + "-" + identifier_part(role, 16); }
+fn nerves_vault_name(org: String, role: String) -> String {
+    return "nats-" + identifier_part(org, 60) + "-" + identifier_part(role, 16);
+}
 
 // GH #989: an application's own account. Its name is the one the record
 // attaches it by (`application.attached`'s `name`), a subject token; its
@@ -132,13 +144,21 @@ fn nerves_vault_name(org: String, role: String) -> String { return "nats-" + ide
 // `<org>.app.<name>.>` and nowhere else.
 fn nerves_app_name(name: String) -> String { return identifier_part(name, 32); }
 fn nerves_app_user(name: String) -> String { return "app-" + nerves_app_name(name); }
-fn nerves_app_vault(org: String, name: String) -> String { return "nats-" + identifier_part(org, 60) + "-app-" + nerves_app_name(name); }
-fn nerves_app_password_var(name: String) -> String { return "NATS_APP_" + std::str::upper(nerves_app_name(name)) + "_PASSWORD"; }
+fn nerves_app_vault(org: String, name: String) -> String {
+    return "nats-" + identifier_part(org, 60) + "-app-" + nerves_app_name(name);
+}
+fn nerves_app_password_var(name: String) -> String {
+    return "NATS_APP_" + std::str::upper(nerves_app_name(name)) + "_PASSWORD";
+}
 // Why `name` can hold no account of its own, "" when it can: the
 // reflexes' subjects are theirs alone (#988).
 fn nerves_app_refusal(name: String) -> String {
-    if len(nerves_app_name(name)) == 0 { return "the application has no name to hold an account by"; }
-    if nerves_app_name(name) == "reflexes" { return "the application's name `reflexes` is the reflexes' subject space (#988): name the project otherwise"; }
+    if len(nerves_app_name(name)) == 0 {
+        return "the application has no name to hold an account by";
+    }
+    if nerves_app_name(name) == "reflexes" {
+        return "the application's name `reflexes` is the reflexes' subject space (#988): name the project otherwise";
+    }
     return "";
 }
 
@@ -165,7 +185,11 @@ fn nerves_missing(org: String) -> String {
         let sp = std::str::index_of(rest, " ");
         let role = rest[0..sp];
         rest = rest[(sp + 1)..len(rest)];
-        if len(org) == 0 || !std::secret::Credential { vault: nerves_vault_name(org, role) }.ready() { missing = missing + (if len(missing) > 0 { " " } else { "" }) + role; }
+        if len(org) == 0
+            || !std::secret::Credential { vault: nerves_vault_name(org, role) }.ready()
+        {
+            missing = missing + (if len(missing) > 0 { " " } else { "" }) + role;
+        }
     }
     return missing;
 }
@@ -212,14 +236,19 @@ fn nerves_heart_conf(key: String) -> String {
     return "    # the heart's broker (GH #1653): its own subject space, its replies\n"
         + "    # under it, nothing of DNA's and no `_INBOX`\n"
         + "    { user: " + heart_broker_user(key) + ", password: $" + HEART_PASSWORD_VAR + ",\n"
-        + "      permissions: { publish: [\"" + base + ".>\"], subscribe: [\"" + base + ".>\"] } }\n"
+        + "      permissions: { publish: [\"" + base + ".>\"], subscribe: [\"" + base
+        + ".>\"] } }\n"
         + "    # its nodes: their own work in, their replies and acks out\n"
-        + "    { user: " + heart_broker_node_user(key) + ", password: $" + HEART_NODE_PASSWORD_VAR + ",\n"
-        + "      permissions: { publish: [\"" + base + ".reply.>\", \"" + base + "._INBOX.>\"], subscribe: [\"" + base + ".node.>\"] } }\n";
+        + "    { user: " + heart_broker_node_user(key) + ", password: $" + HEART_NODE_PASSWORD_VAR
+        + ",\n"
+        + "      permissions: { publish: [\"" + base + ".reply.>\", \"" + base
+        + "._INBOX.>\"], subscribe: [\"" + base + ".node.>\"] } }\n";
 }
 
 // The variable the nerves allocation's nats.conf names a role's password by.
-fn nerves_password_var(role: String) -> String { return "NATS_" + std::str::upper(role) + "_PASSWORD"; }
+fn nerves_password_var(role: String) -> String {
+    return "NATS_" + std::str::upper(role) + "_PASSWORD";
+}
 
 // The nerves allocation's nats.conf (GH #1653: beside the allocation in the
 // local habitat, never in a checkout): the nerves' server, with
@@ -272,8 +301,10 @@ fn nerves_app_conf(app: String) -> String {
     let name = nerves_app_name(app);
     return "    # the application `" + name + "` the record attaches: publishes on its own\n"
         + "    # subjects alone, reads nothing of DNA's (#987)\n"
-        + "    { user: " + nerves_app_user(name) + ", password: $" + nerves_app_password_var(name) + ",\n"
-        + "      permissions: { publish: [\"*.app." + name + ".>\"], subscribe: [\"_INBOX.>\"] } }\n";
+        + "    { user: " + nerves_app_user(name) + ", password: $" + nerves_app_password_var(name)
+        + ",\n"
+        + "      permissions: { publish: [\"*.app." + name
+        + ".>\"], subscribe: [\"_INBOX.>\"] } }\n";
 }
 
 fn env_or_empty(name: String) -> String {
@@ -298,11 +329,15 @@ fn nerves_here() -> Bool { return len(nerves_spine_url()) > 0 && len(nerves_org(
 // program that holds one drains on SIGTERM (GH #1039) — which every
 // program importing the core would, the head and the API among them,
 // had the core imported it.
-fn nerves_filter_of(org: String, owner: String) -> String { return nerves_prefix_of(org, owner) + "dna.>"; }
+fn nerves_filter_of(org: String, owner: String) -> String {
+    return nerves_prefix_of(org, owner) + "dna.>";
+}
 
 // The JetStream API subject that answers for an owner's durable consumer
 // (whether it has a pull outstanding: `num_waiting`).
-fn nerves_info_subject_of(org: String, owner: String) -> String { return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + nerves_durable_of(owner); }
+fn nerves_info_subject_of(org: String, owner: String) -> String {
+    return "$JS.API.CONSUMER.INFO." + nerves_stream(org) + "." + nerves_durable_of(owner);
+}
 
 // The same, for the part of the organism this process is, from its
 // environment: what an organization's connection is spelled with.
@@ -318,8 +353,12 @@ fn nerves_filter() -> String { return nerves_filter_of(nerves_org(), nerves_owne
 // prefix is the organization's alone, never an owner's: the heart is
 // the organization's, whichever owner's host takes an event.
 const NERVES_HEART_DURABLE: String = "heart";
-fn nerves_heart_prefix_of(org: String) -> String { return if len(org) == 0 { "" } else { org + ".app." }; }
-fn nerves_heart_filter_of(org: String) -> String { return if len(org) == 0 { "" } else { nerves_heart_prefix_of(org) + ">" }; }
+fn nerves_heart_prefix_of(org: String) -> String {
+    return if len(org) == 0 { "" } else { org + ".app." };
+}
+fn nerves_heart_filter_of(org: String) -> String {
+    return if len(org) == 0 { "" } else { nerves_heart_prefix_of(org) + ">" };
+}
 fn nerves_heart_prefix() -> String { return nerves_heart_prefix_of(nerves_org()); }
 fn nerves_heart_filter() -> String { return nerves_heart_filter_of(nerves_org()); }
 
@@ -370,7 +409,9 @@ const EXCHANGE_PER_SENDER_ENV: String = "HALE_DNA_EXCHANGE_PER_SENDER";
 fn exchange_stream(org: String) -> String { return nerves_stream(org) + "_EXCHANGE"; }
 fn exchange_card_subject(org: String) -> String { return "exchange." + org + ".card"; }
 fn exchange_inbox_filter(org: String) -> String { return "exchange." + org + ".in.>"; }
-fn exchange_inbox_subject(org: String, sender_org: String, kind: String) -> String { return "exchange." + org + ".in." + sender_org + "." + kind; }
+fn exchange_inbox_subject(org: String, sender_org: String, kind: String) -> String {
+    return "exchange." + org + ".in." + sender_org + "." + kind;
+}
 
 fn exchange_per_sender() -> Int {
     let given = env_or_empty(EXCHANGE_PER_SENDER_ENV);

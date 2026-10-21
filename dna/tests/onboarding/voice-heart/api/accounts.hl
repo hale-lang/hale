@@ -71,7 +71,12 @@ locus Accounts {
 
     /// `createAccount`.
     fn create(c: AccountCreate) -> Account fallible(ApiError) {
-        if !is_slug(c.id) { fail invalid("`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63", "id"); }
+        if !is_slug(c.id) {
+            fail invalid(
+                "`id` is lowercase letters, digits and dashes, starting with a letter or digit, at most 63",
+                "id"
+            );
+        }
         check_name(c.name) or raise;
         let limits = own_account_limits(c.limits, c.id) or raise;
         check_limits(limits.items, "account", "limits") or raise;
@@ -84,7 +89,10 @@ locus Accounts {
             created_at: now_seconds()
         };
         let v = self.view(row) or raise;
-        let added = self.store.insert_account(row, change("create", "accounts/" + c.id, "", account_json(v))) or fail store_failed(err);
+        let added = self.store.insert_account(
+            row,
+            change("create", "accounts/" + c.id, "", account_json(v)),
+        ) or fail store_failed(err);
         if !added { fail conflict("account " + c.id + " exists; an account id is never reused"); }
         return v;
     }
@@ -114,7 +122,11 @@ locus Accounts {
             check_name(u.name) or raise;
             row.name = u.name;
         }
-        if u.has_provider { row.provider = u.provider; } else if u.clear_provider { row.provider = ""; }
+        if u.has_provider {
+            row.provider = u.provider;
+        } else if u.clear_provider {
+            row.provider = "";
+        }
         if u.has_billing { row.billing = billing_name(u.billing); }
         if u.has_limits {
             let limits = own_account_limits(u.limits, row.id) or raise;
@@ -122,7 +134,10 @@ locus Accounts {
             row.limits = limits;
         }
         let after = self.view(row) or raise;
-        self.store.update_account(row, change("update", "accounts/" + row.id, account_json(before), account_json(after))) or fail store_failed(err);
+        self.store.update_account(
+            row,
+            change("update", "accounts/" + row.id, account_json(before), account_json(after)),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -147,7 +162,10 @@ locus Accounts {
         row.archived = true;
         row.archived_at = now_seconds();
         let after = self.view(row) or raise;
-        self.store.update_account(row, change("archive", "accounts/" + row.id, account_json(before), account_json(after))) or fail store_failed(err);
+        self.store.update_account(
+            row,
+            change("archive", "accounts/" + row.id, account_json(before), account_json(after)),
+        ) or fail store_failed(err);
         return after;
     }
 
@@ -235,10 +253,14 @@ fn read_account_update(body: String, account: String) -> AccountUpdate fallible(
 }
 
 fn account_json(a: Account) -> String {
-    return "{\"id\": " + jq(a.id) + ", \"name\": " + jq(a.name) + ", \"provider\": " + jstring_or_null(a.has_provider, a.provider)
-        + ", \"billing\": " + jq(billing_name(a.billing)) + ", \"limits\": " + limits_json(a.limits) + ", \"status\": " + jq(lifecycle_name(a.status))
-        + ", \"seats\": " + st::jnames(a.seats) + ", \"windows\": " + windows_json(a.windows) + ", \"exhausted_until\": " + jtime_or_null(a.has_exhausted_until, a.exhausted_until)
-        + ", \"created_at\": " + jtime(a.created_at) + ", \"archived_at\": " + jtime_or_null(a.has_archived_at, a.archived_at) + "}";
+    return "{\"id\": " + jq(a.id) + ", \"name\": " + jq(a.name) + ", \"provider\": "
+        + jstring_or_null(a.has_provider, a.provider)
+        + ", \"billing\": " + jq(billing_name(a.billing)) + ", \"limits\": " + limits_json(a.limits)
+        + ", \"status\": " + jq(lifecycle_name(a.status))
+        + ", \"seats\": " + st::jnames(a.seats) + ", \"windows\": " + windows_json(a.windows)
+        + ", \"exhausted_until\": " + jtime_or_null(a.has_exhausted_until, a.exhausted_until)
+        + ", \"created_at\": " + jtime(a.created_at) + ", \"archived_at\": "
+        + jtime_or_null(a.has_archived_at, a.archived_at) + "}";
 }
 
 fn account_list_json(l: AccountList) -> String {

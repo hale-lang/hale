@@ -230,7 +230,11 @@ interface Store {
     /// Replace the row, archived, and write the keys it revokes, each with
     /// its own change, all in one write: the keys' changes first, then the
     /// project's.
-    fn archive_project(row: ProjectRow, change: ChangeRow, revoked: Revocations) fallible(StoreError);
+    fn archive_project(
+        row: ProjectRow,
+        change: ChangeRow,
+        revoked: Revocations
+    ) fallible(StoreError);
 
     fn key(id: String) -> KeyRow fallible(StoreError);
     /// The key whose secret has this digest; `present` false for none.
@@ -396,7 +400,9 @@ locus MemoryStore {
     fn insert_model(row: ModelRow, change: ChangeRow) -> Bool fallible(StoreError) {
         let cur = self.model_rows.get(row.id) or ModelRow { };
         if cur.present { return false; }
-        if self.model_order.len() >= 256 { fail StoreError { kind: "full", message: "the catalog holds at most 256 models" }; }
+        if self.model_order.len() >= 256 {
+            fail StoreError { kind: "full", message: "the catalog holds at most 256 models" };
+        }
         let mut r = row;
         r.present = true;
         self.model_rows.set(r);
@@ -434,7 +440,9 @@ locus MemoryStore {
     fn insert_project(row: ProjectRow, change: ChangeRow) -> Bool fallible(StoreError) {
         let cur = self.project_rows.get(row.id) or ProjectRow { };
         if cur.present { return false; }
-        if self.project_order.len() >= 64 { fail StoreError { kind: "full", message: "voice holds at most 64 projects" }; }
+        if self.project_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 projects" };
+        }
         let mut r = row;
         r.present = true;
         self.project_rows.set(r);
@@ -452,7 +460,11 @@ locus MemoryStore {
     }
 
     @unbounded
-    fn archive_project(row: ProjectRow, change: ChangeRow, revoked: Revocations) fallible(StoreError) {
+    fn archive_project(
+        row: ProjectRow,
+        change: ChangeRow,
+        revoked: Revocations
+    ) fallible(StoreError) {
         for k in revoked.keys {
             let mut gone = k;
             gone.present = true;
@@ -496,7 +508,9 @@ locus MemoryStore {
         let cur = self.key_rows.get(row.id) or KeyRow { };
         if cur.present { return false; }
         let held = self.keys(row.project) or KeyRows { };
-        if count(held.rows) >= 64 { fail StoreError { kind: "full", message: "a project holds at most 64 keys" }; }
+        if count(held.rows) >= 64 {
+            fail StoreError { kind: "full", message: "a project holds at most 64 keys" };
+        }
         let mut r = row;
         r.present = true;
         self.key_rows.set(r);
@@ -544,7 +558,9 @@ locus MemoryStore {
     fn insert_account(row: AccountRow, change: ChangeRow) -> Bool fallible(StoreError) {
         let cur = self.account_rows.get(row.id) or AccountRow { };
         if cur.present { return false; }
-        if self.account_order.len() >= 64 { fail StoreError { kind: "full", message: "voice holds at most 64 accounts" }; }
+        if self.account_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 accounts" };
+        }
         let mut r = row;
         r.present = true;
         self.account_rows.set(r);
@@ -582,7 +598,9 @@ locus MemoryStore {
     fn insert_node(row: NodeRow, change: ChangeRow) -> Bool fallible(StoreError) {
         let cur = self.node_rows.get(row.id) or NodeRow { };
         if cur.present { return false; }
-        if self.node_order.len() >= 64 { fail StoreError { kind: "full", message: "voice holds at most 64 nodes" }; }
+        if self.node_order.len() >= 64 {
+            fail StoreError { kind: "full", message: "voice holds at most 64 nodes" };
+        }
         let mut r = row;
         r.present = true;
         r.assignment_version = 1;
@@ -624,7 +642,9 @@ locus MemoryStore {
         let cur = self.seat_rows.get(ref) or SeatRow { };
         if cur.present { return false; }
         let all = self.seats() or SeatRows { };
-        if count(all.rows) >= 256 { fail StoreError { kind: "full", message: "voice holds at most 256 seats" }; }
+        if count(all.rows) >= 256 {
+            fail StoreError { kind: "full", message: "voice holds at most 256 seats" };
+        }
         let mut r = row;
         r.ref = ref;
         r.present = true;
@@ -728,7 +748,11 @@ locus MemoryStore {
         if i < 0 || i >= count(self.beat_ns) { return Beat { }; }
         let ns = at(self.beat_ns, i) or 0;
         if ns == 0 { return Beat { }; }
-        return Beat { at: std::time::from_nanos(ns), in_flight: at(self.beat_load, i) or 0, present: true };
+        return Beat {
+            at: std::time::from_nanos(ns),
+            in_flight: at(self.beat_load, i) or 0,
+            present: true,
+        };
     }
 
     fn put_beat(node: String, when: Time, in_flight: Int) fallible(StoreError) {
@@ -767,7 +791,13 @@ locus MemoryStore {
     @unbounded
     fn put_seat_state(row: SeatStateRow) fallible(StoreError) {
         let cur = self.seat_state_rows.get(row.ref) or SeatStateRow { };
-        if cur.present && cur.status == row.status && cur.reason == row.reason && cur.in_flight == row.in_flight { return; }
+        if cur.present
+            && cur.status == row.status
+            && cur.reason == row.reason
+            && cur.in_flight == row.in_flight
+        {
+            return;
+        }
         let mut r = row;
         r.present = true;
         self.seat_state_rows.set(r);
@@ -788,7 +818,12 @@ locus MemoryStore {
 
 /// True when `c` is one `q` asks for (all but the cursor and the limit).
 fn matches(c: ChangeRow, q: ChangeQuery) -> Bool {
-    if len(q.target) > 0 && c.target != q.target && !std::str::starts_with(c.target, q.target + "/") { return false; }
+    if len(q.target) > 0
+        && c.target != q.target
+        && !std::str::starts_with(c.target, q.target + "/")
+    {
+        return false;
+    }
     let at = std::time::unix(c.at);
     if q.has_from && at < std::time::unix(q.from) { return false; }
     if q.has_to && at > std::time::unix(q.to) { return false; }

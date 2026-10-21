@@ -62,9 +62,15 @@ locus ReviewJournal {
     fn head() -> String { return self.inner.head(); }
     fn read(i: Int) -> Event { return self.inner.read(i); }
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append(expected, kind, entity, body); }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.inner.append_batch(expected, rows); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return self.inner.append_batch(expected, rows);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
 }
 
 // The positions among `signers` (`<position>=<holder>,<holder> …`) that
@@ -75,18 +81,28 @@ fn signer_positions(signers: String, person: String) -> String {
     while len(nth_word(signers, i)) > 0 {
         let entry = nth_word(signers, i);
         let eq = std::str::index_of(entry, "=");
-        if eq > 0 && word_in(person, words_of(entry[(eq + 1)..len(entry)])) { out = word_add(out, entry[0..eq]); }
+        if eq > 0 && word_in(person, words_of(entry[(eq + 1)..len(entry)])) {
+            out = word_add(out, entry[0..eq]);
+        }
         i = i + 1;
     }
     return out;
 }
 
 // A gate as the route names it (`gate:ci/api`), from a run's `gate`.
-fn gate_id(gate: String) -> String { return if std::str::starts_with(gate, "gate:") { gate } else { "gate:" + gate }; }
+fn gate_id(gate: String) -> String {
+    return if std::str::starts_with(gate, "gate:") { gate } else { "gate:" + gate };
+}
 
 // Command outcomes are separate from Review settlement: an admitted abstention
 // has an outcome of its own, and a refusal cannot borrow another caller's approval.
-fn review_command_body(v: Verdict, accepted: Bool, refusal: String, settled: Bool, outcome: String) -> String {
+fn review_command_body(
+    v: Verdict,
+    accepted: Bool,
+    refusal: String,
+    settled: Bool,
+    outcome: String
+) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("command_id", v.command_id);
@@ -205,7 +221,14 @@ locus Review {
     // again — every gate's passing run in, it settles on the last of them.
     fn on_routed(r: ReviewRouting) {
         if len(r.signers) > 0 && len(self.signers) > 0 { self.signers = r.signers; }
-        if self.recheck() { ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment }; }
+        if self.recheck() {
+            ReviewSettled <- ReviewSettlement {
+                review_id: self.review_id,
+                outcome: self.outcome,
+                decided_by: self.decided_by,
+                comment: self.comment,
+            };
+        }
     }
     // Whether the approvals admitted, with the gate runs observed since,
     // now settle it: the last approval decides, as it would have had the
@@ -244,8 +267,15 @@ locus Review {
             }
             if v.verdict != "approve" { continue; }
             so_far = words_add(so_far, signer_positions(self.signers, v.reviewer));
-            if self.fallback && authority_satisfies(v.authority, self.required_authority) { authority_so_far = true; }
-            if words_within(approver_owners(self.signers), so_far) && words_within(self.gates, self.observed_gates()) && (!self.fallback || authority_so_far) { break; }
+            if self.fallback && authority_satisfies(v.authority, self.required_authority) {
+                authority_so_far = true;
+            }
+            if words_within(approver_owners(self.signers), so_far)
+                && words_within(self.gates, self.observed_gates())
+                && (!self.fallback || authority_so_far)
+            {
+                break;
+            }
         }
         i = 0;
         while i < self.verdicts.len() {
@@ -273,10 +303,21 @@ locus Review {
         while i < self.journal.revision() {
             let e = self.journal.read(i);
             // the forge the Review was opened at: a run counts only from it
-            if e.kind == "github.pr" && e.entity == self.review_id { forge = native_json_string(e.body, "forge"); }
-            if e.kind == "gate.observed" && e.entity == self.review_id && len(forge) > 0 && native_json_string(e.body, "forge") == forge {
+            if e.kind == "github.pr" && e.entity == self.review_id {
+                forge = native_json_string(e.body, "forge");
+            }
+            if e.kind == "gate.observed"
+                && e.entity == self.review_id
+                && len(forge) > 0
+                && native_json_string(e.body, "forge") == forge
+            {
                 let gate = gate_id(native_json_string(e.body, "gate"));
-                if word_in(gate, self.gates) && native_json_string(e.body, "sha") == self.subject_digest && native_json_string(e.body, "conclusion") == "success" { out = word_add(out, gate); }
+                if word_in(gate, self.gates)
+                    && native_json_string(e.body, "sha") == self.subject_digest
+                    && native_json_string(e.body, "conclusion") == "success"
+                {
+                    out = word_add(out, gate);
+                }
             }
             i = i + 1;
         }
@@ -307,23 +348,45 @@ locus Review {
             // of them applying the candidate when a generic refusal
             // stood in for this admission.
             if self.readmit(v) {
-                ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: v.reviewer, comment: v.comment, reapproval: true };
+                ReviewSettled <- ReviewSettlement {
+                    review_id: self.review_id,
+                    outcome: self.outcome,
+                    decided_by: v.reviewer,
+                    comment: v.comment,
+                    reapproval: true,
+                };
             } else {
-                ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
+                ReviewSettled <- ReviewSettlement {
+                    review_id: self.review_id,
+                    refusal: self.last_refusal,
+                };
             }
             return;
         }
         let admitted = self.consider(v);
         if admitted && self.settled {
-            ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment };
+            ReviewSettled <- ReviewSettlement {
+                review_id: self.review_id,
+                outcome: self.outcome,
+                decided_by: self.decided_by,
+                comment: self.comment,
+            };
         }
         // an approval admitted that settles nothing is answered too: who
         // signed, and what the Review still awaits
         if admitted && !self.settled && v.verdict == "approve" {
-            ReviewSettled <- ReviewSettlement { review_id: self.review_id, decided_by: v.reviewer, signed: true, awaiting: self.awaiting() };
+            ReviewSettled <- ReviewSettlement {
+                review_id: self.review_id,
+                decided_by: v.reviewer,
+                signed: true,
+                awaiting: self.awaiting(),
+            };
         }
         if !admitted {
-            ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
+            ReviewSettled <- ReviewSettlement {
+                review_id: self.review_id,
+                refusal: self.last_refusal,
+            };
         }
     }
     // Rebuild only persisted command decisions. A decision survives even if
@@ -334,7 +397,9 @@ locus Review {
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.kind == "review.command_decided" && native_json_string(e.body, "review_id") == self.review_id {
+            if e.kind == "review.command_decided"
+                && native_json_string(e.body, "review_id") == self.review_id
+            {
                 let v = review_command_verdict(e.entity, e.body);
                 let mut seen = false;
                 let mut k = 0;
@@ -345,7 +410,10 @@ locus Review {
                 }
                 if !seen {
                     self.command_verdicts.push(v);
-                    if std::json::find_bool_field(e.body, "accepted") && v.subject_digest == self.subject_digest && self.source_verdict_admitted(v, e.seq) {
+                    if std::json::find_bool_field(e.body, "accepted")
+                        && v.subject_digest == self.subject_digest
+                        && self.source_verdict_admitted(v, e.seq)
+                    {
                         self.verdicts.push(v);
                         self.note(v);
                         if std::json::find_bool_field(e.body, "settled") {
@@ -375,10 +443,19 @@ locus Review {
         while i < self.journal.revision() {
             let e = self.journal.read(i);
             i = i + 1;
-            if e.kind != "review.verdict" || e.entity != self.review_id || len(native_json_string(e.body, "command_id")) > 0 { continue; }
+            if e.kind != "review.verdict"
+                || e.entity != self.review_id
+                || len(native_json_string(e.body, "command_id")) > 0
+            {
+                continue;
+            }
             let v = Verdict {
-                review_id: self.review_id, subject_digest: native_json_string(e.body, "subject_digest"), verdict: native_json_string(e.body, "verdict"),
-                reviewer: native_json_string(e.body, "reviewer"), authority: native_json_string(e.body, "authority"), comment: native_json_string(e.body, "comment")
+                review_id: self.review_id,
+                subject_digest: native_json_string(e.body, "subject_digest"),
+                verdict: native_json_string(e.body, "verdict"),
+                reviewer: native_json_string(e.body, "reviewer"),
+                authority: native_json_string(e.body, "authority"),
+                comment: native_json_string(e.body, "comment")
             };
             if len(self.refusal(v)) > 0 { continue; }
             self.verdicts.push(v);
@@ -388,18 +465,34 @@ locus Review {
     fn source_verdict_admitted(v: Verdict, before: Int) -> Bool {
         if len(self.organization_source_request.request_id) == 0 { return true; }
         let codec = OrganizationSourceRequestCodec { };
-        return codec.verdict_admitted(self.journal, self.organization_source_facts, self.organization_source_request, v, before);
+        return codec.verdict_admitted(
+            self.journal,
+            self.organization_source_facts,
+            self.organization_source_request,
+            v,
+            before,
+        );
     }
     fn command_refusal(v: Verdict) -> String {
-        if !self.source_verdict_admitted(v, self.journal.revision()) { return "prepared source requires its exact authorized command profile"; }
+        if !self.source_verdict_admitted(v, self.journal.revision()) {
+            return "prepared source requires its exact authorized command profile";
+        }
         if self.settled { return "already settled: " + self.outcome; }
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.kind == "review.settled" && e.entity == self.review_id { return "already settled: " + e.body; }
+            if e.kind == "review.settled" && e.entity == self.review_id {
+                return "already settled: " + e.body;
+            }
             i = i + 1;
         }
-        if v.verdict != "approve" && v.verdict != "reject" && v.verdict != "revise" && v.verdict != "abstain" { return "unknown verdict: " + v.verdict; }
+        if v.verdict != "approve"
+            && v.verdict != "reject"
+            && v.verdict != "revise"
+            && v.verdict != "abstain"
+        {
+            return "unknown verdict: " + v.verdict;
+        }
         return self.refusal(v);
     }
     // Why a verdict on this candidate is not admitted, "" when it is: the
@@ -407,7 +500,9 @@ locus Review {
     // author. One rule for the Board, a command and a restart. A gate's
     // run is no verdict's to cite: the host observes it (GH #1161).
     fn refusal(v: Verdict) -> String {
-        if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
+        if v.subject_digest != self.subject_digest {
+            return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest;
+        }
         let why = self.standing_refusal(v);
         if len(why) > 0 { return why; }
         // the Board is the exception: a governance proposal requiring the
@@ -415,7 +510,9 @@ locus Review {
         // self-review, so whoever holds the Board may ratify what they asked
         // for (a solo organization seats itself); every other Review, a
         // mutation's above all and a Board-required one too, refuses its author
-        if v.reviewer == self.author && !(self.governance && self.required_authority == "board") { return "reviewer " + v.reviewer + " authored the candidate"; }
+        if v.reviewer == self.author && !(self.governance && self.required_authority == "board") {
+            return "reviewer " + v.reviewer + " authored the candidate";
+        }
         return "";
     }
     // Whether the reviewer stands to decide it. With no signers, the
@@ -427,11 +524,23 @@ locus Review {
     fn standing_refusal(v: Verdict) -> String {
         let as_authority = authority_satisfies(v.authority, self.required_authority);
         if len(self.signers) == 0 {
-            if !as_authority { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
+            if !as_authority {
+                return "authority " + v.authority + " does not satisfy " + self.required_authority;
+            }
             return "";
         }
-        if len(signer_positions(self.signers, v.reviewer)) > 0 || (self.fallback && as_authority) { return ""; }
-        return "reviewer " + v.reviewer + " holds no position this Review requires (" + approver_owners(self.signers) + ")" + (if self.fallback { " and authority " + v.authority + " does not satisfy " + self.required_authority } else { "" });
+        if len(signer_positions(self.signers, v.reviewer)) > 0 || (self.fallback && as_authority) {
+            return "";
+        }
+        return "reviewer " + v.reviewer + " holds no position this Review requires ("
+            + approver_owners(self.signers) + ")"
+            + (
+                if self.fallback {
+                    " and authority " + v.authority + " does not satisfy " + self.required_authority
+                } else {
+                    ""
+                }
+            );
     }
     // Whether an admitted `v` settles the Review: anything but an
     // abstention or an approval settles it; an approval does once every
@@ -441,15 +550,20 @@ locus Review {
         if v.verdict != "approve" { return true; }
         let signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
         let evidenced = self.observed_gates();
-        let authority = self.authority_signed || (self.fallback && authority_satisfies(v.authority, self.required_authority));
-        return words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced) && (!self.fallback || authority);
+        let authority = self.authority_signed
+            || (self.fallback && authority_satisfies(v.authority, self.required_authority));
+        return words_within(approver_owners(self.signers), signed)
+            && words_within(self.gates, evidenced)
+            && (!self.fallback || authority);
     }
     // An admitted verdict's standing and evidence, kept.
     fn note(v: Verdict) {
         self.evidenced = self.observed_gates();
         if v.verdict != "approve" { return; }
         self.signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
-        if self.fallback && authority_satisfies(v.authority, self.required_authority) { self.authority_signed = true; }
+        if self.fallback && authority_satisfies(v.authority, self.required_authority) {
+            self.authority_signed = true;
+        }
     }
     fn command_settles(v: Verdict) -> Bool { return self.settles_with(v); }
     // The exact append is the decision. No live state changes before it. On
@@ -467,7 +581,11 @@ locus Review {
             if len(existing) > 0 {
                 if !review_command_matches(existing, v) { return ""; }
                 let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
-                if std::json::find_bool_field(existing, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
+                if std::json::find_bool_field(existing, "accepted")
+                    && !self.source_verdict_admitted(v, decided.seq)
+                {
+                    return "";
+                }
                 self.restore_command_decisions();
                 return existing;
             }
@@ -475,8 +593,19 @@ locus Review {
             let refusal = self.command_refusal(v);
             let accepted = len(refusal) == 0;
             let settled = accepted && self.command_settles(v);
-            let decision = review_command_body(v, accepted, refusal, settled, if settled { v.verdict } else { "" });
-            let appended = self.journal.append_exact(revision, "review.command_decided", v.command_id, decision);
+            let decision = review_command_body(
+                v,
+                accepted,
+                refusal,
+                settled,
+                if settled { v.verdict } else { "" },
+            );
+            let appended = self.journal.append_exact(
+                revision,
+                "review.command_decided",
+                v.command_id,
+                decision,
+            );
             if appended.ok {
                 self.restore_command_decisions();
                 return decision;
@@ -486,7 +615,11 @@ locus Review {
             if len(recovered) > 0 {
                 if !review_command_matches(recovered, v) { return ""; }
                 let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
-                if std::json::find_bool_field(recovered, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
+                if std::json::find_bool_field(recovered, "accepted")
+                    && !self.source_verdict_admitted(v, decided.seq)
+                {
+                    return "";
+                }
                 self.restore_command_decisions();
                 return recovered;
             }
@@ -503,11 +636,19 @@ locus Review {
     @bounded_by(self.last_refusal)
     fn readmit(v: Verdict) -> Bool {
         if len(self.organization_source_request.request_id) > 0 {
-            self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
+            self.last_refusal = "prepared source requires its exact authorized command profile";
+            self.refused = self.refused + 1;
+            return false;
         }
         self.refused = self.refused + 1;
-        if self.outcome != "approve" { self.last_refusal = "already settled: " + self.outcome; return false; }
-        if v.verdict != "approve" { self.last_refusal = "already settled: approve; a " + v.verdict + " does not reopen it"; return false; }
+        if self.outcome != "approve" {
+            self.last_refusal = "already settled: " + self.outcome;
+            return false;
+        }
+        if v.verdict != "approve" {
+            self.last_refusal = "already settled: approve; a " + v.verdict + " does not reopen it";
+            return false;
+        }
         let why = self.refusal(v);
         if len(why) > 0 { self.last_refusal = "already settled; " + why; return false; }
         self.refused = self.refused - 1;
@@ -520,9 +661,15 @@ locus Review {
     @bounded_by(verdicts)
     fn consider(v: Verdict) -> Bool {
         if len(self.organization_source_request.request_id) > 0 {
-            self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
+            self.last_refusal = "prepared source requires its exact authorized command profile";
+            self.refused = self.refused + 1;
+            return false;
         }
-        if self.settled { self.last_refusal = "already settled"; self.refused = self.refused + 1; return false; }
+        if self.settled {
+            self.last_refusal = "already settled";
+            self.refused = self.refused + 1;
+            return false;
+        }
         let why = self.refusal(v);
         if len(why) > 0 {
             self.last_refusal = why;
@@ -536,14 +683,23 @@ locus Review {
         self.settled = true;
         self.outcome = v.verdict;
         self.decided_by = v.reviewer;
-        self.comment = v.comment + (if v.verdict == "approve" && len(self.signers) > 0 { " (" + self.approvals() + ")" } else { "" });
+        self.comment = v.comment
+            + (
+                if v.verdict == "approve" && len(self.signers) > 0 {
+                    " (" + self.approvals() + ")"
+                } else {
+                    ""
+                }
+            );
         return true;
     }
     // What the approval that settled it gathered, said.
     fn approvals() -> String {
         let mut out = "";
         if len(self.signers) > 0 { out = "every required position approved: " + self.signed; }
-        if len(self.gates) > 0 { out = out + "; evidenced by " + self.evidenced + " (the forge's runs)"; }
+        if len(self.gates) > 0 {
+            out = out + "; evidenced by " + self.evidenced + " (the forge's runs)";
+        }
         return out;
     }
     fn verdict_count() -> Int { return self.verdicts.len(); }
@@ -560,10 +716,14 @@ locus Review {
         i = 0;
         let observed = self.observed_gates();
         while len(nth_word(self.gates, i)) > 0 {
-            if !word_in(nth_word(self.gates, i), observed) { out = word_add(out, nth_word(self.gates, i)); }
+            if !word_in(nth_word(self.gates, i), observed) {
+                out = word_add(out, nth_word(self.gates, i));
+            }
             i = i + 1;
         }
-        if self.fallback && !self.authority_signed { out = word_add(out, "authority:" + self.required_authority); }
+        if self.fallback && !self.authority_signed {
+            out = word_add(out, "authority:" + self.required_authority);
+        }
         return out;
     }
 }
@@ -632,12 +792,18 @@ locus AutonomyBoundary {
                 // GH #605: the resources stay as granted, and the epoch
                 // advances so an admission made before the contraction
                 // is fenced
-                amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
-                counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+                amounts: self.grant.amounts,
+                window_amounts: self.grant.window_amounts,
+                window: self.grant.window,
+                counterparties: self.grant.counterparties,
+                routes: self.grant.routes,
+                expires: self.grant.expires,
                 authority_epoch: self.grant.authority_epoch + 1
             };
             self.contractions = self.contractions + 1;
-            self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "repeated failure" });
+            self.audit.push(
+                AuditRow { seq: self.decisions, disposition: "contract", note: "repeated failure" },
+            );
         }
     }
     // Whether this outcome contracts the grant (what `note_outcome` is
@@ -653,12 +819,22 @@ locus AutonomyBoundary {
             child: self.grant.child, classes: self.grant.classes,
             max_magnitude: max_magnitude,
             review: "pre", may_expand_self: false,
-            amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
-            counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+            amounts: self.grant.amounts,
+            window_amounts: self.grant.window_amounts,
+            window: self.grant.window,
+            counterparties: self.grant.counterparties,
+            routes: self.grant.routes,
+            expires: self.grant.expires,
             authority_epoch: at_epoch
         };
         self.contractions = self.contractions + 1;
-        self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "restored from the record" });
+        self.audit.push(
+            AuditRow {
+                seq: self.decisions,
+                disposition: "contract",
+                note: "restored from the record",
+            },
+        );
     }
     // ...and expansion needs the PARENT. A request from the child (or
     // anyone who is not the owning parent) is refused and recorded.
@@ -667,7 +843,13 @@ locus AutonomyBoundary {
         // the parent; and only the parent may ask at all
         if requested_by == self.child || requested_by != parent || self.grant.may_expand_self {
             self.expansions_refused = self.expansions_refused + 1;
-            self.audit.push(AuditRow { seq: self.decisions, disposition: "refuse-expand", note: "requested by " + requested_by });
+            self.audit.push(
+                AuditRow {
+                    seq: self.decisions,
+                    disposition: "refuse-expand",
+                    note: "requested by " + requested_by,
+                },
+            );
             return false;
         }
         self.grant = Grant {
@@ -676,11 +858,17 @@ locus AutonomyBoundary {
             max_magnitude: new_max,
             review: self.grant.review,
             may_expand_self: false,
-            amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
-            counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+            amounts: self.grant.amounts,
+            window_amounts: self.grant.window_amounts,
+            window: self.grant.window,
+            counterparties: self.grant.counterparties,
+            routes: self.grant.routes,
+            expires: self.grant.expires,
             authority_epoch: self.grant.authority_epoch
         };
-        self.audit.push(AuditRow { seq: self.decisions, disposition: "expand", note: "by " + parent });
+        self.audit.push(
+            AuditRow { seq: self.decisions, disposition: "expand", note: "by " + parent },
+        );
         return true;
     }
     // GH #605: revocation is the parent's, like expansion. Nothing is
@@ -689,18 +877,48 @@ locus AutonomyBoundary {
     fn revoke(requested_by: String, parent: String) -> Bool {
         if requested_by == self.child || requested_by != parent {
             self.expansions_refused = self.expansions_refused + 1;
-            self.audit.push(AuditRow { seq: self.decisions, disposition: "refuse-revoke", note: "requested by " + requested_by });
+            self.audit.push(
+                AuditRow {
+                    seq: self.decisions,
+                    disposition: "refuse-revoke",
+                    note: "requested by " + requested_by,
+                },
+            );
             return false;
         }
-        self.grant = Grant { child: self.grant.child, classes: "", max_magnitude: 0, review: "pre", may_expand_self: false, window: self.grant.window, authority_epoch: self.grant.authority_epoch + 1 };
-        self.audit.push(AuditRow { seq: self.decisions, disposition: "revoke", note: "by " + parent });
+        self.grant = Grant {
+            child: self.grant.child,
+            classes: "",
+            max_magnitude: 0,
+            review: "pre",
+            may_expand_self: false,
+            window: self.grant.window,
+            authority_epoch: self.grant.authority_epoch + 1,
+        };
+        self.audit.push(
+            AuditRow { seq: self.decisions, disposition: "revoke", note: "by " + parent },
+        );
         return true;
     }
     // A revocation read back from the record at birth: nothing granted,
     // the epoch where the revocation left it.
     fn restore_revocation(revoked_at: Int) {
-        self.grant = Grant { child: self.grant.child, classes: "", max_magnitude: 0, review: "pre", may_expand_self: false, window: self.grant.window, authority_epoch: revoked_at };
-        self.audit.push(AuditRow { seq: self.decisions, disposition: "revoke", note: "restored from the record" });
+        self.grant = Grant {
+            child: self.grant.child,
+            classes: "",
+            max_magnitude: 0,
+            review: "pre",
+            may_expand_self: false,
+            window: self.grant.window,
+            authority_epoch: revoked_at,
+        };
+        self.audit.push(
+            AuditRow {
+                seq: self.decisions,
+                disposition: "revoke",
+                note: "restored from the record",
+            },
+        );
     }
     fn audit_count() -> Int { return self.audit.len(); }
     fn audit_at(i: Int) -> AuditRow { return self.audit.get(i) or AuditRow { }; }

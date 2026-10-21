@@ -46,7 +46,10 @@ locus WorktreeTools {
     // every link: it never descends one. The stdlib cannot tell a link from
     // a directory (`list_dir_count` follows it), so this asks `sh`.
     fn no_escape(rel: String, mode: String) -> Bool {
-        let r = run_tool("sh\n-c\nset -f; rr=$(cd \"$1\" && pwd -P) || exit 2; cur=$1; IFS=/; for s in $2; do cur=$cur/$s; if [ -L \"$cur\" ]; then [ \"$3\" = list ] && exit 1; t=$(cd \"$cur\" 2>/dev/null && pwd -P) || exit 1; case \"$t\" in \"$rr\"|\"$rr\"/*) ;; *) exit 1;; esac; fi; done; exit 0\nsh\n" + self.root + "\n" + rel + "\n" + mode);
+        let r = run_tool(
+            "sh\n-c\nset -f; rr=$(cd \"$1\" && pwd -P) || exit 2; cur=$1; IFS=/; for s in $2; do cur=$cur/$s; if [ -L \"$cur\" ]; then [ \"$3\" = list ] && exit 1; t=$(cd \"$cur\" 2>/dev/null && pwd -P) || exit 1; case \"$t\" in \"$rr\"|\"$rr\"/*) ;; *) exit 1;; esac; fi; done; exit 0\nsh\n"
+                + self.root + "\n" + rel + "\n" + mode,
+        );
         return r.code == 0;
     }
     // Each call is one Attempt's: bounded by the attempt cap of the
@@ -61,7 +64,11 @@ locus WorktreeTools {
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.last_refusal)
     fn read(rel: String) -> String {
-        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
+        if !self.inside(rel) {
+            self.refused = self.refused + 1;
+            self.last_refusal = "read outside the worktree: " + rel;
+            return "";
+        }
         self.reads = self.reads + 1;
         return std::io::fs::read_file(self.root + "/" + rel) or "";
     }
@@ -85,7 +92,11 @@ locus WorktreeTools {
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.last_refusal)
     fn edit(rel: String, content: String) -> Bool {
-        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
+        if !self.inside(rel) {
+            self.refused = self.refused + 1;
+            self.last_refusal = "edit outside the worktree: " + rel;
+            return false;
+        }
         self.ensure_parents(rel);
         let before = self.refused;
         std::io::fs::write_file(self.root + "/" + rel, content) or self.write_failed(err);
@@ -109,7 +120,11 @@ locus WorktreeTools {
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.last_refusal)
     fn remove(rel: String) -> Bool {
-        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
+        if !self.inside(rel) {
+            self.refused = self.refused + 1;
+            self.last_refusal = "remove outside the worktree: " + rel;
+            return false;
+        }
         let before = self.refused;
         std::io::fs::unlink(self.root + "/" + rel) or self.remove_failed(err);
         if self.refused > before { return false; }
@@ -156,11 +171,17 @@ locus WorktreeTools {
             rest = rest[(at + 1)..len(rest)];
             let r = run_tool(self.hale_bin + "\ncheck\n" + self.seed_dir(seed));
             // the diagnostics name files from the seed, as an application's do
-            out = RunResult { code: r.code, stdout: r.stdout, stderr: strip_root(r.stderr, self.seed_dir(seed)) };
+            out = RunResult {
+                code: r.code,
+                stdout: r.stdout,
+                stderr: strip_root(r.stderr, self.seed_dir(seed)),
+            };
         }
         return out;
     }
-    fn seed_dir(seed: String) -> String { return if seed == "." { self.root } else { self.root + "/" + seed }; }
+    fn seed_dir(seed: String) -> String {
+        return if seed == "." { self.root } else { self.root + "/" + seed };
+    }
 }
 
 // ---- the editing performer --------------------------------------------
@@ -205,7 +226,11 @@ fn fitness_lines(answer: String) -> String {
         if ch == "\n" {
             let t = trim_nl(line);
             let sp = std::str::index_of(t, " ");
-            if sp > 0 && sp == len(t) - 2 && (t[(sp + 1)..len(t)] == "+" || t[(sp + 1)..len(t)] == "-") && !std::str::contains(t[0..sp], "`") {
+            if sp > 0
+                && sp == len(t) - 2
+                && (t[(sp + 1)..len(t)] == "+" || t[(sp + 1)..len(t)] == "-")
+                && !std::str::contains(t[0..sp], "`")
+            {
                 out = out + (if len(out) > 0 { "\n" } else { "" }) + t;
             }
             line = "";
@@ -286,7 +311,16 @@ locus SourceEditor {
             let path = if len(rel) == 0 { name } else { rel + "/" + name };
             if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" {
                 if self.tools.no_escape(path, "access") { out = out + path + "\n"; }
-            } else if depth < 4 && len(name) > 0 && name[0..1] != "." && name != "dna" && name != "vendor" && name != "node_modules" && name != "target" && (std::io::fs::list_dir_count(self.tools.root + "/" + path) or 0) > 0 && self.tools.no_escape(path, "list") {
+            } else if depth < 4
+                && len(name) > 0
+                && name[0..1] != "."
+                && name != "dna"
+                && name != "vendor"
+                && name != "node_modules"
+                && name != "target"
+                && (std::io::fs::list_dir_count(self.tools.root + "/" + path) or 0) > 0
+                && self.tools.no_escape(path, "list")
+            {
                 out = out + self.files_under(path, depth + 1);
             }
             i = i + 1;
@@ -311,7 +345,15 @@ locus SourceEditor {
             let sp = std::str::index_of(rest, " ");
             let mut tok = if sp < 0 { rest } else { rest[0..sp] };
             if len(tok) > 0 && (tok[0..1] == "(" || tok[0..1] == "`") { tok = tok[1..len(tok)]; }
-            while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
+            while len(tok) > 0
+                && (
+                    tok[(len(tok) - 1)..len(tok)] == ")"
+                        || tok[(len(tok) - 1)..len(tok)] == ","
+                        || tok[(len(tok) - 1)..len(tok)] == "."
+                        || tok[(len(tok) - 1)..len(tok)] == "`"
+                        || tok[(len(tok) - 1)..len(tok)] == "?"
+                )
+            {
                 tok = tok[0..(len(tok) - 1)];
             }
             if len(tok) > 3 {
@@ -323,19 +365,24 @@ locus SourceEditor {
         }
         let pick = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "locate",
-            prompt: "Which one of these files should change so that: " + objective + "\nAnswer with the file name only.",
+            prompt: "Which one of these files should change so that: " + objective
+                + "\nAnswer with the file name only.",
             context: listing, context_bytes: len(listing) + len(objective),
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
         if !pick.ok {
-            self.located_why = "the model could not be asked which file (" + (if len(pick.refused) > 0 { pick.refused } else { "no answer" }) + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing)) + " file(s)";
+            self.located_why = "the model could not be asked which file ("
+                + (if len(pick.refused) > 0 { pick.refused } else { "no answer" })
+                + "); the grant (" + self.seed_label() + ") lists " + to_string(lines_of(listing))
+                + " file(s)";
             return "";
         }
         let name = trim_nl(pick.output);
         let hit = self.match_entry(listing, name);
         if len(hit) > 0 { return hit; }
         if len(self.located_why) > 0 { return ""; }
-        self.located_why = "the model named `" + name + "`, which is not one of the grant's " + to_string(lines_of(listing)) + " listed file(s) (" + self.seed_label() + ")";
+        self.located_why = "the model named `" + name + "`, which is not one of the grant's "
+            + to_string(lines_of(listing)) + " listed file(s) (" + self.seed_label() + ")";
         return "";
     }
     // The listed entry a name stands for: a complete line of the listing
@@ -354,19 +401,25 @@ locus SourceEditor {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             if line == name { return name; }
-            if !std::str::contains(name, "/") && len(line) > len(name) && line[(len(line) - len(name) - 1)..len(line)] == "/" + name {
+            if !std::str::contains(name, "/")
+                && len(line) > len(name)
+                && line[(len(line) - len(name) - 1)..len(line)] == "/" + name
+            {
                 if len(first) == 0 { first = line; } else if len(second) == 0 { second = line; }
             }
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
         }
         if len(second) > 0 {
-            self.located_why = "`" + name + "` is ambiguous: " + first + " and " + second + " are both listed; name the path";
+            self.located_why = "`" + name + "` is ambiguous: " + first + " and " + second
+                + " are both listed; name the path";
             return "";
         }
         return first;
     }
     // The grant's seed, as a message names it.
-    fn seed_label() -> String { return if len(self.seed) == 0 { "the repository root" } else { self.seed }; }
+    fn seed_label() -> String {
+        return if len(self.seed) == 0 { "the repository root" } else { self.seed };
+    }
     // The files an objective is about (GH #566 F3): every listed file the
     // objective names, else the quick tier's plan from the listing, one
     // per line — only listed files are ever targets. Space-separated.
@@ -378,19 +431,30 @@ locus SourceEditor {
             let sp = std::str::index_of(rest, " ");
             let mut tok = if sp < 0 { rest } else { rest[0..sp] };
             if len(tok) > 0 && (tok[0..1] == "(" || tok[0..1] == "`") { tok = tok[1..len(tok)]; }
-            while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
+            while len(tok) > 0
+                && (
+                    tok[(len(tok) - 1)..len(tok)] == ")"
+                        || tok[(len(tok) - 1)..len(tok)] == ","
+                        || tok[(len(tok) - 1)..len(tok)] == "."
+                        || tok[(len(tok) - 1)..len(tok)] == "`"
+                        || tok[(len(tok) - 1)..len(tok)] == "?"
+                )
+            {
                 tok = tok[0..(len(tok) - 1)];
             }
             if len(tok) > 3 {
                 let hit = self.match_entry(listing, tok);
-                if len(hit) > 0 && !std::str::contains(" " + named, " " + hit + " ") { named = named + hit + " "; }
+                if len(hit) > 0 && !std::str::contains(" " + named, " " + hit + " ") {
+                    named = named + hit + " ";
+                }
             }
             if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
         }
         if len(named) > 0 { return trim_nl(named); }
         let pick = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "plan",
-            prompt: "Which of these files should change so that: " + objective + "\nAnswer with file names only, one per line.",
+            prompt: "Which of these files should change so that: " + objective
+                + "\nAnswer with file names only, one per line.",
             context: listing, context_bytes: len(listing) + len(objective),
             tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
@@ -401,7 +465,9 @@ locus SourceEditor {
             let nl = std::str::index_of(lines, "\n");
             let name = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
             let hit = if len(name) > 0 { self.match_entry(listing, name) } else { "" };
-            if len(hit) > 0 && !std::str::contains(" " + out, " " + hit + " ") { out = out + hit + " "; }
+            if len(hit) > 0 && !std::str::contains(" " + out, " " + hit + " ") {
+                out = out + hit + " ";
+            }
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
         }
         return trim_nl(out);
@@ -410,16 +476,30 @@ locus SourceEditor {
     // of the previous try, when any, travel in the prompt. A hosted model
     // wraps a file in a code fence however it is asked (GH #566 F7); the
     // fence is not the file.
-    fn edit_one(attempt: String, file: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
+    fn edit_one(
+        attempt: String,
+        file: String,
+        objective: String,
+        diagnostics: String,
+        data_class: String
+    ) -> ModelResult {
         let refused_before = self.tools.refused;
         // a file that is not there is not an empty file: an edit of it
         // handed the model nothing, and its answer ("I don't have the
         // contents…") was written under that name into the candidate
-        if self.tools.missing(file) { return ModelResult { ok: false, refused: "no such file under the grant: " + file }; }
+        if self.tools.missing(file) {
+            return ModelResult { ok: false, refused: "no such file under the grant: " + file };
+        }
         let current = self.tools.read(file);
-        if self.tools.refused > refused_before { return ModelResult { ok: false, refused: self.tools.last_refusal }; }
-        let mut prompt = "Rewrite " + file + " so that: " + objective + "\nChange only what the objective requires; keep every other line, comments included, exactly as it is.\nReturn the whole file as plain text: no code fence, no commentary, nothing before the first line of the file or after the last.";
-        if len(diagnostics) > 0 { prompt = prompt + "\nThe previous attempt did not check. hale check said:\n" + diagnostics; }
+        if self.tools.refused > refused_before {
+            return ModelResult { ok: false, refused: self.tools.last_refusal };
+        }
+        let mut prompt = "Rewrite " + file + " so that: " + objective
+            + "\nChange only what the objective requires; keep every other line, comments included, exactly as it is.\nReturn the whole file as plain text: no code fence, no commentary, nothing before the first line of the file or after the last.";
+        if len(diagnostics) > 0 {
+            prompt = prompt + "\nThe previous attempt did not check. hale check said:\n"
+                + diagnostics;
+        }
         let edit = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "edit", target: file,
             prompt: prompt, context: current, context_bytes: len(current) + len(prompt),
@@ -427,7 +507,13 @@ locus SourceEditor {
             retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
         });
         if !edit.ok { return edit; }
-        if !self.tools.edit(file, unfence(edit.output)) { return ModelResult { ok: false, backend: edit.backend, refused: self.tools.last_refusal }; }
+        if !self.tools.edit(file, unfence(edit.output)) {
+            return ModelResult {
+                ok: false,
+                backend: edit.backend,
+                refused: self.tools.last_refusal,
+            };
+        }
         return edit;
     }
     // ---- the harness flow (GH #583 M3) --------------------------------
@@ -454,7 +540,9 @@ locus SourceEditor {
     // The file's path inside the grant, or "" when it lies outside it.
     fn in_grant(rel: String) -> String {
         if len(self.seed) == 0 { return rel; }
-        if std::str::starts_with(rel, self.seed + "/") { return rel[(len(self.seed) + 1)..len(rel)]; }
+        if std::str::starts_with(rel, self.seed + "/") {
+            return rel[(len(self.seed) + 1)..len(rel)];
+        }
         return "";
     }
     // Bring the export's changes back under the grant: a file that
@@ -487,8 +575,14 @@ locus SourceEditor {
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
             // inside the grant, so a refusal here is an I/O failure, not
             // a boundary: a partial import must not become a candidate
-            if self.tools.edit(g, after) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { self.import_error = "could not import " + g + ": " + self.tools.last_refusal; return ""; }
+            if self.tools.edit(g, after) {
+                self.imported = self.imported + 1;
+                changed = changed + g + " ";
+            }
+            else {
+                self.import_error = "could not import " + g + ": " + self.tools.last_refusal;
+                return "";
+            }
         }
         let mut gone = self.listing(self.worktree);
         while len(gone) > 0 {
@@ -498,26 +592,46 @@ locus SourceEditor {
             if len(rel) == 0 || std::io::fs::file_exists(dir + "/" + rel) { continue; }
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
-            if self.tools.remove(g) { self.imported = self.imported + 1; changed = changed + g + " "; }
-            else { self.import_error = "could not remove " + g + ": " + self.tools.last_refusal; return ""; }
+            if self.tools.remove(g) {
+                self.imported = self.imported + 1;
+                changed = changed + g + " ";
+            }
+            else {
+                self.import_error = "could not remove " + g + ": " + self.tools.last_refusal;
+                return "";
+            }
         }
         return trim_nl(changed);
     }
     // One try of the harness: export, then ask with the export as its
     // workspace and the repository masked; the caller imports from
     // `last_export` and removes it.
-    fn harness_try(attempt: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
+    fn harness_try(
+        attempt: String,
+        objective: String,
+        diagnostics: String,
+        data_class: String
+    ) -> ModelResult {
         let dir = self.make_export();
-        if len(dir) == 0 { return ModelResult { ok: false, refused: "cannot export the worktree" }; }
+        if len(dir) == 0 {
+            return ModelResult { ok: false, refused: "cannot export the worktree" };
+        }
         let inside = if len(self.seed) == 0 { "." } else { self.seed };
-        let mut prompt = "You are working in a copy of a Hale project: the current directory. Make this change: " + objective
-            + "\nEdit only files under " + inside + ". Run `hale fmt " + inside + "` and `hale check " + inside + "` before you finish, and fix what they report."
+        let mut prompt = "You are working in a copy of a Hale project: the current directory. Make this change: "
+            + objective
+            + "\nEdit only files under " + inside + ". Run `hale fmt " + inside
+            + "` and `hale check " + inside + "` before you finish, and fix what they report."
             + "\nReply with one line saying what you changed.";
-        if len(diagnostics) > 0 { prompt = prompt + "\nThe previous attempt did not check. hale check said:\n" + diagnostics; }
+        if len(diagnostics) > 0 {
+            prompt = prompt + "\nThe previous attempt did not check. hale check said:\n"
+                + diagnostics;
+        }
         let r = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "edit", prompt: prompt, context_bytes: len(prompt),
             workspace: dir, mask: self.repo + "\n" + self.worktree,
-            tool_grant: "harness @export", data_class: data_class, knowledge_bindings: self.bindings,
+            tool_grant: "harness @export",
+            data_class: data_class,
+            knowledge_bindings: self.bindings,
             retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
         });
         if r.ok { self.last_summary = trim_nl(r.output); }
@@ -537,27 +651,50 @@ locus SourceEditor {
         let mut files = "";
         while tries < self.max_tries && !done {
             let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries);
-            let r = self.harness_try(attempt, self.with_practices(req.objective), diagnostics, req.data_class);
+            let r = self.harness_try(
+                attempt,
+                self.with_practices(req.objective),
+                diagnostics,
+                req.data_class,
+            );
             if !r.ok {
                 let rm = run_tool("rm\n-rf\n" + self.last_export);
-                return WorkResult { disposition: "failed", narrative: "harness refused: " + r.refused, performer: self.name };
+                return WorkResult {
+                    disposition: "failed",
+                    narrative: "harness refused: " + r.refused,
+                    performer: self.name,
+                };
             }
             backends = r.backend;
             let brought = self.import_from(self.last_export);
             let rm = run_tool("rm\n-rf\n" + self.last_export);
             if len(self.import_error) > 0 {
-                return WorkResult { disposition: "failed", narrative: "the import was incomplete: " + self.import_error, performer: self.name };
+                return WorkResult {
+                    disposition: "failed",
+                    narrative: "the import was incomplete: " + self.import_error,
+                    performer: self.name,
+                };
             }
             if len(brought) > 0 { files = brought; }
             if len(files) == 0 {
-                return WorkResult { disposition: "failed", narrative: "the harness changed nothing under the grant (" + to_string(self.refused_outside) + " change(s) outside it left behind): " + self.last_summary, performer: self.name };
+                return WorkResult {
+                    disposition: "failed",
+                    narrative: "the harness changed nothing under the grant ("
+                        + to_string(self.refused_outside) + " change(s) outside it left behind): "
+                        + self.last_summary,
+                    performer: self.name,
+                };
             }
             let f = self.tools.fmt_files(files);
             let c = self.tools.check_files(files);
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
-            if c.code == 0 { done = true; } else { diagnostics = strip_root(trim_nl(c.stderr), self.tools.root); }
+            if c.code == 0 {
+                done = true;
+            } else {
+                diagnostics = strip_root(trim_nl(c.stderr), self.tools.root);
+            }
         }
         let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         let mut changed = "";
@@ -572,15 +709,23 @@ locus SourceEditor {
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
-            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
-            tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
+            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n"
+                + changed,
+            context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
+            tool_grant: self.grant(),
+            data_class: req.data_class,
+            knowledge_bindings: self.bindings,
+            retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("work_id", req.work_id);
         b.string_field("files_changed", files);
         b.string_field("rationale", req.objective);
-        b.string_field("fitness_signals", if assess.ok { fitness_lines(assess.output) } else { "" });
+        b.string_field(
+            "fitness_signals",
+            if assess.ok { fitness_lines(assess.output) } else { "" },
+        );
         b.bool_field("fmt_clean", fmt_code == 0);
         b.bool_field("check_clean", check_code == 0);
         b.int_field("tries", tries);
@@ -597,8 +742,15 @@ locus SourceEditor {
         return WorkResult {
             disposition: if check_code == 0 { "done" } else { "failed" },
             result: b.result(),
-            narrative: if check_code == 0 { "harness proposal checks clean after " + to_string(tries) + " try(ies): " + self.last_summary } else { "harness proposal does not check after " + to_string(tries) + " try(ies): " + diagnostics },
-            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries=" + to_string(tries) + " backends=" + backends + "," + assess.backend,
+            narrative: if check_code == 0 {
+                "harness proposal checks clean after " + to_string(tries) + " try(ies): "
+                    + self.last_summary
+            } else {
+                "harness proposal does not check after " + to_string(tries) + " try(ies): "
+                    + diagnostics
+            },
+            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries="
+                + to_string(tries) + " backends=" + backends + "," + assess.backend,
             performer: self.name
         };
     }
@@ -615,9 +767,20 @@ locus SourceEditor {
         if self.in_place(req.data_class) {
             return self.perform_in_place(req);
         }
-        let files = if len(req.target) > 0 { req.target } else { self.plan(attempt_id_of(req.work_id, req.attempt_no), self.with_practices(req.objective)) };
+        let files = if len(req.target) > 0 {
+            req.target
+        } else {
+            self.plan(
+                attempt_id_of(req.work_id, req.attempt_no),
+                self.with_practices(req.objective),
+            )
+        };
         if len(files) == 0 {
-            return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };
+            return WorkResult {
+                disposition: "failed",
+                narrative: "no target file in the request",
+                performer: self.name,
+            };
         }
         let mut tries = 0;
         let mut diagnostics = "";
@@ -636,20 +799,34 @@ locus SourceEditor {
                 let file = rest[0..sp];
                 rest = rest[(sp + 1)..len(rest)];
                 if len(file) == 0 { continue; }
-                let e = self.edit_one(attempt, file, self.with_practices(req.objective), diagnostics, req.data_class);
+                let e = self.edit_one(
+                    attempt,
+                    file,
+                    self.with_practices(req.objective),
+                    diagnostics,
+                    req.data_class,
+                );
                 if !e.ok { failed = "edit of " + file + " refused: " + e.refused; }
                 backends = e.backend;
                 changed = changed + "=== " + file + "\n" + unfence(e.output) + "\n";
             }
             if len(failed) > 0 {
-                return WorkResult { disposition: "failed", narrative: failed, performer: self.name };
+                return WorkResult {
+                    disposition: "failed",
+                    narrative: failed,
+                    performer: self.name,
+                };
             }
             let f = self.tools.fmt_files(files);
             let c = self.tools.check_files(files);
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
-            if c.code == 0 { done = true; } else { diagnostics = strip_root(trim_nl(c.stderr), self.tools.root); }
+            if c.code == 0 {
+                done = true;
+            } else {
+                diagnostics = strip_root(trim_nl(c.stderr), self.tools.root);
+            }
         }
         let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         // The assessment is the deep tier's (assurance 2): it is what the
@@ -660,15 +837,23 @@ locus SourceEditor {
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
-            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
-            tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
+            context: "OBJECTIVE\n" + self.with_practices(req.objective) + "\n\nFILES AS EDITED\n"
+                + changed,
+            context_bytes: len(changed) + len(self.with_practices(req.objective)) + 64,
+            tool_grant: self.grant(),
+            data_class: req.data_class,
+            knowledge_bindings: self.bindings,
+            retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("work_id", req.work_id);
         b.string_field("files_changed", files);
         b.string_field("rationale", req.objective);
-        b.string_field("fitness_signals", if assess.ok { fitness_lines(assess.output) } else { "" });
+        b.string_field(
+            "fitness_signals",
+            if assess.ok { fitness_lines(assess.output) } else { "" },
+        );
         b.bool_field("fmt_clean", fmt_code == 0);
         b.bool_field("check_clean", check_code == 0);
         b.int_field("tries", tries);
@@ -683,8 +868,13 @@ locus SourceEditor {
         return WorkResult {
             disposition: if check_code == 0 { "done" } else { "failed" },
             result: b.result(),
-            narrative: if check_code == 0 { "proposal checks clean after " + to_string(tries) + " try(ies)" } else { "proposal does not check after " + to_string(tries) + " try(ies): " + diagnostics },
-            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries=" + to_string(tries) + " backends=" + backends + "," + assess.backend,
+            narrative: if check_code == 0 {
+                "proposal checks clean after " + to_string(tries) + " try(ies)"
+            } else {
+                "proposal does not check after " + to_string(tries) + " try(ies): " + diagnostics
+            },
+            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries="
+                + to_string(tries) + " backends=" + backends + "," + assess.backend,
             performer: self.name
         };
     }

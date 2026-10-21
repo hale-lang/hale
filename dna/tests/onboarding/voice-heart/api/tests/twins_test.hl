@@ -36,7 +36,11 @@ fn canon(json: String) -> String {
         let mut parts = Parts { };
         let mut it = std::json::object_first(t);
         while !it.done {
-            parts = insert_sorted(parts, "\"" + std::json::escape_string(std::json::obj_key_string(it, t)) + "\":" + canon(std::json::obj_value_raw(it, t)));
+            parts = insert_sorted(
+                parts,
+                "\"" + std::json::escape_string(std::json::obj_key_string(it, t)) + "\":"
+                    + canon(std::json::obj_value_raw(it, t)),
+            );
             it = std::json::object_next(it, t);
         }
         let mut out = "";
@@ -54,7 +58,10 @@ fn canon(json: String) -> String {
         }
         return "[" + out + "]";
     }
-    if std::str::starts_with(t, "\"") { return "\"" + std::json::escape_string(std::json::unescape_string(t[1..(len(t) - 1)])) + "\""; }
+    if std::str::starts_with(t, "\"") {
+        return "\"" + std::json::escape_string(std::json::unescape_string(t[1..(len(t) - 1)]))
+            + "\"";
+    }
     return t;
 }
 
@@ -71,7 +78,9 @@ fn absent_as_null(typed: String, absent: String) -> String {
     while at >= 0 {
         let n = rest[0..at];
         rest = rest[(at + 1)..len(rest)];
-        if len(n) > 0 && std::json::string_field(t, n).kind == "missing" { extra = extra + ", \"" + n + "\": null"; }
+        if len(n) > 0 && std::json::string_field(t, n).kind == "missing" {
+            extra = extra + ", \"" + n + "\": null";
+        }
         at = std::str::index_of(rest, " ");
     }
     if len(extra) == 0 { return t; }
@@ -80,7 +89,11 @@ fn absent_as_null(typed: String, absent: String) -> String {
 
 fn same(rest: String, typed: String, what: String) {
     std::test::assert(len(canon(rest)) > 40, what + ": a whole answer: " + canon(rest));
-    std::test::assert_eq_str(canon(typed), canon(rest), what + ": the router's JSON and the typed twin's");
+    std::test::assert_eq_str(
+        canon(typed),
+        canon(rest),
+        what + ": the router's JSON and the typed twin's",
+    );
 }
 
 const CONFIG: String = "{\"text\": \"hi\", \"chunk_chars\": 8, \"nested\": {\"b\": [1, 2.5], \"a\": true}}";
@@ -88,8 +101,24 @@ const CAPS: String = "{\"engines\": [{\"id\": \"static\", \"kind\": \"static\", 
 
 /// A seat with every field off its default and off null.
 fn full_seat() -> api::SeatRead {
-    let mut s = api::SeatRead { ref: "laptop/static", node: "laptop", id: "static", engine: "static", account: "static", concurrency: 3, enabled: false, config: CONFIG, status: api::SeatStatus::refused, has_reason: true, reason: "the engine refused it", in_flight: 2 };
-    push(s.serves, st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" }) or discard;
+    let mut s = api::SeatRead {
+        ref: "laptop/static",
+        node: "laptop",
+        id: "static",
+        engine: "static",
+        account: "static",
+        concurrency: 3,
+        enabled: false,
+        config: CONFIG,
+        status: api::SeatStatus::refused,
+        has_reason: true,
+        reason: "the engine refused it",
+        in_flight: 2,
+    };
+    push(
+        s.serves,
+        st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" },
+    ) or discard;
     push(s.data_classes, "secret") or discard;
     push(s.problems, "config has no text, which engine static requires") or discard;
     return s;
@@ -98,17 +127,59 @@ fn full_seat() -> api::SeatRead {
 /// A node with every field off its default and off null: revoked, with
 /// a cap, local controls, a heartbeat and a seat.
 fn full_node() -> api::NodeRead {
-    let mut local = api::LocalControls { paused: true, has_max_in_flight: true, max_in_flight: 1, has_reason: true, reason: "maintenance" };
+    let mut local = api::LocalControls {
+        paused: true,
+        has_max_in_flight: true,
+        max_in_flight: 1,
+        has_reason: true,
+        reason: "maintenance",
+    };
     push(local.paused_seats, "static") or discard;
-    let mut n = api::NodeRead { id: "laptop", name: "Laptop", status: api::NodeStatus::revoked, has_version: true, version: "0.1.0", has_capabilities: true, capabilities: CAPS, has_local: true, local: local, has_max_in_flight: true, max_in_flight: 3, has_effective_max_in_flight: true, effective_max_in_flight: 1, in_flight: 2, assignment_version: 7, has_applied_version: true, applied_version: 6, has_connected_at: true, connected_at: `2026-10-17T01:00:00Z`, has_last_heartbeat_at: true, last_heartbeat_at: `2026-10-17T02:00:00Z`, created_at: `2026-10-16T00:00:00Z`, has_revoked_at: true, revoked_at: `2026-10-17T03:00:00Z`, enrollment_token: "vn-0123456789abcdef0123456789abcdef01234567" };
+    let mut n = api::NodeRead {
+        id: "laptop",
+        name: "Laptop",
+        status: api::NodeStatus::revoked,
+        has_version: true,
+        version: "0.1.0",
+        has_capabilities: true,
+        capabilities: CAPS,
+        has_local: true,
+        local: local,
+        has_max_in_flight: true,
+        max_in_flight: 3,
+        has_effective_max_in_flight: true,
+        effective_max_in_flight: 1,
+        in_flight: 2,
+        assignment_version: 7,
+        has_applied_version: true,
+        applied_version: 6,
+        has_connected_at: true,
+        connected_at: `2026-10-17T01:00:00Z`,
+        has_last_heartbeat_at: true,
+        last_heartbeat_at: `2026-10-17T02:00:00Z`,
+        created_at: `2026-10-16T00:00:00Z`,
+        has_revoked_at: true,
+        revoked_at: `2026-10-17T03:00:00Z`,
+        enrollment_token: "vn-0123456789abcdef0123456789abcdef01234567",
+    };
     push(n.seats, full_seat()) or discard;
     return n;
 }
 
 /// An assignment whose seat has every field off its default.
 fn full_assignment() -> api::AssignmentRead {
-    let mut s = api::AssignedRead { id: "static", engine: "static", account: "static", concurrency: 3, enabled: false, config: CONFIG };
-    push(s.serves, st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" }) or discard;
+    let mut s = api::AssignedRead {
+        id: "static",
+        engine: "static",
+        account: "static",
+        concurrency: 3,
+        enabled: false,
+        config: CONFIG,
+    };
+    push(
+        s.serves,
+        st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" },
+    ) or discard;
     push(s.data_classes, "secret") or discard;
     let mut a = api::AssignmentRead { version: 7, max_in_flight: 3 };
     push(a.seats, s) or discard;
@@ -118,42 +189,110 @@ fn full_assignment() -> api::AssignmentRead {
 /// A change with every field off its default and off null, a principal
 /// among them (the store keeps none yet).
 fn full_change() -> api::ChangeRead {
-    return api::ChangeRead { id: "chg_1", at: `2026-10-17T04:00:00Z`, has_principal: true, principal: "admin@example.invalid", action: api::ChangeAction::update, target: "nodes/laptop/seats/static", has_before: true, before: CONFIG, has_after: true, after: "{\"text\": \"bye\"}" };
+    return api::ChangeRead {
+        id: "chg_1",
+        at: `2026-10-17T04:00:00Z`,
+        has_principal: true,
+        principal: "admin@example.invalid",
+        action: api::ChangeAction::update,
+        target: "nodes/laptop/seats/static",
+        has_before: true,
+        before: CONFIG,
+        has_after: true,
+        after: "{\"text\": \"bye\"}",
+    };
 }
 
 fn main() {
     // the spelling itself: order does not count, a member and a null do
-    std::test::assert_eq_str(canon("{\"b\": [1, {\"x\": \"\\u0041\"}], \"a\": 1}"), canon("{\"a\":1,\"b\":[1,{\"x\":\"A\"}]}"), "one spelling");
-    std::test::assert(canon("{\"a\": 1}") != canon("{\"a\": 1, \"b\": 2}"), "a member more is a difference");
-    std::test::assert(canon("{\"a\": 1}") != canon("{\"a\": 1, \"b\": null}"), "and so is a null where nothing was");
-    std::test::assert_eq_str(absent_as_null("{\"a\": 1}", "b c"), "{\"a\": 1, \"b\": null, \"c\": null}", "absent fields named are the router's nulls");
+    std::test::assert_eq_str(
+        canon("{\"b\": [1, {\"x\": \"\\u0041\"}], \"a\": 1}"),
+        canon("{\"a\":1,\"b\":[1,{\"x\":\"A\"}]}"),
+        "one spelling",
+    );
+    std::test::assert(
+        canon("{\"a\": 1}") != canon("{\"a\": 1, \"b\": 2}"),
+        "a member more is a difference",
+    );
+    std::test::assert(
+        canon("{\"a\": 1}") != canon("{\"a\": 1, \"b\": null}"),
+        "and so is a null where nothing was",
+    );
+    std::test::assert_eq_str(
+        absent_as_null("{\"a\": 1}", "b c"),
+        "{\"a\": 1, \"b\": null, \"c\": null}",
+        "absent fields named are the router's nulls",
+    );
 
     // every field set, off its default and off null
     let seat = full_seat();
-    same(api::seat_json(seat), api::SeatView::api_encode(api::seat_view_of(seat) or api::SeatView { status: api::SeatStatus::offline }), "a seat");
+    same(
+        api::seat_json(seat),
+        api::SeatView::api_encode(
+            api::seat_view_of(seat) or api::SeatView { status: api::SeatStatus::offline },
+        ),
+        "a seat",
+    );
     let node = full_node();
-    same(api::node_json(node), api::Node::api_encode(api::node_of_read(node) or api::Node { status: api::NodeStatus::pending }), "a node");
+    same(
+        api::node_json(node),
+        api::Node::api_encode(
+            api::node_of_read(node) or api::Node { status: api::NodeStatus::pending },
+        ),
+        "a node",
+    );
     let assigned = full_assignment();
-    same(api::assignment_json(assigned), api::Assignment::api_encode(api::assignment_of_read(assigned) or api::Assignment { }), "an assignment");
+    same(
+        api::assignment_json(assigned),
+        api::Assignment::api_encode(api::assignment_of_read(assigned) or api::Assignment { }),
+        "an assignment",
+    );
     // the router nests `nats`; the twin has its two fields flat, a wire
     // difference the fit lists
     // a protocol off its default, so its copy is seen (the router writes
     // the row's, which is 2 in every answer it makes)
-    let r = api::RegisteredRead { protocol: 3, heartbeat_interval_ms: 7000, nats_url: "nats://nats:4222", nats_subject: "voice.node.laptop", assignment: assigned };
+    let r = api::RegisteredRead {
+        protocol: 3,
+        heartbeat_interval_ms: 7000,
+        nats_url: "nats://nats:4222",
+        nats_subject: "voice.node.laptop",
+        assignment: assigned,
+    };
     let rest = api::registered_json(r);
-    let flat = std::str::replace(rest, "\"nats\": {\"url\": \"nats://nats:4222\", \"subject\": \"voice.node.laptop\"}", "\"nats_url\": \"nats://nats:4222\", \"nats_subject\": \"voice.node.laptop\"");
+    let flat = std::str::replace(
+        rest,
+        "\"nats\": {\"url\": \"nats://nats:4222\", \"subject\": \"voice.node.laptop\"}",
+        "\"nats_url\": \"nats://nats:4222\", \"nats_subject\": \"voice.node.laptop\"",
+    );
     std::test::assert(flat != rest, "the router's answer nests nats: " + rest);
-    same(flat, api::Registered::api_encode(api::registered_of_read(r) or api::Registered { }), "a registration's answer");
+    same(
+        flat,
+        api::Registered::api_encode(api::registered_of_read(r) or api::Registered { }),
+        "a registration's answer",
+    );
     let mut page = api::ChangeReadList { has_next_cursor: true, next_cursor: "chg_1" };
     push(page.data, full_change()) or discard;
-    same(api::change_list_json(page), api::ChangeList::api_encode(api::change_list_of_read(page) or api::ChangeList { }), "a page of changes");
+    same(
+        api::change_list_json(page),
+        api::ChangeList::api_encode(api::change_list_of_read(page) or api::ChangeList { }),
+        "a page of changes",
+    );
 
     // every presence flag down: the router writes null where the codec
     // leaves the field out, named here field by field
     let mut bare_seat = full_seat();
     bare_seat.has_reason = false;
     bare_seat.reason = "";
-    same(api::seat_json(bare_seat), absent_as_null(api::SeatView::api_encode(api::seat_view_of(bare_seat) or api::SeatView { status: api::SeatStatus::offline }), "reason"), "a seat with no reason");
+    same(
+        api::seat_json(bare_seat),
+        absent_as_null(
+            api::SeatView::api_encode(
+                api::seat_view_of(bare_seat) or api::SeatView { status: api::SeatStatus::offline },
+            ),
+            "reason",
+        ),
+        "a seat with no reason",
+    );
     let mut bare_node = full_node();
     bare_node.has_version = false;
     bare_node.has_capabilities = false;
@@ -166,17 +305,42 @@ fn main() {
     bare_node.has_revoked_at = false;
     bare_node.enrollment_token = "";
     // the router writes the token only in the answers that carry one
-    let bare_encoded = api::Node::api_encode(api::node_of_read(bare_node) or api::Node { status: api::NodeStatus::pending });
+    let bare_encoded = api::Node::api_encode(
+        api::node_of_read(bare_node) or api::Node { status: api::NodeStatus::pending },
+    );
     let bare_typed = std::str::replace(bare_encoded, ",\"enrollment_token\":\"\"", "");
-    std::test::assert(bare_typed != bare_encoded, "the codec writes the empty token, which the router leaves out: " + bare_encoded);
-    same(api::node_json(bare_node), absent_as_null(bare_typed, "version capabilities local max_in_flight effective_max_in_flight applied_version connected_at last_heartbeat_at revoked_at"), "a node with nothing reported");
+    std::test::assert(
+        bare_typed != bare_encoded,
+        "the codec writes the empty token, which the router leaves out: " + bare_encoded,
+    );
+    same(
+        api::node_json(bare_node),
+        absent_as_null(
+            bare_typed,
+            "version capabilities local max_in_flight effective_max_in_flight applied_version connected_at last_heartbeat_at revoked_at",
+        ),
+        "a node with nothing reported",
+    );
     let mut last = api::ChangeReadList { };
     let mut bare_change = full_change();
     bare_change.has_principal = false;
     bare_change.has_before = false;
     push(last.data, full_change()) or discard;
-    let typed_last = api::ChangeList::api_encode(api::change_list_of_read(last) or api::ChangeList { });
+    let typed_last = api::ChangeList::api_encode(
+        api::change_list_of_read(last) or api::ChangeList { },
+    );
     // the last page's absent cursor, then a change's absent fields
     same(api::change_list_json(last), absent_as_null(typed_last, "next_cursor"), "a last page");
-    same(api::change_json(bare_change), absent_as_null(api::Change::api_encode(api::change_of_read(bare_change) or api::Change { action: api::ChangeAction::create }), "principal before"), "a create, by nobody");
+    same(
+        api::change_json(bare_change),
+        absent_as_null(
+            api::Change::api_encode(
+                api::change_of_read(bare_change) or api::Change {
+                    action: api::ChangeAction::create,
+                },
+            ),
+            "principal before",
+        ),
+        "a create, by nobody",
+    );
 }

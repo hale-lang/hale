@@ -6,31 +6,56 @@
 // every call in `sh -c 'cd …; ulimit …; timeout …'`).
 
 fn sh(script: String, o: std::process::SpawnOptions) -> std::process::ProcessOutput {
-    return std::process::run_with("/bin/sh\n-c\n" + script, o) or std::process::ProcessOutput { code: 99, signal: 0, stdout: "", stderr: "run_with failed" };
+    return std::process::run_with("/bin/sh\n-c\n" + script, o) or std::process::ProcessOutput {
+        code: 99,
+        signal: 0,
+        stdout: "",
+        stderr: "run_with failed",
+    };
 }
 
 fn is_linux() -> Bool {
-    let u = std::process::run("uname") or std::process::ProcessOutput { code: 1, signal: 0, stdout: "", stderr: "" };
+    let u = std::process::run("uname") or std::process::ProcessOutput {
+        code: 1,
+        signal: 0,
+        stdout: "",
+        stderr: "",
+    };
     return u.stdout == "Linux\n";
 }
 
 fn main() {
     // cwd: the child runs there; the parent's own is untouched.
-    let pwd = std::process::run_with("pwd", std::process::SpawnOptions { cwd: "/" }) or std::process::ProcessOutput { code: 99, signal: 0, stdout: "", stderr: "" };
+    let pwd = std::process::run_with(
+        "pwd",
+        std::process::SpawnOptions { cwd: "/" },
+    ) or std::process::ProcessOutput { code: 99, signal: 0, stdout: "", stderr: "" };
     std::test::assert_eq_str(pwd.stdout, "/\n", "the child ran in cwd");
     std::test::assert(!pwd.timed_out, "no timeout, not timed out");
     // A cwd that does not exist fails the call, not the child.
-    let missing = std::process::run_with("pwd", std::process::SpawnOptions { cwd: "/definitely/not/a/dir" }) or std::process::ProcessOutput { code: -7, signal: 0, stdout: "", stderr: "" };
+    let missing = std::process::run_with(
+        "pwd",
+        std::process::SpawnOptions { cwd: "/definitely/not/a/dir" },
+    ) or std::process::ProcessOutput { code: -7, signal: 0, stdout: "", stderr: "" };
     std::test::assert_eq_int(missing.code, -7, "a missing cwd is the call's IoError");
 
     // env: set one name, override an inherited one, unset another.
-    let set = sh("echo \"$HALE_OPT_A|${HOME-unset}\"", std::process::SpawnOptions { env: "HALE_OPT_A=one\nHALE_OPT_A=two", unset_env: "HOME" });
+    let set = sh(
+        "echo \"$HALE_OPT_A|${HOME-unset}\"",
+        std::process::SpawnOptions { env: "HALE_OPT_A=one\nHALE_OPT_A=two", unset_env: "HOME" },
+    );
     std::test::assert_eq_str(set.stdout, "two|unset\n", "env set (last line wins) and HOME unset");
     // clear_env: the child sees only what `env` gives it.
-    let clear = std::process::run_with("/usr/bin/env", std::process::SpawnOptions { clear_env: true, env: "ONLY=this" }) or std::process::ProcessOutput { code: 99, signal: 0, stdout: "", stderr: "" };
+    let clear = std::process::run_with(
+        "/usr/bin/env",
+        std::process::SpawnOptions { clear_env: true, env: "ONLY=this" },
+    ) or std::process::ProcessOutput { code: 99, signal: 0, stdout: "", stderr: "" };
     std::test::assert_eq_str(clear.stdout, "ONLY=this\n", "a cleared environment holds only env");
     // A line with no `=` is the call's error.
-    let bad = std::process::run_with("/usr/bin/env", std::process::SpawnOptions { env: "NOEQUALS" }) or std::process::ProcessOutput { code: -7, signal: 0, stdout: "", stderr: "" };
+    let bad = std::process::run_with(
+        "/usr/bin/env",
+        std::process::SpawnOptions { env: "NOEQUALS" },
+    ) or std::process::ProcessOutput { code: -7, signal: 0, stdout: "", stderr: "" };
     std::test::assert_eq_int(bad.code, -7, "an env line with no = is refused");
 
     // timeout on run_with: the child is stopped, reaped, and the result says so.
@@ -48,7 +73,10 @@ fn main() {
 
     // timeout on spawn_with: `wait` returns at the deadline, the child
     // stopped and reaped.
-    let c = std::process::spawn_with("sleep\n30", std::process::SpawnOptions { timeout: 200ms }) or std::process::Child { };
+    let c = std::process::spawn_with(
+        "sleep\n30",
+        std::process::SpawnOptions { timeout: 200ms },
+    ) or std::process::Child { };
     std::test::assert(c.pid > 0, "sleep spawned");
     let code = std::process::wait(c) or 99;
     std::test::assert_eq_int(code, -1, "wait returned -1 at the deadline");
@@ -56,43 +84,72 @@ fn main() {
     let reaped = std::process::try_wait(c) or - 9;
     std::test::assert_eq_int(reaped, -9, "already reaped: try_wait is not_found");
     // try_wait past the deadline stops it too.
-    let p = std::process::spawn_with("sleep\n30", std::process::SpawnOptions { timeout: 100ms }) or std::process::Child { };
+    let p = std::process::spawn_with(
+        "sleep\n30",
+        std::process::SpawnOptions { timeout: 100ms },
+    ) or std::process::Child { };
     std::test::assert_eq_int(std::process::try_wait(p) or 99, -2, "running before the deadline");
     std::time::sleep(250ms);
-    std::test::assert_eq_int(std::process::try_wait(p) or 99, -1, "try_wait past the deadline stops it");
+    std::test::assert_eq_int(
+        std::process::try_wait(p) or 99,
+            -1,
+        "try_wait past the deadline stops it",
+    );
     std::test::assert(p.timed_out, "and records it");
 
     // The whole process group goes at the deadline, not only the child:
     // here the child (the group's leader) ends on TERM, and a member it
     // started ignores TERM (`trap '' TERM`). The member used to outlive the
     // timeout, because the stop ended as soon as the leader was reaped.
-    let group = sh("sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $$; wait", std::process::SpawnOptions { timeout: 300ms });
+    let group = sh(
+        "sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $$; wait",
+        std::process::SpawnOptions { timeout: 300ms },
+    );
     std::test::assert(group.timed_out, "the group's run timed out");
     let pgid = std::str::trim(group.stdout);
     std::test::assert(len(pgid) > 0, "the leader said its group");
-    let left = sh("sleep 0.5; if kill -0 -" + pgid + " 2>/dev/null; then echo alive; else echo gone; fi", std::process::SpawnOptions { });
+    let left = sh(
+        "sleep 0.5; if kill -0 -" + pgid + " 2>/dev/null; then echo alive; else echo gone; fi",
+        std::process::SpawnOptions { },
+    );
     std::test::assert_eq_str(left.stdout, "gone\n", "no process of the group is left");
     // A child that catches TERM and exits 0 still timed out: -1, not its 0.
-    let caught = sh("trap 'exit 0' TERM; while :; do sleep 0.05; done", std::process::SpawnOptions { timeout: 300ms });
+    let caught = sh(
+        "trap 'exit 0' TERM; while :; do sleep 0.05; done",
+        std::process::SpawnOptions { timeout: 300ms },
+    );
     std::test::assert(caught.timed_out, "a TERM-catching child timed out");
     std::test::assert_eq_int(caught.code, -1, "and reads -1, not the 0 it exited with");
 
     // close_stdin still works on a spawn_with handle.
-    let cat = std::process::spawn_with("/bin/cat", std::process::SpawnOptions { cwd: "/", timeout: 10s }) or std::process::Child { };
+    let cat = std::process::spawn_with(
+        "/bin/cat",
+        std::process::SpawnOptions { cwd: "/", timeout: 10s },
+    ) or std::process::Child { };
     std::process::write_stdin(cat, "piped\n") or 0;
     std::process::close_stdin(cat);
     std::test::assert_eq_int(std::process::wait(cat) or 99, 0, "cat saw EOF and exited 0");
     std::test::assert(!cat.timed_out, "before its deadline");
-    std::test::assert_eq_str(std::process::read_stdout(cat) or "", "piped\n", "everything written came back");
+    std::test::assert_eq_str(
+        std::process::read_stdout(cat) or "",
+        "piped\n",
+        "everything written came back",
+    );
 
     // Limits: the child sees them...
-    let lim = sh("ulimit -n; ulimit -t; ulimit -f", std::process::SpawnOptions { open_files: 32, cpu_seconds: 7, file_size: 1048576 });
+    let lim = sh(
+        "ulimit -n; ulimit -t; ulimit -f",
+        std::process::SpawnOptions { open_files: 32, cpu_seconds: 7, file_size: 1048576 },
+    );
     // `ulimit -f` counts 512-byte blocks in dash and bash alike: 2048.
     std::test::assert_eq_str(lim.stdout, "32\n7\n2048\n", "the child's limits");
     // ...and the kernel enforces them: no descriptor at or past open_files.
     let fd_ok = sh("exec 9</dev/null && echo opened", std::process::SpawnOptions { });
     std::test::assert_eq_str(fd_ok.stdout, "opened\n", "fd 9 opens without a limit");
-    let fd_capped = sh("exec 9</dev/null && echo opened", std::process::SpawnOptions { open_files: 8 });
+    let fd_capped = sh(
+        "exec 9</dev/null && echo opened",
+        std::process::SpawnOptions { open_files: 8 },
+    );
     std::test::assert(fd_capped.code != 0, "fd 9 past open_files=8 fails");
     std::test::assert_eq_str(fd_capped.stdout, "", "and nothing ran after it");
     // A limit above the hard one is the call's error.
@@ -100,10 +157,16 @@ fn main() {
     std::test::assert_eq_int(hard.code, 99, "open_files above the hard limit is refused");
     // address_space: Linux enforces it; macOS takes the setting only.
     if is_linux() {
-        let big = sh("x=$(head -c 100000000 /dev/zero | tr '\\000' a); echo grew", std::process::SpawnOptions { address_space: 64 * 1024 * 1024 });
+        let big = sh(
+            "x=$(head -c 100000000 /dev/zero | tr '\\000' a); echo grew",
+            std::process::SpawnOptions { address_space: 64 * 1024 * 1024 },
+        );
         std::test::assert(big.code != 0, "growing past address_space fails");
         std::test::assert_eq_str(big.stdout, "", "the shell never got there");
-        let fine = sh("x=$(head -c 1000 /dev/zero | tr '\\000' a); echo grew", std::process::SpawnOptions { address_space: 64 * 1024 * 1024 });
+        let fine = sh(
+            "x=$(head -c 1000 /dev/zero | tr '\\000' a); echo grew",
+            std::process::SpawnOptions { address_space: 64 * 1024 * 1024 },
+        );
         std::test::assert_eq_str(fine.stdout, "grew\n", "under the limit it runs");
     }
 }

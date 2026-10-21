@@ -36,12 +36,20 @@ fn upstream_header(headers: String, name: String) -> String {
 
 // `METHOD target` against 127.0.0.1:`port` with `headers` (CRLF lines,
 // each terminated) and `body`; read to EOF or `timeout_ns`.
-fn exchange(port: Int, method: String, target: String, headers: String, body: String, timeout_ns: Int) -> Upstream {
+fn exchange(
+    port: Int,
+    method: String,
+    target: String,
+    headers: String,
+    body: String,
+    timeout_ns: Int
+) -> Upstream {
     let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
     if fd < 0 { return Upstream { code: "connect_failed" }; }
     let armed = std::io::tcp::__set_recv_timeout_ns(fd, timeout_ns);
     let s = std::io::tcp::Stream { conn_fd: fd };
-    let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n" + headers + "Connection: close\r\n\r\n";
+    let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n"
+        + headers + "Connection: close\r\n\r\n";
     s.send(head + body) or discard;
     let received = std::bytes::BytesBuilder { };
     let mut total = 0;
@@ -60,7 +68,15 @@ fn exchange(port: Int, method: String, target: String, headers: String, body: St
         }
     }
     let raw = std::str::from_bytes(received.snapshot() or raise);
-    if total == 0 { return Upstream { code: if std::time::monotonic_ns() - started >= timeout_ns { "timeout" } else { "no_response" } }; }
+    if total == 0 {
+        return Upstream {
+            code: if std::time::monotonic_ns() - started >= timeout_ns {
+                "timeout"
+            } else {
+                "no_response"
+            },
+        };
+    }
     if total > MAX_UPSTREAM_BYTES { return Upstream { code: "timeout" }; }
     let split = std::str::index_of(raw, "\r\n\r\n");
     if split < 0 { return Upstream { code: "timeout" }; }

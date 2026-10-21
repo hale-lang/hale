@@ -101,7 +101,14 @@ locus __StdIoH2Conn {
         // that send, so the wait is bounded
         while self.flushing { std::time::sleep(1ms); }
         self.pump();
-        __ApiH2EventT <- __StdIoH2Event { key: self.tid, conn: self.conn, kind: 7, stream: 0, code: 0, bytes: __h2_none() };
+        __ApiH2EventT <- __StdIoH2Event {
+            key: self.tid,
+            conn: self.conn,
+            kind: 7,
+            stream: 0,
+            code: 0,
+            bytes: __h2_none(),
+        };
         if self.session != 0 {
             std::io::h2::__close(self.session);
             self.session = 0;
@@ -135,7 +142,14 @@ locus __StdIoH2Conn {
         while k != 0 {
             let mut data = __h2_none();
             if k == 1 || k == 2 { data = std::io::h2::__ev_bytes(self.session); }
-            __ApiH2EventT <- __StdIoH2Event { key: self.tid, conn: self.conn, kind: k, stream: std::io::h2::__ev_stream(self.session), code: std::io::h2::__ev_code(self.session), bytes: data };
+            __ApiH2EventT <- __StdIoH2Event {
+                key: self.tid,
+                conn: self.conn,
+                kind: k,
+                stream: std::io::h2::__ev_stream(self.session),
+                code: std::io::h2::__ev_code(self.session),
+                bytes: data,
+            };
             k = std::io::h2::__poll(self.session);
         }
     }
@@ -146,7 +160,13 @@ locus __StdIoH2Conn {
         self.flush();
         // while the writer is parked in a send, what it has not yet written
         // is not "nothing more": the writer settles when it has finished
-        if !self.flushing && self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
+        if !self.flushing
+            && self.open
+            && self.session != 0
+            && std::io::h2::__alive(self.session) == 0
+        {
+            self.hangup();
+        }
     }
     // The connection's one writer, as the ws hub's connection has it: the
     // session's output is the queue, and whoever finds no writer running
@@ -167,7 +187,9 @@ locus __StdIoH2Conn {
             if self.open && self.session != 0 { out = std::io::h2::__drain(self.session); }
         }
         self.flushing = false;
-        if self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 { self.hangup(); }
+        if self.open && self.session != 0 && std::io::h2::__alive(self.session) == 0 {
+            self.hangup();
+        }
     }
     fn on_cmd(c: __StdIoH2Cmd) {
         if !self.open || self.session == 0 { return; }
@@ -253,7 +275,10 @@ locus __StdIoH2Listener {
         // no route until then)
         listener: String = "";
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
-        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdIoH2Conns { tid: self.tid }, armed: false };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections {
+            handler: __StdIoH2Conns { tid: self.tid },
+            armed: false,
+        };
     }
     bus {
         subscribe __ApiH2CmdT as on_ctl where key == self.tid;
@@ -275,7 +300,10 @@ locus __StdIoH2Listener {
         }
         self.relay.name = self.listener;
         self.relay.armed = true;
-        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdIoH2Conns { tid: self.tid } };
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdIoH2Conns { tid: self.tid },
+        };
     }
     run() {
         // nothing is accepted before the transport is subscribed, and the
@@ -283,7 +311,15 @@ locus __StdIoH2Listener {
         while !self.started && !self.stopped && !self.draining {
             // the asking names the address bound (`host:<bound port>`), for
             // a transport that describes it
-            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 4, stream: 0, code: 0, headers: __h2_none(), body: std::bytes::from_string(self.listener), trailers: __h2_none() };
+            __ApiH2CmdT <- __StdIoH2Cmd {
+                key: self.tid,
+                kind: 4,
+                stream: 0,
+                code: 0,
+                headers: __h2_none(),
+                body: std::bytes::from_string(self.listener),
+                trailers: __h2_none(),
+            };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {

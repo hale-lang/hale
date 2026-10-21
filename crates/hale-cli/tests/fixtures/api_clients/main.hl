@@ -68,11 +68,49 @@ main locus Desk {
         http_roles: Grants = Grants { trader: "alice" };
         hub_roles: Grants = Grants { operator: "alice" };
         counter: Counter = Counter { };
-        hub: ws::Hub = ws::Hub { bind: "@HUB@", principals: self.bearer, roles: self.hub_roles, as: "ticks" };
-        local: api::Exposure = api::serve(Books, unix::Rpc { path: "@SOCK@", roles: self.unix_roles }, as: "local", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
-        web: api::Exposure = api::serve(Books, http::Rpc { bind: "@HTTP@", codec: json, principals: self.bearer, roles: self.http_roles }, as: "web", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
-        agent: api::Exposure = api::serve(Books, mcp::Rpc { bind: "@MCP@", principals: self.bearer, roles: self.http_roles }, as: "agent", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
-        feed: api::Exposure = api::serve(Books, self.hub, as: "feed", receivers: { Counter: self.counter }, bound: 16, on_full: refuse);
+        hub: ws::Hub = ws::Hub {
+            bind: "@HUB@",
+            principals: self.bearer,
+            roles: self.hub_roles,
+            as: "ticks",
+        };
+        local: api::Exposure = api::serve(
+            Books,
+            unix::Rpc { path: "@SOCK@", roles: self.unix_roles },
+            as: "local",
+            receivers: { Counter: self.counter },
+            bound: 16,
+            on_full: refuse
+        );
+        web: api::Exposure = api::serve(
+            Books,
+            http::Rpc {
+                bind: "@HTTP@",
+                codec: json,
+                principals: self.bearer,
+                roles: self.http_roles,
+            },
+            as: "web",
+            receivers: { Counter: self.counter },
+            bound: 16,
+            on_full: refuse
+        );
+        agent: api::Exposure = api::serve(
+            Books,
+            mcp::Rpc { bind: "@MCP@", principals: self.bearer, roles: self.http_roles },
+            as: "agent",
+            receivers: { Counter: self.counter },
+            bound: 16,
+            on_full: refuse
+        );
+        feed: api::Exposure = api::serve(
+            Books,
+            self.hub,
+            as: "feed",
+            receivers: { Counter: self.counter },
+            bound: 16,
+            on_full: refuse
+        );
     }
     placement { counter: cooperative(pool = desk) where async_io; }
     bindings {

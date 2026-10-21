@@ -18,7 +18,11 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -35,49 +39,112 @@ fn fetch(port: Int, path: String, tries: Int) -> String {
 }
 
 fn main() {
-    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-    let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
-    if len(owner) == 0 || len(nats) == 0 { eprintln("faces_named_start_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)"); return; }
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+    } else {
+        ""
+    };
+    let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") {
+        std::env::var("HALE_DNA_NATS_URL_OWNER")
+    } else {
+        ""
+    };
+    if len(owner) == 0 || len(nats) == 0 {
+        eprintln(
+            "faces_named_start_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER is not set)",
+        );
+        return;
+    }
     let scratch = dna::scratch_root("faces-start");
     let admin_port = dna::free_port(0);
     let product_port = dna::free_port(1);
     let repo = scratch + "/shop";
-    let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/faces/shop/.\" \"$1/\"\nsh\n" + repo + "\n" + source());
+    let copied = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/faces/shop/.\" \"$1/\"\nsh\n" + repo + "\n"
+            + source(),
+    );
     std::test::assert_eq_int(copied.code, 0, "the fixture copied: " + copied.stderr);
     let main = std::io::fs::read_file(repo + "/main.hl") or "";
-    let fixed = std::str::replace(std::str::replace(std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""), "port: 1 }", "port: " + to_string(admin_port) + " }"), "port: 2 }", "port: " + to_string(product_port) + " }");
+    let fixed = std::str::replace(
+        std::str::replace(
+            std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""),
+            "port: 1 }",
+            "port: " + to_string(admin_port) + " }",
+        ),
+        "port: 2 }",
+        "port: " + to_string(product_port) + " }",
+    );
     std::test::assert(fixed != main, "the fixture's import and ports are rewritten");
     std::io::fs::write_file(repo + "/main.hl", fixed) or discard;
-    let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m shop\nsh\n" + repo);
+    let made = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m shop\nsh\n"
+            + repo,
+    );
     std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
 
     let init = dna::grafted(repo, ".\n--attach");
-    std::test::assert_eq_int(init.code, 0, "graft reads the organism: " + init.stdout + init.stderr);
-    let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + repo + "\n" + owner + "\n" + toolchain());
-    std::test::assert_eq_int(migrated.code, 0, "memory migrated for the record: " + migrated.stdout + migrated.stderr);
-    let started = dna::run_tool("sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; mkdir -p .hale; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + repo + "\n" + owner + "\n" + nats + "\n" + toolchain());
+    std::test::assert_eq_int(
+        init.code,
+        0,
+        "graft reads the organism: " + init.stdout + init.stderr,
+    );
+    let migrated = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n"
+            + repo + "\n" + owner + "\n" + toolchain(),
+    );
+    std::test::assert_eq_int(
+        migrated.code,
+        0,
+        "memory migrated for the record: " + migrated.stdout + migrated.stderr,
+    );
+    let started = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" || exit 1; mkdir -p .hale; nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n"
+            + repo + "\n" + owner + "\n" + nats + "\n" + toolchain(),
+    );
     let body = dna::trim_nl(started.stdout);
 
     // ---- both faces start on their declared ports and answer
     let admin_page = fetch(admin_port, "/", 480);
     let product_page = fetch(product_port, "/", 480);
     let log = std::io::fs::read_file(repo + "/.hale/body.log") or "";
-    std::test::assert(std::str::contains(admin_page, "<title>admin</title>"), "admin answers on its port: " + admin_page + log);
-    std::test::assert(std::str::contains(product_page, "<title>product</title>"), "product answers on its port: " + product_page + log);
+    std::test::assert(
+        std::str::contains(admin_page, "<title>admin</title>"),
+        "admin answers on its port: " + admin_page + log,
+    );
+    std::test::assert(
+        std::str::contains(product_page, "<title>product</title>"),
+        "product answers on its port: " + product_page + log,
+    );
     // ---- each face's client names only its declared surface
     let admin_client = fetch(admin_port, "/client.js", 10);
     let product_client = fetch(product_port, "/client.js", 10);
-    std::test::assert(std::str::contains(admin_client, "OrdersSurface") && !std::str::contains(admin_client, "CatalogSurface"), "admin's client: " + admin_client);
-    std::test::assert(std::str::contains(product_client, "CatalogSurface") && !std::str::contains(product_client, "OrdersSurface"), "product's client: " + product_client);
+    std::test::assert(
+        std::str::contains(admin_client, "OrdersSurface")
+            && !std::str::contains(admin_client, "CatalogSurface"),
+        "admin's client: " + admin_client,
+    );
+    std::test::assert(
+        std::str::contains(product_client, "CatalogSurface")
+            && !std::str::contains(product_client, "OrdersSurface"),
+        "product's client: " + product_client,
+    );
     let listed = std::io::fs::read_file(repo + "/.hale/dna/faces") or "";
-    std::test::assert(std::str::contains(listed, "admin\n") && std::str::contains(listed, "product\n"), "both are listed as started: " + listed);
+    std::test::assert(
+        std::str::contains(listed, "admin\n") && std::str::contains(listed, "product\n"),
+        "both are listed as started: " + listed,
+    );
 
     // ---- stopping the body stops them
     dna::run_tool("kill\n" + body);
     let mut n = 0;
     let mut up = true;
     while n < 300 && up {
-        up = len(dna::run_tool("curl\n-s\nhttp://127.0.0.1:" + to_string(admin_port) + "/").stdout) > 0 || len(dna::run_tool("curl\n-s\nhttp://127.0.0.1:" + to_string(product_port) + "/").stdout) > 0;
+        up = len(
+            dna::run_tool("curl\n-s\nhttp://127.0.0.1:" + to_string(admin_port) + "/").stdout,
+        ) > 0
+            || len(
+                dna::run_tool("curl\n-s\nhttp://127.0.0.1:" + to_string(product_port) + "/").stdout,
+            ) > 0;
         if up { std::time::sleep(200ms); }
         n = n + 1;
     }

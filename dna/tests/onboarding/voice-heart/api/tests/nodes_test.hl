@@ -3,7 +3,14 @@
 import ".." as api;
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -15,35 +22,68 @@ fn raw(r: std::http::Response, name: String) -> String {
 }
 
 fn version(e: api::Endpoints, node: String) -> Int {
-    return std::json::find_int_field(call(e, "GET", "/admin/v1/nodes/" + node, "").body, "assignment_version");
+    return std::json::find_int_field(
+        call(e, "GET", "/admin/v1/nodes/" + node, "").body,
+        "assignment_version",
+    );
 }
 
 fn main() {
     let e = api::Endpoints { };
     expect(call(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}"), 201, "a model");
-    expect(call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}"), 201, "an account");
+    expect(
+        call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}"),
+        201,
+        "an account",
+    );
 
     // nodes
     let made = call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\", \"name\": \"Laptop\"}");
     expect(made, 201, "create");
     let token = std::json::find_string_field(made.body, "enrollment_token");
-    std::test::assert(std::str::starts_with(token, "vn-") && len(token) == 43, "a token, shown once");
-    std::test::assert_eq_str(std::json::find_string_field(made.body, "status"), "pending", "pending until it connects");
+    std::test::assert(
+        std::str::starts_with(token, "vn-") && len(token) == 43,
+        "a token, shown once",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(made.body, "status"),
+        "pending",
+        "pending until it connects",
+    );
     std::test::assert_eq_str(raw(made, "capabilities"), "null", "it has declared nothing");
     std::test::assert_eq_str(raw(made, "max_in_flight"), "null", "no coordinator cap");
-    std::test::assert_eq_int(std::json::find_int_field(made.body, "assignment_version"), 1, "its first assignment");
+    std::test::assert_eq_int(
+        std::json::find_int_field(made.body, "assignment_version"),
+        1,
+        "its first assignment",
+    );
     let got = call(e, "GET", "/admin/v1/nodes/laptop", "");
-    std::test::assert(!std::str::contains(got.body, "enrollment_token") && !std::str::contains(got.body, token), "never the token again");
+    std::test::assert(
+        !std::str::contains(got.body, "enrollment_token") && !std::str::contains(got.body, token),
+        "never the token again",
+    );
     expect(call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}"), 409, "an id is taken once");
     expect(call(e, "POST", "/admin/v1/nodes", "{\"id\": \"Laptop\"}"), 400, "an id is a slug");
-    expect(call(e, "POST", "/admin/v1/nodes", "{\"id\": \"x\", \"max_in_flight\": 0}"), 400, "a cap is at least 1");
+    expect(
+        call(e, "POST", "/admin/v1/nodes", "{\"id\": \"x\", \"max_in_flight\": 0}"),
+        400,
+        "a cap is at least 1",
+    );
     expect(call(e, "GET", "/admin/v1/nodes/nope", ""), 404, "an unknown node");
 
     let capped = call(e, "PATCH", "/admin/v1/nodes/laptop", "{\"max_in_flight\": 4}");
     expect(capped, 200, "set a cap");
     std::test::assert_eq_int(std::json::find_int_field(capped.body, "max_in_flight"), 4, "the cap");
-    std::test::assert_eq_int(std::json::find_int_field(capped.body, "assignment_version"), 2, "a new assignment");
-    std::test::assert_eq_str(std::json::find_string_field(capped.body, "name"), "Laptop", "a field not set stays");
+    std::test::assert_eq_int(
+        std::json::find_int_field(capped.body, "assignment_version"),
+        2,
+        "a new assignment",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(capped.body, "name"),
+        "Laptop",
+        "a field not set stays",
+    );
     let uncapped = call(e, "PATCH", "/admin/v1/nodes/laptop", "{\"max_in_flight\": null}");
     std::test::assert_eq_str(raw(uncapped, "max_in_flight"), "null", "the cap lifted");
 
@@ -53,53 +93,188 @@ fn main() {
     std::test::assert(std::str::starts_with(token2, "vn-") && token2 != token, "a new token");
 
     // seats
-    let seat = call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}, {\"model\": \"gone-1\", \"as\": \"g\"}], \"concurrency\": 4, \"config\": {\"text\": \"hello from voice\", \"chunk_chars\": 8}}");
+    let seat = call(
+        e,
+        "POST",
+        "/admin/v1/nodes/laptop/seats",
+        "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}, {\"model\": \"gone-1\", \"as\": \"g\"}], \"concurrency\": 4, \"config\": {\"text\": \"hello from voice\", \"chunk_chars\": 8}}",
+    );
     expect(seat, 201, "a seat");
-    std::test::assert_eq_str(std::json::find_string_field(seat.body, "ref"), "laptop/static", "its full name");
-    std::test::assert_eq_str(std::json::find_string_field(seat.body, "status"), "offline", "its node has not connected");
-    std::test::assert_eq_str(raw(seat, "data_classes"), "[\"internal\"]", "data classes default to internal");
-    std::test::assert_eq_str(std::json::find_string_field(raw(seat, "config"), "text"), "hello from voice", "its config, as written");
+    std::test::assert_eq_str(
+        std::json::find_string_field(seat.body, "ref"),
+        "laptop/static",
+        "its full name",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(seat.body, "status"),
+        "offline",
+        "its node has not connected",
+    );
+    std::test::assert_eq_str(
+        raw(seat, "data_classes"),
+        "[\"internal\"]",
+        "data classes default to internal",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(raw(seat, "config"), "text"),
+        "hello from voice",
+        "its config, as written",
+    );
     let problems = raw(seat, "problems");
-    std::test::assert(std::str::contains(problems, "has not connected"), "the node has declared no engines");
-    std::test::assert(std::str::contains(problems, "model gone-1 is not in the catalog"), "a model not in the catalog");
+    std::test::assert(
+        std::str::contains(problems, "has not connected"),
+        "the node has declared no engines",
+    );
+    std::test::assert(
+        std::str::contains(problems, "model gone-1 is not in the catalog"),
+        "a model not in the catalog",
+    );
     std::test::assert_eq_int(version(e, "laptop"), 5, "a seat is a new assignment");
     let logged = call(e, "GET", "/admin/v1/changes?target=nodes/laptop/seats", "");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::array_first(std::json::find_field_raw(logged.body, "data")).element, "target"), "nodes/laptop/seats/static", "the change names the seat's path");
-    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/models/echo-1", "").body, "laptop/static"), "the model lists the seat");
-    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/accounts/static", "").body, "laptop/static"), "and so does its account");
+    std::test::assert_eq_str(
+        std::json::find_string_field(
+            std::json::array_first(std::json::find_field_raw(logged.body, "data")).element,
+            "target",
+        ),
+        "nodes/laptop/seats/static",
+        "the change names the seat's path",
+    );
+    std::test::assert(
+        std::str::contains(call(e, "GET", "/admin/v1/models/echo-1", "").body, "laptop/static"),
+        "the model lists the seat",
+    );
+    std::test::assert(
+        std::str::contains(call(e, "GET", "/admin/v1/accounts/static", "").body, "laptop/static"),
+        "and so does its account",
+    );
 
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}"), 409, "a seat id is the node's once");
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"nope\", \"serves\": [{\"model\": \"echo-1\"}]}"), 400, "an account that exists");
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": []}"), 400, "at least one model");
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": \"text\"}"), 400, "a config is an object");
-    expect(call(e, "POST", "/admin/v1/nodes/nope/seats", "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}"), 404, "on a node that exists");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/laptop/seats",
+            "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}",
+        ),
+        409,
+        "a seat id is the node's once",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/laptop/seats",
+            "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"nope\", \"serves\": [{\"model\": \"echo-1\"}]}",
+        ),
+        400,
+        "an account that exists",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/laptop/seats",
+            "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": []}",
+        ),
+        400,
+        "at least one model",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/laptop/seats",
+            "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": \"text\"}",
+        ),
+        400,
+        "a config is an object",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/nope/seats",
+            "{\"id\": \"x\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}",
+        ),
+        404,
+        "on a node that exists",
+    );
 
     let listed = call(e, "GET", "/admin/v1/nodes/laptop/seats", "");
     std::test::assert(std::str::contains(listed.body, "laptop/static"), "list");
-    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/nodes/laptop", "").body, "laptop/static"), "the node shows its seats");
+    std::test::assert(
+        std::str::contains(call(e, "GET", "/admin/v1/nodes/laptop", "").body, "laptop/static"),
+        "the node shows its seats",
+    );
 
-    let off = call(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"enabled\": false, \"serves\": [{\"model\": \"echo-1\"}]}");
+    let off = call(
+        e,
+        "PATCH",
+        "/admin/v1/nodes/laptop/seats/static",
+        "{\"enabled\": false, \"serves\": [{\"model\": \"echo-1\"}]}",
+    );
     expect(off, 200, "patch");
     std::test::assert(!std::json::find_bool_field(off.body, "enabled"), "disabled");
     std::test::assert(!std::str::contains(off.body, "gone-1"), "serves replaced");
-    std::test::assert_eq_int(std::json::find_int_field(off.body, "concurrency"), 4, "a field not set stays");
-    expect(call(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"id\": \"other\"}"), 400, "the id cannot change");
+    std::test::assert_eq_int(
+        std::json::find_int_field(off.body, "concurrency"),
+        4,
+        "a field not set stays",
+    );
+    expect(
+        call(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"id\": \"other\"}"),
+        400,
+        "the id cannot change",
+    );
     expect(call(e, "GET", "/admin/v1/nodes/laptop/seats/nope", ""), 404, "an unknown seat");
 
     expect(call(e, "DELETE", "/admin/v1/accounts/static", ""), 200, "archive the account");
-    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body, "account static is archived"), "the seat shows the problem");
+    std::test::assert(
+        std::str::contains(
+            call(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body,
+            "account static is archived",
+        ),
+        "the seat shows the problem",
+    );
 
     let removed = call(e, "DELETE", "/admin/v1/nodes/laptop/seats/static", "");
     expect(removed, 200, "remove");
-    std::test::assert_eq_str(std::json::find_string_field(removed.body, "ref"), "laptop/static", "the removed seat");
+    std::test::assert_eq_str(
+        std::json::find_string_field(removed.body, "ref"),
+        "laptop/static",
+        "the removed seat",
+    );
     expect(call(e, "GET", "/admin/v1/nodes/laptop/seats/static", ""), 404, "gone");
 
     // revoking
     let revoked = call(e, "DELETE", "/admin/v1/nodes/laptop", "");
     expect(revoked, 200, "revoke");
-    std::test::assert_eq_str(std::json::find_string_field(revoked.body, "status"), "revoked", "revoked");
-    std::test::assert(std::str::ends_with(std::json::find_string_field(revoked.body, "revoked_at"), "Z"), "when");
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/token", ""), 409, "a revoked node gets no token");
-    expect(call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"y\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}"), 409, "nor a seat");
-    expect(call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}"), 409, "its id is never reused");
+    std::test::assert_eq_str(
+        std::json::find_string_field(revoked.body, "status"),
+        "revoked",
+        "revoked",
+    );
+    std::test::assert(
+        std::str::ends_with(std::json::find_string_field(revoked.body, "revoked_at"), "Z"),
+        "when",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/nodes/laptop/token", ""),
+        409,
+        "a revoked node gets no token",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/nodes/laptop/seats",
+            "{\"id\": \"y\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}",
+        ),
+        409,
+        "nor a seat",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}"),
+        409,
+        "its id is never reused",
+    );
 }

@@ -4,7 +4,14 @@
 import ".." as api;
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -17,18 +24,51 @@ fn raw(r: std::http::Response, name: String) -> String {
 
 fn main() {
     let e = api::Endpoints { };
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\", \"accounts\": [\"claude-work\", \"static\"]}"), 201, "a project");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"home\", \"name\": \"Home\"}"), 201, "another");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"work\", \"name\": \"Work\", \"accounts\": [\"claude-work\", \"static\"]}",
+        ),
+        201,
+        "a project",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"home\", \"name\": \"Home\"}"),
+        201,
+        "another",
+    );
 
-    expect(call(e, "POST", "/admin/v1/projects/nope/keys", "{\"name\": \"ci\"}"), 404, "a key needs its project");
-    let made = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\", \"accounts\": [\"claude-work\"]}");
+    expect(
+        call(e, "POST", "/admin/v1/projects/nope/keys", "{\"name\": \"ci\"}"),
+        404,
+        "a key needs its project",
+    );
+    let made = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"ci\", \"accounts\": [\"claude-work\"]}",
+    );
     expect(made, 201, "create");
     let id = std::json::find_string_field(made.body, "id");
     let secret = std::json::find_string_field(made.body, "secret");
     std::test::assert(std::str::starts_with(id, "k_"), "a key id");
-    std::test::assert(std::str::starts_with(secret, "vk-") && len(secret) == 43, "a secret, shown once");
-    std::test::assert_eq_str(std::json::find_string_field(made.body, "prefix"), secret[0..7], "the prefix is the secret's start");
-    std::test::assert_eq_str(std::json::find_string_field(made.body, "project"), "work", "its project");
+    std::test::assert(
+        std::str::starts_with(secret, "vk-") && len(secret) == 43,
+        "a secret, shown once",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(made.body, "prefix"),
+        secret[0..7],
+        "the prefix is the secret's start",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(made.body, "project"),
+        "work",
+        "its project",
+    );
     std::test::assert_eq_str(std::json::find_string_field(made.body, "status"), "active", "active");
     std::test::assert_eq_str(raw(made, "accounts"), "[\"claude-work\"]", "its accounts");
     std::test::assert_eq_str(raw(made, "models"), "null", "the project's models");
@@ -36,59 +76,239 @@ fn main() {
     std::test::assert_eq_str(raw(made, "last_used_at"), "null", "never used");
 
     let second = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"laptop\"}");
-    std::test::assert(std::json::find_string_field(second.body, "secret") != secret, "every key has its own secret");
+    std::test::assert(
+        std::json::find_string_field(second.body, "secret") != secret,
+        "every key has its own secret",
+    );
 
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"accounts\": [\"codex\"]}"), 400, "a key's accounts sit within its project's");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"accounts\": [\"codex\"]}",
+        ),
+        400,
+        "a key's accounts sit within its project's",
+    );
     expect(call(e, "POST", "/admin/v1/projects/work/keys", "{}"), 400, "a name is required");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"2020-01-01T00:00:00Z\"}"), 400, "an expiry in the past");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"tomorrow\"}"), 400, "an expiry is a time");
-    let offset = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"off\", \"expires_at\": \"2099-01-01T02:30:00+02:30\"}");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"2020-01-01T00:00:00Z\"}",
+        ),
+        400,
+        "an expiry in the past",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"tomorrow\"}",
+        ),
+        400,
+        "an expiry is a time",
+    );
+    let offset = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"off\", \"expires_at\": \"2099-01-01T02:30:00+02:30\"}",
+    );
     expect(offset, 201, "an expiry with an offset");
-    std::test::assert_eq_str(std::json::find_string_field(offset.body, "expires_at"), "2099-01-01T00:00:00Z", "kept in UTC");
-    let west = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"west\", \"expires_at\": \"2098-12-31t19:00:00-05:00\"}");
-    std::test::assert_eq_str(std::json::find_string_field(west.body, "expires_at"), "2099-01-01T00:00:00Z", "a lowercase t and a negative offset");
-    let lower = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"z\", \"expires_at\": \"2099-01-01t00:00:00.5z\"}");
-    std::test::assert_eq_str(std::json::find_string_field(lower.body, "expires_at"), "2099-01-01T00:00:00.5Z", "a lowercase z, and a fraction");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"2099-01-01T00:00:00+25:00\"}"), 400, "an offset is a real one");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"2099-01-01T00:00:00+-1:00\"}"), 400, "an offset is two digits and two");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"2099-02-30T00:00:00Z\"}"), 400, "a day the month does not have");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"expires_at\": \"2099-13-01T00:00:00Z\"}"), 400, "a month the year does not have");
-    let leap = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"leap\", \"expires_at\": \"2096-02-29T00:00:00Z\"}");
-    std::test::assert_eq_str(std::json::find_string_field(leap.body, "expires_at"), "2096-02-29T00:00:00Z", "a leap day is a day");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"accounts\": [\"Claude Work\"]}"), 400, "a key's accounts are account ids");
-    let limited = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"limits\": [{\"scope\": \"key\", \"window_seconds\": 60, \"requests\": 10}]}");
+    std::test::assert_eq_str(
+        std::json::find_string_field(offset.body, "expires_at"),
+        "2099-01-01T00:00:00Z",
+        "kept in UTC",
+    );
+    let west = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"west\", \"expires_at\": \"2098-12-31t19:00:00-05:00\"}",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(west.body, "expires_at"),
+        "2099-01-01T00:00:00Z",
+        "a lowercase t and a negative offset",
+    );
+    let lower = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"z\", \"expires_at\": \"2099-01-01t00:00:00.5z\"}",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(lower.body, "expires_at"),
+        "2099-01-01T00:00:00.5Z",
+        "a lowercase z, and a fraction",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"2099-01-01T00:00:00+25:00\"}",
+        ),
+        400,
+        "an offset is a real one",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"2099-01-01T00:00:00+-1:00\"}",
+        ),
+        400,
+        "an offset is two digits and two",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"2099-02-30T00:00:00Z\"}",
+        ),
+        400,
+        "a day the month does not have",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"expires_at\": \"2099-13-01T00:00:00Z\"}",
+        ),
+        400,
+        "a month the year does not have",
+    );
+    let leap = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"leap\", \"expires_at\": \"2096-02-29T00:00:00Z\"}",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(leap.body, "expires_at"),
+        "2096-02-29T00:00:00Z",
+        "a leap day is a day",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"accounts\": [\"Claude Work\"]}",
+        ),
+        400,
+        "a key's accounts are account ids",
+    );
+    let limited = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"x\", \"limits\": [{\"scope\": \"key\", \"window_seconds\": 60, \"requests\": 10}]}",
+    );
     expect(limited, 201, "a key with its own limit");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::array_first(raw(limited, "limits")).element, "requests"), 10, "the limit is kept");
-    expect(call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"x\", \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60}]}"), 400, "a key's limits are key-scope");
-    let dated = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"temp\", \"expires_at\": \"2099-01-01T00:00:00Z\"}");
+    std::test::assert_eq_int(
+        std::json::find_int_field(
+            std::json::array_first(raw(limited, "limits")).element,
+            "requests",
+        ),
+        10,
+        "the limit is kept",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects/work/keys",
+            "{\"name\": \"x\", \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60}]}",
+        ),
+        400,
+        "a key's limits are key-scope",
+    );
+    let dated = call(
+        e,
+        "POST",
+        "/admin/v1/projects/work/keys",
+        "{\"name\": \"temp\", \"expires_at\": \"2099-01-01T00:00:00Z\"}",
+    );
     expect(dated, 201, "a key that expires");
-    std::test::assert_eq_str(std::json::find_string_field(dated.body, "expires_at"), "2099-01-01T00:00:00Z", "when");
+    std::test::assert_eq_str(
+        std::json::find_string_field(dated.body, "expires_at"),
+        "2099-01-01T00:00:00Z",
+        "when",
+    );
 
     let listed = call(e, "GET", "/admin/v1/projects/work/keys", "");
     expect(listed, 200, "list");
     std::test::assert(std::str::contains(listed.body, id), "the key is listed");
-    std::test::assert(!std::str::contains(listed.body, "secret") && !std::str::contains(listed.body, secret), "never its secret");
-    std::test::assert_eq_int(std::json::find_int_field(call(e, "GET", "/admin/v1/projects/work", "").body, "key_count"), 8, "the project counts its keys");
-    std::test::assert_eq_str(std::str::trim(call(e, "GET", "/admin/v1/projects/home/keys", "").body), "{\"data\": []}", "keys are per project");
+    std::test::assert(
+        !std::str::contains(listed.body, "secret") && !std::str::contains(listed.body, secret),
+        "never its secret",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(call(e, "GET", "/admin/v1/projects/work", "").body, "key_count"),
+        8,
+        "the project counts its keys",
+    );
+    std::test::assert_eq_str(
+        std::str::trim(call(e, "GET", "/admin/v1/projects/home/keys", "").body),
+        "{\"data\": []}",
+        "keys are per project",
+    );
 
     let got = call(e, "GET", "/admin/v1/projects/work/keys/" + id, "");
     expect(got, 200, "get");
     std::test::assert(!std::str::contains(got.body, "secret"), "no secret after creation");
-    expect(call(e, "GET", "/admin/v1/projects/home/keys/" + id, ""), 404, "a key of another project is not found");
+    expect(
+        call(e, "GET", "/admin/v1/projects/home/keys/" + id, ""),
+        404,
+        "a key of another project is not found",
+    );
     expect(call(e, "GET", "/admin/v1/projects/work/keys/k_nope", ""), 404, "an unknown key");
 
-    let changed = call(e, "PATCH", "/admin/v1/projects/work/keys/" + id, "{\"name\": \"ci-2\", \"models\": [\"echo-1\"], \"expires_at\": \"2099-06-01T00:00:00Z\"}");
+    let changed = call(
+        e,
+        "PATCH",
+        "/admin/v1/projects/work/keys/" + id,
+        "{\"name\": \"ci-2\", \"models\": [\"echo-1\"], \"expires_at\": \"2099-06-01T00:00:00Z\"}",
+    );
     expect(changed, 200, "patch");
     std::test::assert_eq_str(std::json::find_string_field(changed.body, "name"), "ci-2", "renamed");
     std::test::assert_eq_str(raw(changed, "models"), "[\"echo-1\"]", "restricted");
-    std::test::assert_eq_str(raw(changed, "accounts"), "[\"claude-work\"]", "a field not set stays");
+    std::test::assert_eq_str(
+        raw(changed, "accounts"),
+        "[\"claude-work\"]",
+        "a field not set stays",
+    );
     let cleared = call(e, "PATCH", "/admin/v1/projects/work/keys/" + id, "{\"expires_at\": null}");
     std::test::assert_eq_str(raw(cleared, "expires_at"), "null", "the expiry removed");
-    expect(call(e, "PATCH", "/admin/v1/projects/work/keys/" + id, "{\"accounts\": [\"codex\"]}"), 400, "still within the project's accounts");
+    expect(
+        call(e, "PATCH", "/admin/v1/projects/work/keys/" + id, "{\"accounts\": [\"codex\"]}"),
+        400,
+        "still within the project's accounts",
+    );
 
     let revoked = call(e, "DELETE", "/admin/v1/projects/work/keys/" + id, "");
     expect(revoked, 200, "revoke");
-    std::test::assert_eq_str(std::json::find_string_field(revoked.body, "status"), "revoked", "revoked");
-    std::test::assert(std::str::ends_with(std::json::find_string_field(revoked.body, "revoked_at"), "Z"), "when");
-    expect(call(e, "DELETE", "/admin/v1/projects/work/keys/" + id, ""), 200, "revoking again changes nothing");
+    std::test::assert_eq_str(
+        std::json::find_string_field(revoked.body, "status"),
+        "revoked",
+        "revoked",
+    );
+    std::test::assert(
+        std::str::ends_with(std::json::find_string_field(revoked.body, "revoked_at"), "Z"),
+        "when",
+    );
+    expect(
+        call(e, "DELETE", "/admin/v1/projects/work/keys/" + id, ""),
+        200,
+        "revoking again changes nothing",
+    );
 }

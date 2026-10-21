@@ -3,11 +3,20 @@
 import ".." as api;
 
 fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn caller(e: api::Endpoints, path: String, key: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: "GET", path: path, headers: "Authorization: Bearer " + key });
+    return e.handle(
+        std::http::Request { method: "GET", path: path, headers: "Authorization: Bearer " + key },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -27,12 +36,43 @@ fn key(e: api::Endpoints, project: String, body: String) -> String {
 
 fn main() {
     let e = api::Endpoints { };
-    expect(admin(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\", \"context_length\": 8192, \"max_output_tokens\": 1024, \"price\": {\"input_per_mtok_micros\": 3000000, \"output_per_mtok_micros\": 15000000}}"), 201, "a model");
-    expect(admin(e, "POST", "/admin/v1/models", "{\"id\": \"claude-sonnet-5\", \"owned_by\": \"anthropic\", \"kind\": \"hosted\"}"), 201, "another");
+    expect(
+        admin(
+            e,
+            "POST",
+            "/admin/v1/models",
+            "{\"id\": \"echo-1\", \"context_length\": 8192, \"max_output_tokens\": 1024, \"price\": {\"input_per_mtok_micros\": 3000000, \"output_per_mtok_micros\": 15000000}}",
+        ),
+        201,
+        "a model",
+    );
+    expect(
+        admin(
+            e,
+            "POST",
+            "/admin/v1/models",
+            "{\"id\": \"claude-sonnet-5\", \"owned_by\": \"anthropic\", \"kind\": \"hosted\"}",
+        ),
+        201,
+        "another",
+    );
     expect(admin(e, "POST", "/admin/v1/models", "{\"id\": \"old-1\"}"), 201, "a third");
     expect(admin(e, "DELETE", "/admin/v1/models/old-1", ""), 200, "removed");
-    expect(admin(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"), 201, "an open project");
-    expect(admin(e, "POST", "/admin/v1/projects", "{\"id\": \"lab\", \"name\": \"Lab\", \"models\": [\"echo-1\"]}"), 201, "a restricted project");
+    expect(
+        admin(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"),
+        201,
+        "an open project",
+    );
+    expect(
+        admin(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"lab\", \"name\": \"Lab\", \"models\": [\"echo-1\"]}",
+        ),
+        201,
+        "a restricted project",
+    );
     let open = key(e, "work", "{\"name\": \"ci\"}");
     let narrow = key(e, "work", "{\"name\": \"narrow\", \"models\": [\"claude-sonnet-5\"]}");
     let lab = key(e, "lab", "{\"name\": \"lab\"}");
@@ -41,11 +81,39 @@ fn main() {
     let none = e.handle(std::http::Request { method: "GET", path: "/v1/models" });
     expect(none, 401, "no key");
     std::test::assert_eq_str(code(none), "invalid_key", "invalid_key");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(none.body, "error"), "type"), "authentication_error", "an authentication error");
-    expect(caller(e, "/v1/models", "vk-0000000000000000000000000000000000000000"), 401, "an unknown key");
-    expect(e.handle(std::http::Request { method: "GET", path: "/v1/models", headers: "Authorization: Basic " + open }), 401, "not a bearer");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(none.body, "error"), "type"),
+        "authentication_error",
+        "an authentication error",
+    );
+    expect(
+        caller(e, "/v1/models", "vk-0000000000000000000000000000000000000000"),
+        401,
+        "an unknown key",
+    );
+    expect(
+        e.handle(
+            std::http::Request {
+                method: "GET",
+                path: "/v1/models",
+                headers: "Authorization: Basic " + open,
+            },
+        ),
+        401,
+        "not a bearer",
+    );
     std::test::assert_eq_str(none.headers, "WWW-Authenticate: Bearer", "a 401 says what it takes");
-    expect(e.handle(std::http::Request { method: "GET", path: "/v1/models", headers: "authorization: bearer " + open }), 200, "the scheme in any case");
+    expect(
+        e.handle(
+            std::http::Request {
+                method: "GET",
+                path: "/v1/models",
+                headers: "authorization: bearer " + open,
+            },
+        ),
+        200,
+        "the scheme in any case",
+    );
 
     // what each key sees
     let all = caller(e, "/v1/models", open);
@@ -53,43 +121,110 @@ fn main() {
     std::test::assert(std::str::starts_with(all.headers, "X-Request-Id: req_"), "a request id");
     std::test::assert_eq_str(std::json::find_string_field(all.body, "object"), "list", "a list");
     let ci_keys = admin(e, "GET", "/admin/v1/projects/work/keys", "");
-    std::test::assert(std::str::ends_with(std::json::find_string_field(std::json::array_first(std::json::find_field_raw(ci_keys.body, "data")).element, "last_used_at"), "Z"), "a key used has its last use");
-    std::test::assert(std::str::contains(all.body, "\"echo-1\"") && std::str::contains(all.body, "\"claude-sonnet-5\""), "the whole catalog");
+    std::test::assert(
+        std::str::ends_with(
+            std::json::find_string_field(
+                std::json::array_first(std::json::find_field_raw(ci_keys.body, "data")).element,
+                "last_used_at",
+            ),
+            "Z",
+        ),
+        "a key used has its last use",
+    );
+    std::test::assert(
+        std::str::contains(all.body, "\"echo-1\"")
+            && std::str::contains(all.body, "\"claude-sonnet-5\""),
+        "the whole catalog",
+    );
     std::test::assert(!std::str::contains(all.body, "old-1"), "but no removed model");
-    std::test::assert(!std::str::contains(caller(e, "/v1/models", narrow).body, "\"echo-1\""), "a key's restriction narrows it");
+    std::test::assert(
+        !std::str::contains(caller(e, "/v1/models", narrow).body, "\"echo-1\""),
+        "a key's restriction narrows it",
+    );
     let labs = caller(e, "/v1/models", lab);
-    std::test::assert(std::str::contains(labs.body, "\"echo-1\"") && !std::str::contains(labs.body, "claude-sonnet-5"), "and so does a project's");
+    std::test::assert(
+        std::str::contains(labs.body, "\"echo-1\"")
+            && !std::str::contains(labs.body, "claude-sonnet-5"),
+        "and so does a project's",
+    );
 
     // one model
     let one = caller(e, "/v1/models/echo-1", open);
     expect(one, 200, "get");
     std::test::assert_eq_str(std::json::find_string_field(one.body, "object"), "model", "a model");
-    std::test::assert_eq_str(std::json::find_string_field(one.body, "owned_by"), "local", "owned_by");
-    std::test::assert(std::json::find_int_field(one.body, "created") > 1700000000, "created, in Unix seconds");
+    std::test::assert_eq_str(
+        std::json::find_string_field(one.body, "owned_by"),
+        "local",
+        "owned_by",
+    );
+    std::test::assert(
+        std::json::find_int_field(one.body, "created") > 1700000000,
+        "created, in Unix seconds",
+    );
     let v = std::json::find_field_raw(one.body, "voice");
     std::test::assert_eq_str(std::json::find_string_field(v, "kind"), "local", "kind");
-    std::test::assert_eq_int(std::json::find_int_field(v, "max_output_tokens"), 1024, "max_output_tokens");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(v, "price"), "input_per_mtok_micros"), 3000000, "its price");
+    std::test::assert_eq_int(
+        std::json::find_int_field(v, "max_output_tokens"),
+        1024,
+        "max_output_tokens",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(std::json::find_field_raw(v, "price"), "input_per_mtok_micros"),
+        3000000,
+        "its price",
+    );
     std::test::assert(!std::json::find_bool_field(v, "available"), "no seat serves it yet");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(v, "data_classes")), "[]", "so no data class either");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(v, "data_classes")),
+        "[]",
+        "so no data class either",
+    );
 
     let hidden = caller(e, "/v1/models/echo-1", narrow);
     expect(hidden, 404, "a model the key cannot see");
     std::test::assert_eq_str(code(hidden), "model_not_found", "is one that does not exist");
     expect(caller(e, "/v1/models/old-1", open), 404, "a removed model");
     expect(caller(e, "/v1/models/nope", open), 404, "an unknown model");
-    expect(e.handle(std::http::Request { method: "GET", path: "/v1/models/echo-1" }), 401, "a key first");
+    expect(
+        e.handle(std::http::Request { method: "GET", path: "/v1/models/echo-1" }),
+        401,
+        "a key first",
+    );
 
     // a key stops working when it is revoked, or its project archived
     let listed = admin(e, "GET", "/admin/v1/projects/work/keys", "");
-    let ci = std::json::find_string_field(std::json::array_first(std::json::find_field_raw(listed.body, "data")).element, "id");
+    let ci = std::json::find_string_field(
+        std::json::array_first(std::json::find_field_raw(listed.body, "data")).element,
+        "id",
+    );
     expect(admin(e, "DELETE", "/admin/v1/projects/work/keys/" + ci, ""), 200, "revoke");
     expect(caller(e, "/v1/models", open), 401, "a revoked key");
     expect(caller(e, "/v1/models", narrow), 200, "the project's other key still works");
     let narrow_listed = admin(e, "GET", "/admin/v1/projects/work/keys", "");
-    let narrow_id = std::json::find_string_field(std::json::array_next(std::json::array_first(std::json::find_field_raw(narrow_listed.body, "data"))).element, "id");
-    expect(admin(e, "PATCH", "/admin/v1/projects/work/keys/" + narrow_id, "{\"expires_at\": \"2020-01-01T00:00:00Z\"}"), 200, "a key's expiry set in the past");
-    std::test::assert_eq_str(std::json::find_string_field(admin(e, "GET", "/admin/v1/projects/work/keys/" + narrow_id, "").body, "status"), "expired", "is expired");
+    let narrow_id = std::json::find_string_field(
+        std::json::array_next(
+            std::json::array_first(std::json::find_field_raw(narrow_listed.body, "data")),
+        ).element,
+        "id",
+    );
+    expect(
+        admin(
+            e,
+            "PATCH",
+            "/admin/v1/projects/work/keys/" + narrow_id,
+            "{\"expires_at\": \"2020-01-01T00:00:00Z\"}",
+        ),
+        200,
+        "a key's expiry set in the past",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(
+            admin(e, "GET", "/admin/v1/projects/work/keys/" + narrow_id, "").body,
+            "status",
+        ),
+        "expired",
+        "is expired",
+    );
     expect(caller(e, "/v1/models", narrow), 401, "an expired key");
     expect(admin(e, "DELETE", "/admin/v1/projects/lab", ""), 200, "archive");
     expect(caller(e, "/v1/models", lab), 401, "an archived project's key");

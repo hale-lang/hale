@@ -19,29 +19,73 @@ main locus App {
     run() {
         // ---- the table
         std::test::assert_eq_str(dna::memory_of("task.born"), "ledger", "a task is the day's work");
-        std::test::assert_eq_str(dna::memory_of("effect.requested"), "ledger", "an effect claim is a concurrency primitive of the day");
+        std::test::assert_eq_str(
+            dna::memory_of("effect.requested"),
+            "ledger",
+            "an effect claim is a concurrency primitive of the day",
+        );
         std::test::assert_eq_str(dna::memory_of("receipt.filed"), "ledger", "business evidence");
         std::test::assert_eq_str(dna::memory_of("grant.reserved"), "ledger", "money reserved");
-        std::test::assert_eq_str(dna::memory_of("grant.refused"), "record", "a grant born too wide is authority");
-        std::test::assert_eq_str(dna::memory_of("grant.reservation_refused"), "ledger", "a spend refused is money");
-        std::test::assert(dna::memory_of("spend.reserved") == "ledger" && dna::memory_of("spend.settled") == "ledger" && dna::memory_of("spend.compensated") == "ledger", "GH #668: allocations, attempts and compensations are money");
-        std::test::assert_eq_str(dna::memory_of("grant.contracted"), "record", "authority contracted");
-        std::test::assert_eq_str(dna::memory_of("mutation.applied"), "record", "how the organism changed");
+        std::test::assert_eq_str(
+            dna::memory_of("grant.refused"),
+            "record",
+            "a grant born too wide is authority",
+        );
+        std::test::assert_eq_str(
+            dna::memory_of("grant.reservation_refused"),
+            "ledger",
+            "a spend refused is money",
+        );
+        std::test::assert(
+            dna::memory_of("spend.reserved") == "ledger"
+                && dna::memory_of("spend.settled") == "ledger"
+                && dna::memory_of("spend.compensated") == "ledger",
+            "GH #668: allocations, attempts and compensations are money",
+        );
+        std::test::assert_eq_str(
+            dna::memory_of("grant.contracted"),
+            "record",
+            "authority contracted",
+        );
+        std::test::assert_eq_str(
+            dna::memory_of("mutation.applied"),
+            "record",
+            "how the organism changed",
+        );
         std::test::assert_eq_str(dna::memory_of("review.verdict"), "record", "who allowed it");
         std::test::assert_eq_str(dna::memory_of("knowledge.ratified"), "record", "what it knows");
-        std::test::assert_eq_str(dna::memory_of("knowledge.consulted"), "ledger", "what it looked up today");
+        std::test::assert_eq_str(
+            dna::memory_of("knowledge.consulted"),
+            "ledger",
+            "what it looked up today",
+        );
         std::test::assert_eq_str(dna::memory_of("person.retired"), "record", "a roster change");
         std::test::assert_eq_str(dna::memory_of("task.reassigned"), "ledger", "an assignment");
         std::test::assert_eq_str(dna::memory_of("body.claimed"), "ledger", "liveness");
-        std::test::assert_eq_str(dna::memory_of("body.provisioned"), "record", "the body's provisioning");
-        std::test::assert_eq_str(dna::memory_of("something.new"), "record", "an unknown kind stays in the record");
+        std::test::assert_eq_str(
+            dna::memory_of("body.provisioned"),
+            "record",
+            "the body's provisioning",
+        );
+        std::test::assert_eq_str(
+            dna::memory_of("something.new"),
+            "record",
+            "an unknown kind stays in the record",
+        );
 
         // ---- by kind, one merged sequence
         let j0 = dna::RoutedJournal { record: self.record, ledger: self.ledger };
         let born = self.record.append(0, "record.genesis", "record", "{}");
         let stray = self.record.append(1, "task.born", "t0", "");
-        std::test::assert(born.ok && stray.ok && j0.refresh(), "a record row, and a Ledger kind kept in the record");
-        std::test::assert_eq_int(j0.revision(), 1, "a record row of a Ledger kind is not read: the Ledger is its authority");
+        std::test::assert(
+            born.ok && stray.ok && j0.refresh(),
+            "a record row, and a Ledger kind kept in the record",
+        );
+        std::test::assert_eq_int(
+            j0.revision(),
+            1,
+            "a record row of a Ledger kind is not read: the Ledger is its authority",
+        );
         let a = j0.append(1, "task.born", "t1", "");
         std::test::assert(a.ok && j0.revision() == 2, "an operational row lands");
         std::test::assert_eq_int(self.ledger.revision(), 1, "in the ledger");
@@ -50,40 +94,75 @@ main locus App {
         std::test::assert(b.ok && b.revision == 3, "another operational row lands");
         std::test::assert_eq_int(self.ledger.revision(), 2, "in the ledger");
         let c = j0.append(3, "review.requested", "review:r1", "");
-        std::test::assert(c.ok && self.record.revision() == 3, "an evolutionary row lands in the record");
+        std::test::assert(
+            c.ok && self.record.revision() == 3,
+            "an evolutionary row lands in the record",
+        );
         std::test::assert_eq_int(j0.revision(), 4, "four rows merged");
         let e2 = j0.read(2);
-        std::test::assert(e2.kind == "task.planned" && e2.seq == 2, "a row's seq as read is its merged position: " + e2.kind + " " + to_string(e2.seq));
+        std::test::assert(
+            e2.kind == "task.planned" && e2.seq == 2,
+            "a row's seq as read is its merged position: " + e2.kind + " " + to_string(e2.seq),
+        );
         std::test::assert_eq_str(j0.read(3).kind, "review.requested", "in arrival order");
         std::test::assert(j0.verify_chain(), "both chains verify");
 
         // ---- the effect claim finds its own row whichever memory holds it
-        std::test::assert(dna::effect_request(j0, "apply:c1", "first"), "the first request dispatches");
+        std::test::assert(
+            dna::effect_request(j0, "apply:c1", "first"),
+            "the first request dispatches",
+        );
         std::test::assert(!dna::effect_request(j0, "apply:c1", "again"), "a retry does not");
         std::test::assert(dna::effect_result(j0, "apply:c1", true), "the result lands once");
         std::test::assert(dna::effect_status(j0, "apply:c1").ok, "and reads back");
-        std::test::assert_eq_int(self.ledger.revision(), 4, "the claim and its result are in the ledger");
+        std::test::assert_eq_int(
+            self.ledger.revision(),
+            4,
+            "the claim and its result are in the ledger",
+        );
 
         // ---- exact: stale when either memory moved since the read
         let rev = j0.revision();
-        let side = self.record.append(self.record.revision(), "review.settled", "review:r1", "approve");
+        let side = self.record.append(
+            self.record.revision(),
+            "review.settled",
+            "review:r1",
+            "approve",
+        );
         std::test::assert(side.ok, "another writer moved the record");
         let x = j0.append_exact(rev, "grant.reserved", "op1", "10");
-        std::test::assert(!x.ok && x.error == "stale_revision", "an exact append at the old merged revision is stale");
+        std::test::assert(
+            !x.ok && x.error == "stale_revision",
+            "an exact append at the old merged revision is stale",
+        );
         let x2 = j0.append_exact(j0.revision(), "grant.reserved", "op1", "10");
         std::test::assert(x2.ok, "and lands at the current one");
-        std::test::assert_eq_str(self.ledger.read(self.ledger.revision() - 1).kind, "grant.reserved", "in the ledger");
+        std::test::assert_eq_str(
+            self.ledger.read(self.ledger.revision() - 1).kind,
+            "grant.reserved",
+            "in the ledger",
+        );
         let mut i = 0;
         let mut kinds = "";
         while i < j0.revision() { kinds = kinds + j0.read(i).kind + " "; i = i + 1; }
-        std::test::assert_eq_str(kinds, "record.genesis task.born task.planned review.requested effect.requested effect.result review.settled grant.reserved ", "the merged order is arrival, the record's stray row unread: " + kinds);
+        std::test::assert_eq_str(
+            kinds,
+            "record.genesis task.born task.planned review.requested effect.requested effect.result review.settled grant.reserved ",
+            "the merged order is arrival, the record's stray row unread: " + kinds,
+        );
 
         // ---- a ledger with no memory named: reads nothing, refuses appends as io
         let none = dna::MemoryLedger { dsn_env: "HALE_DNA_ROUTING_TEST_NO_SUCH_DSN" };
         std::test::assert(!none.ready() && none.revision() == 0, "no memory: nothing to read");
         let n = none.append(0, "task.born", "t9", "");
-        std::test::assert(!n.ok && n.error == "io", "no memory: an append is io, never silently kept");
-        std::test::assert(std::str::contains(none.last_error(), "is not set: no ledger"), "and says why: " + none.last_error());
+        std::test::assert(
+            !n.ok && n.error == "io",
+            "no memory: an append is io, never silently kept",
+        );
+        std::test::assert(
+            std::str::contains(none.last_error(), "is not set: no ledger"),
+            "and says why: " + none.last_error(),
+        );
     }
 }
 

@@ -54,7 +54,8 @@ fn hole_rows(keeps: dna::Texts, line: String, author: String) -> String {
     q.string_field("group", std::json::find_string_field(line, "group"));
     q.string_field("name", name);
     q.end_object();
-    return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
+    return hole_row("knowledge.proposed", digest, b.result())
+        + hole_row("review.requested", "review:" + review_id, q.result());
 }
 
 fn hole_row(kind: String, entity: String, body: String) -> String {
@@ -73,11 +74,18 @@ fn hole_row(kind: String, entity: String, body: String) -> String {
 // the head's `Commands::fill` and `Commands::open_position` read the same
 // way): every position stated or proposed, every hold, the persons it knows
 // and those it retired.
-fn held_state(root: String) -> ops::HeldState { return ops::held_state_of(dna::RecordJournal { repo: root }, dna::MemoryReceipts { repo: root }); }
+fn held_state(root: String) -> ops::HeldState {
+    return ops::held_state_of(
+        dna::RecordJournal { repo: root },
+        dna::MemoryReceipts { repo: root },
+    );
+}
 
 // Why `holder` may not hold `position` over what the record holds ("" when
 // they may); a warning when it is only one (ops::fill_check_of).
-fn fill_check(root: String, position: String, holder: String) -> ops::FillCheck { return ops::fill_check_of(held_state(root), trust_mode(root), position, holder); }
+fn fill_check(root: String, position: String, holder: String) -> ops::FillCheck {
+    return ops::fill_check_of(held_state(root), trust_mode(root), position, holder);
+}
 
 // What a holder of `position` is fitted with, as a sentence ("" when the
 // position's node names no API roles): the roles its surface's `requires`
@@ -88,7 +96,8 @@ fn fill_equipment(root: String, position: String) -> String {
     let at = std::str::index_of(st.equipment, position + "\t");
     if at < 0 || (at > 0 && st.equipment[(at - 1)..at] != "\n") { return ""; }
     let line = st.equipment[(at + len(position) + 1)..len(st.equipment)];
-    return "equipment: " + line[0..std::str::index_of(line, "\n")] + " (API roles the holder is fitted with; a token carrying them is not granted by `fill`)\n";
+    return "equipment: " + line[0..std::str::index_of(line, "\n")]
+        + " (API roles the holder is fitted with; a token carrying them is not granted by `fill`)\n";
 }
 
 // `hale dna position open <name> --mandate "<text>"`: a position opened at
@@ -98,14 +107,42 @@ fn fill_equipment(root: String, position: String) -> String {
 // answered.
 // The node `--under <part>` names: a node id as given, or a bare name as the
 // graph states it (ops::under_node_of).
-fn under_node(root: String, under: String) -> String { return ops::under_node_of(dna::RecordJournal { repo: root }, dna::MemoryReceipts { repo: root }, held_state(root).positions, under); }
+fn under_node(root: String, under: String) -> String {
+    return ops::under_node_of(
+        dna::RecordJournal { repo: root },
+        dna::MemoryReceipts { repo: root },
+        held_state(root).positions,
+        under,
+    );
+}
 
-fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [--as <who>]"); }
+fn position_open_verb(
+    root: String,
+    seed: String,
+    name: String,
+    mandate: String,
+    text: String,
+    under: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(name) == 0 || len(std::str::trim(mandate)) == 0 {
+        return fail(
+            "usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [--as <who>]",
+        );
+    }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };
-    if std::str::contains(held_state(root).positions, "\n" + position + "\n") { return fail("position open: `" + position + "` is already a position the record states or proposes"); }
+    let position = if std::str::starts_with(name, "position:") {
+        name
+    } else {
+        ops::graph_node_id("position", name)
+    };
+    if std::str::contains(held_state(root).positions, "\n" + position + "\n") {
+        return fail(
+            "position open: `" + position + "` is already a position the record states or proposes",
+        );
+    }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let parent = under_node(root, under);
     let request_id = request_digest_id(root, "p", position + "\n" + mandate + "\n" + who);
@@ -121,23 +158,41 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
     if organism_here(root, memory) {
         let watched = open_projection(root, seed, "", memory);
         let before = watched.rows();
-        if !append_as(root, "position.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "position.requested", request_id, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         let deadline = std::time::now() + dna::wait_secs(60);
         while std::time::now() <= deadline {
             let fresh = watch(watched);
             let r = find_after(watched, before, " position.proposed position.refused ", request_id);
             if r.seq >= 0 {
-                if r.kind == "position.refused" { return fail("position open: refused: " + std::json::find_string_field(r.body, "why")); }
-                return answer("proposed opening " + position + " with its mandate: the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `positions`)\n");
+                if r.kind == "position.refused" {
+                    return fail(
+                        "position open: refused: " + std::json::find_string_field(r.body, "why"),
+                    );
+                }
+                return answer(
+                    "proposed opening " + position + " with its mandate: the Board ratifies it as "
+                        + std::json::find_string_field(r.body, "review_id")
+                        + " (`hale dna review` lists it under `positions`)\n",
+                );
             }
             std::time::sleep(150ms);
         }
-        return fail("requested the position, but the organization journaled no answer for " + request_id + " in time");
+        return fail(
+            "requested the position, but the organization journaled no answer for " + request_id
+                + " in time",
+        );
     }
-    if !append_as(root, "position.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+    if !append_as(root, "position.requested", request_id, b.result(), who, memory) {
+        return fail("the record refused the append");
+    }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
-    return answer("opening " + position + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
+    return answer(
+        "opening " + position + " requested in the record by " + who + " (" + request_id
+            + "); the organization proposes it to the Board when it hears it\n",
+    );
 }
 
 // `hale dna apply <file> [--dry-run] [--as <who>]`: several changes to the
@@ -150,17 +205,48 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
 // verdict ratifies every member in one append. `on_holes` (`--on-holes`,
 // what `hale habitat graft --with` passes) plans it on the holes init proposed
 // that the Board has not decided yet (`dna::batch_plan_on`).
-fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: Bool, who_flag: String, pack: String, retire_pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
+fn apply_verb(
+    root: String,
+    seed: String,
+    file: String,
+    steps: String,
+    dry_run: Bool,
+    who_flag: String,
+    pack: String,
+    retire_pack: String,
+    on_holes: Bool,
+    memory: dna::Memory
+) -> Answer {
     // `hale dna pack apply` hands the rendered steps over as they are
-    if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, on_holes, memory); }
+    if len(steps) > 0 {
+        return apply_text(root, seed, steps, dry_run, who_flag, pack, on_holes, memory);
+    }
     // `hale dna pack retire <name>`: the latest ratified adoption, undone
     if len(retire_pack) > 0 {
-        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
+        let journal = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: memory.ledger,
+        };
         let adopted = dna::pack_adopted_steps(journal, retire_pack);
-        if len(adopted) == 0 { return fail("pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified"); }
+        if len(adopted) == 0 {
+            return fail(
+                "pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified",
+            );
+        }
         let inverse = dna::batch_inverse(journal, dna::MemoryReceipts { repo: root }, adopted);
-        if len(inverse) == 0 { return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left"); }
-        return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", false, memory);
+        if len(inverse) == 0 {
+            return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left");
+        }
+        return apply_text(
+            root,
+            seed,
+            inverse,
+            dry_run,
+            who_flag,
+            retire_pack + "/retired",
+            false,
+            memory,
+        );
     }
     if len(file) == 0 { return fail("usage: hale dna apply <file> [--dry-run] [--as <who>]"); }
     let text = std::io::fs::read_file(file) or "";
@@ -170,26 +256,64 @@ fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: 
 
 // `hale dna vacate <position> <holder> [--dry-run] [--as <who>]`: a holder
 // leaves a position, proposed as a one-step batch, the Board's one Review.
-fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run: Bool, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna vacate <position> <holder> [--dry-run] [--as <who>]"); }
-    return apply_text(root, seed, "vacate " + name + " " + holder + "\n", dry_run, who_flag, "", false, memory);
+fn vacate_verb(
+    root: String,
+    seed: String,
+    name: String,
+    holder: String,
+    dry_run: Bool,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(name) == 0 || len(holder) == 0 {
+        return fail("usage: hale dna vacate <position> <holder> [--dry-run] [--as <who>]");
+    }
+    return apply_text(
+        root,
+        seed,
+        "vacate " + name + " " + holder + "\n",
+        dry_run,
+        who_flag,
+        "",
+        false,
+        memory,
+    );
 }
 
 // A batch's text planned, printed and, unless `dry_run`, proposed.
-fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
+fn apply_text(
+    root: String,
+    seed: String,
+    text: String,
+    dry_run: Bool,
+    who_flag: String,
+    pack: String,
+    on_holes: Bool,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     // the record and its Ledger, as the organization reads them
-    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
     let receipts = dna::MemoryReceipts { repo: root };
-    let plan = dna::batch_plan_on(journal, receipts, text, if on_holes { dna::batch_init_holes(journal) } else { "" });
+    let plan = dna::batch_plan_on(
+        journal,
+        receipts,
+        text,
+        if on_holes { dna::batch_init_holes(journal) } else { "" },
+    );
     if !plan.ok { return fail("apply: refused: " + plan.why); }
     let chart = dna::batch_render(plan);
     if dry_run { return answer(chart + "nothing proposed (--dry-run)\n"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     // the same steps still pending are the same proposal: asked once
     let pending = dna::batch_pending(journal, plan.steps);
-    if len(pending) > 0 { return answer(chart + "already proposed as " + pending + ", not yet decided\n"); }
+    if len(pending) > 0 {
+        return answer(chart + "already proposed as " + pending + ", not yet decided\n");
+    }
     let request_id = request_digest_id(root, "b", plan.steps + who);
     let filing = dna::batch_filing(plan, who, request_id, std::time::now(), pack);
     if !filing.ok { return fail("apply: " + filing.why); }
@@ -204,7 +328,9 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
         let raw = keep_later(keeps, docs[0..nl]);
         docs = docs[(nl + 1)..len(docs)];
     }
-    if !keeps_flush(root, keeps) { return fail("apply: the receipts could not be kept; nothing was proposed"); }
+    if !keeps_flush(root, keeps) {
+        return fail("apply: the receipts could not be kept; nothing was proposed");
+    }
     if organism_here(root, memory) {
         let watched = open_projection(root, seed, "", memory);
         let before = watched.rows();
@@ -215,23 +341,40 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
             let fresh = watch(watched);
             let r = find_after(watched, before, " graph.proposed graph.refused ", request_id);
             if r.seq >= 0 {
-                if r.kind == "graph.refused" { return fail("apply: the organization could not open the Review: " + std::json::find_string_field(r.body, "why")); }
-                return answer(chart + "proposed the batch as one Review: the Board ratifies it as " + filing.review_id + " (`hale dna review` lists it under `changes`)\n");
+                if r.kind == "graph.refused" {
+                    return fail(
+                        "apply: the organization could not open the Review: "
+                            + std::json::find_string_field(r.body, "why"),
+                    );
+                }
+                return answer(
+                    chart + "proposed the batch as one Review: the Board ratifies it as "
+                        + filing.review_id + " (`hale dna review` lists it under `changes`)\n",
+                );
             }
             std::time::sleep(150ms);
         }
-        return fail("proposed the batch as " + filing.review_id + ", but the organization journaled no answer for " + request_id + " in time");
+        return fail(
+            "proposed the batch as " + filing.review_id
+                + ", but the organization journaled no answer for " + request_id + " in time",
+        );
     }
     let seeded = seed_rows(root, filing.rows, "apply", memory);
     if !seeded.ok { return seeded; }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
-    return answer(chart + "proposed the batch as " + filing.review_id + " in the record; the organization opens its Review when it hears it\n");
+    return answer(
+        chart + "proposed the batch as " + filing.review_id
+            + " in the record; the organization opens its Review when it hears it\n",
+    );
 }
 
 // `hale dna nursery list`: the nurseries the Board trusts, one a line.
 fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
-    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
     let mut out = "";
     let mut rest = dna::org_chart(journal, dna::MemoryReceipts { repo: root });
     while len(rest) > 0 {
@@ -247,11 +390,28 @@ fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
 // organization, which proposes it to the Board (dna/core/assembly.hl,
 // `on_hold_requested`). The request is a row in the proposer's name; the
 // host beside the organization relays it until it is answered.
-fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]"); }
+fn fill_verb(
+    root: String,
+    seed: String,
+    name: String,
+    holder: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
+    if len(name) == 0 || len(holder) == 0 {
+        return fail(
+            "usage: hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]",
+        );
+    }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let position = if std::str::starts_with(name, "position:") || std::str::starts_with(name, "organization:") { name } else { ops::graph_node_id("position", name) };
+    let position = if std::str::starts_with(name, "position:")
+        || std::str::starts_with(name, "organization:")
+    {
+        name
+    } else {
+        ops::graph_node_id("position", name)
+    };
     let check = fill_check(root, position, holder);
     if len(check.why) > 0 { return fail("fill: " + check.why); }
     if len(check.warning) > 0 { eprintln("hale dna fill: warning: ", check.warning); }
@@ -267,22 +427,40 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
     if organism_here(root, memory) {
         let watched = open_projection(root, seed, "", memory);
         let before = watched.rows();
-        if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "hold.requested", request_id, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         // the organization answers from its bus; give a busy one a minute
         let deadline = std::time::now() + dna::wait_secs(60);
         while std::time::now() <= deadline {
             let fresh = watch(watched);
             let r = find_after(watched, before, " hold.proposed hold.refused ", request_id);
             if r.seq >= 0 {
-                if r.kind == "hold.refused" { return fail("fill: refused: " + std::json::find_string_field(r.body, "why")); }
-                return answer("proposed " + holder + " to hold " + position + ": the Board ratifies it as " + std::json::find_string_field(r.body, "review_id") + " (`hale dna review` lists it under `holds`)\n" + fill_equipment(root, position));
+                if r.kind == "hold.refused" {
+                    return fail("fill: refused: " + std::json::find_string_field(r.body, "why"));
+                }
+                return answer(
+                    "proposed " + holder + " to hold " + position + ": the Board ratifies it as "
+                        + std::json::find_string_field(r.body, "review_id")
+                        + " (`hale dna review` lists it under `holds`)\n"
+                        + fill_equipment(root, position),
+                );
             }
             std::time::sleep(150ms);
         }
-        return fail("requested the hold, but the organization journaled no answer for " + request_id + " in time");
+        return fail(
+            "requested the hold, but the organization journaled no answer for " + request_id
+                + " in time",
+        );
     }
-    if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+    if !append_as(root, "hold.requested", request_id, b.result(), who, memory) {
+        return fail("the record refused the append");
+    }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
-    return answer("the hold of " + position + " by " + holder + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n" + fill_equipment(root, position));
+    return answer(
+        "the hold of " + position + " by " + holder + " requested in the record by " + who + " ("
+            + request_id + "); the organization proposes it to the Board when it hears it\n"
+            + fill_equipment(root, position),
+    );
 }

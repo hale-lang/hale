@@ -79,7 +79,9 @@ locus RoutedJournal {
     fn take_new() {
         while self.seen_record < self.record.revision() {
             let e = self.record.read(self.seen_record);
-            if memory_of(e.kind) != "ledger" { self.order.push(Placed { ledger: false, index: self.seen_record }); }
+            if memory_of(e.kind) != "ledger" {
+                self.order.push(Placed { ledger: false, index: self.seen_record });
+            }
             self.seen_record = self.seen_record + 1;
         }
         while self.seen_ledger < self.ledger.revision() {
@@ -103,13 +105,23 @@ locus RoutedJournal {
     fn read(i: Int) -> Event {
         let p = self.order.get(i) or Placed { };
         let e = if p.ledger { self.ledger.read(p.index) } else { self.record.read(p.index) };
-        return Event { seq: i, kind: e.kind, entity: e.entity, body: e.body, prev: e.prev, digest: e.digest };
+        return Event {
+            seq: i,
+            kind: e.kind,
+            entity: e.entity,
+            body: e.body,
+            prev: e.prev,
+            digest: e.digest,
+        };
     }
     // Which memory a merged row came from, and its index there (GH #946):
     // a reader that checks a row's author against the record's text needs
     // the record's index, and a ledger row's author is the ledger's.
     fn from_ledger(i: Int) -> Bool { let p = self.order.get(i) or Placed { }; return p.ledger; }
-    fn index_of(i: Int) -> Int { let p = self.order.get(i) or Placed { index: -1 }; return p.index; }
+    fn index_of(i: Int) -> Int {
+        let p = self.order.get(i) or Placed { index: -1 };
+        return p.index;
+    }
     fn verify_chain() -> Bool { return self.record.verify_chain() && self.ledger.verify_chain(); }
     fn to_ledger(kind: String) -> Bool { return memory_of(kind) == "ledger"; }
     // Compare-and-append against the merged revision, then the memory's
@@ -119,9 +131,18 @@ locus RoutedJournal {
     // follows a typed receiver, never one a method handed back.)
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.order.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let r = if self.to_ledger(kind) { self.ledger.append(self.ledger.revision(), kind, entity, body) } else { self.record.append(self.record.revision(), kind, entity, body) };
-        if !r.ok { self.last_error = r.error; return AppendResult { error: r.error, expected: expected, actual: self.order.len() }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
+        let r = if self.to_ledger(kind) {
+            self.ledger.append(self.ledger.revision(), kind, entity, body)
+        } else {
+            self.record.append(self.record.revision(), kind, entity, body)
+        };
+        if !r.ok {
+            self.last_error = r.error;
+            return AppendResult { error: r.error, expected: expected, actual: self.order.len() };
+        }
         self.take_new();
         return AppendResult { ok: true, revision: self.order.len() };
     }
@@ -130,15 +151,22 @@ locus RoutedJournal {
     // a Ledger row in it goes row by row, each to its own memory.
     fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
         let rev = self.order.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         let mut i = 0;
         while i < rows.len() {
-            if self.to_ledger((rows.get(i) or Row { }).kind) { return append_rows(self, expected, rows); }
+            if self.to_ledger((rows.get(i) or Row { }).kind) {
+                return append_rows(self, expected, rows);
+            }
             i = i + 1;
         }
         let r = self.record.append_batch(self.record.revision(), rows);
         self.take_new();
-        if !r.ok { self.last_error = r.error; return AppendResult { error: r.error, expected: expected, actual: self.order.len() }; }
+        if !r.ok {
+            self.last_error = r.error;
+            return AppendResult { error: r.error, expected: expected, actual: self.order.len() };
+        }
         return AppendResult { ok: true, revision: self.order.len() };
     }
     // Exact: neither memory may have moved since the caller read the
@@ -146,8 +174,14 @@ locus RoutedJournal {
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.order.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let r = if self.to_ledger(kind) { self.ledger.append_exact(self.ledger.revision(), kind, entity, body) } else { self.record.append_exact(self.record.revision(), kind, entity, body) };
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
+        let r = if self.to_ledger(kind) {
+            self.ledger.append_exact(self.ledger.revision(), kind, entity, body)
+        } else {
+            self.record.append_exact(self.record.revision(), kind, entity, body)
+        };
         if !r.ok {
             self.take_new();
             return AppendResult { error: r.error, expected: expected, actual: self.order.len() };

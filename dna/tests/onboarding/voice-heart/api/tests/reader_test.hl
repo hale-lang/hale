@@ -10,12 +10,16 @@ const VAULT_ENTRY: String = "voice-reader-test-secret";
 
 /// One ratified limit practice, as the head lists it.
 fn item(project: String, id: String, supersedes: String, requests: Int) -> String {
-    return "{\"id\": \"" + id + "\", \"digest\": \"" + id + "\", \"name\": \"operating/limits/" + project + "\", \"kind\": \"practice\", \"state\": \"ratified\", \"supersedes\": \"" + supersedes + "\", \"text\": \"The limit for " + project + ".\\nwindow_seconds: 60\\nrequests: " + to_string(requests) + "\"}";
+    return "{\"id\": \"" + id + "\", \"digest\": \"" + id + "\", \"name\": \"operating/limits/"
+        + project + "\", \"kind\": \"practice\", \"state\": \"ratified\", \"supersedes\": \""
+        + supersedes + "\", \"text\": \"The limit for " + project
+        + ".\\nwindow_seconds: 60\\nrequests: " + to_string(requests) + "\"}";
 }
 
 /// A page of practices: the last one.
 fn page(items: String) -> String {
-    return "{\"api_version\": \"hale.v1\", \"data\": {\"items\": [" + items + "], \"page\": {\"limit\": 100, \"offset\": 0, \"total\": 2, \"next_offset\": -1, \"snapshot\": \"s1\"}}}";
+    return "{\"api_version\": \"hale.v1\", \"data\": {\"items\": [" + items
+        + "], \"page\": {\"limit\": 100, \"offset\": 0, \"total\": 2, \"next_offset\": -1, \"snapshot\": \"s1\"}}}";
 }
 
 /// `n` in hexadecimal.
@@ -73,14 +77,17 @@ locus FakeHead {
             if len(chunk) == 0 { tries = tries + 1; } else { got = got + chunk; }
         }
         let end = api::head_end(got);
-        let length = std::str::parse_int(api::header_value(std::str::lower(got[0..end]), "content-length")) or 0;
+        let length = std::str::parse_int(
+            api::header_value(std::str::lower(got[0..end]), "content-length"),
+        ) or 0;
         while len(got) - end - 4 < length && tries < 20 {
             let chunk = s.recv(65536) or "";
             if len(chunk) == 0 { tries = tries + 1; } else { got = got + chunk; }
         }
         let line = got[0..std::str::index_of(got, "\r\n")];
         if std::str::contains(line, "/.well-known/openid-configuration") {
-            let body = "{\"token_endpoint\": \"http://127.0.0.1:" + to_string(self.port) + "/token\"}";
+            let body = "{\"token_endpoint\": \"http://127.0.0.1:" + to_string(self.port)
+                + "/token\"}";
             s.send(HEAD + "Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body) or discard;
             return;
         }
@@ -93,11 +100,20 @@ locus FakeHead {
         self.reads = self.reads + 1;
         if n == 0 {
             // whole, chunked
-            s.send(HEAD + "Transfer-Encoding: chunked\r\n\r\n" + chunked(page(item("personal", "p1", "", 2) + ", " + item("other", "o1", "", 3)))) or discard;
+            s.send(
+                HEAD + "Transfer-Encoding: chunked\r\n\r\n"
+                    + chunked(
+                        page(item("personal", "p1", "", 2) + ", " + item("other", "o1", "", 3)),
+                    ),
+            ) or discard;
         } else if n == 1 {
             // cut at 60%, mid-chunk, the peer gone
-            let whole = chunked(page(item("personal", "p1", "", 2) + ", " + item("other", "o1", "", 3)));
-            s.send(HEAD + "Transfer-Encoding: chunked\r\n\r\n" + whole[0..(len(whole) * 6 / 10)]) or discard;
+            let whole = chunked(
+                page(item("personal", "p1", "", 2) + ", " + item("other", "o1", "", 3)),
+            );
+            s.send(
+                HEAD + "Transfer-Encoding: chunked\r\n\r\n" + whole[0..(len(whole) * 6 / 10)],
+            ) or discard;
         } else if n == 2 {
             // neither a length nor chunks: read to the close (and without
             // `other`, which a reader that took it would leave unlimited)
@@ -105,11 +121,18 @@ locus FakeHead {
         } else if n == 3 {
             // personal: two in force, both superseding p1; other superseded
             // plainly; fresh: two in force, and no limit held before
-            let body = page(item("personal", "pa", "p1", 5) + ", " + item("personal", "pb", "p1", 6) + ", " + item("other", "o2", "o1", 4) + ", " + item("fresh", "fa", "", 1) + ", " + item("fresh", "fb", "", 1));
+            let body = page(
+                item("personal", "pa", "p1", 5) + ", " + item("personal", "pb", "p1", 6) + ", "
+                    + item("other", "o2", "o1", 4) + ", " + item("fresh", "fa", "", 1) + ", "
+                    + item("fresh", "fb", "", 1),
+            );
             s.send(HEAD + "Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body) or discard;
         } else {
             // personal and fresh settled; other in a cycle
-            let body = page(item("personal", "pc", "", 7) + ", " + item("other", "o3", "o4", 9) + ", " + item("other", "o4", "o3", 9) + ", " + item("fresh", "fc", "", 8));
+            let body = page(
+                item("personal", "pc", "", 7) + ", " + item("other", "o3", "o4", 9) + ", "
+                    + item("other", "o4", "o3", 9) + ", " + item("fresh", "fc", "", 8),
+            );
             s.send(HEAD + "Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body) or discard;
         }
     }
@@ -135,33 +158,85 @@ main locus Reading {
         std::io::fs::write_file(entry, "reader-secret") or discard;
         let url = "http://127.0.0.1:" + to_string(self.port);
         // built with no head, so its own schedule never starts; read by hand
-        let g = api::Governance { application: "app-1", client: "voice-api", secret: std::secret::Credential { vault: VAULT_ENTRY }, within: 3s, held: self.held };
+        let g = api::Governance {
+            application: "app-1",
+            client: "voice-api",
+            secret: std::secret::Credential { vault: VAULT_ENTRY },
+            within: 3s,
+            held: self.held,
+        };
         g.head = url;
         g.issuer = url;
 
         g.refresh(std::time::monotonic_ns());
-        std::test::assert(api::limits_landed(self.held) && requests_of(self.held, "personal") == 2 && requests_of(self.held, "other") == 3, "a whole chunked answer read: " + g.refused);
-        std::test::assert(len(api::held_limit(self.held, "nobody").project) == 0, "a project with no practice is not limited");
+        std::test::assert(
+            api::limits_landed(self.held)
+                && requests_of(self.held, "personal") == 2
+                && requests_of(self.held, "other") == 3,
+            "a whole chunked answer read: " + g.refused,
+        );
+        std::test::assert(
+            len(api::held_limit(self.held, "nobody").project) == 0,
+            "a project with no practice is not limited",
+        );
 
         g.refresh(std::time::monotonic_ns());
-        std::test::assert(std::str::contains(g.refused, "cut short"), "a cut chunked answer does not land: " + g.refused);
-        std::test::assert(requests_of(self.held, "personal") == 2 && requests_of(self.held, "other") == 3, "and the limits read before stand");
+        std::test::assert(
+            std::str::contains(g.refused, "cut short"),
+            "a cut chunked answer does not land: " + g.refused,
+        );
+        std::test::assert(
+            requests_of(self.held, "personal") == 2 && requests_of(self.held, "other") == 3,
+            "and the limits read before stand",
+        );
 
         g.refresh(std::time::monotonic_ns());
-        std::test::assert(std::str::contains(g.refused, "neither its length nor chunks"), "an answer read to the close does not land: " + g.refused);
+        std::test::assert(
+            std::str::contains(g.refused, "neither its length nor chunks"),
+            "an answer read to the close does not land: " + g.refused,
+        );
         std::test::assert(requests_of(self.held, "other") == 3, "and other is not left unlimited");
 
         g.refresh(std::time::monotonic_ns());
-        std::test::assert(len(g.refused) == 0, "a read with an ambiguous project lands: " + g.refused);
-        std::test::assert(requests_of(self.held, "personal") == 2, "the ambiguous project keeps its last limit");
-        std::test::assert(api::held_limit(self.held, "fresh").closed, "the one with no limit before is closed");
-        std::test::assert(requests_of(self.held, "other") == 4, "every other project is read as it is");
-        std::test::assert(std::str::contains(g.ambiguous, "personal") && std::str::contains(g.ambiguous, "fresh") && !std::str::contains(g.ambiguous, "other:"), "the ambiguous ones are named: " + g.ambiguous);
+        std::test::assert(
+            len(g.refused) == 0,
+            "a read with an ambiguous project lands: " + g.refused,
+        );
+        std::test::assert(
+            requests_of(self.held, "personal") == 2,
+            "the ambiguous project keeps its last limit",
+        );
+        std::test::assert(
+            api::held_limit(self.held, "fresh").closed,
+            "the one with no limit before is closed",
+        );
+        std::test::assert(
+            requests_of(self.held, "other") == 4,
+            "every other project is read as it is",
+        );
+        std::test::assert(
+            std::str::contains(g.ambiguous, "personal")
+                && std::str::contains(g.ambiguous, "fresh")
+                && !std::str::contains(g.ambiguous, "other:"),
+            "the ambiguous ones are named: " + g.ambiguous,
+        );
 
         g.refresh(std::time::monotonic_ns());
-        std::test::assert(requests_of(self.held, "personal") == 7 && requests_of(self.held, "fresh") == 8, "settled, they are read again");
-        std::test::assert(requests_of(self.held, "other") == 4, "a project in a supersession cycle keeps its last limit");
-        std::test::assert(std::str::contains(g.ambiguous, "other: its ratified practices supersede each other in a cycle"), "and is named: " + g.ambiguous);
+        std::test::assert(
+            requests_of(self.held, "personal") == 7 && requests_of(self.held, "fresh") == 8,
+            "settled, they are read again",
+        );
+        std::test::assert(
+            requests_of(self.held, "other") == 4,
+            "a project in a supersession cycle keeps its last limit",
+        );
+        std::test::assert(
+            std::str::contains(
+                g.ambiguous,
+                "other: its ratified practices supersede each other in a cycle",
+            ),
+            "and is named: " + g.ambiguous,
+        );
 
         std::io::fs::unlink(entry) or discard;
         std::io::tcp::close_fd(self.fd);

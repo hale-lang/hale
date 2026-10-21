@@ -27,9 +27,13 @@ const ARRAY_ARGUMENTS: String = " board classes ";
 
 // ---- JSON reads ------------------------------------------------------
 
-fn json_raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
+fn json_raw(object: String, key: String) -> String {
+    return std::json::find_field_raw(object, key);
+}
 
-fn json_is_text(raw: String) -> Bool { return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\""); }
+fn json_is_text(raw: String) -> Bool {
+    return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\"");
+}
 
 // The decoded text of a string member; "" for anything else.
 fn json_text(object: String, key: String) -> String {
@@ -65,7 +69,8 @@ fn canonical_value(key: String, raw: String) -> String {
         let mut first = true;
         let mut it = std::json::array_first_span(t);
         while !it.done {
-            out = out + (if first { "" } else { "," }) + canonical_scalar(std::json::iter_substring(it, t));
+            out = out + (if first { "" } else { "," })
+                + canonical_scalar(std::json::iter_substring(it, t));
             first = false;
             it = std::json::array_next_span(it, t);
         }
@@ -77,7 +82,9 @@ fn canonical_value(key: String, raw: String) -> String {
         let mut first = true;
         let mut it = std::json::object_first(t);
         while !it.done {
-            out = out + (if first { "" } else { "," }) + codec.quote(std::json::obj_key_string(it, t)) + ":" + canonical_scalar(std::json::obj_value_raw(it, t));
+            out = out + (if first { "" } else { "," })
+                + codec.quote(std::json::obj_key_string(it, t)) + ":"
+                + canonical_scalar(std::json::obj_value_raw(it, t));
             first = false;
             it = std::json::object_next(it, t);
         }
@@ -99,14 +106,32 @@ fn whole_lines(path: String, what: String) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         if nl < 0 {
-            eprintln("hale dna head: ", what, ": dropped a torn last line (", len(rest), " bytes without a newline)");
+            eprintln(
+                "hale dna head: ",
+                what,
+                ": dropped a torn last line (",
+                len(rest),
+                " bytes without a newline)",
+            );
             break;
         }
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if std::json::valid_object(line) { out = out + line + "\n"; } else { skipped = skipped + 1; }
+        if std::json::valid_object(line) {
+            out = out + line + "\n";
+        } else {
+            skipped = skipped + 1;
+        }
     }
-    if skipped > 0 { eprintln("hale dna head: ", what, ": skipped ", skipped, " line(s) that are not JSON objects"); }
+    if skipped > 0 {
+        eprintln(
+            "hale dna head: ",
+            what,
+            ": skipped ",
+            skipped,
+            " line(s) that are not JSON objects",
+        );
+    }
     return out;
 }
 
@@ -157,18 +182,28 @@ locus HeadJournal {
     // of bounds (1..128 bytes, no controls).
     fn identity(principal_mode: String, principal_name: String, request_id: String) -> String {
         let codec = ops::GovernanceCommandCodec { };
-        let context = ops::GovernanceContext { application_id: "head", principal_mode: principal_mode, principal_name: principal_name };
+        let context = ops::GovernanceContext {
+            application_id: "head",
+            principal_mode: principal_mode,
+            principal_name: principal_name,
+        };
         return codec.identity(context, request_id);
     }
 
     // Fixed-order JSON over the request: `arguments` carries every key
     // of `allowlist` (space-separated, in fingerprint order), present
     // or not, so two requests differ exactly when a fact differs.
-    fn canonical(principal_mode: String, principal_name: String, request: String, allowlist: String) -> String {
+    fn canonical(
+        principal_mode: String,
+        principal_name: String,
+        request: String,
+        allowlist: String
+    ) -> String {
         let codec = ops::GovernanceCommandCodec { };
         let context = json_raw(request, "context");
         let arguments = json_raw(request, "arguments");
-        let mut out = "{\"format\":\"dna.head-command/1\",\"principal_mode\":" + codec.quote(principal_mode)
+        let mut out = "{\"format\":\"dna.head-command/1\",\"principal_mode\":"
+            + codec.quote(principal_mode)
             + ",\"principal_name\":" + codec.quote(principal_name)
             + ",\"request_id\":" + codec.quote(json_text(request, "request_id"))
             + ",\"operation\":" + codec.quote(json_text(request, "operation"))
@@ -182,14 +217,20 @@ locus HeadJournal {
             let key = if sp < 0 { rest } else { rest[0..sp] };
             rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
             if len(key) == 0 { continue; }
-            out = out + (if first { "" } else { "," }) + codec.quote(key) + ":" + canonical_value(key, json_raw(arguments, key));
+            out = out + (if first { "" } else { "," }) + codec.quote(key) + ":"
+                + canonical_value(key, json_raw(arguments, key));
             first = false;
         }
         return out + "}}";
     }
 
     // `sha256:<hex>` over the canonical form.
-    fn fingerprint(principal_mode: String, principal_name: String, request: String, allowlist: String) -> String {
+    fn fingerprint(
+        principal_mode: String,
+        principal_name: String,
+        request: String,
+        allowlist: String
+    ) -> String {
         return dna::digest_of(self.canonical(principal_mode, principal_name, request, allowlist));
     }
 
@@ -205,7 +246,11 @@ locus HeadJournal {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if !std::str::contains(line, needle) || std::json::find_string_field(line, "command_id") != command_id { continue; }
+            if !std::str::contains(line, needle)
+                || std::json::find_string_field(line, "command_id") != command_id
+            {
+                continue;
+            }
             let state = std::json::find_string_field(line, "state");
             let at = std::json::find_int_field(line, "at");
             r.ok = true;
@@ -256,7 +301,9 @@ locus HeadJournal {
     // principal (which is another identity), it is not found.
     fn lookup(principal_mode: String, principal_name: String, request_id: String) -> Receipt {
         let r = self.find(self.identity(principal_mode, principal_name, request_id));
-        if !r.ok || r.principal_mode != principal_mode || r.principal_name != principal_name { return Receipt { }; }
+        if !r.ok || r.principal_mode != principal_mode || r.principal_name != principal_name {
+            return Receipt { };
+        }
         return r;
     }
 
@@ -269,7 +316,11 @@ locus HeadJournal {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if !std::str::contains(line, "\"state\":\"running\"") || std::json::find_string_field(line, "state") != "running" { continue; }
+            if !std::str::contains(line, "\"state\":\"running\"")
+                || std::json::find_string_field(line, "state") != "running"
+            {
+                continue;
+            }
             let id = std::json::find_string_field(line, "command_id");
             if std::str::contains("\n" + out, "\n" + id + "\n") { continue; }
             let r = self.find(id);
@@ -289,7 +340,12 @@ locus HeadJournal {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if !std::str::contains(line, needle) || std::json::find_string_field(line, "state") != "running" || json_text(line, "child") != kind { continue; }
+            if !std::str::contains(line, needle)
+                || std::json::find_string_field(line, "state") != "running"
+                || json_text(line, "child") != kind
+            {
+                continue;
+            }
             last = std::json::find_string_field(line, "command_id");
         }
         return last;
@@ -305,7 +361,9 @@ locus HeadJournal {
             let line = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             if std::json::find_string_field(line, "state") != "recorded" { continue; }
-            if len(application_id) > 0 && json_text(line, "application_id") != application_id { continue; }
+            if len(application_id) > 0 && json_text(line, "application_id") != application_id {
+                continue;
+            }
             out = out + std::json::find_string_field(line, "command_id") + "\n";
         }
         return dna::trim_nl(out);
@@ -320,37 +378,80 @@ locus HeadJournal {
         let all = self.lines();
         let seq = last_seq(all) + 1;
         let codec = ops::GovernanceCommandCodec { };
-        let line = "{\"seq\":" + to_string(seq) + ",\"at\":" + to_string(std::time::now()) + ",\"command_id\":" + codec.quote(command_id) + ",\"state\":" + codec.quote(state) + rest + "}\n";
+        let line = "{\"seq\":" + to_string(seq) + ",\"at\":" + to_string(std::time::now())
+            + ",\"command_id\":" + codec.quote(command_id) + ",\"state\":" + codec.quote(state)
+            + rest + "}\n";
         std::io::fs::write_file_append(self.path(), line) or discard;
     }
 
-    fn recorded(command_id: String, request: String, fingerprint: String, principal_mode: String, principal_name: String, application_id: String, head_before: String) {
+    fn recorded(
+        command_id: String,
+        request: String,
+        fingerprint: String,
+        principal_mode: String,
+        principal_name: String,
+        application_id: String,
+        head_before: String
+    ) {
         let codec = ops::GovernanceCommandCodec { };
         let request_json = if std::json::valid(request) { request } else { "{}" };
-        self.append_line(command_id, "recorded", ",\"request\":" + request_json + ",\"fingerprint\":" + codec.quote(fingerprint)
-                + ",\"principal\":{\"mode\":" + codec.quote(principal_mode) + ",\"name\":" + codec.quote(principal_name) + "}"
-                + ",\"application_id\":" + codec.quote(application_id) + ",\"head_before\":" + codec.quote(head_before));
+        self.append_line(
+            command_id,
+            "recorded",
+            ",\"request\":" + request_json + ",\"fingerprint\":" + codec.quote(fingerprint)
+                + ",\"principal\":{\"mode\":" + codec.quote(principal_mode) + ",\"name\":"
+                + codec.quote(principal_name) + "}"
+                + ",\"application_id\":" + codec.quote(application_id) + ",\"head_before\":"
+                + codec.quote(head_before));
     }
 
     fn admit(command_id: String) { self.append_line(command_id, "admitted", ""); }
 
     fn refuse(command_id: String, reason_code: String, reason: String) {
         let codec = ops::GovernanceCommandCodec { };
-        self.append_line(command_id, "refused", ",\"reason_code\":" + codec.quote(reason_code) + ",\"reason\":" + codec.quote(reason));
+        self.append_line(
+            command_id,
+            "refused",
+            ",\"reason_code\":" + codec.quote(reason_code) + ",\"reason\":" + codec.quote(reason),
+        );
     }
 
     // `child` is run | body | inline.
-    fn running(command_id: String, child: String, pid: Int, argv_digest: String, deadline: Int, external: Bool) {
+    fn running(
+        command_id: String,
+        child: String,
+        pid: Int,
+        argv_digest: String,
+        deadline: Int,
+        external: Bool
+    ) {
         let codec = ops::GovernanceCommandCodec { };
-        self.append_line(command_id, "running", ",\"child\":" + codec.quote(child) + ",\"pid\":" + to_string(pid) + ",\"argv_digest\":" + codec.quote(argv_digest)
-                + ",\"deadline\":" + to_string(deadline) + ",\"external\":" + (if external { "true" } else { "false" }));
+        self.append_line(
+            command_id,
+            "running",
+            ",\"child\":" + codec.quote(child) + ",\"pid\":" + to_string(pid) + ",\"argv_digest\":"
+                + codec.quote(argv_digest)
+                + ",\"deadline\":" + to_string(deadline) + ",\"external\":"
+                + (if external { "true" } else { "false" }));
     }
 
     // `state` is succeeded | failed | outcome_unknown; `outcome` valid JSON, else `{}`.
-    fn finish(command_id: String, state: String, code: Int, reason_code: String, reason: String, outcome: String) {
+    fn finish(
+        command_id: String,
+        state: String,
+        code: Int,
+        reason_code: String,
+        reason: String,
+        outcome: String
+    ) {
         let codec = ops::GovernanceCommandCodec { };
         let outcome_json = if std::json::valid(outcome) { outcome } else { "{}" };
-        self.append_line(command_id, state, ",\"code\":" + to_string(code) + ",\"reason_code\":" + codec.quote(reason_code) + ",\"reason\":" + codec.quote(reason) + ",\"outcome\":" + outcome_json);
+        self.append_line(
+            command_id,
+            state,
+            ",\"code\":" + to_string(code) + ",\"reason_code\":" + codec.quote(reason_code)
+                + ",\"reason\":" + codec.quote(reason) + ",\"outcome\":" + outcome_json,
+        );
     }
 
     // ---- submit ------------------------------------------------------
@@ -360,18 +461,34 @@ locus HeadJournal {
     // never re-executed; known id with another fingerprint →
     // `request_conflict`. `head_before` is the Record head at this
     // moment ("" when none), the evidence a row-writing outcome starts from.
-    fn submit(principal_mode: String, principal_name: String, request: String, allowlist: String, head_before: String) -> Submitted {
+    fn submit(
+        principal_mode: String,
+        principal_name: String,
+        request: String,
+        allowlist: String,
+        head_before: String
+    ) -> Submitted {
         let request_id = json_text(request, "request_id");
         let id = self.identity(principal_mode, principal_name, request_id);
         if len(id) == 0 { return Submitted { code: "invalid_command" }; }
         let fingerprint = self.fingerprint(principal_mode, principal_name, request, allowlist);
         let existing = self.find(id);
         if existing.ok {
-            if existing.fingerprint != fingerprint { return Submitted { code: "request_conflict", receipt: existing }; }
+            if existing.fingerprint != fingerprint {
+                return Submitted { code: "request_conflict", receipt: existing };
+            }
             return Submitted { replayed: true, receipt: existing };
         }
         let application_id = json_text(json_raw(request, "context"), "application_id");
-        self.recorded(id, request, fingerprint, principal_mode, principal_name, application_id, head_before);
+        self.recorded(
+            id,
+            request,
+            fingerprint,
+            principal_mode,
+            principal_name,
+            application_id,
+            head_before,
+        );
         return Submitted { receipt: self.find(id) };
     }
 
@@ -391,26 +508,64 @@ locus HeadJournal {
         // succeeded with the log as it stood before its last lines.
         let mut exit_text = dna::trim_nl(std::io::fs::read_file(dir + "/run.exit") or "");
         let mut tail = log_tail(dir + "/run.log");
-        let recorded_pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(dir + "/run.pid") or "")) or - 1;
+        let recorded_pid = std::str::parse_int(
+            dna::trim_nl(std::io::fs::read_file(dir + "/run.pid") or ""),
+        ) or
+            - 1;
         let p = Proc { pid: if r.pid > 0 { r.pid } else { recorded_pid }, dir: dir, name: "run" };
         if len(exit_text) == 0 && !alive(p) {
             // it may have ended between the two reads
             exit_text = dna::trim_nl(std::io::fs::read_file(dir + "/run.exit") or "");
             tail = log_tail(dir + "/run.log");
             if len(exit_text) == 0 {
-                return RunEnd { state: "outcome_unknown", code: -1, reason_code: "exit_unrecorded", reason: "the run ended without recording an exit" + (if len(tail) > 0 { "\n" + tail } else { "" }), log_tail: tail };
+                return RunEnd {
+                    state: "outcome_unknown",
+                    code: -1,
+                    reason_code: "exit_unrecorded",
+                    reason: "the run ended without recording an exit"
+                        + (if len(tail) > 0 { "\n" + tail } else { "" }),
+                    log_tail: tail,
+                };
             }
         }
         if len(exit_text) > 0 {
             let code = std::str::parse_int(exit_text) or - 1;
-            if code == 0 { return RunEnd { state: "succeeded", code: 0, reason_code: "", reason: tail, log_tail: tail }; }
-            if code == 124 { return RunEnd { state: if r.external { "outcome_unknown" } else { "failed" }, code: 124, reason_code: "timed_out", reason: tail, log_tail: tail }; }
-            return RunEnd { state: "failed", code: code, reason_code: "", reason: tail, log_tail: tail };
+            if code == 0 {
+                return RunEnd {
+                    state: "succeeded",
+                    code: 0,
+                    reason_code: "",
+                    reason: tail,
+                    log_tail: tail,
+                };
+            }
+            if code == 124 {
+                return RunEnd {
+                    state: if r.external { "outcome_unknown" } else { "failed" },
+                    code: 124,
+                    reason_code: "timed_out",
+                    reason: tail,
+                    log_tail: tail,
+                };
+            }
+            return RunEnd {
+                state: "failed",
+                code: code,
+                reason_code: "",
+                reason: tail,
+                log_tail: tail,
+            };
         }
         if r.deadline > 0 && r.deadline < now {
             kill_tree(to_string(p.pid));
-            return RunEnd { state: if r.external { "outcome_unknown" } else { "failed" }, code: -1, reason_code: "timed_out",
-                reason: "the run passed its deadline (" + to_string(r.deadline) + ") and was killed at " + to_string(now) + (if len(tail) > 0 { "\n" + tail } else { "" }), log_tail: tail };
+            return RunEnd {
+                state: if r.external { "outcome_unknown" } else { "failed" },
+                code: -1,
+                reason_code: "timed_out",
+                reason: "the run passed its deadline (" + to_string(r.deadline)
+                    + ") and was killed at " + to_string(now)
+                    + (if len(tail) > 0 { "\n" + tail } else { "" }),
+                log_tail: tail };
         }
         return RunEnd { };
     }
@@ -439,7 +594,15 @@ locus HeadJournal {
     // the child: ready → succeeded; exited → failed with its log tail;
     // past its deadline → the tree is killed, then failed (internal) or
     // outcome_unknown (external). True when it was finalized.
-    fn settle_child(command_id: String, child_alive: Bool, ready: Bool, exit_code: Int, log_tail: String, now: Int, outcomes: Outcomes) -> Bool {
+    fn settle_child(
+        command_id: String,
+        child_alive: Bool,
+        ready: Bool,
+        exit_code: Int,
+        log_tail: String,
+        now: Int,
+        outcomes: Outcomes
+    ) -> Bool {
         let r = self.find(command_id);
         if !r.ok || r.state != "running" { return false; }
         if ready {
@@ -447,13 +610,29 @@ locus HeadJournal {
             return true;
         }
         if !child_alive {
-            self.finish(command_id, "failed", exit_code, "child_exited", log_tail, outcomes.outcome(r, exit_code, log_tail));
+            self.finish(
+                command_id,
+                "failed",
+                exit_code,
+                "child_exited",
+                log_tail,
+                outcomes.outcome(r, exit_code, log_tail),
+            );
             return true;
         }
         if r.deadline > 0 && r.deadline < now {
             kill_tree(to_string(r.pid));
             let state = if r.external { "outcome_unknown" } else { "failed" };
-            self.finish(command_id, state, -1, "timed_out", "the child did not become ready by its deadline (" + to_string(r.deadline) + ") and was killed at " + to_string(now) + (if len(log_tail) > 0 { "\n" + log_tail } else { "" }), outcomes.outcome(r, -1, log_tail));
+            self.finish(
+                command_id,
+                state,
+                    -1,
+                "timed_out",
+                "the child did not become ready by its deadline (" + to_string(r.deadline)
+                    + ") and was killed at " + to_string(now)
+                    + (if len(log_tail) > 0 { "\n" + log_tail } else { "" }),
+                outcomes.outcome(r, -1, log_tail),
+            );
             return true;
         }
         return false;
@@ -462,7 +641,10 @@ locus HeadJournal {
     // ---- the wire ----------------------------------------------------
 
     fn terminal(r: Receipt) -> Bool {
-        return r.state == "succeeded" || r.state == "failed" || r.state == "outcome_unknown" || r.state == "refused";
+        return r.state == "succeeded"
+            || r.state == "failed"
+            || r.state == "outcome_unknown"
+            || r.state == "refused";
     }
 
     // The receipt as `data` of a HeadCommandResponse (§2.5).
@@ -473,9 +655,18 @@ locus HeadJournal {
         b.string_field("request_id", r.request_id);
         b.string_field("operation", r.operation);
         b.string_field("operation_version", r.operation_version);
-        b.begin_object_field("principal"); b.string_field("mode", r.principal_mode); b.string_field("name", r.principal_name); b.end_object();
-        b.begin_object_field("context"); b.string_field("head", "local"); b.string_field("application_id", r.application_id); b.end_object();
-        b.begin_object_field("target"); b.string_field("kind", r.target_kind); b.string_field("id", r.target_id); b.end_object();
+        b.begin_object_field("principal");
+        b.string_field("mode", r.principal_mode);
+        b.string_field("name", r.principal_name);
+        b.end_object();
+        b.begin_object_field("context");
+        b.string_field("head", "local");
+        b.string_field("application_id", r.application_id);
+        b.end_object();
+        b.begin_object_field("target");
+        b.string_field("kind", r.target_kind);
+        b.string_field("id", r.target_id);
+        b.end_object();
         b.string_field("fingerprint", r.fingerprint);
         b.string_field("state", r.state);
         b.string_field("reason_code", r.reason_code);
@@ -484,7 +675,11 @@ locus HeadJournal {
         b.int_field("updated_at", r.updated_at);
         if len(r.run_kind) > 0 {
             b.begin_object_field("run");
-            b.string_field("kind", r.run_kind); b.int_field("pid", r.pid); b.int_field("deadline", r.deadline); b.bool_field("external", r.external); b.int_field("exit_code", r.exit_code);
+            b.string_field("kind", r.run_kind);
+            b.int_field("pid", r.pid);
+            b.int_field("deadline", r.deadline);
+            b.bool_field("external", r.external);
+            b.int_field("exit_code", r.exit_code);
             b.string_field("log", "/head/logs?run=" + r.command_id);
             b.end_object();
         } else {

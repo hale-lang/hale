@@ -25,12 +25,20 @@ locus Manager<T> {
     }
     run() {
         w::Worker { };
-        std::test::assert_eq_int(self.released, 1, "released at the child's run() end, before the next statement");
+        std::test::assert_eq_int(
+            self.released,
+            1,
+            "released at the child's run() end, before the next statement",
+        );
         std::test::assert_eq_int(self.ran, 1, "released after the child's run()");
     }
 }
 
 fn main() {
     let a: Manager<Job> = Manager { };
-    std::test::assert_eq_int(a.released, 1, "an alias of a qualified argument: released exactly once");
+    std::test::assert_eq_int(
+        a.released,
+        1,
+        "an alias of a qualified argument: released exactly once",
+    );
 }

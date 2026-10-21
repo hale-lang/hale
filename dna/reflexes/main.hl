@@ -50,8 +50,11 @@ fn json_str(s: String) -> String {
 /// A firing on the wire: one JSON object, as the heart reads an event.
 locus FiringJson {
     fn encode(f: Firing) -> Bytes fallible(CodecError) {
-        return std::bytes::from_string("{\"id\":" + json_str(f.id) + ",\"rule\":" + json_str(f.rule) + ",\"node\":" + json_str(f.node) + ",\"target\":" + json_str(f.target)
-                + ",\"action\":" + json_str(f.action) + ",\"since\":" + to_string(f.since) + ",\"fired_at\":" + to_string(f.fired_at) + "}");
+        return std::bytes::from_string(
+            "{\"id\":" + json_str(f.id) + ",\"rule\":" + json_str(f.rule) + ",\"node\":"
+                + json_str(f.node) + ",\"target\":" + json_str(f.target)
+                + ",\"action\":" + json_str(f.action) + ",\"since\":" + to_string(f.since)
+                + ",\"fired_at\":" + to_string(f.fired_at) + "}");
     }
     fn decode(b: Bytes) -> Firing fallible(CodecError) {
         let t = std::str::from_bytes(b);
@@ -76,8 +79,21 @@ fn query_escape(s: String) -> String {
     while i < len(s) {
         let b = std::str::byte_at(v, i);
         let c = s[i..(i + 1)];
-        let plain = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == "~";
-        out = out + (if plain { c } else { "%" + hex[(b / 16)..(b / 16 + 1)] + hex[(b % 16)..(b % 16 + 1)] });
+        let plain = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_"
+            || c == "."
+            || c == "~";
+        out = out
+            + (
+                if plain {
+                    c
+                } else {
+                    "%" + hex[(b / 16)..(b / 16 + 1)] + hex[(b % 16)..(b % 16 + 1)]
+                }
+            );
         i = i + 1;
     }
     return out;
@@ -90,14 +106,21 @@ fn id_segment(s: String) -> String {
     let mut i = 0;
     while i < len(s) {
         let c = s[i..(i + 1)];
-        let keep = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+        let keep = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_"
+            || c == ".";
         out = out + (if keep { c } else { "_" });
         i = i + 1;
     }
     return out;
 }
 
-fn env_or(name: String, fallback: String) -> String { return if std::env::var_exists(name) { std::env::var(name) } else { fallback }; }
+fn env_or(name: String, fallback: String) -> String {
+    return if std::env::var_exists(name) { std::env::var(name) } else { fallback };
+}
 
 main locus Reflexes {
     params {
@@ -120,29 +143,57 @@ main locus Reflexes {
     // replaced each pass by the outages the store's answer still holds.
     @bounded_by(body)
     fn evaluate() {
-        let resp = std::http::get(self.store + "/api/v1/query?query=" + query_escape(QUERY)) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+        let resp = std::http::get(
+            self.store + "/api/v1/query?query=" + query_escape(QUERY),
+        ) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
         let body = std::str::from_bytes(resp.body);
         if resp.status != 200 || std::json::find_string_field(body, "status") != "success" {
-            if self.asked == 0 { eprintln("reflexes: the store at ", self.store, " did not answer (", to_string(resp.status), ")"); }
+            if self.asked == 0 {
+                eprintln(
+                    "reflexes: the store at ",
+                    self.store,
+                    " did not answer (",
+                    to_string(resp.status),
+                    ")",
+                );
+            }
             self.asked = self.asked + 1;
             return;
         }
         self.asked = self.asked + 1;
         // what is published and still down: an outage that ended leaves the set
         let mut still = "\n";
-        let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_field_raw(body, "data"), "result"));
+        let mut it = std::json::array_first(
+            std::json::find_field_raw(std::json::find_field_raw(body, "data"), "result"),
+        );
         while !it.done {
             let metric = std::json::find_field_raw(it.element, "metric");
             let target = std::json::find_string_field(metric, "instance");
             let node = std::json::find_string_field(metric, "node");
             let value = std::json::find_field_raw(it.element, "value");
             let at = std::json::array_first(value);
-            let since_text = if at.done { "" } else { std::json::find_string_field("{\"v\":" + std::json::array_next(at).element + "}", "v") };
+            let since_text = if at.done {
+                ""
+            } else {
+                std::json::find_string_field(
+                    "{\"v\":" + std::json::array_next(at).element + "}",
+                    "v",
+                )
+            };
             let since = std::math::float_to_int(std::str::parse_float(since_text) or 0.0);
-            let id = RULE + ":" + id_segment(node) + ":" + id_segment(target) + ":" + to_string(since);
+            let id = RULE + ":" + id_segment(node) + ":" + id_segment(target) + ":"
+                + to_string(since);
             if len(target) > 0 && len(node) > 0 && since > 0 {
                 if !std::str::contains(self.fired, "\n" + id + "\n") {
-                    ReflexFired <- Firing { id: id, rule: RULE, node: node, target: target, action: "restart", since: since, fired_at: std::time::now() };
+                    ReflexFired <- Firing {
+                        id: id,
+                        rule: RULE,
+                        node: node,
+                        target: target,
+                        action: "restart",
+                        since: since,
+                        fired_at: std::time::now(),
+                    };
                     println("reflexes: ", RULE, " fired for ", target, " on ", node, " (", id, ")");
                 }
                 still = still + id + "\n";
@@ -152,8 +203,18 @@ main locus Reflexes {
         self.fired = still;
     }
     run() {
-        if len(self.store) == 0 { eprintln("reflexes: no store (HALE_DNA_SENSES_URL); nothing to read"); std::process::exit(2); }
-        println("reflexes: reading ", self.store, " every ", to_string(self.tick_ms), " ms; firing onto ", self.nerves.url);
+        if len(self.store) == 0 {
+            eprintln("reflexes: no store (HALE_DNA_SENSES_URL); nothing to read");
+            std::process::exit(2);
+        }
+        println(
+            "reflexes: reading ",
+            self.store,
+            " every ",
+            to_string(self.tick_ms),
+            " ms; firing onto ",
+            self.nerves.url,
+        );
         while !self.draining {
             self.evaluate();
             std::time::sleep(self.tick_ms * 1ms);
@@ -165,11 +226,30 @@ fn main() {
     let org = env_or("HALE_DNA_NATS_ORG", "");
     let url = env_or("HALE_DNA_NATS_URL_REFLEXES", "");
     let vault = env_or("HALE_DNA_NATS_VAULT_REFLEXES", "");
-    if len(org) == 0 || len(url) == 0 || len(vault) == 0 { eprintln("reflexes: HALE_DNA_NATS_URL_REFLEXES, HALE_DNA_NATS_VAULT_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto"); std::process::exit(2); }
-    if !std::secret::Credential { vault: vault }.ready() { eprintln("reflexes: the vault holds no credential ", vault, " (`hale dna upgrade` provisions the organism's secrets)"); std::process::exit(2); }
+    if len(org) == 0 || len(url) == 0 || len(vault) == 0 {
+        eprintln(
+            "reflexes: HALE_DNA_NATS_URL_REFLEXES, HALE_DNA_NATS_VAULT_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto",
+        );
+        std::process::exit(2);
+    }
+    if !std::secret::Credential { vault: vault }.ready() {
+        eprintln(
+            "reflexes: the vault holds no credential ",
+            vault,
+            " (`hale dna upgrade` provisions the organism's secrets)",
+        );
+        std::process::exit(2);
+    }
     Reflexes {
         store: env_or("HALE_DNA_SENSES_URL", ""),
         tick_ms: std::str::parse_int(env_or("HALE_DNA_REFLEX_TICK_MS", "5000")) or 5000,
-        nerves: nats::NatsConn { url: url, user: "reflexes", credential: std::secret::Credential { vault: vault }, name: "reflexes", subject_prefix: org + ".", jetstream: true }
+        nerves: nats::NatsConn {
+            url: url,
+            user: "reflexes",
+            credential: std::secret::Credential { vault: vault },
+            name: "reflexes",
+            subject_prefix: org + ".",
+            jetstream: true,
+        }
     };
 }

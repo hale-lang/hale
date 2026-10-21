@@ -19,7 +19,10 @@ type Header { session: Int; }
 
 fn main() {
     let id = OrderId(7);
-    std::test::assert(id == OrderId(7) && id != OrderId(8), "an identity compares with its own kind");
+    std::test::assert(
+        id == OrderId(7) && id != OrderId(8),
+        "an identity compares with its own kind",
+    );
     std::test::assert_eq_int(Int(id), 7, "and has its Int by a conversion");
     // let nope = id + id;                   // type error: identity has no arithmetic
 

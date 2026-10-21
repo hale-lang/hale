@@ -25,7 +25,9 @@ locus Streams {
         if req.path == "/events" {
             let w = std::http::SseWriter { conn_fd: req.conn_fd, headers: "X-Stream: on" };
             w.event(std::http::SseEvent { data: "one" }) or discard;
-            w.event(std::http::SseEvent { event: "tick", id: "7", retry: 1500ms, data: "two\r\nlines" }) or discard;
+            w.event(
+                std::http::SseEvent { event: "tick", id: "7", retry: 1500ms, data: "two\r\nlines" },
+            ) or discard;
             w.event(std::http::SseEvent { event: "bad\nname", data: "" }) or discard;
             return w.end();
         }
@@ -119,9 +121,17 @@ main locus App {
         let base = "http://127.0.0.1:" + to_string(port);
 
         // ---- chunks, through the client: de-chunked to the payload
-        let r = std::http::get(base + "/chunks") or std::http::ClientResponse { status: -1, headers: "", body: b"" };
+        let r = std::http::get(base + "/chunks") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        };
         std::test::assert_eq_int(r.status, 200, "the stream's status");
-        std::test::assert_eq_str(std::str::from_bytes(r.body), "alpha BETA 0123456789abcdef!", "the chunks, de-chunked");
+        std::test::assert_eq_str(
+            std::str::from_bytes(r.body),
+            "alpha BETA 0123456789abcdef!",
+            "the chunks, de-chunked",
+        );
 
         // ---- chunks, on the wire: the head, one chunk per call, the last chunk
         std::test::assert_eq_str(
@@ -131,7 +141,11 @@ main locus App {
             "the chunked wire bytes");
 
         // ---- events, through the client
-        let e = std::http::get(base + "/events") or std::http::ClientResponse { status: -1, headers: "", body: b"" };
+        let e = std::http::get(base + "/events") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        };
         std::test::assert_eq_int(e.status, 200, "the event stream's status");
         std::test::assert_eq_str(
             std::str::from_bytes(e.body),
@@ -142,9 +156,16 @@ main locus App {
         let ev = get(port, "/events");
         std::test::assert(std::str::starts_with(ev,
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
-                + "Cache-Control: no-cache\r\nX-Stream: on\r\n\r\n"), "the event stream's head: " + ev);
-        std::test::assert(std::str::contains(ev, "\r\nb\r\ndata: one\n\n\r\n"), "the first event is one chunk: " + ev);
-        std::test::assert(std::str::ends_with(ev, "\r\n0\r\n\r\n"), "the stream ends with the last chunk: " + ev);
+                + "Cache-Control: no-cache\r\nX-Stream: on\r\n\r\n"),
+            "the event stream's head: " + ev);
+        std::test::assert(
+            std::str::contains(ev, "\r\nb\r\ndata: one\n\n\r\n"),
+            "the first event is one chunk: " + ev,
+        );
+        std::test::assert(
+            std::str::ends_with(ev, "\r\n0\r\n\r\n"),
+            "the stream ends with the last chunk: " + ev,
+        );
 
         // ---- a handler that builds no writer: today's bytes exactly
         std::test::assert_eq_str(
@@ -156,10 +177,20 @@ main locus App {
         // answered while it is open, and the stream sees it
         std::test::assert(self.held.open(port), "the held stream connects");
         std::time::sleep(50ms);
-        std::test::assert_eq_str(std::str::from_bytes((std::http::get(base + "/mark") or r).body), "plain", "a plain request while a stream is open");
+        std::test::assert_eq_str(
+            std::str::from_bytes((std::http::get(base + "/mark") or r).body),
+            "plain",
+            "a plain request while a stream is open",
+        );
         let held = self.held.rest();
-        std::test::assert(std::str::contains(held, "\r\n5\r\nopen;\r\n"), "the held stream's first chunk: " + held);
-        std::test::assert(std::str::contains(held, "\r\nb\r\nafter-plain\r\n0\r\n\r\n"), "the held stream outlived the plain request: " + held);
+        std::test::assert(
+            std::str::contains(held, "\r\n5\r\nopen;\r\n"),
+            "the held stream's first chunk: " + held,
+        );
+        std::test::assert(
+            std::str::contains(held, "\r\nb\r\nafter-plain\r\n0\r\n\r\n"),
+            "the held stream outlived the plain request: " + held,
+        );
 
         std::io::tcp::stop(self.srv.listener);
     }

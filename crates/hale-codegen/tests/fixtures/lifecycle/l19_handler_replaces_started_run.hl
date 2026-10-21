@@ -48,7 +48,11 @@ locus Kid {
 locus Driver {
     bus { publish Replaces; }
     run() {
-        while !std::io::fs::file_exists(gate("started")) || !std::io::fs::file_exists(gate("ready")) { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(gate("started"))
+            || !std::io::fs::file_exists(gate("ready"))
+        {
+            std::time::sleep(1ms);
+        }
         Replaces <- Note { tag: 1 };
     }
 }

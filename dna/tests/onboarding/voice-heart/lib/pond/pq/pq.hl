@@ -185,8 +185,11 @@ locus PgConn {
         if fd < 0 {
             return db::Status {
                 ok: false,
-                err: db::DbError { kind: if refused { "connection_refused" } else { "open_failed" }, engine_code: 0,
-                    detail: (if refused { "connection refused by " } else { "connect failed to " }) + self.host + ":" + to_string(self.port) },
+                err: db::DbError {
+                    kind: if refused { "connection_refused" } else { "open_failed" },
+                    engine_code: 0,
+                    detail: (if refused { "connection refused by " } else { "connect failed to " })
+                        + self.host + ":" + to_string(self.port) },
             };
         }
         self.sock = fd;
@@ -382,7 +385,10 @@ locus PgConn {
             // voice: through std::log, not a bare println (the program's
             // one sink writes it)
             let log = std::log::Logger { name: "pq" };
-            log.warn_kv("tls: negotiated plaintext, the server does not support TLS", "sslmode=" + self.sslmode + " host=" + self.host + " port=" + to_string(self.port));
+            log.warn_kv(
+                "tls: negotiated plaintext, the server does not support TLS",
+                "sslmode=" + self.sslmode + " host=" + self.host + " port=" + to_string(self.port),
+            );
             return db::Status { ok: true };
         }
         if outcome == "refuse" {
@@ -442,7 +448,15 @@ locus PgConn {
         let server_first = sasl_r_text(m2.body, m2.total);
 
         // compute the client-final message + expected server signature.
-        let cf = if len(self.vault) > 0 { compute_client_final(std::secret::Credential { vault: self.vault }.reveal_text(), cfb, server_first) } else { compute_client_final(self.password, cfb, server_first) };
+        let cf = if len(self.vault) > 0 {
+            compute_client_final(
+                std::secret::Credential { vault: self.vault }.reveal_text(),
+                cfb,
+                server_first,
+            )
+        } else {
+            compute_client_final(self.password, cfb, server_first)
+        };
         if !cf.ok {
             return __SaslResult { ok: false, err_kind: "auth_failed",
                 err_detail: "auth: " + cf.err };
@@ -521,7 +535,11 @@ locus PgConn {
         }
         if r.n == 0 {
             return db::Row { ok: false,
-                err: db::DbError { kind: "no_row", engine_code: 0, detail: "query returned no rows" } };
+                err: db::DbError {
+                    kind: "no_row",
+                    engine_code: 0,
+                    detail: "query returned no rows",
+                } };
         }
         // first row = csv up to the first newline
         let nl = std::str::index_of(r.csv, "\n");
@@ -546,7 +564,11 @@ locus PgConn {
             return db::ExecResult { ok: false,
                 err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
         }
-        return db::ExecResult { ok: true, rows_affected: __tag_rows(r.cmd_tag), last_insert_rowid: 0 };
+        return db::ExecResult {
+            ok: true,
+            rows_affected: __tag_rows(r.cmd_tag),
+            last_insert_rowid: 0,
+        };
     }
 
     fn query_params(sql: String, args: db::Args) -> db::Rows {

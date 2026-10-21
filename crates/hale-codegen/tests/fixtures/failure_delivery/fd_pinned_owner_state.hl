@@ -24,7 +24,13 @@ locus Kid {
 }
 
 main locus App {
-    params { kid: Kid = Kid { }; rows: Rows = Rows { }; mine: Int = 0; heard: Int = 0; on_owner: Int = 0; }
+    params {
+        kid: Kid = Kid { };
+        rows: Rows = Rows { };
+        mine: Int = 0;
+        heard: Int = 0;
+        on_owner: Int = 0;
+    }
     placement { kid: pinned; }
     bus { publish Gos; }
     on_failure(c: Kid, err: ClosureViolation) {

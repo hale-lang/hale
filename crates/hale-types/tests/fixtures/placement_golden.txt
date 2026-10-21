@@ -391,7 +391,7 @@ row	App@literal1.listener	Listener	main	default
 dynamic	Counter	on main
 dynamic	Sensor	on main
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#fee7652a
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#8aa694b6
 root	App	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -408,7 +408,7 @@ shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	App@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #e931d4fb
 
-== crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#c12c5daf
+== crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#d73f38e7
 row	Book@main1	Book	main	default
 row	Desk@main2	Desk	main	default
 
@@ -442,7 +442,7 @@ row	HelloL@main1	HelloL	main	default
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
 
-== crates/hale-codegen/tests/fixtures/examples/interface-fallible.hl#b5605767
+== crates/hale-codegen/tests/fixtures/examples/interface-fallible.hl#95d995a9
 row	Mem@main1	Mem	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/io-demo/main.hl#0fcb0063
@@ -461,7 +461,7 @@ row	App@literal1.p	PluginHost	main	default
 row	~	Gateway	main	default
 row	~.s	Signer	main	inherited
 
-== crates/hale-cli/tests/fixtures/api_clients/main.hl#6fa2b522
+== crates/hale-cli/tests/fixtures/api_clients/main.hl#0ae0ef7b
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:__api_ws	async_io
@@ -481,7 +481,7 @@ shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #e931d4fb
 
-== crates/hale-cli/tests/fixtures/api_description/main.hl#10ef0352
+== crates/hale-cli/tests/fixtures/api_description/main.hl#012e1a4a
 root	Shop	the entry
 domain	pool:work	async_io
 domain	pool:__api_unix	async_io
@@ -491,7 +491,7 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#70438654
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#444ccdd2
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default
@@ -518,7 +518,7 @@ row	Src@main2	Src	main	default
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl#0217e859
 row	Acc@main1	Acc	main	default
 
-== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#11c109ea
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#b3e1525a
 root	App	the entry
 domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
@@ -537,7 +537,7 @@ root	App	the entry
 row	App@literal1	App	main	default
 dynamic	Listener	on main	in the seed
 
-== crates/hale-cli/tests/fixtures/deploy/served/main.hl#800fdda3
+== crates/hale-cli/tests/fixtures/deploy/served/main.hl#1810ee8a
 root	App	the entry
 row	App@entry	App	main	default
 -- App@entry.counter	Counter
@@ -594,7 +594,7 @@ dynamic	<hole>	on main|unresolved declaration `chat::Participant`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl#374b15e0
 row	Bystander@main1	Bystander	main	default
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#5da70164
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#4e88ddcd
 root	ChatServer	the entry
 row	ChatServer@entry	ChatServer	main	default
 row	ChatServer@entry.ada	Participant	main	default
@@ -666,7 +666,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#60231047
+== crates/hale-stdlib/hl/api_rpc.hl#5b9a99d0
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -676,17 +676,17 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#33aabe59
+== crates/hale-stdlib/hl/http_client.hl#c45746aa
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
-== crates/hale-stdlib/hl/log.hl#4469c22a
+== crates/hale-stdlib/hl/log.hl#4f24dcfe
 
-== crates/hale-stdlib/hl/metrics.hl#f4864c90
+== crates/hale-stdlib/hl/metrics.hl#03019d19
 
-== crates/hale-stdlib/hl/observe.hl#983366e8
+== crates/hale-stdlib/hl/observe.hl#c4f4c7ed
 
-== crates/hale-stdlib/hl/process.hl#e44be954
+== crates/hale-stdlib/hl/process.hl#0c36f12b
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 

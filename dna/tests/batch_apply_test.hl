@@ -23,22 +23,39 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
-fn dna_cli(repo: String, args: String) -> dna::RunResult { return in_dir(repo, toolchain() + "\ndna\n" + args); }
+fn dna_cli(repo: String, args: String) -> dna::RunResult {
+    return in_dir(repo, toolchain() + "\ndna\n" + args);
+}
 
 // The rows of the record at `repo` of `kind` that mention `needle`: one
 // pass over the record, read whole.
 @bounded_by(repo)
 fn count_rows(repo: String, kind: String, needle: String) -> Int {
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
-    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -51,8 +68,15 @@ fn count_rows(repo: String, kind: String, needle: String) -> Int {
 
 // The body of the record's last `kind` row, "" when there is none.
 fn last_body(repo: String, kind: String) -> String {
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
-    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -73,129 +97,348 @@ fill api/reviewer bo
 fn check() {
     let scratch = dna::scratch_root("batch-apply");
     let repo = scratch + "/todo";
-    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n" + repo + "\n" + source());
-    std::test::assert_eq_int(made.code, 0, "the todo fixture, a repository of its own: " + made.stderr);
+    let made = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/todo/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m todo\nsh\n"
+            + repo + "\n" + source(),
+    );
+    std::test::assert_eq_int(
+        made.code,
+        0,
+        "the todo fixture, a repository of its own: " + made.stderr,
+    );
     let init = dna::grafted(repo, ".\n--attach\n--no-library\n--no-pack");
     std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);
     std::io::fs::write_file(scratch + "/team.batch", TEAM) or discard;
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let rows_before = dna::RecordJournal { repo: repo }.revision();
 
     // 1. --dry-run: the org chart before and after, nothing proposed
     let dry = dna_cli(repo, "apply\n" + scratch + "/team.batch\n--dry-run");
-    std::test::assert(dry.code == 0 && std::str::contains(dry.stdout, "+ position position:api/reviewer\n+ mandate position:api/reviewer\n") && std::str::contains(dry.stdout, "+ holds position:api/dev ada\n") && std::str::contains(dry.stdout, "nothing proposed (--dry-run)"), "the dry run prints what the batch adds: " + dry.stdout + dry.stderr);
-    std::test::assert_eq_int(dna::RecordJournal { repo: repo }.revision(), rows_before, "and writes nothing");
+    std::test::assert(
+        dry.code == 0
+            && std::str::contains(
+                dry.stdout,
+                "+ position position:api/reviewer\n+ mandate position:api/reviewer\n",
+            )
+            && std::str::contains(dry.stdout, "+ holds position:api/dev ada\n")
+            && std::str::contains(dry.stdout, "nothing proposed (--dry-run)"),
+        "the dry run prints what the batch adds: " + dry.stdout + dry.stderr,
+    );
+    std::test::assert_eq_int(
+        dna::RecordJournal { repo: repo }.revision(),
+        rows_before,
+        "and writes nothing",
+    );
 
     // 2. a batch wrong anywhere is refused whole, before anything is written
-    std::io::fs::write_file(scratch + "/bad.batch", "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n") or discard;
+    std::io::fs::write_file(
+        scratch + "/bad.batch",
+        "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n",
+    ) or discard;
     let bad = dna_cli(repo, "apply\n" + scratch + "/bad.batch");
-    std::test::assert(bad.code != 0 && std::str::contains(bad.stderr, "refused: `fill position:nowhere ada`: no position the graph states or the batch opens"), "refused, naming the step: " + bad.stderr);
-    std::io::fs::write_file(scratch + "/typo.batch", "open web/dev | Decides: the web client.\nhire web/dev ada\n") or discard;
+    std::test::assert(
+        bad.code != 0
+            && std::str::contains(
+                bad.stderr,
+                "refused: `fill position:nowhere ada`: no position the graph states or the batch opens",
+            ),
+        "refused, naming the step: " + bad.stderr,
+    );
+    std::io::fs::write_file(
+        scratch + "/typo.batch",
+        "open web/dev | Decides: the web client.\nhire web/dev ada\n",
+    ) or discard;
     let typo = dna_cli(repo, "apply\n" + scratch + "/typo.batch");
-    std::test::assert(typo.code != 0 && std::str::contains(typo.stderr, "line 2 (`hire web/dev ada`): `hire` is no step a batch takes"), "a line that is no step is named: " + typo.stderr);
-    std::test::assert_eq_int(dna::RecordJournal { repo: repo }.revision(), rows_before, "nothing of a refused batch is written");
+    std::test::assert(
+        typo.code != 0
+            && std::str::contains(
+                typo.stderr,
+                "line 2 (`hire web/dev ada`): `hire` is no step a batch takes",
+            ),
+        "a line that is no step is named: " + typo.stderr,
+    );
+    std::test::assert_eq_int(
+        dna::RecordJournal { repo: repo }.revision(),
+        rows_before,
+        "nothing of a refused batch is written",
+    );
 
     // 3. proposed: one family Review in `changes`, its members the graph
     // proposal and one mandate per opened position
     let one = dna_cli(repo, "apply\n" + scratch + "/team.batch");
-    std::test::assert(one.code == 0 && std::str::contains(one.stdout, "proposed the batch as k:"), "the batch is proposed: " + one.stdout + one.stderr);
-    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 1, "as one Review");
+    std::test::assert(
+        one.code == 0 && std::str::contains(one.stdout, "proposed the batch as k:"),
+        "the batch is proposed: " + one.stdout + one.stderr,
+    );
+    std::test::assert_eq_int(
+        count_rows(repo, "review.requested", "\"group\": \"changes\""),
+        1,
+        "as one Review",
+    );
     let req = last_body(repo, "review.requested");
-    std::test::assert(dna::native_json_string(req, "kind") == "family" && std::json::find_int_field(req, "count") == 3 && dna::native_json_string(req, "required_authority") == "board", "a family of three under the Board: " + req);
-    std::test::assert_eq_int(count_rows(repo, "batch.proposed", "fill\\tposition:api/reviewer\\tbo"), 1, "what was asked is a row");
+    std::test::assert(
+        dna::native_json_string(req, "kind") == "family"
+            && std::json::find_int_field(req, "count") == 3
+            && dna::native_json_string(req, "required_authority") == "board",
+        "a family of three under the Board: " + req,
+    );
+    std::test::assert_eq_int(
+        count_rows(repo, "batch.proposed", "fill\\tposition:api/reviewer\\tbo"),
+        1,
+        "what was asked is a row",
+    );
     let family = dna::native_json_string(req, "knowledge_digest");
-    std::test::assert_eq_int(count_rows(repo, "graph.requested", dna::knowledge_review_id(family)), 1, "and the organization is asked to open the Review");
+    std::test::assert_eq_int(
+        count_rows(repo, "graph.requested", dna::knowledge_review_id(family)),
+        1,
+        "and the organization is asked to open the Review",
+    );
     let receipts = dna::MemoryReceipts { repo: repo };
     let fdoc = receipts.read(family[7..len(family)]);
-    std::test::assert(std::str::contains(dna::native_json_string(fdoc, "batch"), "open\tposition:api/dev\t\t"), "the family carries its steps, for the check at ratification: " + fdoc);
+    std::test::assert(
+        std::str::contains(dna::native_json_string(fdoc, "batch"), "open\tposition:api/dev\t\t"),
+        "the family carries its steps, for the check at ratification: " + fdoc,
+    );
     let ideas = dna::native_json_string(fdoc, "ideas");
-    std::test::assert(std::str::contains(ideas, "\nmandate/api/dev sha256:") && std::str::contains(ideas, "\nmandate/api/reviewer sha256:"), "a mandate per opened position: " + ideas);
+    std::test::assert(
+        std::str::contains(ideas, "\nmandate/api/dev sha256:")
+            && std::str::contains(ideas, "\nmandate/api/reviewer sha256:"),
+        "a mandate per opened position: " + ideas,
+    );
     let mut each = ideas;
     while len(each) > 0 {
         let nl = std::str::index_of(each, "\n");
         let line = each[0..nl];
         each = each[(nl + 1)..len(each)];
         let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
-        std::test::assert_eq_int(count_rows(repo, "knowledge.proposed", d), 1, "each member proposed, with no Review of its own: " + line);
+        std::test::assert_eq_int(
+            count_rows(repo, "knowledge.proposed", d),
+            1,
+            "each member proposed, with no Review of its own: " + line,
+        );
     }
     let graph_digest = ideas[(std::str::index_of(ideas, " ") + 1)..std::str::index_of(ideas, "\n")];
     let rows = dna::proposal_rows(receipts.read(graph_digest[7..len(graph_digest)]));
     let node = std::str::index_of(rows, "\"entity\": \"position:api/reviewer\"");
-    let unfold = std::str::index_of(rows, "\"entity\": \"unfold:position:api/dev|position:api/reviewer\"");
+    let unfold = std::str::index_of(
+        rows,
+        "\"entity\": \"unfold:position:api/dev|position:api/reviewer\"",
+    );
     let hold = std::str::index_of(rows, "\"entity\": \"holds:position:api/reviewer|bo\"");
-    std::test::assert(node >= 0 && unfold > node && hold > unfold, "the graph proposal's rows: nodes, then their edges, then holds: " + rows);
-    std::test::assert(std::str::contains(dna_cli(repo, "review").stdout, "changes — 1 batch(es) of changes to the organization"), "listed under changes");
+    std::test::assert(
+        node >= 0 && unfold > node && hold > unfold,
+        "the graph proposal's rows: nodes, then their edges, then holds: " + rows,
+    );
+    std::test::assert(
+        std::str::contains(
+            dna_cli(repo, "review").stdout,
+            "changes — 1 batch(es) of changes to the organization",
+        ),
+        "listed under changes",
+    );
 
     // 4. the same steps, still pending, are the same proposal
     let again = dna_cli(repo, "apply\n" + scratch + "/team.batch");
-    std::test::assert(again.code == 0 && std::str::contains(again.stdout, "already proposed as " + dna::knowledge_review_id(family) + ", not yet decided"), "proposed once: " + again.stdout + again.stderr);
-    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 1, "still one Review");
+    std::test::assert(
+        again.code == 0
+            && std::str::contains(
+                again.stdout,
+                "already proposed as " + dna::knowledge_review_id(family) + ", not yet decided",
+            ),
+        "proposed once: " + again.stdout + again.stderr,
+    );
+    std::test::assert_eq_int(
+        count_rows(repo, "review.requested", "\"group\": \"changes\""),
+        1,
+        "still one Review",
+    );
 
     // 5. ratified (its members' rows, as the organization writes them), the
     // team is the organization; `vacate` takes a holder out, a one-step
     // batch of its own
-    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: repo },
+        ledger: dna::MemoryLedger { repo: repo },
+    };
     let mut each_member = ideas;
     while len(each_member) > 0 {
         let nl = std::str::index_of(each_member, "\n");
         let line = each_member[0..nl];
         each_member = each_member[(nl + 1)..len(each_member)];
         let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
-        std::test::assert(j.append(j.revision(), "knowledge.ratified", d, "{\"digest\": \"" + d + "\", \"outcome\": \"approve\", \"decided_by\": \"board\"}").ok, "a member ratified: " + line);
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "knowledge.ratified",
+                d,
+                "{\"digest\": \"" + d + "\", \"outcome\": \"approve\", \"decided_by\": \"board\"}",
+            ).ok,
+            "a member ratified: " + line,
+        );
     }
     let chart = dna::org_chart(dna::RecordJournal { repo: repo }, receipts);
-    std::test::assert(std::str::contains(chart, "holds position:api/dev ada\n") && std::str::contains(chart, "mandate position:api/reviewer\n"), "the team is the organization: " + chart);
+    std::test::assert(
+        std::str::contains(chart, "holds position:api/dev ada\n")
+            && std::str::contains(chart, "mandate position:api/reviewer\n"),
+        "the team is the organization: " + chart,
+    );
     let leave = dna_cli(repo, "vacate\napi/dev\nada\n--dry-run");
-    std::test::assert(leave.code == 0 && std::str::contains(leave.stdout, "- holds position:api/dev ada\n") && std::str::contains(leave.stdout, "1 taken out"), "vacate shows the hold it takes out: " + leave.stdout + leave.stderr);
+    std::test::assert(
+        leave.code == 0
+            && std::str::contains(leave.stdout, "- holds position:api/dev ada\n")
+            && std::str::contains(leave.stdout, "1 taken out"),
+        "vacate shows the hold it takes out: " + leave.stdout + leave.stderr,
+    );
     let stranger = dna_cli(repo, "vacate\napi/dev\nzed");
-    std::test::assert(stranger.code != 0 && std::str::contains(stranger.stderr, "the record states no such hold"), "a hold the record does not state is refused: " + stranger.stderr);
+    std::test::assert(
+        stranger.code != 0 && std::str::contains(stranger.stderr, "the record states no such hold"),
+        "a hold the record does not state is refused: " + stranger.stderr,
+    );
     let left = dna_cli(repo, "vacate\napi/dev\nada");
-    std::test::assert(left.code == 0 && std::str::contains(left.stdout, "proposed the batch as k:"), "vacate proposes its one-step batch: " + left.stdout + left.stderr);
-    std::test::assert_eq_int(count_rows(repo, "review.requested", "\"group\": \"changes\""), 2, "a Review of its own");
-    std::test::assert_eq_int(count_rows(repo, "batch.proposed", "vacate\\tposition:api/dev\\tada"), 1, "naming the step");
+    std::test::assert(
+        left.code == 0 && std::str::contains(left.stdout, "proposed the batch as k:"),
+        "vacate proposes its one-step batch: " + left.stdout + left.stderr,
+    );
+    std::test::assert_eq_int(
+        count_rows(repo, "review.requested", "\"group\": \"changes\""),
+        2,
+        "a Review of its own",
+    );
+    std::test::assert_eq_int(
+        count_rows(repo, "batch.proposed", "vacate\\tposition:api/dev\\tada"),
+        1,
+        "naming the step",
+    );
 
     // 6. a pack from the toolchain's nursery: its parameters set, proposed
     // as one batch named for the pack, its digest and source recorded
     let listed = dna_cli(repo, "pack\nlist");
-    std::test::assert(listed.code == 0 && std::str::contains(listed.stdout, "dev-team@1") && std::str::contains(listed.stdout, "content-team@1"), "the toolchain's packs are listed: " + listed.stdout + listed.stderr);
+    std::test::assert(
+        listed.code == 0
+            && std::str::contains(listed.stdout, "dev-team@1")
+            && std::str::contains(listed.stdout, "content-team@1"),
+        "the toolchain's packs are listed: " + listed.stdout + listed.stderr,
+    );
     let unset = dna_cli(repo, "pack\napply\ndev-team");
-    std::test::assert(unset.code != 0 && std::str::contains(unset.stderr, "the pack needs `--set part=…`"), "a parameter with no value is named: " + unset.stderr);
+    std::test::assert(
+        unset.code != 0 && std::str::contains(unset.stderr, "the pack needs `--set part=…`"),
+        "a parameter with no value is named: " + unset.stderr,
+    );
     let team = dna_cli(repo, "pack\napply\ndev-team\n--set\npart=web\n--set\ndev=ada");
-    std::test::assert(team.code == 0 && std::str::contains(team.stdout, "+ practice web/reviewed-before-merge\n") && std::str::contains(team.stdout, "+ holds position:web/dev ada\n") && !std::str::contains(team.stdout, "web/reviewer ada"), "the pack proposed, an unset holder's line left out: " + team.stdout + team.stderr);
+    std::test::assert(
+        team.code == 0
+            && std::str::contains(team.stdout, "+ practice web/reviewed-before-merge\n")
+            && std::str::contains(team.stdout, "+ holds position:web/dev ada\n")
+            && !std::str::contains(team.stdout, "web/reviewer ada"),
+        "the pack proposed, an unset holder's line left out: " + team.stdout + team.stderr,
+    );
     let adopted = last_body(repo, "batch.proposed");
-    std::test::assert(std::str::starts_with(dna::native_json_string(adopted, "pack"), "dev-team@1 sha256:") && std::str::contains(dna::native_json_string(adopted, "pack"), " toolchain "), "the pack's name, digest and source are recorded: " + adopted);
-    std::test::assert(std::str::contains(dna::native_json_string(last_body(repo, "review.requested"), "question"), "ratify adopting the pack dev-team@1"), "the Review names the pack: " + last_body(repo, "review.requested"));
-    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/pack-dev-team.batch"), "the rendered steps are not left behind");
+    std::test::assert(
+        std::str::starts_with(dna::native_json_string(adopted, "pack"), "dev-team@1 sha256:")
+            && std::str::contains(dna::native_json_string(adopted, "pack"), " toolchain "),
+        "the pack's name, digest and source are recorded: " + adopted,
+    );
+    std::test::assert(
+        std::str::contains(
+            dna::native_json_string(last_body(repo, "review.requested"), "question"),
+            "ratify adopting the pack dev-team@1",
+        ),
+        "the Review names the pack: " + last_body(repo, "review.requested"),
+    );
+    std::test::assert(
+        !std::io::fs::file_exists(repo + "/.hale/dna/pack-dev-team.batch"),
+        "the rendered steps are not left behind",
+    );
     // GH #1591: the standard pack's clauses are practices proposed as law:
     // the step says so, and so does the practice's document
     let standard = dna_cli(repo, "pack\napply\nstandard");
-    std::test::assert(standard.code == 0 && std::str::contains(standard.stdout, "+ practice standard/logs-are-structured\n"), "the standard pack is proposed: " + standard.stdout + standard.stderr);
+    std::test::assert(
+        standard.code == 0
+            && std::str::contains(standard.stdout, "+ practice standard/logs-are-structured\n"),
+        "the standard pack is proposed: " + standard.stdout + standard.stderr,
+    );
     let steps = dna::native_json_string(last_body(repo, "batch.proposed"), "steps");
-    std::test::assert(std::str::contains(steps, "practice\tstandard/logs-are-structured\tLogs are structured:") && std::str::contains(steps, "\tlaw\n"), "naming its clause, proposed as law: " + steps);
-    let as_law = dna::knowledge_document(dna::Idea { kind: "practice", text: "t", name: "standard/logs-are-structured", law: true }, "org");
-    let as_advice = dna::knowledge_document(dna::Idea { kind: "practice", text: "t", name: "web/reviewed-before-merge" }, "org");
-    std::test::assert(std::str::ends_with(as_law, ", \"law\": true}") && !std::str::contains(as_advice, "law"), "the practice's document proposes it as law, and advice says nothing of law: " + as_law + " " + as_advice);
+    std::test::assert(
+        std::str::contains(steps, "practice\tstandard/logs-are-structured\tLogs are structured:")
+            && std::str::contains(steps, "\tlaw\n"),
+        "naming its clause, proposed as law: " + steps,
+    );
+    let as_law = dna::knowledge_document(
+        dna::Idea { kind: "practice", text: "t", name: "standard/logs-are-structured", law: true },
+        "org",
+    );
+    let as_advice = dna::knowledge_document(
+        dna::Idea { kind: "practice", text: "t", name: "web/reviewed-before-merge" },
+        "org",
+    );
+    std::test::assert(
+        std::str::ends_with(as_law, ", \"law\": true}") && !std::str::contains(as_advice, "law"),
+        "the practice's document proposes it as law, and advice says nothing of law: " + as_law
+            + " " + as_advice,
+    );
     let plan = dna::batch_steps("law standard/x | Text.\npractice y/z | More.\n");
-    std::test::assert(plan.steps == "practice\tstandard/x\tText.\tlaw\npractice\ty/z\tMore.\n" && dna::batch_text(plan.steps) == "law standard/x | Text.\npractice y/z | More.\n", "a `law` line is a practice step marked law, and renders back: " + plan.steps + plan.why);
+    std::test::assert(
+        plan.steps == "practice\tstandard/x\tText.\tlaw\npractice\ty/z\tMore.\n"
+            && dna::batch_text(plan.steps) == "law standard/x | Text.\npractice y/z | More.\n",
+        "a `law` line is a practice step marked law, and renders back: " + plan.steps + plan.why,
+    );
 
     let unratified = dna_cli(repo, "pack\nretire\ndev-team");
-    std::test::assert(unratified.code != 0 && std::str::contains(unratified.stderr, "no adoption of the pack `dev-team` the Board ratified"), "a pack is retired once the Board has adopted it: " + unratified.stderr);
+    std::test::assert(
+        unratified.code != 0
+            && std::str::contains(
+                unratified.stderr,
+                "no adoption of the pack `dev-team` the Board ratified",
+            ),
+        "a pack is retired once the Board has adopted it: " + unratified.stderr,
+    );
 
     // 7. a nursery of one's own, a directory with its index at the root
     let mine = scratch + "/nursery";
     std::io::fs::mkdir(mine) or discard;
-    std::io::fs::write_file(mine + "/nursery.toml", "[[pack]]\nname = \"ops\"\nversion = \"2\"\npath = \"ops.pack\"\nsummary = \"an operator\"\nparams = { who = \"\" }\n") or discard;
-    std::io::fs::write_file(mine + "/ops.pack", "open ops/operator | Decides: when the deployment runs. May not: change code. Cites: the readings. Escalates: incidents to the Board.\n? fill ops/operator {who}\n") or discard;
+    std::io::fs::write_file(
+        mine + "/nursery.toml",
+        "[[pack]]\nname = \"ops\"\nversion = \"2\"\npath = \"ops.pack\"\nsummary = \"an operator\"\nparams = { who = \"\" }\n",
+    ) or discard;
+    std::io::fs::write_file(
+        mine + "/ops.pack",
+        "open ops/operator | Decides: when the deployment runs. May not: change code. Cites: the readings. Escalates: incidents to the Board.\n? fill ops/operator {who}\n",
+    ) or discard;
     let own = dna_cli(repo, "pack\napply\nops\n--from\n" + mine + "\n--dry-run");
-    std::test::assert(own.code == 0 && std::str::contains(own.stdout, "+ position position:ops/operator\n") && std::str::contains(own.stdout, "nothing proposed"), "a directory is a nursery: " + own.stdout + own.stderr);
+    std::test::assert(
+        own.code == 0
+            && std::str::contains(own.stdout, "+ position position:ops/operator\n")
+            && std::str::contains(own.stdout, "nothing proposed"),
+        "a directory is a nursery: " + own.stdout + own.stderr,
+    );
     let missing = dna_cli(repo, "pack\napply\nnone\n--from\n" + mine);
-    std::test::assert(missing.code != 0 && std::str::contains(missing.stderr, "no pack `none`") && std::str::contains(missing.stderr, "it offers: ops"), "a pack the nursery does not offer is named: " + missing.stderr);
+    std::test::assert(
+        missing.code != 0
+            && std::str::contains(missing.stderr, "no pack `none`")
+            && std::str::contains(missing.stderr, "it offers: ops"),
+        "a pack the nursery does not offer is named: " + missing.stderr,
+    );
     // 8. a git nursery's packs wait for the Board to trust it; nothing is
     // fetched before
     let untrusted = dna_cli(repo, "pack\napply\nops\n--from\nhttps://nursery.invalid/packs.git");
-    std::test::assert(untrusted.code != 0 && std::str::contains(untrusted.stderr, "the Board does not trust the nursery https://nursery.invalid/packs.git yet"), "an untrusted nursery is refused before it is read: " + untrusted.stderr);
+    std::test::assert(
+        untrusted.code != 0
+            && std::str::contains(
+                untrusted.stderr,
+                "the Board does not trust the nursery https://nursery.invalid/packs.git yet",
+            ),
+        "an untrusted nursery is refused before it is read: " + untrusted.stderr,
+    );
     let trust = dna_cli(repo, "nursery\nadd\nhttps://nursery.invalid/packs.git\n--dry-run");
-    std::test::assert(trust.code == 0 && std::str::contains(trust.stdout, "+ nursery https://nursery.invalid/packs.git"), "nursery add proposes the trust as a batch: " + trust.stdout + trust.stderr);
+    std::test::assert(
+        trust.code == 0
+            && std::str::contains(trust.stdout, "+ nursery https://nursery.invalid/packs.git"),
+        "nursery add proposes the trust as a batch: " + trust.stdout + trust.stderr,
+    );
     dna::scratch_done(scratch);
 }
 
