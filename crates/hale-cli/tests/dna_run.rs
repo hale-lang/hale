@@ -122,8 +122,9 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
         last = s.chars().take(600).collect();
         // the diff reports loaded, the law verified, and the organism's
         // own locus tree replayed (a process attaches before its births
-        // are replayed, so wait for a type)
-        let tree_up = organism_loci(&s).map(|t| !t.is_empty()).unwrap_or(false);
+        // are replayed in birth order, so wait for the DNA's own locus, not
+        // for whichever type is replayed first)
+        let tree_up = organism_loci(&s).map(|t| t.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism")).unwrap_or(false);
         if s.contains("\"state\":\"loaded\"") && s.contains("\"digest\":\"verified\"") && tree_up {
             snap = s;
             break;

@@ -13,9 +13,10 @@ law standard/logs-are-structured | Logs are structured: every line a running par
 # A template, proposed once per watched upstream:
 #   hale dna pack apply standard --set integration=<name> --set position=<owner> \
 #     --set source=<url, or the surface `hale api import` committed> \
-#     --set kind=changelog|docs|feed|openapi --set every=<1h, 1d, …>
+#     --set kind=changelog|docs|feed|openapi --set every=<1h, 1d, …> \
+#     [--set codebase=<an attached codebase whose client of it a move is a task for>]
 # The practice is bound to the position that owns the integration; its text
 # is the parameters of the `source-check` step its schedule runs. The idea
 # beside it is the source, an external one, bound to the same position.
-? practice standard/upstream-watched/{integration} for {position} | The upstream {integration} is watched for its position: on the cadence it names, its source is read and compared with what the last check saw, and a move is a reading with the diff and a concern for the position. source={source} kind={kind} every={every} step=source-check
+? practice standard/upstream-watched/{integration} for {position} | The upstream {integration} is watched for its position: on the cadence it names, its source is read and compared with what the last check saw, and a move is a reading with the diff and a concern for the position. source={source} kind={kind} every={every} codebase={codebase} step=source-check
 ? idea standard/upstream-source/{integration} for {position} | The upstream {integration}, an external source its position watches: its kind {kind}, at {source}.

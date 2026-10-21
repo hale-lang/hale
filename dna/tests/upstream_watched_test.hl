@@ -248,7 +248,7 @@ main locus App {
         std::test::assert(std::str::contains(decl, "\"definition\": \"source-check\"") && std::str::contains(decl, "\"convener\": \"position:app/dev\""), "the changelog's practice is convened by app/dev: " + decl);
         let practice = std::json::find_string_field(std::json::find_string_field(decl, "args"), "practice");
         let doc = dna::MemoryReceipts { repo: self.repo }.read(practice);
-        std::test::assert(std::str::contains(std::json::find_string_field(doc, "text"), "kind=changelog every=1h step=source-check") && std::json::find_string_field(doc, "target") == "position:app/dev", "its occurrences name the practice, whose text is their parameters, bound to app/dev: " + doc);
+        std::test::assert(std::str::contains(std::json::find_string_field(doc, "text"), "kind=changelog every=1h codebase=none step=source-check") && std::json::find_string_field(doc, "target") == "position:app/dev", "its occurrences name the practice, whose text is their parameters, bound to app/dev: " + doc);
         self.adopt("pay-api", "position:app/ops", "integrations/pay.hl", "openapi");
         std::test::assert(std::str::contains(self.last_body("schedule.declared", watched("pay-api")), "\"convener\": \"position:app/ops\""), "the API's by app/ops: " + self.last_body("schedule.declared", watched("pay-api")));
         std::test::assert(std::str::contains(self.last_body("batch.proposed", ""), "standard/upstream-source/pay-api") && !std::str::contains(self.last_body("batch.proposed", ""), "logs-are-structured"), "adopted again, the pack proposes only what it adds, the source's idea with it: " + self.last_body("batch.proposed", ""));

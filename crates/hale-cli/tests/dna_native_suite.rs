@@ -1088,6 +1088,7 @@ fn dna_fixture_set_is_complete() {
             "idle_body_cpu_test.hl",
             "ingest_test.hl",
             "init_with_test.hl",
+            "integration_task_test.hl",
             "journal_contention_test.hl",
             "journal_incremental_test.hl",
             "journal_test.hl",

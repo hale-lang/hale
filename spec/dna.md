@@ -1505,6 +1505,8 @@ record's.
 | `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
 | `codebase.attached` | record | a foreign codebase the organism works on, attached with no application (`hale dna codebase attach`): `name`, `repo` (a url or a path), `build` and `test` (opaque command strings), `branch` (the default branch, `main` unless given), `toolchain` (`go`, `hale` or `none`, the default) and who; a later attach of the name states it anew |
 | `codebase.detached` | record | the codebase removed (`hale dna codebase detach`): its `name` and who |
+| `task.delivered` | ledger | a codebase task's verdict, delivered (entity the task): `via` `review` (merged: `review`, `leg_commit`, `merge_commit`, `edited`, `edit_receipt`, `comment_receipts`: the pull request's comments, each kept as a receipt, space-separated) or `brief` (its Review approved: `review_id`, `by`) |
+| `task.refused` | ledger | a codebase task's verdict, refused (entity the task): `via` `review` (closed without merging; `comment_receipts` as above) or `brief` (its Review not approved), with `why` |
 | `structure.observed` | record | the compiler's model of one of its parts, at the graft |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
@@ -1609,8 +1611,11 @@ record's.
 
 ### A codebase attached with no application
 
-`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--branch <name>] [--as <who>]`
-writes `codebase.attached` (above); `detach <name>` writes
+`hale dna codebase attach <name> --repo <url|path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] [--as <who>]`
+writes `codebase.attached` (above); `--knowledge` (default `docs/integrations/`, a
+directory inside the repository) declares where the codebase keeps an
+watched source's architecture note, `<watch>.md`, on its default branch
+(**The task a move becomes**); `detach <name>` writes
 `codebase.detached`; `list` (the default) reads the record's attached
 codebases. No application row is written and no broker account exists: a
 codebase is a repository the organism works on, not a heart it senses.
@@ -1672,7 +1677,7 @@ practice, never a manifest table or a record family of its own. The
 standard pack's template `standard/upstream-watched/<name>` is proposed
 once per upstream (`hale dna pack apply standard --set integration=<name>
 --set position=<owner> --set source=<source> --set kind=<kind> --set
-every=<cadence>`), ratified by the Board with the rest of its batch, and
+every=<cadence> [--set codebase=<name>]`), ratified by the Board with the rest of its batch, and
 bound to the owning position (its target `position:<owner>`). The batch
 also proposes an idea, `standard/upstream-source/<name>`, the source as
 knowledge, an external source with its URL, bound to the same position.
@@ -1684,6 +1689,9 @@ The practice's text names its terms (**A practice's terms**):
   imported from (`from openapi "…"`);
 - `kind=`: `changelog`, `docs`, `feed` or `openapi`;
 - `every=`: the cadence, as a schedule takes it;
+- `codebase=`: optional, an attached codebase whose client of the source
+  a move is a task for (**The task a move becomes**); the pack's default
+  `none` is no codebase;
 - `step=source-check`: the step its occurrences run.
 
 Ratified, the practice declares the schedule its text names, its id the
@@ -1757,8 +1765,90 @@ keeps no rows of its own: what each occurrence saw is its outcome, and
 the snapshots and diffs are receipts.
 
 The concern goes the way every concern goes (`concern-escalate`): raised
-and routed, and proposed as knowledge at the threshold. Nothing turns a
-concern routed to a position into a task under it; that is a later item.
+and routed, and proposed as knowledge at the threshold. Of itself a
+concern is not a task; a practice that names an attached `codebase=`
+files one for its move (below).
+
+#### The task a move becomes
+
+A watched upstream whose practice names an attached codebase (a
+`codebase=<name>` term, beside `source=` and `kind=`) is that codebase's
+client of an external service. Two things follow from a move, by the
+organization, none by a person filing anything, and both are composed of
+shapes that exist: the practice, a knowledge node, an ask. No row kind
+and no record family is added.
+
+**The note.** The codebase's knowledge directory (`--knowledge`) holds
+`<watch>.md` on its default branch, the source's architecture note. At each
+move the organization reads it (`git show <branch>:<dir><watch>.md` in the
+repository, in a scratch clone when it is not on this machine) and
+proposes it as a knowledge node of kind `concept`, named
+`integration/<watch>`, authored by `org` and bound to the practice's
+position: the Board ratifies it as any knowledge (`knowledge.proposed`, its
+Review). A proposal is by the digest of its document, so a note that did
+not change is the proposal already in the record, and a note that changed
+is a fresh proposal on the same node. A codebase with no such file notes
+nothing.
+
+**The task.** A move (the check that lands `reading.recorded`
+`sources/<watch>.changed/<task>` and its concern, whether the check is
+fresh or asked again) files, besides, one ask under `position:<position>`
+naming the codebase, id `source-<watch>-<reading's task>` (an ask is
+admitted once by its id): the `ask-position` workflow, `Patch` output, and
+in the admission's inputs an `integration` object `{integration (the
+watch), practice (its name), codebase, source (its kind), reading,
+diff_receipt, diff, note_path, note_digest, note}`, derived from the
+reading, the concern's receipt and the practice that convened the check
+(the diff and the note inline cut at a line past 8000 bytes, the whole of
+each in the receipt and the codebase). The hat carries it
+(`hat.integration`, in the digest), and a prompt rendering names the move,
+its diff and the note and the two ways to answer. A leg holding the
+position claims it through the ordinary claim path (`attempt.claimed`;
+`hale dna work next --as position:<name>`).
+
+**The answer.** The leg reads the client through the codebase's worktree
+and answers one of two ways. A change opens a pull request at the
+codebase's forge (the Go hand and `CodebaseWork.propose`, **A codebase
+attached with no application**); the review's body ends in a
+`leg-commit: <sha>` line naming the commit the leg left the branch at, and
+the attempt settles `done` with `result_ref: review:<ref>`. A first line
+beginning `NO IMPACT` over an unchanged worktree is a no-impact brief: the
+attempt settles `done` with `result_ref: brief:<digest>` and the brief as
+its result, no validator judging a tree nothing changed, and the
+organization puts it to a Review of its own, not the forge's: a knowledge
+proposal (kind `idea`) bound to the position, its provenance naming the
+task (no row of its own). Neither
+touches anything but the codebase's repository and the record: no Mutation
+of the genome is asked. Either answer's receipts are the architecture
+note and the reading's diff in full, one manifest of sources (`{"sources":
+[{kind note|diff|file, path, digest}…]}`: the note, the diff by its
+receipt, and every file read through the `read` hand with the digest of
+what it read), and the tool calls (a `read` row names its `path`).
+
+**The verdict.** The forge decides a review's fate and the organization
+learns it through the `Forge` interface (`dna/core/forge.hl`):
+`review_state` (`open`, `merged\t<commit>`, `closed`, `unknown`),
+`review_body` and `review_comments` (`who\tkey\ttext`, newlines as `\n`),
+beside the verdict, check and comment methods. The host's `github_sync`
+asks it for every codebase review not yet decided, per codebase (GitHub's
+`gh pr view` for a `github` forge, the repository taken from the
+codebase's url; the file forge's `<n>.merged`, `<n>.said` for fixtures),
+through `codebase_intake` (`dna/core/codebase_reviews.hl`), which returns
+the rows and writes none:
+
+- merged: `task.delivered {via: review, leg_commit, merge_commit, edited,
+  edit_receipt, comment_receipts}`. A review the team edited before merging is still
+  delivered; `edited` is whether `git diff <leg_commit> <merge_commit>`
+  in the codebase is not empty, and that diff is the `edit_receipt`: what
+  the organism learns from;
+- closed unmerged: `task.refused {via: review, why, comment_receipts}`;
+- each comment on the review, once by its key, is a receipt on the task:
+  `comment_receipts` on the verdict row, in the forge's order. A comment
+  has no row kind of its own.
+
+A no-impact brief's Review is the verdict: approved, `task.delivered {via:
+brief}`; otherwise `task.refused {via: brief}`, written when the Review
+settles (`brief_verdict`).
 
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must

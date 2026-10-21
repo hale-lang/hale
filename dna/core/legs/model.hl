@@ -145,6 +145,8 @@ fn tool_row(turn: Int, name: String, args: String, done: HandResult) -> String {
     b.begin_object();
     b.int_field("turn", turn);
     b.string_field("name", name);
+    // a read names its file: the sources an answer rests on are receipts
+    if name == "read" && len(std::json::find_string_field(args, "path")) > 0 { b.string_field("path", std::json::find_string_field(args, "path")); }
     b.string_field("arguments_digest", dna::digest_of(args));
     b.string_field("ok", if done.ok { "true" } else { "false" });
     b.string_field("output_digest", dna::digest_of(done.output));
@@ -167,6 +169,60 @@ fn tool_receipt_object(rows: String) -> String {
     b.string_field("body", "{\"tool_calls\": [" + rows + "]}");
     b.end_object();
     return b.result();
+}
+
+// The sources an integration task's answer rests on, as receipts: the
+// architecture note and the reading's diff in full, then one manifest of
+// them and of every file the leg read through the hands (its path and the
+// digest of what it read). "" for a Work that answers no integration.
+fn integration_sources(hat: String, rows: String) -> String {
+    let brief = std::json::find_field_raw(hat, "integration");
+    if len(brief) == 0 { return ""; }
+    let note = std::json::find_string_field(brief, "note");
+    let diff = std::json::find_string_field(brief, "diff");
+    let m = std::json::Builder { };
+    m.begin_object();
+    m.begin_array_field("sources");
+    if len(std::json::find_string_field(brief, "note_digest")) > 0 {
+        m.begin_object(); m.string_field("kind", "note"); m.string_field("path", std::json::find_string_field(brief, "note_path")); m.string_field("digest", std::json::find_string_field(brief, "note_digest")); m.end_object();
+    }
+    m.begin_object(); m.string_field("kind", "diff"); m.string_field("reading", std::json::find_string_field(brief, "reading")); m.string_field("digest", std::json::find_string_field(brief, "diff_receipt")); m.end_object();
+    let mut it = std::json::array_first("[" + rows + "]");
+    while !it.done {
+        if std::json::find_string_field(it.element, "name") == "read" && std::json::find_string_field(it.element, "ok") == "true" {
+            m.begin_object(); m.string_field("kind", "file"); m.string_field("path", std::json::find_string_field(it.element, "path")); m.string_field("digest", std::json::find_string_field(it.element, "output_digest")); m.end_object();
+        }
+        it = std::json::array_next(it);
+    }
+    m.end_array();
+    m.end_object();
+    let mut out = "";
+    if len(note) > 0 { out = out + receipt_object(note) + ", "; }
+    if len(diff) > 0 { out = out + receipt_object(diff) + ", "; }
+    return out + receipt_object(m.result());
+}
+
+fn receipt_object(body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("class", "internal");
+    b.string_field("body", body);
+    b.end_object();
+    return b.result();
+}
+
+// Receipts (a JSON array of `{class, body}`) with more objects added at the end.
+fn receipts_plus(receipts: String, more: String) -> String {
+    if len(more) == 0 { return receipts; }
+    let t = std::str::trim(receipts);
+    if t == "[]" || len(t) < 3 { return "[" + more + "]"; }
+    return t[0..(len(t) - 1)] + ", " + more + "]";
+}
+
+// Whether a model's answer says that nothing needs to change: its first
+// line begins `NO IMPACT`.
+fn no_impact_answer(text: String) -> Bool {
+    return std::str::starts_with(std::str::lower(std::str::trim(text)), "no impact");
 }
 
 // A Patch's receipts: the commit's patch first (what the owner applies),
@@ -291,6 +347,7 @@ locus ModelPerformer {
         let mut turn = 0;
         let mut answer = "";
         let mut refusals = 0;
+        let mut briefed = false;
         while turn < self.max_turns && len(answer) == 0 {
             turn = turn + 1;
             req.messages = "[" + messages + "]";
@@ -314,6 +371,12 @@ locus ModelPerformer {
                     rows = joined(rows, tool_row(turn, name, args, done));
                     it = std::json::array_next(it);
                 }
+            } else if mode == "do" && len(std::json::find_field_raw(hat, "integration")) > 0 && no_impact_answer(r.output) && len(std::str::trim(dna::run_tool("git\n-C\n" + worktree + "\nstatus\n--porcelain").stdout)) == 0 {
+                // an integration's move that changes nothing in the codebase: the
+                // answer is a brief with its reasons, not a patch, and the tree
+                // is the one it was cloned as, so no validator has anything to judge
+                answer = r.output;
+                briefed = true;
             } else if mode == "do" {
                 // the answer stands once the validators pass on every seed touched
                 let refused = bench.validate(hands, validators);
@@ -330,6 +393,15 @@ locus ModelPerformer {
         }
         let calls = "[" + self.calls + "]";
         if len(answer) == 0 { return Performance { disposition: "failed", narrative: "no answer within " + to_string(self.max_turns) + " turns" + (if refusals > 0 { " (the validators refused " + to_string(refusals) + " time(s))" } else { "" }), calls: calls, receipts: tool_receipt(rows), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION }; }
+        let sources = integration_sources(hat, rows);
+        if briefed {
+            let kept = receipts_plus(tool_receipt(rows), sources);
+            return Performance {
+                disposition: "done", result: answer, result_ref: "brief:" + dna::digest_of(answer),
+                narrative: "the model read the integration's move against the codebase for " + to_string(turn) + " turn(s) and found no impact" + self.waits_said(),
+                calls: calls, receipts: kept, prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
+            };
+        }
         if mode == "do" && owed == "Patch" {
             // one commit on the base: everything the loop changed, squashed
             let soft = dna::run_tool("git\n-C\n" + bench.worktree + "\nreset\n-q\n--soft\n" + bench.base);
@@ -344,7 +416,7 @@ locus ModelPerformer {
                 return Performance {
                     disposition: "done", result: answer, result_ref: "review:" + rev.output,
                     narrative: "the model drove the hands for " + to_string(turn) + " turn(s), the validators passed and the review opened at the codebase" + self.waits_said(),
-                    calls: calls, receipts: if shown.ok { patch_and_tools(shown.output, rows) } else { tool_receipt(rows) }, prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
+                    calls: calls, receipts: receipts_plus(if shown.ok { patch_and_tools(shown.output, rows) } else { tool_receipt(rows) }, sources), prompt_digest: first.prompt_digest, renderer: RENDERER_VERSION
                 };
             }
             let sha = hands.git.commit(bench.worktree, first_line(answer));

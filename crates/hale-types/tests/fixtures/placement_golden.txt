@@ -11775,6 +11775,211 @@ dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/integration_task_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.d	__lib_dna__core___assembly__Dna
+row	~	__lib_dna__core___assembly__Dna	main	default
+row	~.attempts	__lib_dna__core___attempts__AttemptRecord	main	inherited
+row	~.attempts.held_edits	__lib_dna__core___attempts__EditAsks	main	inherited
+row	~.attempts.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.attempts.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.attempts.pending_reports	__lib_dna__core___attempts__Reports	main	inherited
+row	~.attempts.waiting_edits	__lib_dna__core___attempts__EditAsks	main	inherited
+row	~.board	__lib_dna__core___assembly__LocalHumanMembrane	main	inherited
+row	~.boundary	__lib_dna__core___review__AutonomyBoundary	main	inherited
+row	~.boundary.audit	__lib_dna__core___review__AuditRows	main	inherited
+row	~.budget	__lib_dna__core___budget__Budget	main	inherited
+row	~.cases	__lib_dna__core___cases__CaseRecord	main	inherited
+row	~.cases.held_cases	__lib_dna__core___cases__CaseAsks	main	inherited
+row	~.cases.held_rows	__lib_dna__core___cases__CaseIds	main	inherited
+row	~.cases.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.cases.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.cases.pending_cases	__lib_dna__core___cases__CaseAsks	main	inherited
+row	~.cases.refused_completions	__lib_dna__core___cases__CaseIds	main	inherited
+row	~.catalog	__lib_dna__core___workflow_definition__WorkflowCatalog	main	inherited
+row	~.catalog.bound	__lib_dna__core___workflow_definition__BoundNodeRows	main	inherited
+row	~.catalog.members	__lib_dna__core___workflow_definition__MemberDefRows	main	inherited
+row	~.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	main	inherited
+row	~.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited
+row	~.ceiling	__lib_dna__core___review__AutonomyBoundary	main	inherited
+row	~.ceiling.audit	__lib_dna__core___review__AuditRows	main	inherited
+row	~.claims	__lib_dna__core___memory_spine__MemoryLeases	main	inherited
+row	~.claims.store	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
+row	~.claims.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.claims.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.concerns	__lib_dna__core___concerns__ConcernRecord	main	inherited
+row	~.concerns.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.concerns.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.deployment	__lib_dna__core___assembly__NoDeployment	main	inherited
+row	~.editor	__lib_dna__core___editing__SourceEditor	main	inherited
+row	~.editor.models	__lib_dna__core___models__ModelRouter	main	inherited
+row	~.editor.models.deep	__lib_dna__core___models__FakeModel	main	inherited
+row	~.editor.models.private	__lib_dna__core___models__LocalFakeModel	main	inherited
+row	~.editor.models.quick	__lib_dna__core___models__FakeModel	main	inherited
+row	~.editor.models.selection	__lib_dna__core___models__EvidenceAwareSelection	main	inherited
+row	~.editor.tools	__lib_dna__core___editing__WorktreeTools	main	inherited
+row	~.evidence	__lib_dna__core___evidence__EvidenceStore	main	inherited
+row	~.evidence.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.evidence.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.evidence.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
+row	~.evidence.vault	__lib_dna__core___memory_spine__MemoryVault	main	inherited
+row	~.evidence.vault.j	__lib_dna__core___routing__RoutedJournal	main	inherited
+row	~.evidence.vault.j.ledger	__lib_dna__core___memory_spine__MemoryLedger	main	inherited
+row	~.evidence.vault.j.ledger.leases	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
+row	~.evidence.vault.j.ledger.leases.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.evidence.vault.j.ledger.leases.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.evidence.vault.j.ledger.store	__lib_dna__core___memory_ledger__PqLedger	main	inherited
+row	~.evidence.vault.j.ledger.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.evidence.vault.j.ledger.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.evidence.vault.j.ledger.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.evidence.vault.j.ledger.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.evidence.vault.j.ledger.store.writers	__lib_dna__core___journal__Authors	main	inherited
+row	~.evidence.vault.j.order	__lib_dna__core___routing__PlacedRows	main	inherited
+row	~.evidence.vault.j.record	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.evidence.vault.j.record.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.evidence.vault.store	__lib_dna__core___memory_protected__PqProtected	main	inherited
+row	~.evidence.vault.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.evidence.vault.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.executions	__lib_dna__core___workflow_runtime__Executions	main	inherited
+row	~.gateway	__lib_dna__core___workspace__MutationGateway	main	inherited
+row	~.gateway.leases	__lib_dna__core___journal__MemLeases	main	inherited
+row	~.gateway.leases.rows	__lib_dna__core___journal__LeaseRows	main	inherited
+row	~.gateway.repo	__lib_dna__core___workspace__LocalGit	main	inherited
+row	~.gateway.workspaces	__lib_dna__core___workspace__IsolatedWorktrees	main	inherited
+row	~.journal	__lib_dna__core___routing__RoutedJournal	main	inherited
+row	~.journal.ledger	__lib_dna__core___memory_spine__MemoryLedger	main	inherited
+row	~.journal.ledger.leases	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
+row	~.journal.ledger.leases.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.journal.ledger.leases.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.journal.ledger.store	__lib_dna__core___memory_ledger__PqLedger	main	inherited
+row	~.journal.ledger.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.journal.ledger.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.journal.ledger.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.journal.ledger.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.journal.ledger.store.writers	__lib_dna__core___journal__Authors	main	inherited
+row	~.journal.order	__lib_dna__core___routing__PlacedRows	main	inherited
+row	~.journal.record	__lib_dna__core___memory_record__RecordJournal	main	inherited
+row	~.journal.record.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
+row	~.journal.record.store	__lib_dna__core___memory_record__PqRecord	main	inherited
+row	~.journal.record.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.journal.record.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.journal.record.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.journal.record.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.journal.record.store.sigs	__lib_dna__core___journal__Authors	main	inherited
+row	~.knowledge	__lib_dna__core___knowledge__Knowledge	main	inherited
+row	~.knowledge.bindings	__lib_dna__core___knowledge__BindingRows	main	inherited
+row	~.knowledge.edges	__lib_dna__core___knowledge__EdgeRows	main	inherited
+row	~.knowledge.ideas	__lib_dna__core___knowledge__IdeaRows	main	inherited
+row	~.knowledge.proposals	__lib_dna__core___knowledge__IdeaRows	main	inherited
+row	~.knowledge_client	__lib_dna__core___memory_spine__MemoryKnowledge	main	inherited
+row	~.knowledge_client.store	__lib_dna__core___memory_store__Pq	main	inherited
+row	~.knowledge_client.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.knowledge_client.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.knowledge_record	__lib_dna__core___knowledge_record__KnowledgeRecord	main	inherited
+row	~.knowledge_record.binding_policy_syntax	__lib_dna__core___knowledge_binding__NoKnowledgeBindingPolicySyntax	main	inherited
+row	~.knowledge_record.edge_facts	__lib_dna__core___knowledge_edge_review__NoKnowledgeDirectEdgeFacts	main	inherited
+row	~.knowledge_record.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.knowledge_record.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.knowledge_record.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
+row	~.leases	__lib_dna__core___journal__MemLeases	main	inherited
+row	~.leases.rows	__lib_dna__core___journal__LeaseRows	main	inherited
+row	~.org_source	__lib_dna__core___org_source__OrganizationSourceRecord	main	inherited
+row	~.org_source.apply_inputs	__lib_dna__core___organization_source_request__NoOrganizationSourceApplyInputs	main	inherited
+row	~.org_source.facts	__lib_dna__core___organization_source_request__NoOrganizationSourceFacts	main	inherited
+row	~.org_source.inputs	__lib_dna__core___organization_source_request__NoOrganizationSourceInputs	main	inherited
+row	~.org_source.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.org_source.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.organization_source_review_facts	__lib_dna__core___organization_source_request__OrganizationSourceReviewFacts	main	inherited
+row	~.organization_source_review_facts.inner	__lib_dna__core___organization_source_request__NoOrganizationSourceFacts	main	inherited
+row	~.ownership	__lib_dna__core___ownership__Ownership	main	inherited
+row	~.ownership.memberships	__lib_dna__core___ownership__MembershipRows	main	inherited
+row	~.ownership.positions	__lib_dna__core___ownership__OwnedRows	main	inherited
+row	~.pending_asks	__lib_dna__core___assembly__PendingAsks	main	inherited
+row	~.positions	__lib_dna__core___positions__PositionRecord	main	inherited
+row	~.positions.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.positions.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.positions.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
+row	~.practices	__lib_dna__core___practices__PracticeRecord	main	inherited
+row	~.practices.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.practices.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.review_journal	__lib_dna__core___review__ReviewJournal	main	inherited
+row	~.review_journal.inner	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.review_journal.inner.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.review_policy	__lib_dna__core___assembly__HumanBeforeApply	main	inherited
+row	~.reviews	__lib_dna__core___reviews__ReviewRecord	main	inherited
+row	~.reviews.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.reviews.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.reviews.knowledge_reviews	__lib_dna__core___reviews__KnowledgeReviewIds	main	inherited
+row	~.reviews.organization_source_reviews	__lib_dna__core___reviews__KnowledgeReviewIds	main	inherited
+row	~.runtime	__lib_dna__core___workflow_runtime__WorkflowRuntime	main	inherited
+row	~.runtime.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.runtime.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.runtime.p	__lib_dna__core___workflow_projection__WorkflowProjection	main	inherited
+row	~.runtime.p.asks	__lib_dna__core___workflow_projection__AskViewRows	main	inherited
+row	~.runtime.p.facts	__lib_dna__core___workflow_projection__FactRows	main	inherited
+row	~.runtime.p.reader	__lib_dna__core___workflow_definition__WorkflowCatalog	main	inherited
+row	~.runtime.p.reader.bound	__lib_dna__core___workflow_definition__BoundNodeRows	main	inherited
+row	~.runtime.p.reader.members	__lib_dna__core___workflow_definition__MemberDefRows	main	inherited
+row	~.runtime.p.reader.stats	__lib_dna__core___workflow_definition__DefStatRows	main	inherited
+row	~.runtime.p.reader.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited
+row	~.runtime.p.steps	__lib_dna__core___workflow_projection__StepViewRows	main	inherited
+row	~.runtime.p.tasks	__lib_dna__core___workflow_projection__TaskViewRows	main	inherited
+row	~.runtime.p.tree	__lib_dna__core___workflow_definition__BoundNodeRows	main	inherited
+row	~.runtime.p.works	__lib_dna__core___workflow_projection__WorkViewRows	main	inherited
+row	~.runtime.work	__lib_dna__core___performers__NoPerformers	main	inherited
+row	~.scheduler	__lib_dna__core___scheduler__Scheduler	main	inherited
+row	~.scheduler.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.scheduler.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.scheduler.rows	__lib_dna__core___scheduler__ScheduleRows	main	inherited
+row	~.spending	__lib_dna__core___spending__SpendRecord	main	inherited
+row	~.spending.journal	__lib_dna__core___journal__MemJournal	main	inherited
+row	~.spending.journal.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.steps	__lib_dna__core___steps__StepRecord	main	inherited
+row	~.steps.waiting_steps	__lib_dna__core___steps__StepAsks	main	inherited
+row	~.verification	__lib_dna__core___verification__HaleVerification	main	inherited
+row	~.verification.receipts	__lib_dna__core___memory_record__MemoryReceipts	main	inherited
+row	~.verification.receipts.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.verification.receipts.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.work	__lib_dna__core___work_system__WorkSystem	main	inherited
+row	~.work.agent	__lib_dna__core___work_system__LegRelay	main	inherited
+row	~.work.agent_reconciler	__lib_dna__core___work_system__RelayReplay	main	inherited
+row	~.work.edit	__lib_dna__core___work_system__EditRelay	main	inherited
+row	~.work.edit_reconciler	__lib_dna__core___performers__IdempotentReplay	main	inherited
+row	~.work.edit_relay	__lib_dna__core___work_system__EditRelay	main	inherited
+row	~.work.human	__lib_dna__core___work_system__HumanRelay	main	inherited
+row	~.work.human_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
+row	~.work.human_relay	__lib_dna__core___work_system__HumanRelay	main	inherited
+row	~.work.organism_reconciler	__lib_dna__core___performers__IdempotentReplay	main	inherited
+row	~.work.organism_relay	__lib_dna__core___work_system__OrganismRelay	main	inherited
+row	~.work.selection	__lib_dna__core___work_system__CapabilityFirstSelection	main	inherited
+row	~.work.service	__lib_dna__core___work_system__ServicePerformer	main	inherited
+row	~.work.service_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
+row	~.work.software	__lib_dna__core___performers__ScriptedPerformer	main	inherited
+row	~.work.software_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
+-- App@literal1.forge	__lib_dna__core___forge__MemForge
+row	~	__lib_dna__core___forge__MemForge	main	default
+row	~.reviews	__lib_dna__core___forge__MemReviews	main	inherited
+shared	__lib_dna__core___memory_record__RecordJournal@main1	__lib_dna__core___memory_record__RecordJournal #8053e680
+shared	__lib_dna__operations___memory_tail__MemoryProjection@main2	__lib_dna__operations___memory_tail__MemoryProjection #92e5fe40
+shared	dynamic	sites in core #fef121de
+shared	dynamic	sites in core/legs #df5504df
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in operations #bbf7cafe
+-- dynamic	sites in tests
+dynamic	__lib_dna__core___memory_record__MemoryReceipts	on main
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main
+dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__core__legs___hands__ForgeBridge	on main
+dynamic	__lib_dna__core__legs___hands__Hands	on main
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on main
+dynamic	__lib_dna__operations___context__HatReader	on main
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/journal_contention_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -13723,39 +13928,7 @@ row	~.work.software_reconciler	__lib_dna__core___performers__NoEvidence	main	inh
 shared	__lib_dna__core___memory_record__RecordJournal@main1	__lib_dna__core___memory_record__RecordJournal #8053e680
 shared	__lib_dna__core___memory_record__RecordJournal@main2	__lib_dna__core___memory_record__RecordJournal #8053e680
 shared	__lib_dna__operations___memory_tail__MemoryProjection@main3	__lib_dna__operations___memory_tail__MemoryProjection #92e5fe40
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___exchange__ExchangeKey	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
-dynamic	__lib_dna__core___routing__RoutedJournal	on main
-dynamic	__lib_dna__core___steps__StepAsks	on main
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #fef121de
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in operations #bbf7cafe
 shared	dynamic	sites in tests #9fd35e77
@@ -19201,6 +19374,40 @@ dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 == shared sites in core #ee955449
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+
+== shared sites in core #fef121de
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___exchange__ExchangeKey	on main
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
+dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
+dynamic	__lib_dna__core___memory_embed__Words	on main
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main
+dynamic	__lib_dna__core___review__Review	on main
+dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__core___steps__StepAsks	on main
+dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
+dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
+dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__Executions	on main
+dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
+dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
 == shared sites in core/legs #df5504df

@@ -119,7 +119,10 @@ export const nervesOwner = () => process.env.HALE_DNA_NATS_URL_OWNER || '';
 // Linux limits; the browser worker remains separate (V8 reserves large VA).
 export function boundedNative(command, args, { build = false, lock = true } = {}) {
   if (process.platform !== 'linux') return { command, args };
-  const memory = build ? 2_147_483_648 : 536_870_912;
+  // The service reads the organization's topology of the vendored DNA (3.7 MB
+  // and growing with the DNA's loci); loading it takes about 300 MiB of arena
+  // at peak, which the old 512 MiB bound left too little headroom for.
+  const memory = build ? 2_147_483_648 : 805_306_368;
   // A build compiles the toolchain's host or a whole API tree, about a
   // CPU-minute from a cold cache on a fast machine and several on a CI
   // runner; a service or a fixture process keeps the short budget.

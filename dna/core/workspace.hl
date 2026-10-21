@@ -1325,3 +1325,26 @@ fn fixture_record_refuses(repo: String, refusing: Bool) -> String {
     let r = run_tool("psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\n" + sql);
     return if r.code == 0 { "" } else { trim_nl(r.stderr) };
 }
+
+// ---- a codebase's repository (phase 3) ----
+// git is spelled here, in the workspace's file, not beside the codebase.
+
+// A scratch clone of the codebase at its default branch: its path, or ""
+// with why in `why`.
+fn codebase_clone(c: Codebase) -> RunResult {
+    let dir = scratch_root("codebase-" + c.name);
+    let r = run_tool("git\nclone\n--quiet\n--no-checkout\n" + c.repo + "\n" + dir + "/clone");
+    if r.code != 0 { scratch_done(dir); return RunResult { code: r.code, stderr: r.stderr }; }
+    return RunResult { code: 0, stdout: dir };
+}
+
+// `git <args>` in the codebase's repository: where it is on this machine,
+// else in a scratch clone that goes after.
+fn codebase_git(c: Codebase, args: String) -> RunResult {
+    if codebase_repo_local(c) { return run_tool("git\n-C\n" + c.repo + "\n" + args); }
+    let cl = codebase_clone(c);
+    if cl.code != 0 { return cl; }
+    let r = run_tool("git\n-C\n" + cl.stdout + "/clone\n" + args);
+    scratch_done(cl.stdout);
+    return r;
+}

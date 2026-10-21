@@ -75,8 +75,22 @@ fn render_prompt(hat: String) -> String {
     out = out + "Its data class is " + std::json::find_string_field(hat, "data_class") + ": nothing of that class leaves it.\n";
     let history = history_lines(hat, "- ");
     if len(history) > 0 { out = out + "\nWhat happened to this work so far:\n" + history; }
+    out = out + integration_lines(hat);
     let output_contract = std::json::find_string_field(hat, "output_contract");
     out = out + "\nAnswer " + (if len(output_contract) > 0 { "in the form the output contract names, `" + output_contract + "`" } else { "with your result" }) + ", and nothing else.\n";
+    return out;
+}
+
+// An integration task's brief: what moved upstream, its diff, and the
+// integration's architecture note; and the two ways to answer it. "" for
+// a Work that answers no integration.
+fn integration_lines(hat: String) -> String {
+    let brief = std::json::find_field_raw(hat, "integration");
+    if len(brief) == 0 { return ""; }
+    let note = std::json::find_string_field(brief, "note");
+    let mut out = "\nThe upstream `" + std::json::find_string_field(brief, "integration") + "` moved upstream (reading " + std::json::find_string_field(brief, "reading") + "). Its diff:\n" + std::json::find_string_field(brief, "diff");
+    out = out + "\nThe architecture note (" + std::json::find_string_field(brief, "note_path") + "): " + (if len(note) > 0 { "\n" + note } else { "the codebase holds none.\n" });
+    out = out + "\nRead the client's source in the codebase with your hands. Answer one of two ways. If the client must change, change it (the change opens as a pull request). If nothing must change, change nothing and begin your answer with `NO IMPACT:` and give your reasons, naming the files you read.\n";
     return out;
 }
 

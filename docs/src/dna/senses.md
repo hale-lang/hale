@@ -323,8 +323,50 @@ practice whose terms do not stand (a kind outside the four, say) fails
 every occurrence saying why, and lands nothing.
 
 From there the concern is a concern like any other: escalated, and
-proposed as knowledge when the watch keeps raising them. It does not
-become a task by itself yet.
+proposed as knowledge when the watch keeps raising them. When the
+practice names an attached codebase (`codebase=<name>`, set with
+`--set codebase=<name>` on the pack), the move also becomes a task:
+see [A move becomes a task](#a-move-becomes-a-task).
+
+### A move becomes a task
+
+A service you depend on moved; whether your client must change is a
+question about your code. When the watch's practice names an attached
+codebase ([A codebase of your own](./heart.md)), the organism asks it for
+you. The task is derived from what the check already landed: the reading
+and its diff, and the practice that convened it. Nothing new is recorded
+for it beyond the ask.
+
+Keep the architecture note of the service in the codebase, on its default
+branch, as `<watch>.md` in its knowledge directory (`--knowledge` on
+`hale dna codebase attach`, default `docs/integrations/`; `<watch>` is the
+last segment of the practice's name): what the client does with the
+service, and where. When the service moves, the organism reads it and
+proposes it as knowledge bound to the owning position (the Board ratifies
+it like any knowledge). A note that changed is a fresh proposal on the
+same node; one that did not is the proposal already in the record.
+
+When the service moves, the organism files a task under the position, with
+no one filing it: the reading, its diff, and the note are in the task's
+brief. A leg that holds the position claims it the way it claims any task,
+reads your client through the codebase's worktree, and answers one of two
+ways:
+
+- **a pull request** on the codebase's repository that updates the client;
+- **a no-impact brief**, an answer that begins `NO IMPACT:` and gives its
+  reasons, when nothing needs to change. No forge sees it: the organism
+  puts it to a Review of its own.
+
+Either answer comes with receipts: the note, the diff, and every file the
+leg read. The leg touches nothing but the codebase's repository.
+
+The forge's word becomes the task's verdict. A merged pull request is
+**delivered**; one closed without merging is **refused**; a no-impact brief
+is delivered when its Review is approved and refused otherwise. Every
+comment on the pull request is kept as a receipt on the verdict row, and when the
+team edited the leg's branch before merging, the task is still delivered
+and the diff between the leg's last commit and the merge commit is a
+receipt: what the organism learns from your edits.
 
 ## How it breaks
 
