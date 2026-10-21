@@ -1269,3 +1269,13 @@ textarea.kd-input { resize: vertical; min-height: 120px; line-height: 1.6; }
   .projects-request .command-outcome-map .outcome-marker { margin: 0; }
   .projects-logs .intervention-actions, .projects-logs .detail-note, .projects-logs .projects-log, .projects-logs .intervention-error, .projects-logs > .button { margin-left: 14px; margin-right: 14px; }
 }
+
+/* The record's index (dna/face/standard/index.hl): static, one column of panels. */
+.record-index { max-width: 1100px; margin: 0 auto; padding: 32px 20px 64px; display: grid; gap: 20px; }
+.record-index .index-body { padding: 16px 20px; overflow-x: auto; }
+.record-index .index-purpose { max-width: 72ch; font-size: 15px; }
+.record-index .index-table { width: 100%; border-collapse: collapse; }
+.record-index .index-table th { text-align: left; font: 10px/1.6 var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding: 0 12px 8px 0; }
+.record-index .index-table td { padding: 8px 12px 8px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.record-index .index-links { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.record-index .quiet { color: var(--muted); }

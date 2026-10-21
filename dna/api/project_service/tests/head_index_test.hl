@@ -1,0 +1,87 @@
+// dna/api/project_service/tests/head_index_test.hl — the standard face's
+// index, generated from the record.
+//
+// The record holds a declared purpose, a position with its holder, one
+// attached codebase, one watched upstream (its practice ratified, one
+// occurrence of its check settled) and a contract that links to the outside.
+// The face reads all of it through an `api::client` over the head's surface
+// (the API child's `Commands::index` row) and serves it as a static page at
+// `/index`: every section appears with the record's content. The page is the
+// face's: the head's own port has none. It stands behind the head's read, as
+// `/app/` does: a trusted-local session reads bare, as every head read does.
+
+import "./fixture" as fixture;
+import "../../../core" as dna;
+import "../../../operations" as ops;
+
+const SOURCE: String = "https://pay.example/changelog";
+const DOCS: String = "https://docs.example/shop/api";
+// the occurrence at 2026-09-28T12:53:20Z, in milliseconds
+const OCCURRENCE: Int = 1790600000000;
+const SNAPSHOT: String = "sha256:3a71c0d2e9b4f81c5d6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a";
+
+fn add(j: dna::Journal, kind: String, entity: String, body: String) {
+    let r = j.append(j.revision(), kind, entity, body);
+    std::test::assert(r.ok, "the record takes " + kind + " " + entity + ": " + r.error);
+}
+
+fn fill_record(project: String) {
+    let j = dna::RecordJournal { repo: project, author: "ada" };
+    let refreshed = j.refresh();
+    add(j, "graph.node", "purpose:shop", ops::graph_node_body("purpose", "shop", "Keep the shop's books and its payments honest.", ""));
+    add(j, "graph.node", "position:app/dev", ops::graph_node_body("position", "app/dev", "builds and mends the payments code", ""));
+    std::test::assert_eq_str(ops::graph_seat(j, "position:app/dev", "ada"), "", "ada holds app/dev");
+    add(j, "graph.node", "contract:spec/openapi.yaml", ops::graph_node_body("contract", "spec/openapi.yaml", "The payments API, described at " + DOCS + ".", "spec/openapi.yaml"));
+    let c = dna::Codebase { present: true, name: "billing", repo: "/srv/git/billing.git", build: "go build ./...", test: "go test ./...", branch: "trunk", by: "ada", toolchain: "go" };
+    add(j, "codebase.attached", "codebase:billing", dna::codebase_body(c));
+
+    // the watched upstream: a ratified practice, and one settled occurrence of its check
+    let receipts = dna::MemoryReceipts { repo: project };
+    let name = "standard/upstream-watched/pay-changelog";
+    let text = "The upstream pay-changelog is watched for its position: on the cadence it names, its source is read. source=" + SOURCE + " kind=changelog every=1d codebase=billing step=source-check";
+    let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: text, author: "org", name: name }, "position:app/dev");
+    let digest = "sha256:" + receipts.store(doc);
+    add(j, "knowledge.proposed", digest, "{\"digest\": \"" + digest + "\", \"name\": \"" + name + "\"}");
+    add(j, "knowledge.ratified", digest, "{}");
+    // the occurrence's rows are the Ledger's, written through the routed journal
+    let routed = dna::RoutedJournal { record: dna::RecordJournal { repo: project, author: "ada" }, ledger: dna::MemoryLedger { repo: project, dsn_env: dna::kept_spine_dsn(project) } };
+    add(routed, "workflow.admitted", "task-1", "{\"definition\": \"source-check\", \"inputs\": {\"name\": \"" + name + "\"}, \"request\": \"sched:" + name + "@" + to_string(OCCURRENCE) + "\"}");
+    add(routed, "attempt.admitted", "task-1.a0", "{\"task_id\": \"task-1\", \"attempt_id\": \"task-1.a0\"}");
+    add(routed, "attempt.outcome", "task-1.a0", "{\"disposition\": \"done\", \"result\": \"" + SNAPSHOT + "\"}");
+}
+
+fn main() {
+    let root = dna::scratch_root("head-index");
+    let f = fixture::HeadFixture { root: root, face_port: dna::free_port(9) };
+    fill_record(f.project);
+    f.start_with_project(f.project, 0);
+    f.start_face();
+    let face = f.face_url();
+
+    // the API child comes up after the head listens: the page says so until it answers
+    let mut page = "";
+    let deadline = std::time::now() + dna::wait_secs(60);
+    while std::time::now() <= deadline && !std::str::contains(page, "Parts and positions") {
+        let got = dna::run_tool("curl\n-s\n" + face + "/index");
+        page = got.stdout;
+        if !std::str::contains(page, "Parts and positions") { std::time::sleep(250ms); }
+    }
+    std::test::assert(std::str::contains(page, "Parts and positions"), "the index is served: " + page + (std::io::fs::read_file(root + "/face.log") or "") + f.log());
+
+    // each section, with the record's content
+    std::test::assert(std::str::contains(page, "Keep the shop&#39;s books and its payments honest."), "the purpose, escaped: " + page);
+    std::test::assert(std::str::contains(page, "<code>app/dev</code>") && std::str::contains(page, "<td>ada</td>"), "the position and its holder");
+    std::test::assert(std::str::contains(page, "<code>billing</code>") && std::str::contains(page, "/srv/git/billing.git") && std::str::contains(page, "<td>trunk</td>") && std::str::contains(page, "go test ./..."), "the codebase");
+    std::test::assert(std::str::contains(page, "<code>pay-changelog</code>") && std::str::contains(page, "<code>" + SOURCE + "</code>") && std::str::contains(page, "<td>changelog</td>"), "the watched upstream, its source and kind");
+    std::test::assert(std::str::contains(page, "<code>3a71c0d2e9b4</code>") && std::str::contains(page, "2026-09-28T12:53:20Z") && std::str::contains(page, "<td>app/dev</td>"), "its last reading, when it was taken, and its position");
+    std::test::assert(std::str::contains(page, "<code>spec/openapi.yaml</code>") && std::str::contains(page, "The payments API, described at"), "the contract");
+    std::test::assert(std::str::contains(page, "<a href=\"" + DOCS + "\" rel=\"noopener noreferrer\">") && std::str::contains(page, "<code>contract:spec/openapi.yaml</code>"), "an outside link a graph node holds");
+    std::test::assert(std::str::contains(page, "<a href=\"" + SOURCE + "\" rel=\"noopener noreferrer\">") && std::str::contains(page, "<code>knowledge:standard/upstream-watched/pay-changelog</code>"), "an outside link a practice holds");
+    std::test::assert(std::str::contains(page, "href=\"/styles.css\"") && !std::str::contains(page, "<script"), "plain HTML in the shell's stylesheet, no script");
+
+    // the page is the face's: the head's own port has none
+    std::test::assert_eq_int(fixture::curl("GET", f.url() + "/index", "", "").status, 404, "the head has no index");
+
+    f.stop();
+    dna::scratch_done(root);
+}

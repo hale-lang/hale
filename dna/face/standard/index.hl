@@ -1,0 +1,172 @@
+// dna/face/standard/index.hl — the standard face's index (faces slice 2).
+//
+// A static page generated on request from the record. The face does not
+// reach the record: it reads the head's surface through an `api::client`,
+// one row, `Commands::index`, that the head's API child serves beside its
+// commands (dna/api/record_index.hl), and renders what comes back as plain
+// HTML in the shell's stylesheet: the purpose, the parts and their
+// positions with who holds them, the attached codebases, the upstreams the
+// organism watches, the contracts, and every outside link the record holds
+// as knowledge.
+//
+// A row of a surface is its member name and the shapes of its request and
+// response (spec/api.md, The contract digest), so the face declares the two
+// records and the one row it calls; a handler it does not serve is a stub.
+//
+// The client's bearer is the visitor's own: the Cookie header of the request
+// the face is answering, which the face presents to the head's surface
+// (`/api/hale/v1/head/surface`), where the head reads it as the visitor's
+// session. The head relays the call to its API child under that session's
+// credential (an ID token under OIDC), so the index is the visitor's read.
+
+// What the face asks: at most `limit` entries of each section.
+type IndexAsk { limit: Int = 200; }
+
+type RecordIndex {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    purpose: String = "";
+    positions: String = "[]";
+    codebases: String = "[]";
+    watched: String = "[]";
+    contracts: String = "[]";
+    links: String = "[]";
+}
+
+api HeadIndex {
+    rpc Commands::index;
+}
+
+locus Commands {
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex { return RecordIndex { why: "this face serves no rows" }; }
+}
+
+// The visitor's credential, as the head's surface reads it.
+locus VisitorBearer {
+    params { cookie: String = ""; }
+    fn bearer(role: String) -> String { return self.cookie; }
+}
+
+locus IndexReader {
+    params {
+        head_port: Int = 0;
+        cookie: String = "";
+        visitor: VisitorBearer = VisitorBearer { cookie: self.cookie };
+        head: api::Client = api::client(HeadIndex, http::Client { base: "http://127.0.0.1:" + to_string(self.head_port) + "/api/hale/v1/head/surface", principals: self.visitor });
+    }
+    fn read() -> RecordIndex {
+        return match self.head.commands_index(IndexAsk { limit: 200 }) {
+            HeadIndexCommandsIndexOutcome::Result(r) -> r,
+            HeadIndexCommandsIndexOutcome::Refusal(f) -> RecordIndex { why: "the head refused the face's read: " + f.kind + " " + f.reason },
+            HeadIndexCommandsIndexOutcome::ServerError -> RecordIndex { why: "the head failed the read" },
+            HeadIndexCommandsIndexOutcome::Lost(why) -> RecordIndex { why: "the head's surface did not answer: " + why },
+        };
+    }
+}
+
+// ---- the page ----------------------------------------------------------------
+
+fn esc(s: String) -> String {
+    return std::str::replace(std::str::replace(std::str::replace(std::str::replace(std::str::replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"), "\"", "&quot;"), "'", "&#39;");
+}
+
+fn field(el: String, name: String) -> String { return esc(std::json::find_string_field(el, name)); }
+
+fn cell(s: String) -> String { return "<td>" + (if len(s) > 0 { s } else { "<span class=\"quiet\">-</span>" }) + "</td>"; }
+
+fn section(title: String, note: String, body: String) -> String {
+    return "<section class=\"panel\"><div class=\"panel-heading\"><h2>" + title + "</h2><span>" + note + "</span></div><div class=\"index-body\">" + body + "</div></section>\n";
+}
+
+fn table(heads: String, rows: String) -> String {
+    if len(rows) == 0 { return "<p class=\"quiet\">Nothing in the record yet.</p>"; }
+    let mut head = "";
+    let mut rest = heads;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, "|");
+        head = head + "<th scope=\"col\">" + (if sp < 0 { rest } else { rest[0..sp] }) + "</th>";
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+    }
+    return "<table class=\"index-table\"><thead><tr>" + head + "</tr></thead><tbody>" + rows + "</tbody></table>";
+}
+
+fn positions_section(array: String) -> String {
+    let mut rows = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        rows = rows + "<tr>" + cell("<code>" + field(it.element, "name") + "</code>") + cell(field(it.element, "holders")) + "</tr>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return section("Parts and positions", to_string(n) + " positions", table("Position|Held by", rows));
+}
+
+fn codebases_section(array: String) -> String {
+    let mut rows = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        let e = it.element;
+        rows = rows + "<tr>" + cell("<code>" + field(e, "name") + "</code>") + cell("<code>" + field(e, "repo") + "</code>") + cell(field(e, "branch")) + cell("<code>" + field(e, "build") + "</code>") + cell("<code>" + field(e, "test") + "</code>") + cell(field(e, "toolchain")) + "</tr>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return section("Codebases", to_string(n) + " attached", table("Name|Repository|Branch|Build|Test|Toolchain", rows));
+}
+
+fn watched_section(array: String) -> String {
+    let mut rows = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        let e = it.element;
+        let why = field(e, "why");
+        let reading = if len(why) > 0 { "refused: " + why } else if len(std::json::find_string_field(e, "reading")) > 0 { "<code>" + field(e, "reading") + "</code>" } else { "" };
+        rows = rows + "<tr>" + cell("<code>" + field(e, "name") + "</code>") + cell("<code>" + field(e, "source") + "</code>") + cell(field(e, "kind")) + cell(reading) + cell(field(e, "taken")) + cell(field(e, "position")) + "</tr>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return section("Watched upstreams", to_string(n) + " watched", table("Upstream|Source|Kind|Last reading|Taken|Position", rows));
+}
+
+fn contracts_section(array: String) -> String {
+    let mut rows = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        let e = it.element;
+        rows = rows + "<tr>" + cell("<code>" + field(e, "name") + "</code>") + cell("<code>" + field(e, "source") + "</code>") + cell(field(e, "text")) + "</tr>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return section("Contracts", to_string(n) + " contracts", table("Contract|Source|Text", rows));
+}
+
+fn links_section(array: String) -> String {
+    let mut items = "";
+    let mut n = 0;
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        let e = it.element;
+        let url = field(e, "url");
+        items = items + "<li><a href=\"" + url + "\" rel=\"noopener noreferrer\">" + url + "</a> <span class=\"quiet\">held by <code>" + field(e, "held_by") + "</code></span></li>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return section("Outside links", to_string(n) + " links", if n == 0 { "<p class=\"quiet\">The record holds no outside link.</p>" } else { "<ul class=\"index-links\">" + items + "</ul>" });
+}
+
+// The index as a page: the record at its revision, section by section, or
+// why the head could not be read.
+fn index_page(r: RecordIndex) -> String {
+    let mut body = "";
+    if !r.ok {
+        body = section("Unavailable", "", "<p>" + esc(if len(r.why) > 0 { r.why } else { "the head did not answer" }) + "</p>");
+    } else {
+        body = section("Purpose", "the declared purpose", if len(r.purpose) > 0 { "<p class=\"index-purpose\">" + esc(r.purpose) + "</p>" } else { "<p class=\"quiet\">No purpose is declared in the record.</p>" })
+            + positions_section(r.positions) + codebases_section(r.codebases) + watched_section(r.watched) + contracts_section(r.contracts) + links_section(r.links);
+    }
+    return "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"dark\"><title>Hale · the index</title><link rel=\"stylesheet\" href=\"/styles.css\"></head>\n<body><main class=\"record-index\"><header><p class=\"eyebrow\">HALE / DNA ORGANISM</p><h1>Index</h1><p class=\"quiet\">" + (if r.ok { "The record at revision " + to_string(r.revision) + ". " } else { "" }) + "<a href=\"/\">Open the shell</a></p></header>\n" + body + "</main></body></html>\n";
+}

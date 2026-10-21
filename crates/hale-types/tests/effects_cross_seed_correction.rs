@@ -177,21 +177,25 @@ fn api() {
     // (`__rpc_row_<n>_12`, generated per row of the served surface) call it,
     // so they carry what it does; every row's eater, decoder and encoder
     // is a manifest row of its own (56 more on each side).
+    // The faces index row (`Commands::index`) shifts the served rows'
+    // numbering by one (`__rpc_row_1_13`, `__rpc_row_2_13`) and adds 13 rows on
+    // each side: the row's eater, decoder and encoder and the fns of
+    // `record_index.hl`, none of them a row the correction changes.
     // GH #1554: two more rows on both sides, `{alloc}` from the stores
     // into a child locus's field from outside its methods (`self.reader.root
     // = self.root`), which lowering copies (GH #1561) and the survey now
     // sees through the checker's types.
     pinned(
         "api",
-        379,
-        381,
+        392,
+        394,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_12  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_12  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_13  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_13  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}

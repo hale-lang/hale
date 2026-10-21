@@ -614,7 +614,7 @@ const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/91-module-decls: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/docs-server: 0 go, 0 appear; dump 4 tags, 9 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/multi-file-seed: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
-    "dna/api: 1 go, 0 appear, 1 move their reason; dump 395 tags, 1020 reclaim, 1 verdicts",
+    "dna/api: 1 go, 0 appear, 1 move their reason; dump 402 tags, 1026 reclaim, 1 verdicts",
     "dna/core: 0 go, 0 appear; dump 323 tags, 921 reclaim, 0 verdicts",
     "dna/host: 2 go, 0 appear; dump 468 tags, 1115 reclaim, 2 verdicts",
     "dna/host/verb: 0 go, 0 appear; dump 468 tags, 1010 reclaim, 727 verdicts",

@@ -642,8 +642,8 @@ and its practices retire. Anything that has already gone is left out.
 holes the graft opens, and the pack may fill those holes:
 
 ```sh
-hale habitat graft . --with founder --set founder=riley --as riley
-hale dna review all approve --as riley
+hale habitat graft . --with founder --set founder=alice --as alice
+hale dna review all approve --as alice
 ```
 
 The holes are proposals until the Board ratifies them, so a batch planned
@@ -652,8 +652,8 @@ the pack **on** them instead: as though they were ratified. The batch
 names the pending Reviews it stands on, and the dry run says so:
 
 ```text
-+ holds position:board riley
-+ holds position:api/dev riley
++ holds position:board alice
++ holds position:api/dev alice
 …
 5 line(s) added to the organization, 0 taken out, 19 unchanged
 planned on 10 pending Review(s) (k:c5a61bce0f4b, …): ratified after them, refused whole if any is not

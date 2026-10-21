@@ -386,6 +386,18 @@ request to the head, which listens behind it on the loopback
 (`--head-port`, 8796). Open the face's URL, not the head's; the head has no
 page of its own, and `/app.js` or `/app/` on it is a 404.
 
+**The index.** Open `/index` on the face for the record at a glance: the
+purpose, the parts and who holds each position, the attached codebases,
+the upstreams the organism watches (each one's source, kind, last reading
+and when it was taken), the contracts, and every outside link the record
+holds as knowledge. It is a plain page, generated from the record each
+time you open it, with no script of its own. The face does not read the
+record itself: it asks the head's surface for one row, `Commands::index`
+(`hale api describe` lists it among `HeadCommands`), through an
+`api::client`, presenting your own session, so under a sign-in (OIDC) the
+index is yours to read once you are signed in, and refused as every read
+is before.
+
 Naming several faces in a genome, and a face filled by another
 application, are not built yet.
 

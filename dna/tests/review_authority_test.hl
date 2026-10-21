@@ -21,10 +21,10 @@ main locus App {
         // a Review requiring the Board: a hold its asker proposed
         board_review: dna::Review = dna::Review {
             review_id: "r2",
-            question: "ratify riley holding the position `board`, as riley proposes?",
-            subject_digest: "sha256:hold-riley-board",
+            question: "ratify alice holding the position `board`, as alice proposes?",
+            subject_digest: "sha256:hold-alice-board",
             required_authority: "board",
-            author: "riley",
+            author: "alice",
             governance: true
         };
         // a change to the work that requires the Board (an escalated
@@ -34,7 +34,7 @@ main locus App {
             question: "apply mutation m9, which touches the law?",
             subject_digest: "sha256:m9-candidate",
             required_authority: "board",
-            author: "riley"
+            author: "alice"
         };
         boundary: dna::AutonomyBoundary = dna::AutonomyBoundary {
             child: "Support",
@@ -60,14 +60,14 @@ main locus App {
         // 3. A verdict for a candidate that changed after the reviewer looked is refused (TOCTOU pin).
         let stale = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate-v2",
-            verdict: "approve", reviewer: "riley", authority: "maintainer"
+            verdict: "approve", reviewer: "alice", authority: "maintainer"
         });
         std::test::assert(!stale, "digest mismatch refused");
         std::test::assert_eq_int(self.review.refused, 3, "three refusals recorded");
         // 4. Abstention is admitted but does not settle.
         let abst = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
-            verdict: "abstain", reviewer: "riley", authority: "maintainer"
+            verdict: "abstain", reviewer: "alice", authority: "maintainer"
         });
         std::test::assert(abst && !self.review.settled, "abstain admitted, not settled");
         // 5. The right verdict settles it, with provenance. The claim is
@@ -75,30 +75,30 @@ main locus App {
         //    pass by substring, which is the shakeout's finding 3.
         let compound = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
-            verdict: "approve", reviewer: "riley", authority: "maintainer operator"
+            verdict: "approve", reviewer: "alice", authority: "maintainer operator"
         });
         std::test::assert(!compound && !self.review.settled, "a compound authority name is not the authority it contains");
         let ok = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
-            verdict: "approve", reviewer: "riley", authority: "maintainer"
+            verdict: "approve", reviewer: "alice", authority: "maintainer"
         });
         std::test::assert(ok && self.review.settled, "settled");
         std::test::assert_eq_str(self.review.outcome, "approve", "outcome recorded");
-        std::test::assert_eq_str(self.review.decided_by, "riley", "reviewer recorded");
+        std::test::assert_eq_str(self.review.decided_by, "alice", "reviewer recorded");
         std::test::assert_eq_int(self.review.verdict_count(), 2, "abstain + approve kept in lineage");
         // 6. The Board is the exception to independence: a Review requiring
         //    the Board's authority admits its asker's verdict (governance,
         //    not self-review), where the maintainer's Review above did not.
         let own = self.board_review.consider(dna::Verdict {
-            review_id: "r2", subject_digest: "sha256:hold-riley-board",
-            verdict: "approve", reviewer: "riley", authority: "board"
+            review_id: "r2", subject_digest: "sha256:hold-alice-board",
+            verdict: "approve", reviewer: "alice", authority: "board"
         });
-        std::test::assert(own && self.board_review.settled && self.board_review.decided_by == "riley", "the Board ratifies what it asked for: " + self.board_review.last_refusal);
+        std::test::assert(own && self.board_review.settled && self.board_review.decided_by == "alice", "the Board ratifies what it asked for: " + self.board_review.last_refusal);
         //    The exception is governance's alone: a change to the work that
         //    requires the Board still refuses its author.
         let own_change = self.board_change.consider(dna::Verdict {
             review_id: "r3", subject_digest: "sha256:m9-candidate",
-            verdict: "approve", reviewer: "riley", authority: "board"
+            verdict: "approve", reviewer: "alice", authority: "board"
         });
         std::test::assert(!own_change && !self.board_change.settled && std::str::contains(self.board_change.last_refusal, "authored the candidate"), "a Board-required change refuses its author: " + self.board_change.last_refusal);
 
