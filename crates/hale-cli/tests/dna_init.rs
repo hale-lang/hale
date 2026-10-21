@@ -140,6 +140,22 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
+/// A seed in a directory holding `.hale-fmt-frozen` (a recorded fixture)
+/// is not formatted by graft: tools that format on their own honour it.
+#[test]
+fn graft_leaves_a_frozen_seed_as_written() {
+    let app = pipeline_app("frozen");
+    let long = format!("fn wide() {{ println({}); }}\n", ["\"a-long-argument\""; 8].join(", "));
+    let text = std::fs::read_to_string(app.join("main.hl")).unwrap() + &long;
+    std::fs::write(app.join("main.hl"), &text).unwrap();
+    std::fs::write(app.join(".hale-fmt-frozen"), "recorded fixture\n").unwrap();
+    habitat::habitat();
+    let (ok, out) = hale(&["habitat", "graft", ".", "--attach", "--no-pack"], &app);
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read_to_string(app.join("main.hl")).unwrap(), text, "the frozen seed is as written");
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
 #[test]
 fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let app = pipeline_app("journal");

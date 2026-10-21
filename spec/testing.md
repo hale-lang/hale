@@ -472,10 +472,11 @@ log, and BytesBuilder are done).
 
 Zero config, Go-style: there are no options that change the output.
 `hale fmt [paths]` formats `.hl` files in place (no path = the
-current directory tree; `vendor/`, dot-directories and any directory below
-the walk's root that holds a `.hale-fmt-frozen` file are skipped — the
-marker freezes a recorded fixture whose tape is keyed on its bytes; a
-file or directory named on the command line is still formatted);
+current directory tree; `vendor/`, dot-directories and any directory that
+holds a `.hale-fmt-frozen` file are skipped, whether walked into or named —
+the marker freezes a recorded fixture whose tape is keyed on its bytes; a
+file named on the command line is still formatted, and tools that format
+on their own (graft) honour the marker too);
 `--check` lists files that would change and exits 1 (the CI gate);
 `--diff` previews without writing; `--stdin` filters stdin→stdout
 for editor integration.

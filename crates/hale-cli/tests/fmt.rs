@@ -143,6 +143,11 @@ fn a_frozen_directory_is_skipped_by_the_walk_but_not_by_name() {
     assert_eq!(std::fs::read_to_string(dir.join("b.hl")).unwrap(), CANON);
     assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), MESSY, "frozen by the walk");
 
+    // a frozen directory named on the command line is skipped too
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).arg("fmt").arg(&frozen).output().expect("dir");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), MESSY, "frozen when named");
+
     // a file named on the command line is formatted
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("fmt")

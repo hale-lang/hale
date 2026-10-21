@@ -1920,7 +1920,8 @@ fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<Str
     // 9. format what we generated and touched
     let mut fmt = Command::new(&me);
     fmt.arg("fmt").arg(root.join("dna"));
-    if let Some(app) = &app {
+    // a seed in a frozen directory (a recorded fixture) is left as written
+    if let Some(app) = app.as_ref().filter(|a| !crate::verbs::fmt::frozen(&a.seed, &root)) {
         fmt.arg(&app.seed);
     }
     let _ = fmt.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
