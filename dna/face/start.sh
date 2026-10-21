@@ -320,5 +320,13 @@ child=$!
 env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" &
 face_child=$!
 # either one ending ends the launch: a face with no head, or a head with no face, is no door
-if wait -n "$child" "$face_child"; then result=0; else result=$?; fi
+# (polled with kill -0: the system Bash of macOS is 3.2, which has no `wait -n`)
+while kill -0 "$child" 2>/dev/null && kill -0 "$face_child" 2>/dev/null; do sleep 0.2; done
+if ! kill -0 "$child" 2>/dev/null; then
+  if wait "$child"; then result=0; else result=$?; fi
+  child=
+else
+  if wait "$face_child"; then result=0; else result=$?; fi
+  face_child=
+fi
 exit "$result"
