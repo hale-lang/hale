@@ -221,8 +221,11 @@ collection are left as they were. A
 retires what it replaces and the next value reuses the block — so it
 is not reported. An append is, however it reaches the old value:
 `self.log = self.log + line`, through a `let` bound to `self.log`, or
-through a method of `self` — the survey excuses only a value it can
-show carries nothing of the field.
+through a method of `self` that reads the field (directly, or through
+a method it calls) — the survey excuses only a value it can show carries
+nothing of the field. A method of `self` carries the fields its body
+reads, so `self.last = self.label() + id` is a replace while `label`
+reads other fields only.
 `--dump-alloc-summary` tags each scratch-local function,
 and lists one row per declaration: two declarations sharing a name are
 two rows, even in a program the check refuses for it.

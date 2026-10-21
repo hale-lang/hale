@@ -2876,7 +2876,12 @@ assume the others in a build:
   `self.<f>` carries `f`, a free fn's or a builtin's call what its
   arguments carry (it reaches `self` only through them), a method of
   another receiver its receiver's and arguments', an `if` whose arms
-  are values one of its arms'. A method of `self`, `self` itself, a
+  are values one of its arms'. A method of `self` carries the fields its
+  body names as `self.<f>` and the fields the `self` methods it calls
+  carry, and what it is passed; it carries every field when its body
+  uses `self` as a value, writes through a parameter (`p.f = …`,
+  `p[i] = …`, `p.m(…)`), or calls a `self` member that is not a method
+  of the locus. `self` itself, a
   call through a local, a `match`, an arm or block with statements in
   it, and any form the walk does not follow may carry every field.
   A parameter carries what its callers pass, over every call the
@@ -2905,7 +2910,7 @@ assume the others in a build:
   whose publishes carries anything of its own fields keeps its
   handlers' messages fresh, and a message from another locus is taken
   as fresh. So `let previous = self.log; self.log = previous + "x"`,
-  `self.log = self.previous() + "x"`, `self.log = wrap(self.log) +
+  `self.log = self.previous() + "x"` (`previous` reads `log`), `self.log = wrap(self.log) +
   "x"` and `fn append(p: String) { self.log = p + "x"; }` called as
   `self.append(self.log)` are appends and reported, as `self.log =
   self.log + "x"` is; a value built from a handler's message, other

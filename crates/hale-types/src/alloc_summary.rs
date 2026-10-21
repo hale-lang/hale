@@ -2586,6 +2586,9 @@ pub fn summarize_within(
         out.insert(key.clone(), params.iter().map(|p| (p.name.name.clone(), p.default.clone())).collect());
     };
     let mut field_defaults: FieldDefaults = BTreeMap::new();
+    // GH #1490 (step 4): what each locus method's body reads of `self`
+    // (see [`SelfReads`]).
+    let mut self_scans: BTreeMap<(String, String), SelfScan> = BTreeMap::new();
     // GH #1490 (step 4): each locus's handlers with the subject each
     // subscribes to (`None` for a qualified topic, matched as anything).
     let mut subscriptions: Subscriptions = BTreeMap::new();
@@ -3016,6 +3019,12 @@ pub fn summarize_within(
                                     string_rets.insert(key.clone());
                                 }
                                 note_params(&key, &decl.params, &mut param_info);
+                                if !is_stdlib_copy(ids) {
+                                    self_scans.insert(
+                                        (locus.clone(), decl.name.name.clone()),
+                                        self_reads_of(&decl.body, &param_names(&decl.params)),
+                                    );
+                                }
                                 bodies.push((
                                     key,
                                     &decl.body,
@@ -3298,6 +3307,7 @@ pub fn summarize_within(
     summary.flow_loci = flow_loci;
     summary.analysis_copy_loci = analysis_copy_loci;
     summary.appended_runtime_loci = runtime_loci;
+    let self_reads = resolve_self_reads(&self_scans);
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
@@ -3359,6 +3369,7 @@ pub fn summarize_within(
             taints: vec![params.iter().map(|p| (p.clone(), Taint::param(p))).collect()],
             param_info: &param_info,
             field_defaults: &field_defaults,
+            self_reads: &self_reads,
             expanding: std::cell::RefCell::new(Vec::new()),
             inline_array_fields,
             form_of: &form_of,
@@ -3901,6 +3912,43 @@ type Subscriptions = BTreeMap<String, BTreeSet<String>>;
 
 /// GH #1490 (step 4): each fn's and method's parameters, in order, with
 /// the default each has.
+/// GH #1490 (step 4): by (locus, method), the fields of `self` a call of
+/// the method may return something of: `None` when it may be anything.
+type SelfReads = BTreeMap<(String, String), Option<BTreeSet<String>>>;
+
+/// A method's result carries the fields its body reads, the fields the
+/// `self` methods it calls read in turn, and what it was passed. It is
+/// anything when the body uses `self` as a value, writes through a
+/// parameter (it could store what it reads into an argument), or calls
+/// something of `self` that is no method of the locus (a function-valued
+/// field).
+fn resolve_self_reads(scans: &BTreeMap<(String, String), SelfScan>) -> SelfReads {
+    let mut out: SelfReads =
+        scans.iter().map(|(k, sc)| (k.clone(), (!sc.top && !sc.writes_params).then(|| sc.fields.clone()))).collect();
+    loop {
+        let mut changed = false;
+        for (k, sc) in scans {
+            let Some(Some(cur)) = out.get(k).cloned() else { continue };
+            let mut next = cur.clone();
+            let mut top = false;
+            for c in &sc.calls {
+                match out.get(&(k.0.clone(), c.clone())) {
+                    Some(Some(f)) => next.extend(f.iter().cloned()),
+                    _ => top = true,
+                }
+            }
+            let new = if top { None } else { Some(next) };
+            if new.as_ref() != Some(&cur) {
+                out.insert(k.clone(), new);
+                changed = true;
+            }
+        }
+        if !changed {
+            return out;
+        }
+    }
+}
+
 type ParamInfo = BTreeMap<FnKey, Vec<(String, Option<Expr>)>>;
 
 /// GH #1490 (step 4): each struct type's and locus's fields, with the
@@ -5655,6 +5703,9 @@ struct Walker<'a> {
     /// GH #1490 (step 4): every struct type's and locus's field
     /// defaults, evaluated where a literal leaves the field.
     field_defaults: &'a FieldDefaults,
+    /// GH #1490 (step 4): the fields each method of a locus may carry
+    /// into its result ([`resolve_self_reads`]).
+    self_reads: &'a SelfReads,
     /// The struct literals whose left fields' defaults `taint_of` is
     /// expanding, outermost first.
     expanding: std::cell::RefCell<Vec<String>>,
@@ -6226,7 +6277,20 @@ impl<'a> Walker<'a> {
                     }
                     Expr::Ident(_) | Expr::Path(_) => Taint::none(),
                     Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => match receiver.as_ref() {
-                        Expr::KwSelf(_) => return Taint::Top,
+                        // A method of `self` carries what its body reads
+                        // of `self` (and what it calls reads), and what
+                        // it is passed; one the survey holds no body of
+                        // may carry anything.
+                        Expr::KwSelf(_) => {
+                            let (Expr::Field { name, .. } | Expr::Path2 { name, .. }) = callee.as_ref() else {
+                                return Taint::Top;
+                            };
+                            let key = (self.enclosing_locus.clone().unwrap_or_default(), name.name.clone());
+                            match self.self_reads.get(&key) {
+                                Some(Some(fields)) => fields.iter().fold(Taint::none(), |t, f| t.join(Taint::field(f))),
+                                _ => return Taint::Top,
+                            }
+                        }
                         // `alias::f(..)` spelled with a dot is a free fn.
                         Expr::Ident(r)
                             if self.local(&r.name).is_none()
@@ -7298,7 +7362,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
 /// assignment runs, on a later iteration, the value the assignment
 /// stored. Every walker that tracks bindings uses this one rule.
 pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
+    let mut a = Reassigned::new(BTreeSet::new());
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -7311,7 +7375,7 @@ pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<Str
 /// over-approximation, which only makes a field-provenance answer more
 /// conservative.
 fn loop_assigned_heads(cond: Option<&Expr>, body: &Block) -> BTreeMap<String, usize> {
-    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new(), heads: BTreeMap::new() };
+    let mut a = Reassigned::new(BTreeSet::new());
     if let Some(c) = cond {
         a.expr(c);
     }
@@ -7327,9 +7391,46 @@ struct Reassigned {
     /// [`loop_assigned_heads`]: every assigned binding, with how many
     /// assignments write it.
     heads: BTreeMap<String, usize>,
+    /// [`self_reads_of`]: what the walked body reads of `self`.
+    scan: SelfScan,
+    /// The walked body's parameters ([`SelfScan::writes_params`]).
+    params: BTreeSet<String>,
+}
+
+/// GH #1490 (step 4): what a method's body reads of `self`, syntactically.
+#[derive(Debug, Default, Clone)]
+struct SelfScan {
+    /// The fields named `self.<f>` anywhere in the body (a field written
+    /// compound-wise included).
+    fields: BTreeSet<String>,
+    /// The methods called as `self.<m>(..)`.
+    calls: BTreeSet<String>,
+    /// `self` itself is used as a value: it may reach anything.
+    top: bool,
+    /// A parameter is written through (`p.f = ..`, `p[i] = ..`, `p.m(..)`):
+    /// the callee may store what it reads into an argument.
+    writes_params: bool,
+}
+
+/// GH #1490 (step 4): a body's reads of `self`, for the methods that call
+/// it: [`SelfScan`].
+fn self_reads_of(body: &Block, params: &[String]) -> SelfScan {
+    let mut a = Reassigned::new(params.iter().cloned().collect());
+    a.block(body, Vec::new());
+    a.scan
 }
 
 impl Reassigned {
+    fn new(params: BTreeSet<String>) -> Self {
+        Reassigned {
+            scopes: Vec::new(),
+            out: BTreeSet::new(),
+            heads: BTreeMap::new(),
+            scan: SelfScan::default(),
+            params,
+        }
+    }
+
     fn bind(&mut self, name: &str) {
         self.scopes.last_mut().expect("a scope").insert(name.to_string());
     }
@@ -7357,7 +7458,7 @@ impl Reassigned {
                     self.bind(&n.name);
                 }
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, op, value, .. } => {
                 for seg in &target.tail {
                     if let LValueSeg::Index(e) = seg {
                         self.expr(e);
@@ -7367,6 +7468,16 @@ impl Reassigned {
                 let name = &target.head.name;
                 if name != "self" {
                     *self.heads.entry(name.clone()).or_default() += 1;
+                }
+                if self.params.contains(name) {
+                    self.scan.writes_params = true;
+                }
+                if name == "self" {
+                    if let Some(LValueSeg::Field(f)) = target.tail.first() {
+                        if !matches!(op, AssignOp::Eq) {
+                            self.scan.fields.insert(f.name.clone());
+                        }
+                    }
                 }
                 if target.tail.is_empty() && !self.scopes.iter().any(|s| s.contains(name)) {
                     self.out.insert(name.clone());
@@ -7456,6 +7567,11 @@ impl Reassigned {
                 self.expr(left);
                 self.expr(right);
             }
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+            {
+                self.scan.fields.insert(name.name.clone());
+            }
             Expr::Unary { operand: x, .. }
             | Expr::Field { receiver: x, .. }
             | Expr::Path2 { receiver: x, .. }
@@ -7463,6 +7579,22 @@ impl Reassigned {
             | Expr::Prod(x, _)
             | Expr::ArrayRepeat { val: x, .. } => self.expr(x),
             Expr::Call { callee, args, .. } => {
+                if let Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } = callee.as_ref() {
+                    match receiver.as_ref() {
+                        Expr::KwSelf(_) => {
+                            self.scan.calls.insert(name.name.clone());
+                        }
+                        r => {
+                            let mut root = r;
+                            while let Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } = root {
+                                root = receiver;
+                            }
+                            if matches!(root, Expr::Ident(v) if self.params.contains(&v.name)) {
+                                self.scan.writes_params = true;
+                            }
+                        }
+                    }
+                }
                 self.expr(callee);
                 for a in args {
                     self.expr(a);
@@ -7484,7 +7616,8 @@ impl Reassigned {
                     self.expr(x);
                 }
             }
-            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::KwSelf(_) => self.scan.top = true,
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => {}
         }
     }
 }
@@ -8660,6 +8793,70 @@ mod tests {
             fn main() { let a = App { }; }
         "#;
         assert!(field_leaks(src, "on_t").is_empty());
+    }
+
+    /// A handler `on_t(m: Int)` of `App` with String fields `log` and
+    /// `tag`, the methods `methods`, and the handler's body `body`.
+    fn method_store(methods: &str, body: &str) -> String {
+        format!(
+            "locus App {{
+                 params {{ log: String = \"\"; tag: String = \"t\"; }}
+                 bus {{ subscribe \"t\" as on_t of type Int; }}
+                 {methods}
+                 fn on_t(m: Int) {{ {body} }}
+             }}
+             fn main() {{ let a = App {{ }}; }}"
+        )
+    }
+
+    #[test]
+    fn a_method_of_self_carries_the_fields_its_body_reads() {
+        // The result of `self.label()` holds `tag`, and what `label`
+        // calls reads: not `log`. A store of it into `log` replaces.
+        let methods = "fn label() -> String { return self.tag + \"!\"; }
+                       fn both() -> String { return self.label() + to_string(1); }
+                       fn pad(s: String) -> String { return s + self.tag; }";
+        for body in [
+            "self.log = self.label() + \"x\";",
+            "self.log = self.both() + \"x\";",
+            "let l = self.label(); self.log = l + to_string(m);",
+            "self.log = self.pad(to_string(m)) + \"x\";",
+        ] {
+            let leaks = field_leaks(&method_store(methods, body), "on_t");
+            assert!(leaks.is_empty(), "`{body}` replaces `self.log` whole: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn a_method_of_self_that_reaches_the_field_keeps_the_append() {
+        // Reading the field directly, through a method it calls, as
+        // `self`, through a compound write, or handing it out through a
+        // parameter it writes, or passing it as an argument: still an
+        // append.
+        let methods = "fn direct() -> String { return self.log; }
+                       fn via() -> String { return self.direct() + \"!\"; }
+                       fn whole() -> String { let me = self; return me.tag; }
+                       fn grown() -> String { self.tag += self.log; return self.tag; }
+                       fn pass(s: String) -> String { return s + self.tag; }";
+        for body in [
+            "self.log = self.direct() + \"x\";",
+            "self.log = self.via() + \"x\";",
+            "self.log = self.whole() + \"x\";",
+            "self.log = self.grown() + \"x\";",
+            "self.log = self.pass(self.log) + \"x\";",
+            "self.log = self.log + self.tag;",
+        ] {
+            let leaks = field_leaks(&method_store(methods, body), "on_t");
+            assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` appends to `self.log`: {leaks:?}");
+        }
+    }
+
+    #[test]
+    fn growth_stays_growth_whichever_way_it_is_spelled() {
+        for body in ["self.log += self.tag;", "self.log = self.log + self.tag;", "self.log = f\"{self.log}{self.tag}\";"] {
+            let leaks = field_leaks(&method_store("", body), "on_t");
+            assert!(leaks.contains(&Escape::StoredToSelf), "`{body}` grows `self.log`: {leaks:?}");
+        }
     }
 
     /// `App` with a `log` field and the methods `methods`, a handler
