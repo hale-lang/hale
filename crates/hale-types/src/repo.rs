@@ -66,7 +66,7 @@ fn repo_types(programs: &[&Program]) -> BTreeSet<String> {
         .iter()
         .flat_map(|p| flat_decls(&p.items))
         .filter_map(|d| match d {
-            TopDecl::Locus(l) => l.repo.as_ref().map(|r| plain(&r.ty.name).to_string()),
+            TopDecl::Locus(l) => l.repo.as_ref().map(|r| r.ty.name.clone()),
             _ => None,
         })
         .collect()
@@ -98,13 +98,57 @@ pub fn expand(programs: &mut [&mut Program]) {
                 .into_iter()
                 .filter(|d| !matches!(d, TopDecl::Fn(f) if f.name.name == "__repo_classes_end")),
         ),
-        Err(ds) => eprintln!(
-            "repo: the generated state classes did not parse: {}",
-            ds.iter()
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ),
+        Err(ds) => {
+            eprintln!(
+                "repo: the generated state classes did not parse: {}",
+                ds.iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            return;
+        }
+    }
+    // An imported repo's methods write `reads(Item)`, the name its library
+    // wrote; the import did not rewrite the class text. Point each at the
+    // class of the resolved, mangled record, so two imported records of one
+    // written name keep two classes.
+    let names: Vec<String> = programs[0].effect_names.clone();
+    for p in programs.iter_mut() {
+        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+            let TopDecl::Locus(l) = d else { return };
+            let Some(full) = l.repo.as_ref().map(|r| r.ty.name.clone()) else {
+                return;
+            };
+            let written = plain(&full).to_string();
+            if written == full {
+                return;
+            }
+            for m in &mut l.members {
+                let LocusMember::Fn(f) = m else { continue };
+                for a in &mut f.effects {
+                    let EffectAssert::Carries(cs) = a else {
+                        continue;
+                    };
+                    for c in cs.iter_mut() {
+                        let EffectClass::User(i) = c else { continue };
+                        let Some(name) = names.get(*i as usize) else {
+                            continue;
+                        };
+                        let Some((word, rest)) = name.split_once('(') else {
+                            continue;
+                        };
+                        if !CLASSES.contains(&word) || rest.trim_end_matches(')') != written {
+                            continue;
+                        }
+                        if let Some(j) = names.iter().position(|n| *n == format!("{word}({full})"))
+                        {
+                            *c = EffectClass::User(j as u16);
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -264,7 +308,7 @@ fn check_repo(
         let fname = &f.name.name;
         let declared = declared_classes(f, names);
         for (word, ty) in &declared {
-            if ty != t {
+            if ty != full {
                 diags.push(Diag::ty(
                     f.name.span,
                     format!("`{lname}::{fname}` declares `{word}({ty})`: a repo declares no state class of another type, it is a leaf"),
@@ -273,7 +317,7 @@ fn check_repo(
         }
         let own: Vec<&String> = declared
             .iter()
-            .filter(|(_, ty)| ty == t)
+            .filter(|(_, ty)| ty == full)
             .map(|(w, _)| w)
             .collect();
         let want = REQUIRED.iter().find(|(n, _)| n == fname).map(|(_, c)| *c);
@@ -365,5 +409,55 @@ fn stray_markers(f: &FnDecl, diags: &mut Vec<Diag>) {
                 ),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two imported records of one written name (`Item`, mangled apart)
+    /// keep two classes: each repo's `reads(Item)` is the class of its own
+    /// record after the expansion.
+    #[test]
+    fn two_imported_records_of_one_written_name_keep_two_classes() {
+        let src = r#"
+type __a__Item { id: Int `db:"id,key"`; }
+type __b__Item { id: Int `db:"id,key"`; }
+@repo(__a__Item)
+locus __a__Items {
+    @effects(is: { reads(Item) })
+    fn get(id: Int) -> Int { return id; }
+}
+@repo(__b__Item)
+locus __b__Items {
+    @effects(is: { reads(Item) })
+    fn get(id: Int) -> Int { return id; }
+}
+fn main() { }
+"#;
+        let mut p = hale_syntax::parse_source(src).expect("parses");
+        expand(&mut [&mut p]);
+        let class_of = |locus: &str| -> String {
+            for d in flat_decls(&p.items) {
+                let TopDecl::Locus(l) = d else { continue };
+                if l.name.name != locus {
+                    continue;
+                }
+                for m in &l.members {
+                    let LocusMember::Fn(f) = m else { continue };
+                    for a in &f.effects {
+                        if let EffectAssert::Carries(cs) = a {
+                            if let EffectClass::User(i) = cs[0] {
+                                return p.effect_names[i as usize].clone();
+                            }
+                        }
+                    }
+                }
+            }
+            panic!("no class on {locus}");
+        };
+        assert_eq!(class_of("__a__Items"), "reads(__a__Item)");
+        assert_eq!(class_of("__b__Items"), "reads(__b__Item)");
     }
 }
