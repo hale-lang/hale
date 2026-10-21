@@ -40,9 +40,9 @@ developer's stays the default).
 
 | Verb | Behaviour |
 |---|---|
-| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up, migrating any whose recorded schema version is behind this toolchain's, and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process. `--no-body` births it and brings its allocations up and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
-| `status` | The habitat, its genome and body, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
-| `down` | Stops the habitat's body and every service of its project. Data is kept; `up` brings them back. |
+| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up, migrating any whose recorded schema version is behind this toolchain's, and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it and brings its allocations up and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `status` | The habitat, its genome, body and face (its address), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
+| `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
@@ -50,6 +50,19 @@ developer's stays the default).
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
 exits 2 naming the graft that replaces it.
+
+## The face
+
+The habitat is served as every organism is: the standard face over its own
+head (`spec/dna.md`, The habitat's face). `up` starts `hale dna head` on the
+genome, its state under `face-state` in the habitat's directory. The
+habitat's address, and each organism's, is a block of 8 loopback ports
+recorded in a `dna.head.url` (the habitat's in its genome's, an organism's
+in its own, assigned at its graft); the face is the block's base and the head
+the next port. The face's index lists the organisms the record grafted, with
+their state and the addresses of their faces and heads. A habitat started
+under `HALE_DNA_TRUSTED_LOCAL=1` serves its face without the stub provider,
+as a fixture's head does.
 
 ## Backends
 
@@ -102,7 +115,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
 | `habitat.profile local` | at birth | `profile`, `backends`, `project` |
-| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends` |
+| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses) |
 
 An allocation made before the habitat's record exists waits in
 `allocations/<id>/allocation.json`, the local profile's cache of the rows,

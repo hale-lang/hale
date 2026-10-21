@@ -187,8 +187,8 @@ fn api() {
     // sees through the checker's types.
     pinned(
         "api",
-        392,
         394,
+        396,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}

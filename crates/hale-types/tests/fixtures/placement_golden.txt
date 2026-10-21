@@ -11612,6 +11612,8 @@ dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/tests/habitat_face_test.hl
+
 == dna/tests/habitat_graft_test.hl
 
 == dna/tests/habitat_operator_test.hl

@@ -6330,6 +6330,31 @@ the visitor's read: a visitor who is not signed in, or whose session is
 forged, is refused as the head refuses every read (`401`), the face passing
 the refusal on.
 
+**The habitat's face.** The habitat is an organism, so its face is this
+one: `hale habitat up` starts `hale dna head` on the habitat's genome, the
+standard face over the habitat's own head, beside the habitat's body (a
+second systemd user unit, or with `--foreground` a child of the process
+that execs the body), its head's state in `face-state` under the habitat's
+directory; `hale habitat status` prints its address on a `face` line, and
+`down` stops it with its API child. The habitat's index is the same page
+and the same `Commands::index` row, with one more section in the answer: a
+record that grafted organisms lists them under **Organisms** (the
+`organisms` array, empty and then no section in any other record). Each
+entry is read from a `habitat.grafted` row and says the organism's name (the
+directory it was grafted into), its state (`up` while its face accepts
+connections on the loopback, `grafted` otherwise), the address of its face
+and the address of its head. No manifest table, record family or row kind
+is added: the addresses are fields of the existing `habitat.grafted` row
+(`name`, `face`, `head`), taken at the graft. An organism's address is a
+block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a
+starting point of the habitat's own and distinct from every block already
+handed out, and kept in the organism's `dna.head.url` (its face is the
+block's base, its head the next port, then its API child, provider and
+commands). `hale dna head <organism>` serves on that block unless a port
+flag says otherwise, so the recorded address is the one the head answers
+on. The habitat's own address is assigned the same way, in its genome's
+`dna.head.url`, the first time `up` needs it.
+
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a
 `text/event-stream` the head writes `event: changed` to — `data: rows`

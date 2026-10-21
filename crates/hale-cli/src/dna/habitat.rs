@@ -45,7 +45,9 @@ up                   birth the habitat the first time, from the genome the
                      whose recorded schema version is behind this
                      toolchain's, and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
-                     --foreground, in this process; --no-body births it and
+                     --foreground, in this process, and its face (the
+                     standard face over its own head; `status` prints its
+                     address); --no-body births it and
                      brings its allocations up and starts no body (what a
                      test's habitat needs to graft into). Idempotent. Its
                      backends are chosen at its birth and kept: `own` (the
@@ -703,12 +705,20 @@ fn up(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if foreground {
+        match start_face(&me, &genome, true) {
+            Ok(line) => println!("{line}"),
+            Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
+        }
         let _ = std::fs::write(pid_file(), format!("{}\n", std::process::id()));
         println!("{:<8}the habitat's body runs in this process (`hale dna dev {}`)", "body", genome.display());
         use std::os::unix::process::CommandExt;
         let e = Command::new(&me).args(["dna", "dev"]).arg(&genome).arg("--no-iris").env("HALE_DNA_COMPOSE", "off").current_dir(&genome).exec();
         eprintln!("hale habitat up: cannot run {me}: {e}");
         return ExitCode::from(1);
+    }
+    match start_face(&me, &genome, false) {
+        Ok(line) => println!("{line}"),
+        Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
     }
     if let Some(state) = body_state() {
         println!("{:<8}{state}", "body");
@@ -1007,6 +1017,179 @@ fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String>
     Ok(format!("{:<8}up (systemd user unit {}, {})", "body", unit_name(), path.display()))
 }
 
+// ---------------------------------------------------------------
+// the faces: the habitat's own, and each organism's address
+// ---------------------------------------------------------------
+
+/// How many consecutive loopback ports one organism's head takes: the
+/// face (the port a browser opens), the head behind it, the API child, the
+/// stub provider and the API child's commands, in that order from the
+/// block's base. `hale dna head` reads them back from the organism's
+/// `dna.head.url`, so the address the habitat records is the address the
+/// head serves on.
+pub(crate) const HEAD_BLOCK: u16 = 8;
+
+/// The first port a block is looked for from; each habitat starts its
+/// search at its own offset, so two habitats on one machine (a test's
+/// beside the developer's) do not meet.
+const HEAD_BLOCK_FROM: u16 = 8800;
+
+pub(crate) fn head_url_at(root: &Path) -> Option<String> {
+    let o = Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.head.url"]).output().ok()?;
+    let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
+/// The port of a loopback head URL, `None` for any other address.
+pub(crate) fn loopback_port(url: &str) -> Option<u16> {
+    let rest = url.strip_prefix("http://127.0.0.1:").or_else(|| url.strip_prefix("http://localhost:"))?;
+    let port: u16 = rest.trim_end_matches('/').parse().ok()?;
+    (port >= 1 && u32::from(port) + u32::from(HEAD_BLOCK) <= 65535).then_some(port)
+}
+
+fn block_free(base: u16) -> bool {
+    (0..5).all(|i| std::net::TcpListener::bind(("127.0.0.1", base + i)).is_ok())
+}
+
+/// The base port of the head block of the organism at `root`: the one its
+/// `dna.head.url` names, or, when it names none, the first block from the
+/// habitat's starting point that no block in `taken` overlaps and whose
+/// ports are free, recorded there.
+fn head_block(root: &Path, taken: &[u16]) -> Result<u16, String> {
+    if let Some(port) = head_url_at(root).as_deref().and_then(loopback_port) {
+        return Ok(port);
+    }
+    let h = openssl::sha::sha256(local_habitat_dir().as_bytes());
+    let blocks = (65000 - u32::from(HEAD_BLOCK_FROM)) / u32::from(HEAD_BLOCK);
+    let start = u32::from(u16::from_be_bytes([h[0], h[1]])) % 200;
+    for i in 0..blocks {
+        let base = HEAD_BLOCK_FROM + (((start + i) % blocks) as u16) * HEAD_BLOCK;
+        if taken.iter().any(|t| t.abs_diff(base) < HEAD_BLOCK) || !block_free(base) {
+            continue;
+        }
+        let ok = Command::new("git").arg("-C").arg(root).args(["config", "--local", "dna.head.url", &format!("http://127.0.0.1:{base}")]).status().is_ok_and(|s| s.success());
+        if !ok {
+            return Err(format!("could not record the head's address in {}'s git config", root.display()));
+        }
+        return Ok(base);
+    }
+    Err("no block of free loopback ports for a head".to_string())
+}
+
+/// The bases of the head blocks the habitat's grafts hold, from their rows.
+fn granted_bases(genome: &Path) -> Vec<u16> {
+    rows_of(genome).iter().filter(|r| r["kind"] == "habitat.grafted").filter_map(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).filter_map(|b| b["face"].as_str().and_then(loopback_port)).collect()
+}
+
+fn face_pid_file() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("face.pid")
+}
+
+fn face_state_dir() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("face-state")
+}
+
+fn face_unit_name() -> String {
+    format!("{}-face.service", local_habitat_project())
+}
+
+/// The habitat's face as it runs: a pid, a unit, or `None`.
+fn face_running() -> Option<String> {
+    if let Ok(pid) = std::fs::read_to_string(face_pid_file()) {
+        if let Ok(pid) = pid.trim().parse::<i32>() {
+            if alive(pid) {
+                return Some(format!("pid {pid}"));
+            }
+        }
+    }
+    Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success()).then(|| format!("systemd user unit {}", face_unit_name()))
+}
+
+/// The habitat's face, the standard face over the habitat's own head
+/// (`hale dna head` on its genome), started when it is not up: as a second
+/// systemd user unit, or, with `foreground`, as a child of this process
+/// that outlives its exec. Its head's state is the habitat's `face-state`.
+fn start_face(me: &str, genome: &Path, foreground: bool) -> Result<String, String> {
+    let base = head_block(genome, &granted_bases(genome))?;
+    if let Some(state) = face_running() {
+        return Ok(format!("{:<8}up ({state}, http://127.0.0.1:{base}/)", "face"));
+    }
+    std::fs::create_dir_all(face_state_dir()).map_err(|e| format!("create {}: {e}", face_state_dir().display()))?;
+    if foreground {
+        use std::os::unix::process::CommandExt;
+        let log = PathBuf::from(local_habitat_dir()).join("face.log");
+        let out = std::fs::File::create(&log).map_err(|e| format!("write {}: {e}", log.display()))?;
+        let err = out.try_clone().map_err(|e| e.to_string())?;
+        let child = Command::new(me)
+            .args(["dna", "head"])
+            .arg(genome)
+            .env("HALE_DNA_HEAD_STATE", face_state_dir())
+            .stdin(std::process::Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("cannot run {me} dna head: {e}"))?;
+        std::fs::write(face_pid_file(), format!("{}\n", child.id())).map_err(|e| format!("write {}: {e}", face_pid_file().display()))?;
+        return Ok(format!("{:<8}starting (pid {}, http://127.0.0.1:{base}/; its log {})", "face", child.id(), log.display()));
+    }
+    let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
+    let vault = std::env::var("HALE_VAULT_DIR").ok().filter(|v| !v.is_empty()).map(|v| format!("Environment=HALE_VAULT_DIR={v}\n")).unwrap_or_default();
+    let unit = format!(
+        "[Unit]\nDescription=hale habitat (local) face at {dir}\nAfter=network-online.target {body}\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_HABITAT={dir}\nEnvironment=HALE_DNA_HEAD_STATE={state}\n{vault}ExecStart={me} dna head {g}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
+        dir = local_habitat_dir(),
+        body = unit_name(),
+        g = genome.display(),
+        state = face_state_dir().display()
+    );
+    let path = unit_path().with_file_name(face_unit_name());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, unit).map_err(|e| format!("write {}: {e}", path.display()))?;
+    let systemctl = |args: &[&str]| Command::new("systemctl").arg("--user").args(args).output().map_err(|e| format!("systemctl: {e}")).and_then(|o| if o.status.success() { Ok(()) } else { Err(format!("systemctl --user {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim())) });
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "--now", &face_unit_name()])?;
+    Ok(format!("{:<8}up (systemd user unit {}, http://127.0.0.1:{base}/)", "face", face_unit_name()))
+}
+
+/// The habitat's face stopped: its launcher, and the children the head kept
+/// in the habitat's face state (the API child), which a stopped head leaves.
+fn stop_face(said: &mut Vec<String>) {
+    if let Ok(pid) = std::fs::read_to_string(face_pid_file()) {
+        if let Ok(pid) = pid.trim().parse::<i32>() {
+            if alive(pid) {
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                while alive(pid) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                if alive(pid) {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+                said.push(format!("stopped the habitat's face (pid {pid})"));
+            }
+        }
+        let _ = std::fs::remove_file(face_pid_file());
+    }
+    if Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success())
+        && Command::new("systemctl").args(["--user", "stop"]).arg(face_unit_name()).status().is_ok_and(|s| s.success())
+    {
+        said.push(format!("stopped the habitat's face (systemd user unit {})", face_unit_name()));
+    }
+    if let Ok(dir) = std::fs::read_dir(face_state_dir().join("children")) {
+        for e in dir.flatten() {
+            if e.path().extension().is_some_and(|x| x == "pid") {
+                if let Some(pid) = std::fs::read_to_string(e.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()) {
+                    if alive(pid) {
+                        unsafe { libc::kill(pid, libc::SIGTERM) };
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn status() -> ExitCode {
     let genome = genome_dir();
     println!("habitat local at {} (compose project {})", local_habitat_dir(), local_habitat_project());
@@ -1015,6 +1198,10 @@ fn status() -> ExitCode {
         None => println!("genome  not born: `hale habitat up` births it"),
     }
     println!("{:<8}{}", "body", body_state().unwrap_or_else(|| "down: `hale habitat up` starts it".to_string()));
+    match head_url_at(&genome).as_deref().and_then(loopback_port) {
+        Some(port) => println!("{:<8}http://127.0.0.1:{port}/ ({})", "face", face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
+        None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
+    }
     let (rows, from) = match recorded_allocations() {
         Some(rows) => (rows, "the habitat's record"),
         None => (allocations(), "the allocations' cache (the habitat's record is not readable: its memory is not up)"),
@@ -1076,6 +1263,7 @@ fn alive(pid: i32) -> bool {
 
 fn down() -> ExitCode {
     let mut said = Vec::new();
+    stop_face(&mut said);
     if let Ok(pid) = std::fs::read_to_string(pid_file()) {
         if let Ok(pid) = pid.trim().parse::<i32>() {
             if alive(pid) && unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
@@ -1522,7 +1710,13 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     if rows_of(&genome).iter().any(|r| r["kind"] == "habitat.grafted" && r["entity"] == &child[..12]) {
         out.push(format!("{:<8}the graft of {}… (the habitat's record holds it)", "kept", &child[..12]));
     } else {
-        let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends }).to_string() });
+        // the organism's address: its head block, taken beside every block
+        // the habitat has handed out, and kept in its own `dna.head.url`
+        let mut taken = granted_bases(&genome);
+        taken.extend(head_url_at(&genome).as_deref().and_then(loopback_port));
+        let base = head_block(&root, &taken)?;
+        let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://127.0.0.1:{base}"), "head": format!("http://127.0.0.1:{}", base + 1) }).to_string() });
         let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
         std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
         let landed = host_run("record-seed", &genome, &[file.display().to_string(), String::new()]);

@@ -92,6 +92,18 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
             }
         }
     }
+    // an organism grafted by the habitat has its block of ports on record
+    // (`dna.head.url`, GH #1653): the head serves where the habitat says
+    if let Some(p) = project.as_deref() {
+        if let Some(base) = super::habitat::head_url_at(Path::new(p)).as_deref().and_then(super::habitat::loopback_port) {
+            for (flag, offset) in [("--port", 0), ("--head-port", 1), ("--api-port", 2), ("--oidc-port", 3), ("--commands-port", 4)] {
+                if !passed.iter().any(|a| a == flag) {
+                    passed.push(flag.to_string());
+                    passed.push((base + offset).to_string());
+                }
+            }
+        }
+    }
     match launch(project.as_deref(), &passed) {
         // `launch` execs; it returns only when it could not
         Ok(never) => match never {},

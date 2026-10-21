@@ -6,7 +6,9 @@
 // them, the attached codebases, the upstreams the organism watches (each
 // `standard/upstream-watched/<name>` practice with its source, its kind, its
 // last reading and when that was taken), the contracts, and every outside
-// link the record holds as knowledge. It reads the record's rows, the graph
+// link the record holds as knowledge, and, in a record that grafted any, the
+// organisms it grafted (`habitat.grafted` rows): the habitat's index lists
+// its organisms with their state and their face's and head's addresses. It reads the record's rows, the graph
 // they state (`dna::record_graph_bodies`) and the ratified practices, and
 // writes nothing. Each section is a JSON array the face renders.
 //
@@ -28,6 +30,7 @@ type RecordIndex {
     watched: String = "[]";
     contracts: String = "[]";
     links: String = "[]";
+    organisms: String = "[]";
 }
 
 const INDEX_WATCHED: String = "standard/upstream-watched/";
@@ -142,6 +145,45 @@ fn index_last_reading(j: dna::Journal, name: String) -> IndexReading {
         i = i + 1;
     }
     return out;
+}
+
+// Whether something accepts connections on the loopback `url`
+// (`http://127.0.0.1:<port>`): an organism whose face answers is `up`.
+fn index_answers(url: String) -> Bool {
+    let port = std::str::parse_int(index_after_last(url, ":")) or 0;
+    if port < 1 || port > 65535 { return false; }
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::close_fd(fd);
+    return true;
+}
+
+// The organisms a record grafted, as the `habitat.grafted` rows give them:
+// the name, the state (`up` while its face answers, else `grafted`), the
+// face's address and the head's.
+@bounded_by(j)
+fn index_organisms(j: dna::Journal, cap: Int) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" {
+            let face = std::json::find_string_field(e.body, "face");
+            let name = std::json::find_string_field(e.body, "name");
+            out.begin_object();
+            out.string_field("name", if len(name) > 0 { name } else { e.entity });
+            out.string_field("state", if len(face) > 0 && index_answers(face) { "up" } else { "grafted" });
+            out.string_field("face", face);
+            out.string_field("head", std::json::find_string_field(e.body, "head"));
+            out.end_object();
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    out.end_array();
+    return out.result();
 }
 
 fn index_taken(ms: Int) -> String {
@@ -298,5 +340,5 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     }
     watched.end_array();
     links.end_array();
-    return RecordIndex { ok: true, revision: j.revision(), purpose: purpose, positions: positions.result(), codebases: codebases.result(), watched: watched.result(), contracts: contracts.result(), links: links.result() };
+    return RecordIndex { ok: true, revision: j.revision(), purpose: purpose, positions: positions.result(), codebases: codebases.result(), watched: watched.result(), contracts: contracts.result(), links: links.result(), organisms: index_organisms(j, cap) };
 }
