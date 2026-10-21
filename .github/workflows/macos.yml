@@ -289,6 +289,15 @@ jobs:
           grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/hlci/cross-file.out
           test ! -e /tmp/hlci/coop_bus.o
 
+      - name: Go for the Go fixtures
+        # codebase_go_test and sdlc_exit_test work a Go codebase and
+        # refuse to skip on CI. The Linux image has `go` on PATH; the
+        # macOS image does not.
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
       - name: Postgres 16 with pgvector for memory (GH #1590)
         # The record is memory's, so every DNA fixture needs a Postgres
         # with pgvector and pgcrypto, as the Linux jobs have from their
