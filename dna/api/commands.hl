@@ -567,6 +567,12 @@ locus CommandAdmission {
         return BatchPreview { ok: plan.ok, code: "", why: plan.why, application_id: s.application_id, head: s.head, revision: s.revision, steps: plan.steps,
             before: plan.before, after: plan.after, added: diff.added, removed: diff.removed, unchanged: diff.unchanged, pending: if plan.ok { dna::batch_pending(j, plan.steps) } else { "" } };
     }
+    // The record as the standard face's index reads it (record_index.hl): a
+    // read, so any authenticated caller the record knows may ask.
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
+        if self.personless(ctx) { return RecordIndex { why: "forbidden" }; }
+        return record_index(self.root, a.limit);
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -601,6 +607,7 @@ locus Commands {
     fn ask_allowance(a: Allowance, ctx: std::api::Context) -> CommandReply { return self.admission.allowance(a, ctx); }
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply { return self.admission.file_friction(f, ctx); }
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply { return self.admission.lookup(l, ctx); }
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex { return self.admission.index(a, ctx); }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
     fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply { return self.admission.open_position(p, ctx); }
@@ -638,6 +645,8 @@ api HeadCommands {
     rpc Commands::ask_allowance requires: [position];
     rpc Commands::file_friction requires: [position];
     rpc Commands::lookup;
+    // The record as the standard face's index reads it: a read.
+    rpc Commands::index;
     // The structure: every mutation is a head command whose handler writes
     // the rows its CLI verb writes, and the UI is a client of this surface.
     // `vacate` is a one-step batch (`vacate <position> <holder>`).

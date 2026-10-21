@@ -94,21 +94,21 @@ main locus App {
 
         // ---- a person signs with their own key
         let keydir = scratch + "/keys";
-        let keyed = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && ssh-keygen -q -t ed25519 -N '' -C riley -f \"$1/riley\" && cd \"$2\" && git config gpg.format ssh && git config user.signingkey \"$1/riley\"\nsh\n" + keydir + "\n" + repo);
-        std::test::assert_eq_int(keyed.code, 0, "riley's ssh key, git's signing key here: " + keyed.stderr);
-        let person = dna::RecordJournal { repo: repo, dsn: m.spine_dsn, author: "riley" };
+        let keyed = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && ssh-keygen -q -t ed25519 -N '' -C alice -f \"$1/alice\" && cd \"$2\" && git config gpg.format ssh && git config user.signingkey \"$1/alice\"\nsh\n" + keydir + "\n" + repo);
+        std::test::assert_eq_int(keyed.code, 0, "alice's ssh key, git's signing key here: " + keyed.stderr);
+        let person = dna::RecordJournal { repo: repo, dsn: m.spine_dsn, author: "alice" };
         let pr = person.append(person.revision(), "review.verdict", "r1", "approve");
-        std::test::assert(pr.ok, "riley's row lands: " + pr.error + " " + person.last_error());
+        std::test::assert(pr.ok, "alice's row lands: " + pr.error + " " + person.last_error());
         let at = person.revision() - 1;
         let sig = person.sig_of(at);
-        let pub_key = dna::trim_nl(std::io::fs::read_file(keydir + "/riley.pub") or "");
+        let pub_key = dna::trim_nl(std::io::fs::read_file(keydir + "/alice.pub") or "");
         let words = std::str::index_of(pub_key, " ");
         let rest = pub_key[(words + 1)..len(pub_key)];
         let key_only = pub_key[0..(words + 1 + std::str::index_of(rest, " "))];
         std::test::assert(std::str::starts_with(sig, "ssh:"), "an ssh signature: " + sig);
-        std::test::assert(dna::ssh_verify("riley " + key_only, "riley", person.read(at).digest, sig), "it verifies as riley's");
-        std::test::assert(!dna::ssh_verify("mallory " + key_only, "riley", person.read(at).digest, sig), "and as nobody else's");
-        std::test::assert(!dna::ssh_verify("riley " + key_only, "riley", person.read(0).digest, sig), "over its own row alone");
+        std::test::assert(dna::ssh_verify("alice " + key_only, "alice", person.read(at).digest, sig), "it verifies as alice's");
+        std::test::assert(!dna::ssh_verify("mallory " + key_only, "alice", person.read(at).digest, sig), "and as nobody else's");
+        std::test::assert(!dna::ssh_verify("alice " + key_only, "alice", person.read(0).digest, sig), "over its own row alone");
 
         // ---- receipts, unsealed beside the protected ones
         let rc = dna::MemoryReceipts { repo: repo, dsn: m.spine_dsn };

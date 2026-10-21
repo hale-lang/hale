@@ -6287,10 +6287,44 @@ redirect to `/`, a refusal) is passed on unchanged. `/app/…` asks the
 head's read (`GET /api/hale/v1/head`) as the same session which project is
 attached, and serves its `ui/` (`ops::application_asset`), or the
 head's refusal. The head has no static file and no `/app/`: those paths
-are no route of it. The head's browser routes are not yet rows of a
-surface, so the face reaches them as the browser does; its generated
-client (`api::client`, `spec/api.md` § Calling a surface) over the head's
-surfaces arrives with the record index the face will serve.
+are no route of it. The browser's traffic keeps relaying as the browser
+sent it (the head's browser routes are not rows of a surface); the face's
+own reads go through a client.
+
+**The index.** `GET /index` on the face is the record's index: a static
+page, plain HTML in the shell's stylesheet and no script, generated on
+each request. Behind the head's read as the person's session (the same
+gate as `/app/`: the head's refusal is passed on; a trusted-local session
+reads bare, as every head read does), the face reads the record through a
+client of the head's surface (`api::client`, `spec/api.md` § Calling a
+surface; the face declares the one row it calls, `Commands::index`, whose
+member digest is the row's request and response shapes, so the two sides
+agree by shape). The row is `Commands::index` of `HeadCommands`
+(`dna/api/record_index.hl`), a read any authenticated caller the record
+knows may ask: it takes `{limit}` (at most that many entries of each
+section, 200 by default, 1000 at most) and answers the record's revision
+and six sections, each a JSON array the face renders and the purpose a
+line: the declared **purpose** (the `purpose` node of the graph the
+record states); the **parts and positions** (each `position` node with
+the holders of its `holds` edges); the attached **codebases** (name,
+repository, branch, build, test, toolchain); the **watched upstreams**
+(each ratified, unretired `standard/upstream-watched/<name>` practice with
+its position, source, kind and codebase, its terms refused if they cannot
+stand, the result of its last occurrence — the snapshot's digest, short,
+or `unreached` — and the instant of that occurrence in UTC; the
+occurrences are the Ledger's rows, read beside the record); the
+**contracts** (each `contract` node with its source and text); and every
+**outside link** the record holds as knowledge, each `http://` or
+`https://` URL in the text or source of a graph node or in the text of a
+ratified, unretired practice, with what holds it. The row writes nothing
+and adds no manifest table, record family or row kind: the sections are
+read from the rows that exist. The face reads it on the API child's
+commands port, which the child reported in the head's state directory
+(`children/api.ports`, the directory the face is given as its fourth
+argument; `dna/face/start.sh` passes the head's), presenting the attached
+project's launch token (`.hale/dna/head.token`) as the bearer. A head
+under OIDC has an API child that knows bearers as ID tokens, which the
+face does not hold; its index says the head refused the read.
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a

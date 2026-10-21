@@ -18,14 +18,18 @@
 // read (`GET /api/hale/v1/head`) which project is attached, and serves
 // that project's `ui/`.
 //
-//   face <port 1..65535> <webroot> <head-port 1..65535>
+// `GET /index` is the record's index: a static page generated on request
+// (index.hl) from what the face reads of the head through a client of its
+// surface, behind the head's read as the person's session.
+//
+//   face <port 1..65535> <webroot> <head-port 1..65535> [<head state dir>]
 //
 // Build: hale build dna/face/standard -o <path>
 import "../../api/web" as assets;
 import "../../core" as dna;
 import "../../operations" as ops;
 
-const USAGE: String = "hale dna face: expected <port 1..65535> <webroot> <head-port 1..65535>";
+const USAGE: String = "hale dna face: expected <port 1..65535> <webroot> <head-port 1..65535> [<head state dir>]";
 const HEAD_READ: String = "/api/hale/v1/head";
 // A request to the head is answered within this; an event stream's
 // heartbeat (the head writes one every 15 s) keeps its read alive.
@@ -121,6 +125,9 @@ locus Face {
     params {
         web: assets::WebAssets;
         head_port: Int = 0;
+        // the head's state directory: where the API child's commands port and
+        // the launch token the index is read under are kept; "" = none
+        state: String = "";
     }
 
     // `raw` written to the browser's connection as it is, and the
@@ -158,8 +165,12 @@ locus Face {
 
     // The attached project's `ui/` page: the head says which project is
     // attached, to the person whose session this is.
+    fn head_read(req: std::http::Request) -> Answer {
+        return buffered(self.head_port, std::str::replace(head_request(req, self.head_port), req.method + " " + req.path + " ", "GET " + HEAD_READ + " "));
+    }
+
     fn app_asset(req: std::http::Request, path: String) -> std::http::Response {
-        let read = buffered(self.head_port, std::str::replace(head_request(req, self.head_port), req.method + " " + req.path + " ", "GET " + HEAD_READ + " "));
+        let read = self.head_read(req);
         if !read.ok { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
         if read.status != 200 { return self.hand_over(req, read.raw); }
         let active = std::json::find_field_raw(std::json::find_field_raw(read.body, "data"), "active");
@@ -171,10 +182,26 @@ locus Face {
         return self.hand_over(req, std::bytes::concat(std::bytes::from_string(head), a.bytes));
     }
 
+    // The record's index: the head's read first, as for `/app/` (the person's
+    // session is the gate, and it names the attached project), then the page
+    // generated from the head's surface, read under that project's launch
+    // token.
+    fn index_page(req: std::http::Request) -> std::http::Response {
+        let read = self.head_read(req);
+        if !read.ok { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
+        if read.status != 200 { return self.hand_over(req, read.raw); }
+        let root = std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(read.body, "data"), "active"), "root");
+        let port = commands_port_in(self.state);
+        let reader = IndexReader { port: port, file: if len(root) > 0 { root + "/.hale/dna/head.token" } else { "" } };
+        let page = if len(root) == 0 { index_page(RecordIndex { why: "the head has no attached project" }) } else if port <= 0 { index_page(RecordIndex { why: "the head's API child has not reported its commands port" }) } else { index_page(reader.read()) };
+        return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", body: page };
+    }
+
     fn handle(req: std::http::Request) -> std::http::Response {
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_asset(req, path); }
+        if req.method == "GET" && path == "/index" { return self.index_page(req); }
         if req.method == "GET" && path == "/" {
             // the head's gate: 204 lets the shell out, anything else is the head's to say
             let gate = buffered(self.head_port, head_request(req, self.head_port));
@@ -189,8 +216,8 @@ locus Face {
 
 // The F.3 rule: the loaded assets reach the server literal through a
 // parameter, never from a `let` in the same scope.
-fn serve_face(port: Int, web: assets::WebAssets, head_port: Int) {
-    FaceMain { srv: std::http::Server { host: "127.0.0.1", port: port, ready_signal: "hale dna face: http://127.0.0.1:" + to_string(port) + "/", handler: Face { web: web, head_port: head_port } } };
+fn serve_face(port: Int, web: assets::WebAssets, head_port: Int, state: String) {
+    FaceMain { srv: std::http::Server { host: "127.0.0.1", port: port, ready_signal: "hale dna face: http://127.0.0.1:" + to_string(port) + "/", handler: Face { web: web, head_port: head_port, state: state } } };
 }
 
 // It must be the program's own `main locus`: the server off the main pool,
@@ -211,7 +238,8 @@ fn main() {
     let port = integer(std::env::arg_or(1, ""), 65535);
     let webroot = std::env::arg_or(2, "");
     let head_port = integer(std::env::arg_or(3, ""), 65535);
-    if port < 1 || head_port < 1 || port == head_port || len(webroot) == 0 || std::str::contains(webroot, "\n") || std::str::contains(webroot, "\r") {
+    let state = std::env::arg_or(4, "");
+    if port < 1 || std::str::contains(state, "\n") || std::str::contains(state, "\r") || head_port < 1 || port == head_port || len(webroot) == 0 || std::str::contains(webroot, "\n") || std::str::contains(webroot, "\r") {
         eprintln(USAGE);
         std::process::exit(2);
     }
@@ -220,5 +248,5 @@ fn main() {
         eprintln("hale dna face: " + web.error + "; refusing to start");
         std::process::exit(2);
     }
-    serve_face(port, web, head_port);
+    serve_face(port, web, head_port, state);
 }
