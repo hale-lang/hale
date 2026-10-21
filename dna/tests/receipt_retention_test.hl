@@ -76,7 +76,10 @@ main locus App {
     fn projected_to(record: String, at: Int, secs: Int) -> Int {
         let deadline = std::time::now() + dna::wait_secs(secs);
         let mut projected = -1;
+        let mut n = 0;
         while projected < at && std::time::now() <= deadline {
+            n = n + 1;
+            if n == 300 { std::io::fs::write_file(dna::scratch_dir("retention") + "/proj-wait.txt", "at " + to_string(projected) + " of " + to_string(at) + dna::organization_state(dna::scratch_dir("retention") + "/kept")) or discard; }
             let w = self.owner_conn.conn.query_one("SELECT value FROM " + dna::schema_for(record) + ".knowledge_meta WHERE key = 'watermark'");
             projected = if w.ok { std::str::parse_int(dna::trim_nl(w.data)) or - 1 } else { -1 };
             if projected < at { std::time::sleep(200ms); }
@@ -337,7 +340,7 @@ main locus App {
         std::test::assert_eq_str(self.core.evidence.redact(proposed, "mara", "superseded", "retention:30d"), "", "its receipt redacted");
         let at = dna::RecordJournal { repo: app }.revision();
         let projected = self.projected_to(record, at, 300);
-        std::test::assert(projected >= at, "the spine still projects the record past the redaction: at " + to_string(projected) + " of " + to_string(at) + "; " + (std::io::fs::read_file(app + "/.hale/dev.log") or "") + dna::organization_state(app));
+        std::test::assert(projected >= at, "the spine still projects the record past the redaction: at " + to_string(projected) + " of " + to_string(at) + "; " + (std::io::fs::read_file(app + "/.hale/dev.log") or "") + (std::io::fs::read_file(dna::scratch_dir("retention") + "/proj-wait.txt") or ""));
 
         stop_spine(app, spine2);
         self.owner_conn.conn.close();

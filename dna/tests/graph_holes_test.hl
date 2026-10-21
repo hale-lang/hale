@@ -281,7 +281,7 @@ locus App {
         let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
         let started = dna::run_tool(start);
         let body = dna::trim_nl(started.stdout);
-        std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + dna::organization_state(self.repo));
+        std::test::assert(dna::organization_alive(self.repo, 600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + (std::io::fs::read_file(self.repo + "/.hale/org-wait.txt") or ""));
         std::test::assert(self.logged("a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)", 240), "its compose services left alone: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
         // ---- the ledger: a record has it from its first row (GH #1590);
         // each decision's execution rows land in it, fenced

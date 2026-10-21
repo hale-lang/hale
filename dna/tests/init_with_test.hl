@@ -219,7 +219,7 @@ locus App {
         self.head = head;
         let started = dna::run_tool(start_of(self.repo, owner, nats));
         let body = dna::trim_nl(started.stdout);
-        std::test::assert(self.organization_up(600), "the organization runs: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + dna::organization_state(self.repo));
+        std::test::assert(dna::organization_alive(self.repo, 600), "the organization runs: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or "") + (std::io::fs::read_file(self.repo + "/.hale/org-wait.txt") or ""));
 
         let all = self.dna("review\nall\napprove\n--as\nriley");
         std::test::assert_eq_int(all.code, 0, "one `review all approve` decides every group: " + all.stdout + all.stderr);
