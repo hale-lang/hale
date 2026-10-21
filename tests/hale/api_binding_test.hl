@@ -40,7 +40,9 @@ fn app_source(sock: String) -> String {
         + "}\n"
         + "api Public { rpc Head::on_claim; rpc Head::on_slow; rpc Head::read_stats; }\n"
         + "main locus App {\n"
-        + "    params { head: Head = Head { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \"" + sock + "\" }, as: \"public\", receivers: { Head: self.head }, bound: 1, on_full: refuse); }\n"
+        + "    params { head: Head = Head { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \""
+        + sock
+        + "\" }, as: \"public\", receivers: { Head: self.head }, bound: 1, on_full: refuse); }\n"
         + "    placement { head: cooperative(pool = work) where async_io; }\n"
         + "    run() {\n"
         + "        std::time::sleep(8s);\n"
@@ -104,7 +106,10 @@ locus Api {
 
     // A call of `member` with `payload`, under the client id `c-<id>`.
     fn call(id: Int, member: String, payload: String) {
-        self.send("{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-" + to_string(id) + "\"}");
+        self.send(
+            "{\"call\":\"" + member + "\",\"payload\":" + payload + ",\"id\":\"c-" + to_string(id)
+                + "\"}",
+        );
     }
 
     // The next complete line, or "" after ~4s without one.
@@ -161,33 +166,62 @@ fn drive(api: Api) {
     api.call(1, "Head::on_claim", "{\"task\":7,\"who\":\"dev\"}");
     let r1 = api.reply_for(1);
     std::test::assert(std::str::contains(r1, "\"ok\":true"), "claim answered: " + r1);
-    std::test::assert_eq_str(field(r1, "value"), "{\"task\":7,\"token\":\"lease-dev\"}", "the handler's return is the reply: " + r1);
-    std::test::assert(len(field(r1, "request_id")) > 0, "the exposure assigned a request id: " + r1);
+    std::test::assert_eq_str(
+        field(r1, "value"),
+        "{\"task\":7,\"token\":\"lease-dev\"}",
+        "the handler's return is the reply: " + r1,
+    );
+    std::test::assert(
+        len(field(r1, "request_id")) > 0,
+        "the exposure assigned a request id: " + r1,
+    );
 
     // A wrong-typed field is refused before dispatch.
     api.call(2, "Head::on_claim", "{\"task\":\"x\",\"who\":\"dev\"}");
     let r2 = api.reply_for(2);
     std::test::assert(std::str::contains(r2, "\"ok\":false"), "malformed refused: " + r2);
-    std::test::assert(std::str::contains(r2, "\"kind\":\"malformed\""), "the refusal names malformed: " + r2);
-    std::test::assert(std::str::contains(r2, "wrong_type: task"), "the refusal names the field: " + r2);
+    std::test::assert(
+        std::str::contains(r2, "\"kind\":\"malformed\""),
+        "the refusal names malformed: " + r2,
+    );
+    std::test::assert(
+        std::str::contains(r2, "wrong_type: task"),
+        "the refusal names the field: " + r2,
+    );
 
     // A member the surface does not have.
     api.call(3, "Head::Nope", "{}");
     let r3 = api.reply_for(3);
-    std::test::assert(std::str::contains(r3, "\"kind\":\"malformed\"") && std::str::contains(r3, "unknown_member"), "unknown member refused: " + r3);
+    std::test::assert(
+        std::str::contains(r3, "\"kind\":\"malformed\"")
+            && std::str::contains(r3, "unknown_member"),
+        "unknown member refused: " + r3,
+    );
 
     // What was a read is an rpc: it answers the field, and a later write
     // moves it.
     api.call(5, "Head::read_stats", "{}");
     let r5 = api.reply_for(5);
-    std::test::assert_eq_str(field(r5, "value"), "{\"claims\":1,\"slow\":0}", "the row answers the field: " + r5);
+    std::test::assert_eq_str(
+        field(r5, "value"),
+        "{\"claims\":1,\"slow\":0}",
+        "the row answers the field: " + r5,
+    );
     api.call(6, "Head::on_claim", "{\"task\":8,\"who\":\"ops\"}");
     let r6 = api.reply_for(6);
     std::test::assert(std::str::contains(r6, "\"ok\":true"), "second claim answered: " + r6);
     api.call(7, "Head::read_stats", "{}");
     let r7 = api.reply_for(7);
-    std::test::assert_eq_str(field(r7, "value"), "{\"claims\":2,\"slow\":0}", "the field moved: " + r7);
-    std::test::assert_eq_str(field(r5, "value"), "{\"claims\":1,\"slow\":0}", "the first copy did not change");
+    std::test::assert_eq_str(
+        field(r7, "value"),
+        "{\"claims\":2,\"slow\":0}",
+        "the field moved: " + r7,
+    );
+    std::test::assert_eq_str(
+        field(r5, "value"),
+        "{\"claims\":1,\"slow\":0}",
+        "the first copy did not change",
+    );
 
     // Over the bound, the caller is refused and the handler never runs
     // for the refused requests: bound 1, a handler that takes 300ms,
@@ -196,19 +230,36 @@ fn drive(api: Api) {
     api.call(10, "Head::on_slow", "{\"n\":2}");
     api.call(11, "Head::on_slow", "{\"n\":3}");
     let r10 = api.reply_for(10);
-    std::test::assert(std::str::contains(r10, "\"kind\":\"full\""), "second in flight refused: " + r10);
+    std::test::assert(
+        std::str::contains(r10, "\"kind\":\"full\""),
+        "second in flight refused: " + r10,
+    );
     let r11 = api.reply_for(11);
-    std::test::assert(std::str::contains(r11, "\"kind\":\"full\""), "third in flight refused: " + r11);
+    std::test::assert(
+        std::str::contains(r11, "\"kind\":\"full\""),
+        "third in flight refused: " + r11,
+    );
     let r9 = api.reply_for(9);
-    std::test::assert_eq_str(field(r9, "value"), "{\"n\":1}", "the first slow call answered: " + r9);
+    std::test::assert_eq_str(
+        field(r9, "value"),
+        "{\"n\":1}",
+        "the first slow call answered: " + r9,
+    );
     api.call(12, "Head::read_stats", "{}");
     let r12 = api.reply_for(12);
-    std::test::assert_eq_str(field(r12, "value"), "{\"claims\":2,\"slow\":1}", "refused requests never reached the handler: " + r12);
+    std::test::assert_eq_str(
+        field(r12, "value"),
+        "{\"claims\":2,\"slow\":1}",
+        "refused requests never reached the handler: " + r12,
+    );
 
     // A line that is not a request.
     api.send("not json");
     let r0 = api.next_reply();
-    std::test::assert(std::str::contains(r0, "\"kind\":\"malformed\""), "a non-request line is refused: " + r0);
+    std::test::assert(
+        std::str::contains(r0, "\"kind\":\"malformed\""),
+        "a non-request line is refused: " + r0,
+    );
 }
 
 fn main() {
@@ -237,7 +288,10 @@ fn main() {
     let refused = std::process::run(hale + "\nrun\n--api\n" + sock + "\n" + src)
     or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
     std::test::assert(refused.code != 0, "hale run --api is refused");
-    std::test::assert(std::str::contains(refused.stderr, "`--api <path>` is retired"), "and says so: " + refused.stderr);
+    std::test::assert(
+        std::str::contains(refused.stderr, "`--api <path>` is retired"),
+        "and says so: " + refused.stderr,
+    );
 
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;

@@ -98,10 +98,17 @@ fn check(hale: String, dir: String, name: String, source: String) {
     std::test::assert_eq_int(built.code, 0, name + " builds: " + built.stderr);
     let p = Proc { };
     // exec keeps the pid, so the signal reaches the program itself
-    std::test::assert(p.start("sh\n-c\nLOTUS_DRAIN_GRACE_MS=20000 exec \"$1\"\nsh\n" + dir + "/" + name), name + " started");
+    std::test::assert(
+        p.start("sh\n-c\nLOTUS_DRAIN_GRACE_MS=20000 exec \"$1\"\nsh\n" + dir + "/" + name),
+        name + " started",
+    );
     std::test::assert(p.wait_for("up"), name + " is running: " + p.out);
     p.term();
-    std::test::assert_eq_int(p.exit_code(), -1, name + " died by SIGTERM at once, not after the 20 s grace");
+    std::test::assert_eq_int(
+        p.exit_code(),
+            -1,
+        name + " died by SIGTERM at once, not after the 20 s grace",
+    );
 }
 
 fn main() {

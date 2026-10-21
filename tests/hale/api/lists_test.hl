@@ -56,7 +56,14 @@ main locus Desk {
     params {
         probe: Probe = Probe { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
-        h: api::Exposure = api::serve(Lists, self.f, as: "lists", receivers: { Probe: self.probe }, bound: 8, on_full: refuse);
+        h: api::Exposure = api::serve(
+            Lists,
+            self.f,
+            as: "lists",
+            receivers: { Probe: self.probe },
+            bound: 8,
+            on_full: refuse
+        );
     }
 
     fn refused(id: Int, member: String, body: String, reason: String, what: String) {
@@ -72,7 +79,10 @@ main locus Desk {
         let before = self.probe.entered;
         self.f.call_as_peer(id, member, body, 1000);
         std::test::assert_eq_str(self.f.await_outcome(id, 2000), "result", what);
-        std::test::assert(std::str::contains(self.f.line(id), "\"value\":" + value + ","), what + ": its value");
+        std::test::assert(
+            std::str::contains(self.f.line(id), "\"value\":" + value + ","),
+            what + ": its value",
+        );
         std::test::assert_eq_int(self.probe.entered, before + 1, what + ": the handler ran once");
     }
 
@@ -83,34 +93,133 @@ main locus Desk {
         // ---- bounded[Item; 3]: up to three records ----
         let two = "{\"items\":[" + a + "," + b + "],\"total\":2}";
         self.ran(1, "Probe::page", two, two, "a page of two records");
-        self.ran(2, "Probe::page", "{\"total\":0}", "{\"items\":[],\"total\":0}", "a bounded list left out is empty");
-        self.ran(3, "Probe::page", "{\"items\": [ " + a + " , " + a + " , " + a + " ] ,\"total\":3}",
+        self.ran(
+            2,
+            "Probe::page",
+            "{\"total\":0}",
+            "{\"items\":[],\"total\":0}",
+            "a bounded list left out is empty",
+        );
+        self.ran(
+            3,
+            "Probe::page",
+            "{\"items\": [ " + a + " , " + a + " , " + a + " ] ,\"total\":3}",
             "{\"items\":[" + a + "," + a + "," + a + "],\"total\":3}", "a full page, spaced");
-        self.refused(4, "Probe::page", "{\"items\":[" + a + "," + a + "," + a + "," + a + "],\"total\":4}", "too_long: items", "a fourth record");
-        self.refused(5, "Probe::page", "{\"items\":[1],\"total\":1}", "wrong_type: items", "a number where a record is");
-        self.refused(6, "Probe::page", "{\"items\":\"x\",\"total\":1}", "wrong_type: items", "a string where the list is");
-        self.refused(7, "Probe::page", "{\"items\":[" + a + ",],\"total\":1}", "wrong_type: items", "an array that is not JSON");
-        self.refused(8, "Probe::page", "{\"items\":[{\"id\":\"1\",\"name\":\"a\"}],\"total\":1}", "wrong_type: id", "a record's field of the wrong kind");
-        self.refused(9, "Probe::page", "{\"items\":[{\"id\":1}],\"total\":1}", "missing_field: name", "a record missing a field");
+        self.refused(
+            4,
+            "Probe::page",
+            "{\"items\":[" + a + "," + a + "," + a + "," + a + "],\"total\":4}",
+            "too_long: items",
+            "a fourth record",
+        );
+        self.refused(
+            5,
+            "Probe::page",
+            "{\"items\":[1],\"total\":1}",
+            "wrong_type: items",
+            "a number where a record is",
+        );
+        self.refused(
+            6,
+            "Probe::page",
+            "{\"items\":\"x\",\"total\":1}",
+            "wrong_type: items",
+            "a string where the list is",
+        );
+        self.refused(
+            7,
+            "Probe::page",
+            "{\"items\":[" + a + ",],\"total\":1}",
+            "wrong_type: items",
+            "an array that is not JSON",
+        );
+        self.refused(
+            8,
+            "Probe::page",
+            "{\"items\":[{\"id\":\"1\",\"name\":\"a\"}],\"total\":1}",
+            "wrong_type: id",
+            "a record's field of the wrong kind",
+        );
+        self.refused(
+            9,
+            "Probe::page",
+            "{\"items\":[{\"id\":1}],\"total\":1}",
+            "missing_field: name",
+            "a record missing a field",
+        );
 
         // ---- lists of scalars, of an identity and of a quantity ----
         let mixed = "{\"tags\":[\"x\",\"y\\nz\"],\"ids\":[41,42],\"prices\":[125,0],\"flags\":[true,false],\"ratios\":[1.5,-2.25]}";
-        self.ran(10, "Probe::mixed", mixed, mixed, "strings, identities, quantities, bools and floats");
-        self.ran(11, "Probe::mixed", "{}", "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[],\"ratios\":[]}", "every list left out");
-        self.refused(12, "Probe::mixed", "{\"tags\":[\"x\",\"y\",\"z\"]}", "too_long: tags", "a third string");
-        self.refused(13, "Probe::mixed", "{\"ids\":[\"41\"]}", "wrong_type: ids", "a string where an identity is");
-        self.refused(14, "Probe::mixed", "{\"prices\":[1.5]}", "wrong_type: prices", "a fraction where a count is");
-        self.refused(15, "Probe::mixed", "{\"flags\":[1]}", "wrong_type: flags", "a number where a Bool is");
-        self.refused(16, "Probe::mixed", "{\"tags\":[null]}", "wrong_type: tags", "null where a string is");
+        self.ran(
+            10,
+            "Probe::mixed",
+            mixed,
+            mixed,
+            "strings, identities, quantities, bools and floats",
+        );
+        self.ran(
+            11,
+            "Probe::mixed",
+            "{}",
+            "{\"tags\":[],\"ids\":[],\"prices\":[],\"flags\":[],\"ratios\":[]}",
+            "every list left out",
+        );
+        self.refused(
+            12,
+            "Probe::mixed",
+            "{\"tags\":[\"x\",\"y\",\"z\"]}",
+            "too_long: tags",
+            "a third string",
+        );
+        self.refused(
+            13,
+            "Probe::mixed",
+            "{\"ids\":[\"41\"]}",
+            "wrong_type: ids",
+            "a string where an identity is",
+        );
+        self.refused(
+            14,
+            "Probe::mixed",
+            "{\"prices\":[1.5]}",
+            "wrong_type: prices",
+            "a fraction where a count is",
+        );
+        self.refused(
+            15,
+            "Probe::mixed",
+            "{\"flags\":[1]}",
+            "wrong_type: flags",
+            "a number where a Bool is",
+        );
+        self.refused(
+            16,
+            "Probe::mixed",
+            "{\"tags\":[null]}",
+            "wrong_type: tags",
+            "null where a string is",
+        );
 
         // ---- [T; N]: exactly N ----
-        self.ran(17, "Probe::point", "{\"xyz\":[1,-2,3]}", "{\"xyz\":[1,-2,3]}", "a fixed array of three");
+        self.ran(
+            17,
+            "Probe::point",
+            "{\"xyz\":[1,-2,3]}",
+            "{\"xyz\":[1,-2,3]}",
+            "a fixed array of three",
+        );
         self.refused(18, "Probe::point", "{\"xyz\":[1,2]}", "too_short: xyz", "two of three");
         self.refused(19, "Probe::point", "{\"xyz\":[1,2,3,4]}", "too_long: xyz", "four of three");
         self.refused(20, "Probe::point", "{}", "missing_field: xyz", "a fixed array left out");
         let pair = "{\"both\":[" + a + "," + b + "]}";
         self.ran(21, "Probe::pair", pair, pair, "a fixed array of records");
-        self.refused(22, "Probe::pair", "{\"both\":[" + a + "]}", "too_short: both", "one record of two");
+        self.refused(
+            22,
+            "Probe::pair",
+            "{\"both\":[" + a + "]}",
+            "too_short: both",
+            "one record of two",
+        );
     }
 }
 

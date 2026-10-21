@@ -87,7 +87,11 @@ locus Person {
         self.briefed = self.briefed + 1;
         return Performance {
             pending: true, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION,
-            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --as " + brief.position + worker_flag(brief.holder) + " --attempt " + brief.attempt_id + " --token " + to_string(brief.token) + " --result <text>` hands the outcome back under the lease (until " + to_string(brief.until) + ")"
+            narrative: "a person performs " + brief.attempt_id + ": `hale dna work submit --as "
+                + brief.position + worker_flag(brief.holder) + " --attempt " + brief.attempt_id
+                + " --token " + to_string(brief.token)
+                + " --result <text>` hands the outcome back under the lease (until "
+                + to_string(brief.until) + ")"
         };
     }
 }
@@ -98,7 +102,10 @@ locus NoDeterministic {
     fn takes(performer_kind: String) -> Bool { return false; }
     fn effect_class() -> String { return "effect_free"; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        return Performance { refused: "no deterministic performer takes " + brief.performer_kind + " work in this project (dna/org/work.hl names none)" };
+        return Performance {
+            refused: "no deterministic performer takes " + brief.performer_kind
+                + " work in this project (dna/org/work.hl names none)",
+        };
     }
 }
 
@@ -109,7 +116,10 @@ locus NoModel {
     fn takes(performer_kind: String) -> Bool { return false; }
     fn effect_class() -> String { return "effect_free"; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
-        return Performance { refused: "no model performs " + brief.performer_kind + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }` puts the catalog behind it)" };
+        return Performance {
+            refused: "no model performs " + brief.performer_kind
+                + " work in this project; a person does (`hale dna work brief --render text`), or a deterministic performer in dna/org/work.hl (`legs::ModelPerformer { router: agent_models(), effect: \"effect_free\" }` puts the catalog behind it)",
+        };
     }
 }
 
@@ -117,13 +127,26 @@ locus NoModel {
 // one fixed result: the shape a project's own program takes, and the
 // one a fixture wires.
 locus FixedAnswer {
-    params { name: String = "fixed"; kinds: String = "agent"; effect: String = ""; result: String = ""; narrative: String = "a fixed answer"; performed: Int = 0; }
+    params {
+        name: String = "fixed";
+        kinds: String = "agent";
+        effect: String = "";
+        result: String = "";
+        narrative: String = "a fixed answer";
+        performed: Int = 0;
+    }
     fn kind() -> String { return "deterministic"; }
     fn takes(performer_kind: String) -> Bool { return dna::word_in(performer_kind, self.kinds); }
     fn effect_class() -> String { return self.effect; }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         self.performed = self.performed + 1;
-        return Performance { disposition: "done", result: self.result, narrative: self.narrative, prompt_digest: prompt_digest(brief.rendered), renderer: RENDERER_VERSION };
+        return Performance {
+            disposition: "done",
+            result: self.result,
+            narrative: self.narrative,
+            prompt_digest: prompt_digest(brief.rendered),
+            renderer: RENDERER_VERSION,
+        };
     }
 }
 
@@ -146,9 +169,15 @@ locus PerformerCatalog {
     // The performer that declares no effect class, or one that is not
     // `effect_free`, `idempotent` or `uncertain`: "" when all three do.
     fn unseated() -> String {
-        if !dna::effect_class_ok(self.person.effect_class()) { return unseated_text("person", self.person.effect_class()); }
-        if !dna::effect_class_ok(self.deterministic.effect_class()) { return unseated_text("deterministic", self.deterministic.effect_class()); }
-        if !dna::effect_class_ok(self.model.effect_class()) { return unseated_text("model", self.model.effect_class()); }
+        if !dna::effect_class_ok(self.person.effect_class()) {
+            return unseated_text("person", self.person.effect_class());
+        }
+        if !dna::effect_class_ok(self.deterministic.effect_class()) {
+            return unseated_text("deterministic", self.deterministic.effect_class());
+        }
+        if !dna::effect_class_ok(self.model.effect_class()) {
+            return unseated_text("model", self.model.effect_class());
+        }
         return "";
     }
     // The effect class of the performer named.
@@ -170,7 +199,9 @@ locus PerformerCatalog {
         return self.chosen(performer_kind);
     }
     // The render mode a performer is briefed in.
-    fn mode_for(who: String) -> String { return if who == "person" { "text" } else if who == "model" { "prompt" } else { "agent" }; }
+    fn mode_for(who: String) -> String {
+        return if who == "person" { "text" } else if who == "model" { "prompt" } else { "agent" };
+    }
     fn perform(brief: Brief, hands: Hands) -> Performance {
         return self.perform_as(self.chosen(brief.performer_kind), brief, hands);
     }
@@ -178,11 +209,20 @@ locus PerformerCatalog {
     // be: a performer never answers a kind it does not take, forced or not.
     fn perform_as(who: String, brief: Brief, hands: Hands) -> Performance {
         if who == "deterministic" {
-            if !self.deterministic.takes(brief.performer_kind) { return Performance { refused: "the deterministic performer does not take " + brief.performer_kind + " work" }; }
+            if !self.deterministic.takes(brief.performer_kind) {
+                return Performance {
+                    refused: "the deterministic performer does not take " + brief.performer_kind
+                        + " work",
+                };
+            }
             return self.deterministic.perform(brief, hands);
         }
         if who == "model" {
-            if !self.model.takes(brief.performer_kind) { return Performance { refused: "the model performer does not take " + brief.performer_kind + " work" }; }
+            if !self.model.takes(brief.performer_kind) {
+                return Performance {
+                    refused: "the model performer does not take " + brief.performer_kind + " work",
+                };
+            }
             return self.model.perform(brief, hands);
         }
         return self.person.perform(brief, hands);

@@ -36,7 +36,11 @@ locus Shelf {
 
 fn main() {
     let shelf = Shelf { };
-    std::test::assert_eq_str(shelf.text, "{\"sku\":\"p\",\"qty\":1}", "a params field's initializer");
+    std::test::assert_eq_str(
+        shelf.text,
+        "{\"sku\":\"p\",\"qty\":1}",
+        "a params field's initializer",
+    );
     std::test::assert_eq_str(shelf.stamp(), "{\"sku\":\"d\",\"qty\":2}", "a parameter's default");
     let text = "{\"id\":7,\"lines\":[{\"sku\":\"a\",\"qty\":2},{\"sku\":\"b\",\"qty\":1}],\"total\":1250,\"at\":\"2026-10-17T09:00:00Z\"}";
     let o = Order::api_decode(text) or {
@@ -50,17 +54,31 @@ fn main() {
 
     // the same strictness as a served row
     let wrong = Order::api_decode("{\"id\":\"7\"}") or {
-        std::test::assert_eq_str(err.kind + ": " + err.field, "wrong_type: id", "a value of the wrong kind");
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "wrong_type: id",
+            "a value of the wrong kind",
+        );
         Order { id: 0, total: 0 * 1cent, at: `1970-01-01T00:00:00Z`, note: "", has_note: false }
     };
     std::test::assert_eq_int(wrong.id, 0, "refused, the substitute");
     let missing = Line::api_decode("{\"sku\":\"x\"}") or {
-        std::test::assert_eq_str(err.kind + ": " + err.field, "missing_field: qty", "a missing field");
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "missing_field: qty",
+            "a missing field",
+        );
         Line { sku: "", qty: -1 }
     };
     std::test::assert_eq_int(missing.qty, -1, "refused, the substitute");
-    let long = Order::api_decode("{\"id\":1,\"lines\":[{\"sku\":\"a\",\"qty\":1},{\"sku\":\"b\",\"qty\":1},{\"sku\":\"c\",\"qty\":1},{\"sku\":\"d\",\"qty\":1}],\"total\":0,\"at\":\"2026-10-17T09:00:00Z\"}") or {
-        std::test::assert_eq_str(err.kind + ": " + err.field, "too_long: lines", "more lines than the list holds");
+    let long = Order::api_decode(
+        "{\"id\":1,\"lines\":[{\"sku\":\"a\",\"qty\":1},{\"sku\":\"b\",\"qty\":1},{\"sku\":\"c\",\"qty\":1},{\"sku\":\"d\",\"qty\":1}],\"total\":0,\"at\":\"2026-10-17T09:00:00Z\"}",
+    ) or {
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "too_long: lines",
+            "more lines than the list holds",
+        );
         Order { id: 0, total: 0 * 1cent, at: `1970-01-01T00:00:00Z`, note: "", has_note: false }
     };
     std::test::assert_eq_int(long.id, 0, "refused, the substitute");
@@ -70,11 +88,27 @@ fn main() {
         std::test::assert(false, "a valid status: " + err.kind + " " + err.field);
         return;
     };
-    std::test::assert_eq_str(Status::api_encode(held), "{\"Held\":\"at the door\"}", "an enum written back");
-    std::test::assert_eq_str(Status::api_encode(Status::Moved(2, -3)), "{\"Moved\":[2,-3]}", "several values");
-    std::test::assert_eq_str(Status::api_encode(Status::Open), "\"Open\"", "a payload-free variant");
+    std::test::assert_eq_str(
+        Status::api_encode(held),
+        "{\"Held\":\"at the door\"}",
+        "an enum written back",
+    );
+    std::test::assert_eq_str(
+        Status::api_encode(Status::Moved(2, -3)),
+        "{\"Moved\":[2,-3]}",
+        "several values",
+    );
+    std::test::assert_eq_str(
+        Status::api_encode(Status::Open),
+        "\"Open\"",
+        "a payload-free variant",
+    );
     let unknown = Status::api_decode("\"Gone\"") or {
-        std::test::assert_eq_str(err.kind + ": " + err.field, "wrong_type: payload", "an unknown variant");
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "wrong_type: payload",
+            "an unknown variant",
+        );
         Status::Open
     };
     std::test::assert_eq_str(Status::api_encode(unknown), "\"Open\"", "refused, the substitute");
@@ -86,27 +120,47 @@ fn main() {
         return;
     };
     std::test::assert(!absent.has_spare, "an absent optional map");
-    std::test::assert_eq_str(Desk::api_encode(absent), "{\"status\":\"Open\",\"checks\":{\"db\":{\"ok\":true}}}", "an absent map is not written");
+    std::test::assert_eq_str(
+        Desk::api_encode(absent),
+        "{\"status\":\"Open\",\"checks\":{\"db\":{\"ok\":true}}}",
+        "an absent map is not written",
+    );
     let empty = Desk::api_decode("{\"status\":\"Open\",\"spare\":{}}") or {
         std::test::assert(false, "a desk with an empty spare: " + err.kind + " " + err.field);
         return;
     };
     std::test::assert(empty.has_spare, "a present empty optional map");
-    std::test::assert_eq_str(Desk::api_encode(empty), "{\"status\":\"Open\",\"checks\":{},\"spare\":{}}", "a present empty map is written");
+    std::test::assert_eq_str(
+        Desk::api_encode(empty),
+        "{\"status\":\"Open\",\"checks\":{},\"spare\":{}}",
+        "a present empty map is written",
+    );
     let nulled = Desk::api_decode("{\"status\":{\"Moved\":[1,2]},\"spare\":null}") or {
         std::test::assert(false, "a desk with a null spare: " + err.kind + " " + err.field);
         return;
     };
     std::test::assert(!nulled.has_spare, "a null optional map is absent");
-    let full = Desk::api_decode("{\"status\":\"Open\",\"spare\":{\"a\":{\"ok\":false},\"b\":{\"ok\":true}}}") or {
+    let full = Desk::api_decode(
+        "{\"status\":\"Open\",\"spare\":{\"a\":{\"ok\":false},\"b\":{\"ok\":true}}}",
+    ) or {
         std::test::assert(false, "a desk with a spare: " + err.kind + " " + err.field);
         return;
     };
     std::test::assert(full.has_spare, "a present optional map");
     std::test::assert_eq_int(count(full.spare), 2, "its entries");
-    std::test::assert_eq_str(Desk::api_encode(full), "{\"status\":\"Open\",\"checks\":{},\"spare\":{\"a\":{\"ok\":false},\"b\":{\"ok\":true}}}", "written back in order");
-    let dup = Desk::api_decode("{\"status\":\"Open\",\"spare\":{\"a\":{\"ok\":false},\"a\":{\"ok\":true}}}") or {
-        std::test::assert_eq_str(err.kind + ": " + err.field, "duplicate_key: spare", "a key twice in an optional map");
+    std::test::assert_eq_str(
+        Desk::api_encode(full),
+        "{\"status\":\"Open\",\"checks\":{},\"spare\":{\"a\":{\"ok\":false},\"b\":{\"ok\":true}}}",
+        "written back in order",
+    );
+    let dup = Desk::api_decode(
+        "{\"status\":\"Open\",\"spare\":{\"a\":{\"ok\":false},\"a\":{\"ok\":true}}}",
+    ) or {
+        std::test::assert_eq_str(
+            err.kind + ": " + err.field,
+            "duplicate_key: spare",
+            "a key twice in an optional map",
+        );
         Desk { status: Status::Open, has_spare: false }
     };
     std::test::assert(!dup.has_spare, "refused, the substitute");

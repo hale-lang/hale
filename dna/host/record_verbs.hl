@@ -28,7 +28,15 @@ fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
     return ReviewRow { };
 }
 
-fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn candidates_verb(
+    root: String,
+    seed: String,
+    sub: String,
+    id_in: String,
+    why: String,
+    who_flag: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(sub) == 0 {
@@ -42,37 +50,72 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             if len(mid) == 0 { continue; }
             let rv = review_for_mutation(p, mid);
-            let state = if len(rv.id) == 0 { "no Review names it" } else { "review " + rv.id + " " + rv.state + (if rv.state == "pending" { "" } else { ": " + rv.settled }) };
-            out = out + "  " + mid + "  " + short(genome_candidate(root, mid)) + "  " + state + "\n";
+            let state = if len(rv.id) == 0 {
+                "no Review names it"
+            } else {
+                "review " + rv.id + " " + rv.state
+                    + (if rv.state == "pending" { "" } else { ": " + rv.settled })
+            };
+            out = out + "  " + mid + "  " + short(genome_candidate(root, mid)) + "  " + state
+                + "\n";
             n = n + 1;
         }
-        return answer("candidates: " + (if n == 0 { "none kept" } else { to_string(n) }) + "\n" + out + (if n > 0 { "`hale dna candidates <mutation>` shows one as a diff; `hale dna candidates drop <mutation> --why <why>` stops keeping it\n" } else { "" }));
+        return answer(
+            "candidates: " + (if n == 0 { "none kept" } else { to_string(n) }) + "\n" + out
+                + (
+                    if n > 0 {
+                        "`hale dna candidates <mutation>` shows one as a diff; `hale dna candidates drop <mutation> --why <why>` stops keeping it\n"
+                    } else {
+                        ""
+                    }
+                ),
+        );
     }
     if sub == "drop" {
-        if len(id_in) == 0 || len(why) == 0 { return fail("candidates drop: `hale dna candidates drop <mutation> --why <why> [--as <who>]`"); }
-        if len(genome_candidate(root, id_in)) == 0 { return fail("candidates drop: no candidate is kept for " + id_in); }
+        if len(id_in) == 0 || len(why) == 0 {
+            return fail(
+                "candidates drop: `hale dna candidates drop <mutation> --why <why> [--as <who>]`",
+            );
+        }
+        if len(genome_candidate(root, id_in)) == 0 {
+            return fail("candidates drop: no candidate is kept for " + id_in);
+        }
         let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("by", who);
         b.string_field("why", why);
         b.end_object();
-        if !append_as(root, "candidate.dropped", id_in, b.result(), who, memory) { return fail("the record refused the append"); }
+        if !append_as(root, "candidate.dropped", id_in, b.result(), who, memory) {
+            return fail("the record refused the append");
+        }
         let dropped = apply_drops(root);
         let s = sync_record(root, memory);
-        return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; its branch is deleted here, and every clone deletes its own when it reads the row; a branch pushed to a forge is deleted there as any branch is)\n");
+        return answer(
+            "candidate " + id_in + " dropped by " + who + ": " + why
+                + " (candidate.dropped; its branch is deleted here, and every clone deletes its own when it reads the row; a branch pushed to a forge is deleted there as any branch is)\n",
+        );
     }
     // show one: the diff from the review's base
     let mid = sub;
     let commit = genome_candidate(root, mid);
-    if len(commit) == 0 { return fail("candidates: no candidate is kept for " + mid + " (`hale dna candidates` lists them)"); }
+    if len(commit) == 0 {
+        return fail(
+            "candidates: no candidate is kept for " + mid + " (`hale dna candidates` lists them)",
+        );
+    }
     let p = open_projection(root, seed, "", memory);
     let rv = review_for_mutation(p, mid);
     let base = if len(rv.base_commit) > 0 { rv.base_commit } else { commit + "~1" };
-    let mut out = "candidate " + mid + " at " + short(commit) + (if len(rv.id) > 0 { " (review " + rv.id + " " + rv.state + ")" } else { "" }) + "\n";
+    let mut out = "candidate " + mid + " at " + short(commit)
+        + (if len(rv.id) > 0 { " (review " + rv.id + " " + rv.state + ")" } else { "" }) + "\n";
     out = out + "diff (" + short(base) + " .. " + short(commit) + "):\n";
     let d = genome_diff(root, base, commit);
-    if d.code == 0 { out = out + indent_lines(dna::trim_nl(d.stdout), "  ") + "\n"; } else { out = out + "  (the diff could not be read: " + dna::trim_nl(d.stderr) + ")\n"; }
+    if d.code == 0 {
+        out = out + indent_lines(dna::trim_nl(d.stdout), "  ") + "\n";
+    } else {
+        out = out + "  (the diff could not be read: " + dna::trim_nl(d.stderr) + ")\n";
+    }
     return answer(out);
 }
 
@@ -87,20 +130,40 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
 fn record_genesis_verb(root: String, body: String) -> Answer {
     if len(body) == 0 { return fail("record-genesis: the genesis row's body"); }
     let id = record_identity(root);
-    if len(id) == 0 { return fail("record-genesis: hale.toml pins no record; `hale habitat graft` pins it first"); }
-    if dna::event_digest("genesis", "record.genesis", "record", body) != id { return fail("record-genesis: the row's digest is not the identity hale.toml pins (" + id + ")"); }
+    if len(id) == 0 {
+        return fail("record-genesis: hale.toml pins no record; `hale habitat graft` pins it first");
+    }
+    if dna::event_digest("genesis", "record.genesis", "record", body) != id {
+        return fail(
+            "record-genesis: the row's digest is not the identity hale.toml pins (" + id + ")",
+        );
+    }
     let key = dna::record_key(dna::schema_for(id));
-    if !key.ready() { return fail("record-genesis: the record's key is not in the vault (" + dna::exchange_key_vault(dna::schema_for(id)) + "); `hale dna secrets` draws it"); }
+    if !key.ready() {
+        return fail(
+            "record-genesis: the record's key is not in the vault ("
+                + dna::exchange_key_vault(dna::schema_for(id)) + "); `hale dna secrets` draws it",
+        );
+    }
     let who = who_am_i();
     let j = dna::RecordJournal { repo: root, author: who };
     let r = j.append_as(0, "record.genesis", "record", body, who, true);
-    if !r.ok { return fail("record-genesis: memory refused the record's first row (" + r.error + "): " + j.last_error()); }
+    if !r.ok {
+        return fail(
+            "record-genesis: memory refused the record's first row (" + r.error + "): "
+                + j.last_error(),
+        );
+    }
     let k = std::json::Builder { };
     k.begin_object();
     k.string_field("key", key.public());
     k.end_object();
     let kr = j.append_as(1, "record.key", "record", k.result(), "dna", true);
-    if !kr.ok { return fail("record-genesis: memory refused the record's key (" + kr.error + "): " + j.last_error()); }
+    if !kr.ok {
+        return fail(
+            "record-genesis: memory refused the record's key (" + kr.error + "): " + j.last_error(),
+        );
+    }
     return answer("record " + id + " (record.genesis; record.key " + key.public()[0..12] + "…)\n");
 }
 
@@ -122,7 +185,9 @@ fn record_rows_verb(root: String) -> Answer {
     if !h.ok { return fail("record-rows: the record in " + root + " could not be read: " + h.why); }
     if h.absent { return answer(""); }
     let text = journal_text_at(root, h.id);
-    if len(text) == 0 { return fail("record-rows: the record's rows at " + h.id + " could not be read"); }
+    if len(text) == 0 {
+        return fail("record-rows: the record's rows at " + h.id + " could not be read");
+    }
     return answer(text);
 }
 
@@ -131,27 +196,55 @@ fn record_rows_verb(root: String) -> Answer {
 // memory's tables. A protected body is the vault's (`hale dna receipt show
 // … --purpose`), never this verb's.
 fn record_body_verb(root: String, digest: String) -> Answer {
-    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    let hexd = if std::str::starts_with(digest, "sha256:") {
+        digest[7..len(digest)]
+    } else {
+        digest
+    };
     if len(hexd) != 64 { return fail("record-body: a receipt's digest"); }
     let r = dna::MemoryReceipts { repo: root };
     let text = r.read(hexd);
-    if len(text) == 0 { return fail("record-body: no body " + digest + " is kept unsealed in memory" + (if len(r.last_error()) > 0 { " (" + r.last_error() + ")" } else { "" })); }
+    if len(text) == 0 {
+        return fail(
+            "record-body: no body " + digest + " is kept unsealed in memory"
+                + (if len(r.last_error()) > 0 { " (" + r.last_error() + ")" } else { "" }),
+        );
+    }
     return answer(text);
 }
 
 // Append every row of a file (one JSON object per line: kind, entity,
 // body) in order, in the identity of whoever runs this. The count.
-fn record_seed_verb(root: String, path: String, purpose_path: String, memory: dna::Memory) -> Answer {
+fn record_seed_verb(
+    root: String,
+    path: String,
+    purpose_path: String,
+    memory: dna::Memory
+) -> Answer {
     if len(path) == 0 { return fail("record-seed: a file of rows"); }
     let rows = std::io::fs::read_file(path) or "";
     // GH #995: the declared purpose's proposal in the same seed, so a
     // record never exists without it
-    let purpose = if len(purpose_path) > 0 { std::io::fs::read_file(purpose_path) or "" } else { "" };
-    if len(purpose_path) > 0 && len(purpose) == 0 { return fail("record-seed: no purpose at " + purpose_path); }
+    let purpose = if len(purpose_path) > 0 {
+        std::io::fs::read_file(purpose_path) or ""
+    } else {
+        ""
+    };
+    if len(purpose_path) > 0 && len(purpose) == 0 {
+        return fail("record-seed: no purpose at " + purpose_path);
+    }
     let keeps = dna::Texts { };
     let proposed = if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" };
-    if !keeps_flush(root, keeps) { return fail("record-seed: the purpose's receipt could not be kept; nothing was seeded"); }
-    return seed_rows(root, rows + (if len(rows) > 0 && !std::str::ends_with(rows, "\n") { "\n" } else { "" }) + proposed, "record-seed", memory);
+    if !keeps_flush(root, keeps) {
+        return fail("record-seed: the purpose's receipt could not be kept; nothing was seeded");
+    }
+    return seed_rows(
+        root,
+        rows + (if len(rows) > 0 && !std::str::ends_with(rows, "\n") { "\n" } else { "" })
+            + proposed,
+        "record-seed",
+        memory,
+    );
 }
 
 // Rows into the record, one JSON object per line (`kind`, `entity`,
@@ -171,8 +264,18 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
         if len(kind) == 0 { return fail(who + ": row " + to_string(n) + " has no kind"); }
         let entity = std::json::find_string_field(line, "entity");
         let body = std::json::find_string_field(line, "body");
-        let g = if kind == "graph.node" { ops::graph_node_row(entity, body) } else if kind == "graph.edge" { ops::graph_edge_row(entity, body) } else if kind == "graph.retired" { ops::graph_retired_row(entity) } else { ops::GraphRow { ok: true } };
-        if !g.ok { return fail(who + ": row " + to_string(n) + " (" + kind + " " + entity + "): " + g.why); }
+        let g = if kind == "graph.node" {
+            ops::graph_node_row(entity, body)
+        } else if kind == "graph.edge" {
+            ops::graph_edge_row(entity, body)
+        } else if kind == "graph.retired" {
+            ops::graph_retired_row(entity)
+        } else {
+            ops::GraphRow { ok: true }
+        };
+        if !g.ok {
+            return fail(who + ": row " + to_string(n) + " (" + kind + " " + entity + "): " + g.why);
+        }
     }
     // the rows land in their order; those of the record go down together,
     // one commit each, through the record's batch
@@ -210,8 +313,19 @@ fn structure_roles(root: String) -> String {
 // is a file of the artifact's rows, which land first; `app` names the
 // application's root seed; `description_path` is a file holding what
 // `hale check --api` exports.
-fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String, description_path: String, memory: dna::Memory) -> Answer {
-    let described = if len(description_path) > 0 { std::io::fs::read_file(description_path) or "" } else { "" };
+fn graph_ingest_verb(
+    root: String,
+    first: String,
+    rows_path: String,
+    app: String,
+    description_path: String,
+    memory: dna::Memory
+) -> Answer {
+    let described = if len(description_path) > 0 {
+        std::io::fs::read_file(description_path) or ""
+    } else {
+        ""
+    };
     let declared = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
     let g = ops::GraphIngest { root: root, app: app, description: described, declared: declared };
     let r = g.ingest();
@@ -232,14 +346,31 @@ fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String
     // a repository with nothing to ingest still has its record
     let purpose = if len(first) > 0 { std::io::fs::read_file(first) or "" } else { "" };
     let observed = if len(rows_path) > 0 { std::io::fs::read_file(rows_path) or "" } else { "" };
-    if len(rows_path) > 0 && len(observed) == 0 { return fail("graph-ingest: no rows at " + rows_path); }
-    let head = if len(observed) > 0 && !std::str::ends_with(observed, "\n") { observed + "\n" } else { observed };
+    if len(rows_path) > 0 && len(observed) == 0 {
+        return fail("graph-ingest: no rows at " + rows_path);
+    }
+    let head = if len(observed) > 0 && !std::str::ends_with(observed, "\n") {
+        observed + "\n"
+    } else {
+        observed
+    };
     let before = head + (if len(purpose) > 0 { purpose_rows(keeps, purpose) } else { "" });
-    if !keeps_flush(root, keeps) { return fail("graph-ingest: the receipts could not be kept; nothing was seeded"); }
-    let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
+    if !keeps_flush(root, keeps) {
+        return fail("graph-ingest: the receipts could not be kept; nothing was seeded");
+    }
+    let seeded = seed_rows(
+        root,
+        before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" })
+            + r.rows + proposals,
+        "graph-ingest",
+        memory,
+    );
     if !seeded.ok { return seeded; }
     // ruling 11b: what the ingest took no row from, said once, a line each
-    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n" + r.notes);
+    return answer(
+        to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; "
+            + to_string(holes.count) + " proposal(s)\n" + r.notes,
+    );
 }
 
 // Whether the record attaches an application built from a seed
@@ -250,7 +381,11 @@ fn attached_somewhere(j: dna::Journal) -> Bool {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "application.attached" && len(std::json::find_string_field(e.body, "main")) > 0 { return true; }
+        if e.kind == "application.attached"
+            && len(std::json::find_string_field(e.body, "main")) > 0
+        {
+            return true;
+        }
         i = i + 1;
     }
     return false;
@@ -264,13 +399,21 @@ fn ingest_owned(id: String) -> Bool {
     let colon = std::str::index_of(id, ":");
     if colon <= 0 { return false; }
     let kind = id[0..colon];
-    if dna::word_in(kind, "purpose axiom process seed contract noun deployment gate document witness tool meets names refers constrains runs gates witnesses") { return true; }
+    if dna::word_in(
+        kind,
+        "purpose axiom process seed contract noun deployment gate document witness tool meets names refers constrains runs gates witnesses",
+    ) {
+        return true;
+    }
     if kind != "unfold" { return false; }
     let rest = id[(colon + 1)..len(id)];
     let bar = std::str::index_of(rest, "|");
     if bar < 0 { return false; }
     let ends = rest[0..bar] + " " + rest[(bar + 1)..len(rest)];
-    return !std::str::contains(" " + ends, " position:") && !std::str::contains(" " + ends, " work:") && !std::str::contains(" " + ends, " organization:") && !std::str::contains(" " + ends, " definition:");
+    return !std::str::contains(" " + ends, " position:")
+        && !std::str::contains(" " + ends, " work:")
+        && !std::str::contains(" " + ends, " organization:")
+        && !std::str::contains(" " + ends, " definition:");
 }
 
 // `hale dna ingest [--at <rev>]` (the CLI checks the commit out at `tree`):
@@ -286,8 +429,15 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     if len(no_head) > 0 { return fail(no_head); }
     if len(at) < 7 { return fail("ingest: name the commit (--at <sha>)"); }
     // the record and its Ledger, as the organization reads them
-    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
-    if attached_somewhere(journal) { return fail("ingest: an attached application's re-ingest is not built yet; a repository's is"); }
+    let journal = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: memory.ledger,
+    };
+    if attached_somewhere(journal) {
+        return fail(
+            "ingest: an attached application's re-ingest is not built yet; a repository's is",
+        );
+    }
     let g = ops::GraphIngest { root: tree, tools: true };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("ingest: " + r.error); }
@@ -311,7 +461,11 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
         let was = dna::graph_body_of(current, id);
         if len(was) == 0 || was != body {
             if len(was) == 0 { added = added + 1; } else { changed = changed + 1; }
-            if std::json::find_string_field(row, "kind") == "graph.node" { nodes = nodes + row + "\n"; } else { edges = edges + row + "\n"; }
+            if std::json::find_string_field(row, "kind") == "graph.node" {
+                nodes = nodes + row + "\n";
+            } else {
+                edges = edges + row + "\n";
+            }
         }
     }
     // what the record states and the repository no longer does: retired,
@@ -334,7 +488,11 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
         retired = retired + 1;
         let gone = hole_row("graph.retired", id, "{}");
         let colon = std::str::index_of(id, ":");
-        if dna::word_in(id[0..colon], "meets names refers constrains runs gates witnesses unfold") { gone_edges = gone_edges + gone; } else { gone_nodes = gone_nodes + gone; }
+        if dna::word_in(id[0..colon], "meets names refers constrains runs gates witnesses unfold") {
+            gone_edges = gone_edges + gone;
+        } else {
+            gone_nodes = gone_nodes + gone;
+        }
     }
     let short = at[0..12];
     let b = std::json::Builder { };
@@ -349,7 +507,10 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
         b.end_object();
         let seeded = seed_rows(root, hole_row("graph.ingested", at, b.result()), "ingest", memory);
         if !seeded.ok { return seeded; }
-        return answer("ingested " + short + ": the graph the record states is the repository's; nothing to review\n");
+        return answer(
+            "ingested " + short
+                + ": the graph the record states is the repository's; nothing to review\n",
+        );
     }
     // one graph proposal: its rows as the receipt carries them
     let d = std::json::Builder { };
@@ -358,7 +519,9 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     d.string_field("kind", "graph");
     d.string_field("name", "ingest@" + short);
     d.string_field("provenance", "ingested at " + at);
-    let question = "ratify the graph as the repository states it at " + short + ": " + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired) + " retired";
+    let question = "ratify the graph as the repository states it at " + short + ": "
+        + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired)
+        + " retired";
     d.string_field("question", question);
     d.begin_array_field("rows");
     let all = nodes + edges + gone_edges + gone_nodes;
@@ -381,15 +544,27 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     d.string_field("text", question + ".");
     d.end_object();
     let keeps = dna::Texts { };
-    let proposal = hole_rows(keeps, ops::hole_line(d.result(), question, "ingest", "graph", "ingest@" + short, "org"), "hale dna ingest");
-    let digest = std::json::find_string_field(proposal[0..std::str::index_of(proposal, "\n")], "entity");
+    let proposal = hole_rows(
+        keeps,
+        ops::hole_line(d.result(), question, "ingest", "graph", "ingest@" + short, "org"),
+        "hale dna ingest",
+    );
+    let digest = std::json::find_string_field(
+        proposal[0..std::str::index_of(proposal, "\n")],
+        "entity",
+    );
     b.string_field("review_id", dna::knowledge_review_id(digest));
     b.end_object();
     // the same difference at the same commit is the same proposal: asked once
     if len(dna::first_row(journal, "knowledge.proposed", digest).kind) > 0 {
-        return answer("ingested " + short + ": the same difference is already proposed as " + dna::knowledge_review_id(digest) + "\n");
+        return answer(
+            "ingested " + short + ": the same difference is already proposed as "
+                + dna::knowledge_review_id(digest) + "\n",
+        );
     }
-    if !keeps_flush(root, keeps) { return fail("ingest: the receipt could not be kept; nothing was proposed"); }
+    if !keeps_flush(root, keeps) {
+        return fail("ingest: the receipt could not be kept; nothing was proposed");
+    }
     // the organization opens the Review it is asked to (a running one hears
     // the request; one started later finds it in the record)
     let rq = std::json::Builder { };
@@ -398,9 +573,19 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     rq.string_field("review_id", dna::knowledge_review_id(digest));
     rq.string_field("by", "hale dna ingest");
     rq.end_object();
-    let seeded = seed_rows(root, proposal + hole_row("graph.ingested", at, b.result()) + hole_row("graph.requested", "g" + digest[7..19], rq.result()), "ingest", memory);
+    let seeded = seed_rows(
+        root,
+        proposal + hole_row("graph.ingested", at, b.result())
+            + hole_row("graph.requested", "g" + digest[7..19], rq.result()),
+        "ingest",
+        memory,
+    );
     if !seeded.ok { return seeded; }
-    return answer("ingested " + short + ": " + to_string(added) + " added, " + to_string(changed) + " changed, " + to_string(retired) + " retired; the Board ratifies it as " + dna::knowledge_review_id(digest) + " (`hale dna review` lists it under `ingest`)\n");
+    return answer(
+        "ingested " + short + ": " + to_string(added) + " added, " + to_string(changed)
+            + " changed, " + to_string(retired) + " retired; the Board ratifies it as "
+            + dna::knowledge_review_id(digest) + " (`hale dna review` lists it under `ingest`)\n",
+    );
 }
 
 // ---- the toolchain's design, as proposals (GH #596 C) --------------------
@@ -440,7 +625,9 @@ locus DigestNames {
     capacity { pool rows of DigestName indexed_by digest; }
 }
 
-fn in_list(list: String, item: String) -> Bool { return std::str::contains(list, "\n" + item + "\n"); }
+fn in_list(list: String, item: String) -> Bool {
+    return std::str::contains(list, "\n" + item + "\n");
+}
 
 // The record's design states, by name, from the rows and the receipts:
 // the journal's `text`, read whole.
@@ -466,17 +653,34 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
         let kind = std::json::find_string_field(line, "kind");
         let entity = std::json::find_string_field(line, "entity");
         if kind == "knowledge.proposed" {
-            let digest = std::json::find_string_field(std::json::find_string_field(line, "body"), "digest");
+            let digest = std::json::find_string_field(
+                std::json::find_string_field(line, "body"),
+                "digest",
+            );
             if len(digest) == 0 { continue; }
             // the receipt is canonical: its name and its text
-            let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+            let raw = if std::str::starts_with(digest, "sha256:") {
+                digest[7..len(digest)]
+            } else {
+                digest
+            };
             let doc = r.body(raw);
             if !doc.present { continue; }
             let name = std::json::find_string_field(doc.text, "name");
             if len(name) == 0 { continue; }
             names.set(DigestName { digest: digest, name: name });
             let cur = states.get(name) or DesignState { name: name };
-            states.set(DesignState { name: name, latest_text: design_terms(std::json::find_string_field(doc.text, "text"), std::json::find_string_field(doc.text, "schedule")), latest: digest, active: cur.active });
+            states.set(
+                DesignState {
+                    name: name,
+                    latest_text: design_terms(
+                        std::json::find_string_field(doc.text, "text"),
+                        std::json::find_string_field(doc.text, "schedule"),
+                    ),
+                    latest: digest,
+                    active: cur.active,
+                },
+            );
         } else if kind == "knowledge.ratified" {
             decided = decided + entity + "\n";
             ratified = ratified + entity + "\n";
@@ -500,7 +704,14 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
         if len(dn.name) == 0 { continue; }
         let cur = states.get(dn.name) or DesignState { };
         if len(cur.name) == 0 { continue; }
-        states.set(DesignState { name: cur.name, latest_text: cur.latest_text, latest: cur.latest, active: digest });
+        states.set(
+            DesignState {
+                name: cur.name,
+                latest_text: cur.latest_text,
+                latest: cur.latest,
+                active: digest,
+            },
+        );
     }
     // pending / refused: about the latest proposal under each name; the
     // names are walked through the digests they were proposed under
@@ -510,12 +721,24 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
         let line = if nl < 0 { rest2 } else { rest2[0..nl] };
         rest2 = if nl < 0 { "" } else { rest2[(nl + 1)..len(rest2)] };
         if std::json::find_string_field(line, "kind") != "knowledge.proposed" { continue; }
-        let digest = std::json::find_string_field(std::json::find_string_field(line, "body"), "digest");
+        let digest = std::json::find_string_field(
+            std::json::find_string_field(line, "body"),
+            "digest",
+        );
         let dn = names.get(digest) or DigestName { };
         if len(dn.name) == 0 { continue; }
         let cur = states.get(dn.name) or DesignState { };
         if cur.latest != digest { continue; }
-        states.set(DesignState { name: cur.name, latest_text: cur.latest_text, latest: cur.latest, active: cur.active, pending: !in_list(decided, digest), refused: in_list(refused, digest) });
+        states.set(
+            DesignState {
+                name: cur.name,
+                latest_text: cur.latest_text,
+                latest: cur.latest,
+                active: cur.active,
+                pending: !in_list(decided, digest),
+                refused: in_list(refused, digest),
+            },
+        );
     }
     return true;
 }
@@ -524,11 +747,26 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
 // filed it (compact, keys in order): its digest is the Review's name.
 // What a seeded practice states: its text, and the schedule it declares
 // once ratified (GH #1143) — a change to either is a new revision.
-fn design_terms(text: String, schedule: String) -> String { return if len(schedule) > 0 { text + "\n\nschedule: " + schedule } else { text }; }
+fn design_terms(text: String, schedule: String) -> String {
+    return if len(schedule) > 0 { text + "\n\nschedule: " + schedule } else { text };
+}
 
-fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
+fn design_document(
+    name: String,
+    text: String,
+    toolchain: String,
+    supersedes: String,
+    schedule: String,
+    target: String
+) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"kind\":\"" + (if len(target) > 0 { "mandate" } else { "practice" }) + "\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":" + q.quote(if len(target) > 0 { target } else { "org" }) + ",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"kind\":\""
+        + (if len(target) > 0 { "mandate" } else { "practice" }) + "\",\"name\":" + q.quote(name)
+        + ",\"provenance\":\"design\","
+        + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" })
+        + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" })
+        + "\"target\":" + q.quote(if len(target) > 0 { target } else { "org" }) + ",\"text\":"
+        + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
 // A seeded practice's family: the part of its name before the slash
@@ -541,8 +779,19 @@ fn seeded_family(name: String) -> String {
 // Propose one practice: its receipt (queued in `keeps`), a
 // `knowledge.proposed` row and a Review of its own, grouped by its family
 // for the listing: the two seed rows.
-fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String, supersedes: String, schedule: String, target: String) -> String {
-    let raw = keep_later(keeps, design_document(name, text, toolchain, supersedes, schedule, target));
+fn design_rows(
+    keeps: dna::Texts,
+    name: String,
+    text: String,
+    toolchain: String,
+    supersedes: String,
+    schedule: String,
+    target: String
+) -> String {
+    let raw = keep_later(
+        keeps,
+        design_document(name, text, toolchain, supersedes, schedule, target),
+    );
     let kind = if len(target) > 0 { "mandate" } else { "practice" };
     let bound = if len(target) > 0 { target } else { "org" };
     let digest = "sha256:" + raw;
@@ -561,7 +810,14 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
     b.end_object();
     let proposed = hole_row("knowledge.proposed", digest, b.result());
     let first = if len(text) > 72 { text[0..72] + "…" } else { text };
-    let question = (if len(target) > 0 { "ratify the mandate of `" + target + "` (`" + name + "`)" } else { "ratify the " + seeded_family(name) + " practice `" + name + "`" }) + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
+    let question = (
+        if len(target) > 0 {
+            "ratify the mandate of `" + target + "` (`" + name + "`)"
+        } else {
+            "ratify the " + seeded_family(name) + " practice `" + name + "`"
+        }
+    )
+        + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
     let q = std::json::Builder { };
     q.begin_object();
     q.string_field("question", question);
@@ -591,9 +847,21 @@ fn design_rows(keeps: dna::Texts, name: String, text: String, toolchain: String,
 // A library idea's document: the toolchain's text about a node of the
 // graph (`language:hale`, `system:dna`), authored above it, bound to it by
 // its own `target`, with the chapter's title and the digest of its text.
-fn library_document(name: String, title: String, text: String, target: String, toolchain: String, content: String, supersedes: String) -> String {
+fn library_document(
+    name: String,
+    title: String,
+    text: String,
+    target: String,
+    toolchain: String,
+    content: String,
+    supersedes: String
+) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"content_digest\":" + q.quote(content) + ",\"kind\":\"idea\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + "\"target\":" + q.quote(target) + ",\"text\":" + q.quote(text) + ",\"title\":" + q.quote(title) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"content_digest\":" + q.quote(content)
+        + ",\"kind\":\"idea\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\","
+        + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" })
+        + "\"target\":" + q.quote(target) + ",\"text\":" + q.quote(text) + ",\"title\":"
+        + q.quote(title) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
 type LibraryRow {
@@ -603,8 +871,20 @@ type LibraryRow {
 
 // One library idea's receipt and its `knowledge.proposed` row, as a seed
 // row; the digest is "" when the receipt could not be kept.
-fn library_idea_row(keeps: dna::Texts, name: String, title: String, text: String, target: String, toolchain: String, content: String, supersedes: String) -> LibraryRow {
-    let raw = keep_later(keeps, library_document(name, title, text, target, toolchain, content, supersedes));
+fn library_idea_row(
+    keeps: dna::Texts,
+    name: String,
+    title: String,
+    text: String,
+    target: String,
+    toolchain: String,
+    content: String,
+    supersedes: String
+) -> LibraryRow {
+    let raw = keep_later(
+        keeps,
+        library_document(name, title, text, target, toolchain, content, supersedes),
+    );
     let digest = "sha256:" + raw;
     let b = std::json::Builder { };
     b.begin_object();
@@ -623,18 +903,31 @@ fn library_idea_row(keeps: dna::Texts, name: String, title: String, text: String
 // A family's document: the ideas it ratifies, `<name> <digest>` a line.
 fn library_family_document(name: String, version: String, count: Int, ideas: String) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"count\":" + to_string(count) + ",\"ideas\":" + q.quote(ideas) + ",\"kind\":\"family\",\"name\":" + q.quote(name) + ",\"provenance\":\"toolchain\",\"toolchain\":" + q.quote(version) + "}";
+    return "{\"author\":\"org\",\"count\":" + to_string(count) + ",\"ideas\":" + q.quote(ideas)
+        + ",\"kind\":\"family\",\"name\":" + q.quote(name)
+        + ",\"provenance\":\"toolchain\",\"toolchain\":" + q.quote(version) + "}";
 }
 
 // A family's Review: its receipt kept and its `review.requested` row, as a
 // seed row, under the group `library`. "" when the receipt could not be kept.
-fn library_family_row(keeps: dna::Texts, family: String, version: String, target: String, count: Int, ideas: String) -> String {
+fn library_family_row(
+    keeps: dna::Texts,
+    family: String,
+    version: String,
+    target: String,
+    count: Int,
+    ideas: String
+) -> String {
     let name = "library/" + family + "@" + version;
     let raw = keep_later(keeps, library_family_document(name, version, count, ideas));
     let digest = "sha256:" + raw;
     let q = std::json::Builder { };
     q.begin_object();
-    q.string_field("question", "ratify the library family `" + name + "`: " + to_string(count) + " idea(s) bound to `" + target + "`");
+    q.string_field(
+        "question",
+        "ratify the library family `" + name + "`: " + to_string(count) + " idea(s) bound to `"
+            + target + "`",
+    );
     q.string_field("subject_digest", digest);
     q.string_field("required_authority", "board");
     q.string_field("author", "org");
@@ -668,7 +961,9 @@ fn library_families_in_record(root: String) -> String {
             settled = settled + id + "\n";
         } else if kind == "review.requested" {
             let body = std::json::find_string_field(line, "body");
-            if std::json::find_string_field(body, "group") == "library" { asked = asked + std::json::find_string_field(body, "name") + " " + id + "\n"; }
+            if std::json::find_string_field(body, "group") == "library" {
+                asked = asked + std::json::find_string_field(body, "name") + " " + id + "\n";
+            }
         }
     }
     let mut out = "";
@@ -678,7 +973,9 @@ fn library_families_in_record(root: String) -> String {
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let sp = std::str::index_of(line, " ");
-        out = out + line[0..sp] + " " + (if in_list(settled, line[(sp + 1)..len(line)]) { "decided" } else { "pending" }) + "\n";
+        out = out + line[0..sp] + " "
+            + (if in_list(settled, line[(sp + 1)..len(line)]) { "decided" } else { "pending" })
+            + "\n";
     }
     return out;
 }
@@ -691,7 +988,11 @@ fn family_pending(known: String, family: String) -> Bool {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        if std::str::starts_with(line, "library/" + family + "@") && std::str::ends_with(line, " pending") { return true; }
+        if std::str::starts_with(line, "library/" + family + "@")
+            && std::str::ends_with(line, " pending")
+        {
+            return true;
+        }
     }
     return false;
 }
@@ -704,7 +1005,14 @@ fn family_pending(known: String, family: String) -> Bool {
 // still awaits the Board waits, and any other is proposed afresh, each idea
 // superseding the ACTIVE digest under its name. Prints
 // `proposed=<n> families=<f> superseding=<m> waiting=<w>`.
-fn library_seed_verb(root: String, path: String, version_arg: String, upgrading: Bool, toolchain: String, memory: dna::Memory) -> Answer {
+fn library_seed_verb(
+    root: String,
+    path: String,
+    version_arg: String,
+    upgrading: Bool,
+    toolchain: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let ideas = std::io::fs::read_file(path) or "";
@@ -713,9 +1021,13 @@ fn library_seed_verb(root: String, path: String, version_arg: String, upgrading:
     let known = library_families_in_record(root);
     // a record seeded without the library (`--no-library`) is not given one
     // by an upgrade
-    if upgrading && len(known) == 0 { return answer("proposed=0 families=0 superseding=0 waiting=0\n"); }
+    if upgrading && len(known) == 0 {
+        return answer("proposed=0 families=0 superseding=0 waiting=0\n");
+    }
     let states = DesignStates { };
-    if len(known) > 0 && !design_in_record(root, states) { return fail("library-seed: the record's head could not be read; nothing was proposed"); }
+    if len(known) > 0 && !design_in_record(root, states) {
+        return fail("library-seed: the record's head could not be read; nothing was proposed");
+    }
     let keeps = dna::Texts { };
     let mut rows = "";
     let mut proposed = 0;
@@ -748,7 +1060,9 @@ fn library_seed_verb(root: String, path: String, version_arg: String, upgrading:
             }
             if mode == 2 { waiting = waiting + 1; }
             cur = family; cur_ideas = ""; cur_rows = ""; cur_count = 0; cur_super = 0; mode = 0;
-            if std::str::contains("\n" + known, "\nlibrary/" + family + "@" + version + " ") { mode = 1; }
+            if std::str::contains("\n" + known, "\nlibrary/" + family + "@" + version + " ") {
+                mode = 1;
+            }
             else if family_pending(known, family) { mode = 2; }
         }
         if len(family) == 0 || mode != 0 { continue; }
@@ -759,18 +1073,32 @@ fn library_seed_verb(root: String, path: String, version_arg: String, upgrading:
         // the record holds under the earlier one
         let earlier = std::json::find_string_field(line, "earlier");
         if len(st.active) == 0 && len(earlier) > 0 { st = states.get(earlier) or DesignState { }; }
-        let one = library_idea_row(keeps, name, std::json::find_string_field(line, "title"), std::json::find_string_field(line, "text"), cur_target, version, std::json::find_string_field(line, "digest"), st.active);
+        let one = library_idea_row(
+            keeps,
+            name,
+            std::json::find_string_field(line, "title"),
+            std::json::find_string_field(line, "text"),
+            cur_target,
+            version,
+            std::json::find_string_field(line, "digest"),
+            st.active,
+        );
         cur_rows = cur_rows + one.row;
         cur_ideas = cur_ideas + name + " " + one.digest + "\n";
         cur_count = cur_count + 1;
         if len(st.active) > 0 { cur_super = cur_super + 1; }
     }
     if proposed > 0 {
-        if !keeps_flush(root, keeps) { return fail("library-seed: the receipts could not be kept; nothing was seeded"); }
+        if !keeps_flush(root, keeps) {
+            return fail("library-seed: the receipts could not be kept; nothing was seeded");
+        }
         let seeded = seed_rows(root, rows, "library-seed", memory);
         if !seeded.ok { return seeded; }
     }
-    return answer("proposed=" + to_string(proposed) + " families=" + to_string(families) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
+    return answer(
+        "proposed=" + to_string(proposed) + " families=" + to_string(families) + " superseding="
+            + to_string(superseding) + " waiting=" + to_string(waiting) + "\n",
+    );
 }
 
 // The rows that propose the declared purpose (GH #995), one JSON object
@@ -781,7 +1109,19 @@ fn library_seed_verb(root: String, path: String, version_arg: String, upgrading:
 // proposal, and `hale dna review purpose approve` decides it by its
 // group. "" when the receipt could not be kept.
 fn purpose_rows(keeps: dna::Texts, text: String) -> String {
-    let raw = keep_later(keeps, dna::knowledge_document(dna::Idea { kind: "purpose", text: text, author: "org", name: "purpose", provenance: "declared" }, "org"));
+    let raw = keep_later(
+        keeps,
+        dna::knowledge_document(
+            dna::Idea {
+                kind: "purpose",
+                text: text,
+                author: "org",
+                name: "purpose",
+                provenance: "declared",
+            },
+            "org",
+        ),
+    );
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
     let b = std::json::Builder { };
@@ -809,19 +1149,27 @@ fn purpose_rows(keeps: dna::Texts, text: String) -> String {
     q.string_field("group", "purpose");
     q.string_field("name", "purpose");
     q.end_object();
-    return hole_row("knowledge.proposed", digest, b.result()) + hole_row("review.requested", "review:" + review_id, q.result());
+    return hole_row("knowledge.proposed", digest, b.result())
+        + hole_row("review.requested", "review:" + review_id, q.result());
 }
 
 // `design-upgrade <practices>`: the practices as the toolchain states
 // them, one JSON object per line (`name`, `text`). Prints
 // `proposed=<n> superseding=<m> waiting=<w>`.
-fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dna::Memory) -> Answer {
+fn design_upgrade_verb(
+    root: String,
+    path: String,
+    toolchain: String,
+    memory: dna::Memory
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let practices = std::io::fs::read_file(path) or "";
     if len(practices) == 0 { return fail("design-upgrade: no practices at " + path); }
     let states = DesignStates { };
-    if !design_in_record(root, states) { return fail("design-upgrade: the record's head could not be read; nothing was proposed"); }
+    if !design_in_record(root, states) {
+        return fail("design-upgrade: the record's head could not be read; nothing was proposed");
+    }
     let keeps = dna::Texts { };
     let mut rows = "";
     let mut proposed = 0;
@@ -838,7 +1186,9 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         let schedule = std::json::find_string_field(line, "schedule");
         let target = std::json::find_string_field(line, "target");
         let st = states.get(name) or DesignState { };
-        if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused { continue; }
+        if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused {
+            continue;
+        }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
         rows = rows + design_rows(keeps, name, text, toolchain, old, schedule, target);
@@ -846,11 +1196,16 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         if len(old) > 0 { superseding = superseding + 1; }
     }
     if proposed > 0 {
-        if !keeps_flush(root, keeps) { return fail("design-upgrade: the receipts could not be kept; nothing was proposed"); }
+        if !keeps_flush(root, keeps) {
+            return fail("design-upgrade: the receipts could not be kept; nothing was proposed");
+        }
         let seeded = seed_rows(root, rows, "design-upgrade", memory);
         if !seeded.ok { return fail("design-upgrade: the record refused the proposals"); }
     }
-    return answer("proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
+    return answer(
+        "proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting="
+            + to_string(waiting) + "\n",
+    );
 }
 
 // ---- hale dna signers (GH #1590) -------------------------------------------
@@ -862,23 +1217,57 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
 // themselves into a record that admits others. The first enrolment is the
 // bootstrap.
 
-fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_flag: String) -> Answer {
+fn signers_verb(
+    root: String,
+    sub: String,
+    who_in: String,
+    key_in: String,
+    who_flag: String
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let j = dna::RecordJournal { repo: root, author: "host" };
     if len(sub) == 0 || sub == "list" {
         let keys = dna::enrolled_keys(j);
-        let mut out = "signers: " + (if len(keys) == 0 { "none enrolled (`hale dna signers enroll <who> --key <ssh public key or file>`)" } else { to_string(dna::count_lines(keys)) }) + "\n";
-        out = out + indent_lines(dna::trim_nl(keys), "  ") + (if len(keys) > 0 { "\n" } else { "" });
-        out = out + "trust:   " + trust_mode(root) + (if trust_mode(root) == "signed" { " (a person's row is admitted when an enrolled key signed it)" } else { " (every writer to the record is trusted; `git config dna.trust signed` admits signed rows alone)" }) + "\n";
+        let mut out = "signers: "
+            + (
+                if len(keys) == 0 {
+                    "none enrolled (`hale dna signers enroll <who> --key <ssh public key or file>`)"
+                } else {
+                    to_string(dna::count_lines(keys))
+                }
+            )
+            + "\n";
+        out = out + indent_lines(dna::trim_nl(keys), "  ")
+            + (if len(keys) > 0 { "\n" } else { "" });
+        out = out + "trust:   " + trust_mode(root)
+            + (
+                if trust_mode(root) == "signed" {
+                    " (a person's row is admitted when an enrolled key signed it)"
+                } else {
+                    " (every writer to the record is trusted; `git config dna.trust signed` admits signed rows alone)"
+                }
+            )
+            + "\n";
         return answer(out);
     }
     let by = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "enroll" {
-        if len(who_in) == 0 || len(key_in) == 0 { return fail("signers enroll: `hale dna signers enroll <who> --key <ssh public key or a .pub file> [--as <who>]`"); }
+        if len(who_in) == 0 || len(key_in) == 0 {
+            return fail(
+                "signers enroll: `hale dna signers enroll <who> --key <ssh public key or a .pub file> [--as <who>]`",
+            );
+        }
         let from_file = std::io::fs::read_file(key_in) or "";
         let key = dna::trim_nl(if len(from_file) > 0 { from_file } else { key_in });
-        if !std::str::starts_with(key, "ssh-") && !std::str::starts_with(key, "ecdsa-") && !std::str::starts_with(key, "sk-") { return fail("signers enroll: `" + key_in + "` is not an ssh public key or a file holding one"); }
+        if !std::str::starts_with(key, "ssh-")
+            && !std::str::starts_with(key, "ecdsa-")
+            && !std::str::starts_with(key, "sk-")
+        {
+            return fail(
+                "signers enroll: `" + key_in + "` is not an ssh public key or a file holding one",
+            );
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("who", who_in);
@@ -887,13 +1276,37 @@ fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_f
         b.end_object();
         let w = dna::RecordJournal { repo: root, author: by };
         let r = w.append_as(w.revision(), "signer.enrolled", who_in, b.result(), by, false);
-        if !r.ok { return fail("signers enroll: the record refused the enrolment (" + r.error + "): " + w.last_error()); }
+        if !r.ok {
+            return fail(
+                "signers enroll: the record refused the enrolment (" + r.error + "): "
+                    + w.last_error(),
+            );
+        }
         let now = dna::enrolled_keys(dna::RecordJournal { repo: root, author: "host" });
-        if !std::str::contains("\n" + now, "\n" + who_in + " " + key + "\n") { return fail("signers enroll: the enrolment of " + who_in + " is in the record, but it does not count: it is not signed by anyone the record admits (" + by + " signs with " + (if len(dna::person_signing_key(root)) > 0 { "a key the record has not enrolled" } else { "no key: `git config user.signingkey` and `gpg.format ssh` name one" }) + ")"); }
-        return answer("enrolled " + who_in + " (" + key[0..std::str::index_of(key + " ", " ")] + ") as a signer of the record, by " + by + "\n");
+        if !std::str::contains("\n" + now, "\n" + who_in + " " + key + "\n") {
+            return fail(
+                "signers enroll: the enrolment of " + who_in
+                    + " is in the record, but it does not count: it is not signed by anyone the record admits ("
+                    + by + " signs with "
+                    + (
+                        if len(dna::person_signing_key(root)) > 0 {
+                            "a key the record has not enrolled"
+                        } else {
+                            "no key: `git config user.signingkey` and `gpg.format ssh` name one"
+                        }
+                    )
+                    + ")",
+            );
+        }
+        return answer(
+            "enrolled " + who_in + " (" + key[0..std::str::index_of(key + " ", " ")]
+                + ") as a signer of the record, by " + by + "\n",
+        );
     }
     if sub == "revoke" {
-        if len(who_in) == 0 { return fail("signers revoke: `hale dna signers revoke <who> [--as <who>]`"); }
+        if len(who_in) == 0 {
+            return fail("signers revoke: `hale dna signers revoke <who> [--as <who>]`");
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("who", who_in);
@@ -901,12 +1314,24 @@ fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_f
         b.end_object();
         let w = dna::RecordJournal { repo: root, author: by };
         let r = w.append_as(w.revision(), "signer.revoked", who_in, b.result(), by, false);
-        if !r.ok { return fail("signers revoke: the record refused the revocation (" + r.error + "): " + w.last_error()); }
+        if !r.ok {
+            return fail(
+                "signers revoke: the record refused the revocation (" + r.error + "): "
+                    + w.last_error(),
+            );
+        }
         let now = dna::enrolled_keys(dna::RecordJournal { repo: root, author: "host" });
-        if std::str::contains("\n" + now, "\n" + who_in + " ") { return fail("signers revoke: the revocation of " + who_in + " is in the record, but it does not count: it is not signed by anyone the record admits"); }
+        if std::str::contains("\n" + now, "\n" + who_in + " ") {
+            return fail(
+                "signers revoke: the revocation of " + who_in
+                    + " is in the record, but it does not count: it is not signed by anyone the record admits",
+            );
+        }
         return answer("revoked " + who_in + " as a signer of the record, by " + by + "\n");
     }
-    return fail("signers: `hale dna signers [list]`, `hale dna signers enroll <who> --key <ssh public key or file>`, or `hale dna signers revoke <who>`");
+    return fail(
+        "signers: `hale dna signers [list]`, `hale dna signers enroll <who> --key <ssh public key or file>`, or `hale dna signers revoke <who>`",
+    );
 }
 
 // ---- hale dna codebase --------------------------------------------------------
@@ -917,44 +1342,130 @@ fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_f
 // revoke it. A leg working it clones the repository, branches from `branch`,
 // verifies with the two commands and has its review opened there.
 
-fn codebase_verb(root: String, sub: String, name: String, repo_in: String, build: String, test: String, branch_in: String, who_flag: String, toolchain_in: String, knowledge_in: String) -> Answer {
+fn codebase_verb(
+    root: String,
+    sub: String,
+    name: String,
+    repo_in: String,
+    build: String,
+    test: String,
+    branch_in: String,
+    who_flag: String,
+    toolchain_in: String,
+    knowledge_in: String
+) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let j = dna::RecordJournal { repo: root, author: "host" };
     if len(sub) == 0 || sub == "list" {
         let names = dna::codebase_names(j);
-        return answer("codebases: " + (if len(names) == 0 { "none attached (`hale dna codebase attach <name> --repo <url> --build <cmd> --test <cmd>`)" } else { to_string(dna::count_lines(names)) }) + "\n" + dna::codebase_listing(j));
+        return answer(
+            "codebases: "
+                + (
+                    if len(names) == 0 {
+                        "none attached (`hale dna codebase attach <name> --repo <url> --build <cmd> --test <cmd>`)"
+                    } else {
+                        to_string(dna::count_lines(names))
+                    }
+                )
+                + "\n" + dna::codebase_listing(j),
+        );
     }
     let by = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "attach" {
-        if !dna::codebase_name_ok(name) { return fail("codebase attach: `hale dna codebase attach <name> --repo <url or path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] [--as <who>]`; the name is lowercase letters, digits, - and _"); }
-        if len(repo_in) == 0 { return fail("codebase attach: --repo names the codebase's repository (a url, or a path to one)"); }
+        if !dna::codebase_name_ok(name) {
+            return fail(
+                "codebase attach: `hale dna codebase attach <name> --repo <url or path> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] [--as <who>]`; the name is lowercase letters, digits, - and _",
+            );
+        }
+        if len(repo_in) == 0 {
+            return fail(
+                "codebase attach: --repo names the codebase's repository (a url, or a path to one)",
+            );
+        }
         let toolchain = if len(toolchain_in) > 0 { toolchain_in } else { "none" };
-        if !dna::toolchain_known(toolchain) { return fail("codebase attach: --toolchain is go, hale or none (none leaves build and test as the opaque commands)"); }
-        let kdir = if len(knowledge_in) > 0 { dna::knowledge_dir_ok(knowledge_in) } else { "docs/integrations/" };
-        if len(kdir) == 0 { return fail("codebase attach: --knowledge is a directory inside the repository (default docs/integrations/), where an integration's architecture note `<integration>.md` lives"); }
+        if !dna::toolchain_known(toolchain) {
+            return fail(
+                "codebase attach: --toolchain is go, hale or none (none leaves build and test as the opaque commands)",
+            );
+        }
+        let kdir = if len(knowledge_in) > 0 {
+            dna::knowledge_dir_ok(knowledge_in)
+        } else {
+            "docs/integrations/"
+        };
+        if len(kdir) == 0 {
+            return fail(
+                "codebase attach: --knowledge is a directory inside the repository (default docs/integrations/), where an integration's architecture note `<integration>.md` lives",
+            );
+        }
         // a repository on this machine is named by its absolute path
         let local = dna::run_tool("sh\n-c\ncd \"$1\" 2>/dev/null && pwd -P\nsh\n" + repo_in);
-        let repo = if local.code == 0 && len(dna::trim_nl(local.stdout)) > 0 { dna::trim_nl(local.stdout) } else { repo_in };
-        let c = dna::Codebase { present: true, name: name, repo: repo, build: build, test: test, branch: if len(branch_in) > 0 { branch_in } else { "main" }, by: by, toolchain: toolchain, knowledge: kdir };
+        let repo = if local.code == 0 && len(dna::trim_nl(local.stdout)) > 0 {
+            dna::trim_nl(local.stdout)
+        } else {
+            repo_in
+        };
+        let c = dna::Codebase {
+            present: true,
+            name: name,
+            repo: repo,
+            build: build,
+            test: test,
+            branch: if len(branch_in) > 0 { branch_in } else { "main" },
+            by: by,
+            toolchain: toolchain,
+            knowledge: kdir,
+        };
         let w = dna::RecordJournal { repo: root, author: by };
-        let r = w.append_as(w.revision(), "codebase.attached", "codebase:" + name, dna::codebase_body(c), by, false);
-        if !r.ok { return fail("codebase attach: the record refused the row (" + r.error + "): " + w.last_error()); }
-        return answer("codebase attach: `" + name + "` attached (codebase.attached in the record): " + repo + " (" + c.branch + ")\n");
+        let r = w.append_as(
+            w.revision(),
+            "codebase.attached",
+            "codebase:" + name,
+            dna::codebase_body(c),
+            by,
+            false,
+        );
+        if !r.ok {
+            return fail(
+                "codebase attach: the record refused the row (" + r.error + "): " + w.last_error(),
+            );
+        }
+        return answer(
+            "codebase attach: `" + name + "` attached (codebase.attached in the record): " + repo
+                + " (" + c.branch + ")\n",
+        );
     }
     if sub == "detach" {
-        if !dna::codebase_of(j, name).present { return fail("codebase detach: no codebase `" + name + "` is attached"); }
+        if !dna::codebase_of(j, name).present {
+            return fail("codebase detach: no codebase `" + name + "` is attached");
+        }
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("name", name);
         b.string_field("by", by);
         b.end_object();
         let w = dna::RecordJournal { repo: root, author: by };
-        let r = w.append_as(w.revision(), "codebase.detached", "codebase:" + name, b.result(), by, false);
-        if !r.ok { return fail("codebase detach: the record refused the row (" + r.error + "): " + w.last_error()); }
-        return answer("codebase detach: `" + name + "` detached (codebase.detached in the record)\n");
+        let r = w.append_as(
+            w.revision(),
+            "codebase.detached",
+            "codebase:" + name,
+            b.result(),
+            by,
+            false,
+        );
+        if !r.ok {
+            return fail(
+                "codebase detach: the record refused the row (" + r.error + "): " + w.last_error(),
+            );
+        }
+        return answer(
+            "codebase detach: `" + name + "` detached (codebase.detached in the record)\n",
+        );
     }
-    return fail("codebase: `hale dna codebase [list]`, `hale dna codebase attach <name> --repo <url> --build <cmd> --test <cmd>`, or `hale dna codebase detach <name>`");
+    return fail(
+        "codebase: `hale dna codebase [list]`, `hale dna codebase attach <name> --repo <url> --build <cmd> --test <cmd>`, or `hale dna codebase detach <name>`",
+    );
 }
 
 // ---- hale dna ledger --------------------------------------------------------
@@ -970,7 +1481,9 @@ fn ledger_verb(root: String, sub: String) -> Answer {
     // the supported query an export reads (GH #646 stage 4; GH #985)
     if sub == "rows" {
         let env = dna::memory_source(root, dna::own_dsn_env());
-        if !dna::dsn_set(env) { return fail("ledger rows: no memory named here (HALE_DNA_MEMORY_DSN_HEAD)"); }
+        if !dna::dsn_set(env) {
+            return fail("ledger rows: no memory named here (HALE_DNA_MEMORY_DSN_HEAD)");
+        }
         let l = dna::MemoryLedger { repo: root, dsn_env: env };
         let n = l.revision();
         if len(l.last_error()) > 0 { return fail("ledger rows: " + l.last_error()); }

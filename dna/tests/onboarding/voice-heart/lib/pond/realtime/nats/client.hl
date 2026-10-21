@@ -66,7 +66,9 @@ fn new_inbox() -> String { return new_inbox_under("_INBOX"); }
 /// voice: `new_inbox` under `prefix` instead of `_INBOX`, for an account
 /// whose subjects are a prefix of its own (lib/broker).
 fn new_inbox_under(prefix: String) -> String {
-    let raw = std::os::getrandom(11) or std::bytes::from_string(to_string(std::time::monotonic_ns()));
+    let raw = std::os::getrandom(11) or std::bytes::from_string(
+        to_string(std::time::monotonic_ns()),
+    );
     return prefix + "." + hex_of(raw);
 }
 
@@ -130,7 +132,10 @@ locus NatsClient {
         let sep = std::str::index_of(u, "://");
         if sep < 0 { self.note("url", "no scheme in " + u); return false; }
         self.scheme = u[0..sep];
-        if self.scheme != "nats" && self.scheme != "tls" { self.note("url", "scheme " + self.scheme + " (nats or tls)"); return false; }
+        if self.scheme != "nats" && self.scheme != "tls" {
+            self.note("url", "scheme " + self.scheme + " (nats or tls)");
+            return false;
+        }
         let mut rest = u[(sep + 3)..len(u)];
         let slash = std::str::index_of(rest, "/");
         if slash >= 0 { rest = rest[0..slash]; }
@@ -140,11 +145,17 @@ locus NatsClient {
             rest = rest[(at + 1)..len(rest)];
             let colon = std::str::index_of(cred, ":");
             if colon < 0 { if len(self.token) == 0 { self.token = cred; } }
-            else if len(self.user) == 0 { self.user = cred[0..colon]; self.pass = cred[(colon + 1)..len(cred)]; }
+            else if len(self.user) == 0 {
+                self.user = cred[0..colon];
+                self.pass = cred[(colon + 1)..len(cred)];
+            }
         }
         let pc = std::str::index_of(rest, ":");
         if pc < 0 { self.host = rest; self.port = 4222; }
-        else { self.host = rest[0..pc]; self.port = std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222; }
+        else {
+            self.host = rest[0..pc];
+            self.port = std::str::parse_int(rest[(pc + 1)..len(rest)]) or 4222;
+        }
         if len(self.host) == 0 { self.note("url", "no host in " + u); return false; }
         return true;
     }
@@ -179,7 +190,10 @@ locus NatsClient {
         // the kernel's SYN retries (about two minutes) on an address that
         // never answers
         let h = std::io::tcp::connect_within(self.host, self.port, self.timeout) or - 1;
-        if h < 0 { self.note("connect", "tcp to " + self.host + ":" + to_string(self.port)); return false; }
+        if h < 0 {
+            self.note("connect", "tcp to " + self.host + ":" + to_string(self.port));
+            return false;
+        }
         self.io.sock = h;
         std::io::tcp::set_nodelay(h, true) or discard;
         self.framer.clear();
@@ -196,24 +210,47 @@ locus NatsClient {
                 }
             }
         }
-        if !got_info { self.io.close(); if len(self.last_error) == 0 { self.last_error = "handshake: no INFO from the server"; } return false; }
+        if !got_info {
+            self.io.close();
+            if len(self.last_error) == 0 {
+                self.last_error = "handshake: no INFO from the server";
+            }
+            return false;
+        }
         if self.scheme == "tls" || self.tls_required {
             let fd = self.io.sock;
             let t = std::io::tls::upgrade(fd, self.host, true) or - 1;
-            if t < 0 { self.note("handshake", "TLS with " + self.host + " failed"); self.io.close(); return false; }
+            if t < 0 {
+                self.note("handshake", "TLS with " + self.host + " failed");
+                self.io.close();
+                return false;
+            }
             self.io.sock = -1;
             self.io.tls = t;
             self.io.set_recv_deadline(self.timeout);
         }
         // the one place a sealed credential is revealed: straight into the
         // CONNECT it authenticates
-        if !self.write_str(with_password(connect_line(self.user, "", self.token, self.name, self.echo), if credential.ready() { credential.reveal_text() } else { self.pass }) + ping_line()) { self.io.close(); return false; }
+        if !self.write_str(
+            with_password(
+                connect_line(self.user, "", self.token, self.name, self.echo),
+                if credential.ready() { credential.reveal_text() } else { self.pass },
+            )
+                + ping_line(),
+        ) {
+            self.io.close();
+            return false;
+        }
         while std::time::monotonic() < deadline {
             if !self.pull() { break; }
             while self.framer.next() {
                 let op = self.framer.frame.op;
                 if op == "PONG" { self.connected = true; return true; }
-                if op == "ERR" { self.note("server", self.framer.frame.text); self.io.close(); return false; }
+                if op == "ERR" {
+                    self.note("server", self.framer.frame.text);
+                    self.io.close();
+                    return false;
+                }
                 if op == "PING" { let p = self.write_str(pong_line()); }
             }
         }
@@ -237,7 +274,11 @@ locus NatsClient {
         let got = self.io.recv_into(self.framer.rx, self.recv_chunk);
         if got > 0 || got == -2 { return true; }
         self.connected = false;
-        self.last_error = if got == 0 { "closed: the server closed the connection" } else { "io: the read failed" };
+        self.last_error = if got == 0 {
+            "closed: the server closed the connection"
+        } else {
+            "io: the read failed"
+        };
         return false;
     }
 
@@ -253,7 +294,11 @@ locus NatsClient {
                 if self.framer.frame.op == "PING" { let p = self.write_str(pong_line()); continue; }
                 return true;
             }
-            if len(self.framer.error) > 0 { self.note("protocol", self.framer.error); self.connected = false; return false; }
+            if len(self.framer.error) > 0 {
+                self.note("protocol", self.framer.error);
+                self.connected = false;
+                return false;
+            }
             if tries == 1 { return false; }
             if !self.pull() { return false; }
             tries = tries + 1;
@@ -270,10 +315,25 @@ locus NatsClient {
 
     /// A publish with a header block (HPUB), or a plain PUB when
     /// `headers` is "".
-    fn pub_headers(subject: String, reply: String, headers: String, data: Bytes) fallible(NatsError) {
+    fn pub_headers(
+        subject: String,
+        reply: String,
+        headers: String,
+        data: Bytes
+    ) fallible(NatsError) {
         if !self.connected { fail self.fail_with("closed", "not connected"); }
-        if len(headers) + len(data) > self.max_payload { fail self.fail_with("io", "payload of " + to_string(len(headers) + len(data)) + " bytes over the server's max_payload " + to_string(self.max_payload)); }
-        let frame = if len(headers) > 0 { hpub_frame(subject, reply, headers, data) } else { pub_frame(subject, reply, data) };
+        if len(headers) + len(data) > self.max_payload {
+            fail self.fail_with(
+                "io",
+                "payload of " + to_string(len(headers) + len(data))
+                    + " bytes over the server's max_payload " + to_string(self.max_payload),
+            );
+        }
+        let frame = if len(headers) > 0 {
+            hpub_frame(subject, reply, headers, data)
+        } else {
+            pub_frame(subject, reply, data)
+        };
         if !self.write(frame) { fail self.fail_with("io", "the write failed"); }
     }
 
@@ -281,7 +341,9 @@ locus NatsClient {
         if !self.connected { fail self.fail_with("closed", "not connected"); }
         let sid = self.next_sid;
         self.next_sid = self.next_sid + 1;
-        if !self.write_str(sub_line(subject, queue, sid)) { fail self.fail_with("io", "the write failed"); }
+        if !self.write_str(sub_line(subject, queue, sid)) {
+            fail self.fail_with("io", "the write failed");
+        }
         return sid;
     }
 
@@ -309,7 +371,13 @@ locus NatsClient {
     }
 
     fn as_msg(f: NatsFrame) -> NatsMsg {
-        return NatsMsg { subject: f.subject, sid: f.sid, reply: f.reply, headers: if f.op == "HMSG" { f.headers } else { "" }, data: f.data };
+        return NatsMsg {
+            subject: f.subject,
+            sid: f.sid,
+            reply: f.reply,
+            headers: if f.op == "HMSG" { f.headers } else { "" },
+            data: f.data,
+        };
     }
 
     // Put a message into `last` field by field: replacing the whole
@@ -328,7 +396,10 @@ locus NatsClient {
     fn set_aside() {
         let f = self.framer.frame;
         self.stash.push(f.subject, f.data);
-        self.stash_meta.push(f.reply, std::bytes::from_string(if f.op == "HMSG" { f.headers } else { "" }));
+        self.stash_meta.push(
+            f.reply,
+            std::bytes::from_string(if f.op == "HMSG" { f.headers } else { "" }),
+        );
         self.stash_sids.push(f.sid);
     }
 
@@ -338,7 +409,13 @@ locus NatsClient {
     fn read_msg(wait: Duration) -> Bool {
         if self.stash_head < self.stash.len() {
             let i = self.stash_head;
-            self.keep_last(self.stash.subject_at(i), self.stash_sids.get(i) or 0, self.stash_meta.subject_at(i), std::str::from_bytes(self.stash_meta.data_at(i)), self.stash.data_at(i));
+            self.keep_last(
+                self.stash.subject_at(i),
+                self.stash_sids.get(i) or 0,
+                self.stash_meta.subject_at(i),
+                std::str::from_bytes(self.stash_meta.data_at(i)),
+                self.stash.data_at(i),
+            );
             self.stash_head = i + 1;
             if self.stash_head == self.stash.len() {
                 self.stash.clear();
@@ -358,7 +435,13 @@ locus NatsClient {
             let op = self.framer.frame.op;
             if op == "MSG" || op == "HMSG" {
                 let f = self.framer.frame;
-                self.keep_last(f.subject, f.sid, f.reply, if op == "HMSG" { f.headers } else { "" }, f.data);
+                self.keep_last(
+                    f.subject,
+                    f.sid,
+                    f.reply,
+                    if op == "HMSG" { f.headers } else { "" },
+                    f.data,
+                );
                 return true;
             }
             if op == "ERR" { self.note("server", self.framer.frame.text); }
@@ -374,7 +457,12 @@ locus NatsClient {
     }
 
     /// `request` with a header block on the publish (see `pub_headers`).
-    fn request_with(subject: String, headers: String, data: Bytes, wait: Duration) -> NatsMsg fallible(NatsError) {
+    fn request_with(
+        subject: String,
+        headers: String,
+        data: Bytes,
+        wait: Duration
+    ) -> NatsMsg fallible(NatsError) {
         let inbox = new_inbox_under(self.inbox_prefix);
         let sid = self.sub_to(inbox, "") or raise;
         if !self.write_str(unsub_line(sid, 1)) { fail self.fail_with("io", "the write failed"); }
@@ -389,7 +477,9 @@ locus NatsClient {
             let f = self.framer.frame;
             if (f.op == "MSG" || f.op == "HMSG") && f.sid == sid {
                 let status = if f.op == "HMSG" { header_status(f.headers) } else { "" };
-                if std::str::starts_with(status, "503") { fail self.fail_with("no_responders", "nothing answers " + subject); }
+                if std::str::starts_with(status, "503") {
+                    fail self.fail_with("no_responders", "nothing answers " + subject);
+                }
                 return self.as_msg(f);
             }
             if f.op == "MSG" || f.op == "HMSG" { self.set_aside(); }

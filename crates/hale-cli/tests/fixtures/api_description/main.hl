@@ -43,7 +43,14 @@ main locus Shop {
     params {
         billing: Billing = Billing { };
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "auditor owner" };
-        books: api::Exposure = api::serve(Books, unix::Rpc { path: "/tmp/hale-api-description-fixture.sock", roles: self.staff }, as: "books", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);
+        books: api::Exposure = api::serve(
+            Books,
+            unix::Rpc { path: "/tmp/hale-api-description-fixture.sock", roles: self.staff },
+            as: "books",
+            receivers: { Billing: self.billing },
+            bound: 8,
+            on_full: refuse
+        );
     }
     placement { billing: cooperative(pool = work) where async_io; }
     run() {

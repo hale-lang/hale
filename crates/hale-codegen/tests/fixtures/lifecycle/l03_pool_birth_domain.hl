@@ -20,7 +20,14 @@ type Ping { n: Int; }
 topic Pings { payload: Ping; subject: "lifecycle.l03.pool_birth"; }
 
 locus Slowborn {
-    params { main_on: Int = 0; born: Int = 0; born_on: Int = 0; heard_on: Int = 0; ran_on: Int = 0; hits: Int = 0; }
+    params {
+        main_on: Int = 0;
+        born: Int = 0;
+        born_on: Int = 0;
+        heard_on: Int = 0;
+        ran_on: Int = 0;
+        hits: Int = 0;
+    }
     bus { subscribe Pings as on_ping; }
     birth() {
         std::time::sleep(50ms);
@@ -50,13 +57,18 @@ main locus App {
             i = i + 1;
         }
         let born_on = self.s.born_on;
-        let on_worker = born_on != self.s.main_on && born_on == self.s.heard_on && born_on == self.s.ran_on;
+        let on_worker = born_on != self.s.main_on
+            && born_on == self.s.heard_on
+            && born_on == self.s.ran_on;
         if self.seen == 1 && on_worker && self.s.hits == 2 {
             println("outcome: birth-on-worker-run-posted");
         } else if self.seen == 1 && born_on == self.s.main_on {
             println("outcome: birth-inline-run-posted");
         } else {
-            println("outcome: seen=" + to_string(self.seen) + " on-worker=" + to_string(on_worker) + " hits=" + to_string(self.s.hits));
+            println(
+                "outcome: seen=" + to_string(self.seen) + " on-worker=" + to_string(on_worker)
+                    + " hits=" + to_string(self.s.hits),
+            );
         }
     }
 }

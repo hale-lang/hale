@@ -5,11 +5,26 @@ import ".." as api;
 fn main() {
     let mut mask = 1;
     while mask < 32 {
-        let h = api::head_handover(if mask % 2 == 1 { "http://head" } else { "" }, if (mask / 2) % 2 == 1 { "app-1" } else { "" }, if (mask / 4) % 2 == 1 { "http://issuer" } else { "" }, if (mask / 8) % 2 == 1 { "voice-api" } else { "" }, if (mask / 16) % 2 == 1 { "oidc-service-voice-api" } else { "" });
+        let h = api::head_handover(
+            if mask % 2 == 1 { "http://head" } else { "" },
+            if (mask / 2) % 2 == 1 { "app-1" } else { "" },
+            if (mask / 4) % 2 == 1 { "http://issuer" } else { "" },
+            if (mask / 8) % 2 == 1 { "voice-api" } else { "" },
+            if (mask / 16) % 2 == 1 { "oidc-service-voice-api" } else { "" },
+        );
         if mask == 31 {
-            std::test::assert(h.handed && h.problem == "" && h.head == "http://head" && h.client_vault == "oidc-service-voice-api", "all five: handed over");
+            std::test::assert(
+                h.handed
+                    && h.problem == ""
+                    && h.head == "http://head"
+                    && h.client_vault == "oidc-service-voice-api",
+                "all five: handed over",
+            );
         } else {
-            std::test::assert(!h.handed && len(h.problem) > 0, "a partial hand-over is refused (set " + to_string(mask) + " of 31)");
+            std::test::assert(
+                !h.handed && len(h.problem) > 0,
+                "a partial hand-over is refused (set " + to_string(mask) + " of 31)",
+            );
         }
         mask = mask + 1;
     }

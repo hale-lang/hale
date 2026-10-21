@@ -4,23 +4,63 @@
 import ".." as api;
 
 fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn ask(e: api::Endpoints, path: String, key: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: "POST", path: path, headers: "Authorization: Bearer " + key, body: body });
+    return e.handle(
+        std::http::Request {
+            method: "POST",
+            path: path,
+            headers: "Authorization: Bearer " + key,
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, code: String, what: String) {
     std::test::assert_eq_int(r.status, status, what + ": " + r.body);
-    if len(code) > 0 { std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(r.body, "error"), "code"), code, what); }
+    if len(code) > 0 {
+        std::test::assert_eq_str(
+            std::json::find_string_field(std::json::find_field_raw(r.body, "error"), "code"),
+            code,
+            what,
+        );
+    }
 }
 
 /// A streamed request is admitted as any request: a refusal is answered
 /// whole, before any stream (the streams themselves: serve_test.hl).
 fn streamed_refused(e: api::Endpoints, key: String) {
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"other-1\", \"input\": \"hi\", \"stream\": true}"), 403, "model_not_permitted", "a streamed response, refused");
-    expect(ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [], \"stream\": true}"), 400, "invalid_request", "a streamed chat completion, refused");
+    expect(
+        ask(
+            e,
+            "/v1/responses",
+            key,
+            "{\"model\": \"other-1\", \"input\": \"hi\", \"stream\": true}",
+        ),
+        403,
+        "model_not_permitted",
+        "a streamed response, refused",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/chat/completions",
+            key,
+            "{\"model\": \"echo-1\", \"messages\": [], \"stream\": true}",
+        ),
+        400,
+        "invalid_request",
+        "a streamed chat completion, refused",
+    );
 }
 
 fn main() {
@@ -28,19 +68,87 @@ fn main() {
     admin(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}");
     admin(e, "POST", "/admin/v1/models", "{\"id\": \"other-1\"}");
     admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
-    admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"paid\", \"name\": \"Paid\", \"billing\": \"metered\"}");
-    admin(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\", \"models\": [\"echo-1\"], \"accounts\": [\"static\"]}");
-    let key = std::json::find_string_field(admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}").body, "secret");
+    admin(
+        e,
+        "POST",
+        "/admin/v1/accounts",
+        "{\"id\": \"paid\", \"name\": \"Paid\", \"billing\": \"metered\"}",
+    );
+    admin(
+        e,
+        "POST",
+        "/admin/v1/projects",
+        "{\"id\": \"work\", \"name\": \"Work\", \"models\": [\"echo-1\"], \"accounts\": [\"static\"]}",
+    );
+    let key = std::json::find_string_field(
+        admin(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}").body,
+        "secret",
+    );
 
     let hi = "{\"model\": \"echo-1\", \"input\": \"hi\"}";
-    expect(e.handle(std::http::Request { method: "POST", path: "/v1/responses", body: hi }), 401, "invalid_key", "a key first");
-    expect(ask(e, "/v1/responses", key, "{\"input\": \"hi\"}"), 400, "invalid_request", "a model is required");
-    expect(ask(e, "/v1/responses", key, "not json"), 400, "invalid_request", "a body is one JSON object");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"previous_response_id\": \"resp_1\"}"), 400, "previous_response_not_found", "responses are not stored");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"nope\", \"input\": \"hi\"}"), 404, "model_not_found", "a model not in the catalog");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"other-1\", \"input\": \"hi\"}"), 403, "model_not_permitted", "a model the key may not use");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"account\": \"paid\"}}"), 403, "account_not_permitted", "an account the key may not spend");
-    expect(ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"data_class\": \"customer\"}}"), 403, "data_class_refused", "a data class the project may not send");
+    expect(
+        e.handle(std::http::Request { method: "POST", path: "/v1/responses", body: hi }),
+        401,
+        "invalid_key",
+        "a key first",
+    );
+    expect(
+        ask(e, "/v1/responses", key, "{\"input\": \"hi\"}"),
+        400,
+        "invalid_request",
+        "a model is required",
+    );
+    expect(
+        ask(e, "/v1/responses", key, "not json"),
+        400,
+        "invalid_request",
+        "a body is one JSON object",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/responses",
+            key,
+            "{\"model\": \"echo-1\", \"input\": \"hi\", \"previous_response_id\": \"resp_1\"}",
+        ),
+        400,
+        "previous_response_not_found",
+        "responses are not stored",
+    );
+    expect(
+        ask(e, "/v1/responses", key, "{\"model\": \"nope\", \"input\": \"hi\"}"),
+        404,
+        "model_not_found",
+        "a model not in the catalog",
+    );
+    expect(
+        ask(e, "/v1/responses", key, "{\"model\": \"other-1\", \"input\": \"hi\"}"),
+        403,
+        "model_not_permitted",
+        "a model the key may not use",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/responses",
+            key,
+            "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"account\": \"paid\"}}",
+        ),
+        403,
+        "account_not_permitted",
+        "an account the key may not spend",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/responses",
+            key,
+            "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"data_class\": \"customer\"}}",
+        ),
+        403,
+        "data_class_refused",
+        "a data class the project may not send",
+    );
     streamed_refused(e, key);
 
     // admitted, and no seat to take it
@@ -48,14 +156,52 @@ fn main() {
     expect(none, 503, "no_eligible_seat", "no seat serves the model");
     std::test::assert(std::str::contains(none.body, "no seat serves model echo-1"), "and says so");
     admin(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}");
-    admin(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": {\"text\": \"hi\"}}");
-    let offline = ask(e, "/v1/responses", key, "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"account\": \"static\"}}");
+    admin(
+        e,
+        "POST",
+        "/admin/v1/nodes/laptop/seats",
+        "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": {\"text\": \"hi\"}}",
+    );
+    let offline = ask(
+        e,
+        "/v1/responses",
+        key,
+        "{\"model\": \"echo-1\", \"input\": \"hi\", \"voice\": {\"account\": \"static\"}}",
+    );
     expect(offline, 503, "no_eligible_seat", "a seat whose node has not connected");
-    std::test::assert(std::str::contains(offline.body, "1 seat(s) serve model echo-1"), "and says why");
+    std::test::assert(
+        std::str::contains(offline.body, "1 seat(s) serve model echo-1"),
+        "and says why",
+    );
 
     let chat = "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}";
-    expect(ask(e, "/v1/chat/completions", key, chat), 503, "no_eligible_seat", "a chat completion, the same way");
-    expect(ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": []}"), 400, "invalid_request", "at least one message");
-    expect(ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\"}"), 400, "invalid_request", "messages are required");
-    expect(ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"n\": 2}"), 400, "unsupported", "one choice");
+    expect(
+        ask(e, "/v1/chat/completions", key, chat),
+        503,
+        "no_eligible_seat",
+        "a chat completion, the same way",
+    );
+    expect(
+        ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\", \"messages\": []}"),
+        400,
+        "invalid_request",
+        "at least one message",
+    );
+    expect(
+        ask(e, "/v1/chat/completions", key, "{\"model\": \"echo-1\"}"),
+        400,
+        "invalid_request",
+        "messages are required",
+    );
+    expect(
+        ask(
+            e,
+            "/v1/chat/completions",
+            key,
+            "{\"model\": \"echo-1\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"n\": 2}",
+        ),
+        400,
+        "unsupported",
+        "one choice",
+    );
 }

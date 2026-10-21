@@ -96,15 +96,27 @@ main locus App {
         // the parent's own kick, then its child's queued nudge
         Kicks <- Kick { key: "p" };
         std::time::sleep(300ms);
-        std::test::assert_eq_int(self.count("run-born:heard"), 1, "the run-born ender heard one message");
+        std::test::assert_eq_int(
+            self.count("run-born:heard"),
+            1,
+            "the run-born ender heard one message",
+        );
         std::test::assert_eq_int(self.count("run-born:dissolved"), 1, "and ended once");
-        std::test::assert_eq_int(self.count("handler-born:heard"), 1, "the handler-born ender heard one message");
+        std::test::assert_eq_int(
+            self.count("handler-born:heard"),
+            1,
+            "the handler-born ender heard one message",
+        );
         std::test::assert_eq_int(self.count("handler-born:dissolved"), 1, "and ended once");
         std::test::assert_eq_int(self.count("held:heard"), 1, "the held ender heard one message");
         std::test::assert_eq_int(self.count("held:dissolved"), 1, "and ended once");
         std::test::assert_eq_int(self.count("p:dissolved"), 1, "the parent ended");
         std::test::assert_eq_int(self.count("p.c:dissolved"), 1, "and its child with it");
-        std::test::assert_eq_int(self.count("p.c:heard"), 0, "the nudge queued for the reclaimed child reached nobody");
+        std::test::assert_eq_int(
+            self.count("p.c:heard"),
+            0,
+            "the nudge queued for the reclaimed child reached nobody",
+        );
     }
 }
 

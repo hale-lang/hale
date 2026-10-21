@@ -45,7 +45,12 @@ main locus App {
     }
     fn on_seen(s: Seen) { self.seen = s.ok; }
     run() {
-        let mut m = Msg { key: Status::Down, label: "x", last: Status::Gone, inner: Inner { s: Status::Gone, n: 5 } };
+        let mut m = Msg {
+            key: Status::Down,
+            label: "x",
+            last: Status::Gone,
+            inner: Inner { s: Status::Gone, n: 5 },
+        };
         push(m.tags, Status::Gone) or { };
         Events <- m;
         std::time::sleep(300ms);

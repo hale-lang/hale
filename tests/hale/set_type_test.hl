@@ -113,11 +113,19 @@ fn main() {
     std::test::assert_eq_str(encode(s.last), "ack 3", "a field initialized with a member");
     s.last = Reject { id: 4, why: "no" };
     std::test::assert_eq_str(encode(s.last), "reject 4 no", "a field assigned a member");
-    std::test::assert_eq_str(encode(Outbound::Ack(Ack { id: 9 })), "ack 9", "the explicit spelling");
+    std::test::assert_eq_str(
+        encode(Outbound::Ack(Ack { id: 9 })),
+        "ack 9",
+        "the explicit spelling",
+    );
 
     // a matched member flows back; a default's member is its set's; a
     // generic record's alias is a member
-    std::test::assert_eq_str(encode(forward(Reject { id: 5, why: "late" })), "reject 5 late", "a matched member, passed and returned");
+    std::test::assert_eq_str(
+        encode(forward(Reject { id: 5, why: "late" })),
+        "reject 5 late",
+        "a matched member, passed and returned",
+    );
     std::test::assert_eq_str(encode(forward(Ack { id: 6 })), "ack 6", "a matched member, returned");
     let h = Holder { };
     std::test::assert_eq_str(encode(h.item), "ack 7", "a field default's member");

@@ -20,7 +20,12 @@ type Decoded { ok: Bool = false; text: String = ""; }
 locus Http {
     params { }
     fn response(status: Int, body: String) -> std::http::Response {
-        return std::http::Response { status: status, content_type: "application/json; charset=utf-8", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff", body: body };
+        return std::http::Response {
+            status: status,
+            content_type: "application/json; charset=utf-8",
+            headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+            body: body,
+        };
     }
     fn error(status: Int, code: String, message: String, retryable: Bool) -> std::http::Response {
         let b = std::json::Builder { };
@@ -38,7 +43,12 @@ locus Http {
     // the Record unavailable, never taken for a Record that did not move
     // (GH #961).
     fn unreadable(h: dna::Head) -> std::http::Response {
-        return self.error(503, "record_unavailable", "the Record's head could not be read: " + h.why, true);
+        return self.error(
+            503,
+            "record_unavailable",
+            "the Record's head could not be read: " + h.why,
+            true,
+        );
     }
     fn success(source: Source, data: String) -> std::http::Response {
         let b = std::json::Builder { };
@@ -64,10 +74,24 @@ locus Http {
         while i < len(text) {
             let c = std::str::byte_at_unchecked(text, i);
             if c < 128 { i = i + 1; continue; }
-            let n = if c >= 194 && c <= 223 { 2 } else if c >= 224 && c <= 239 { 3 } else if c >= 240 && c <= 244 { 4 } else { 0 };
+            let n = if c >= 194 && c <= 223 {
+                2
+            } else if c >= 224 && c <= 239 {
+                3
+            } else if c >= 240 && c <= 244 {
+                4
+            } else {
+                0
+            };
             if n == 0 || i + n > len(text) { return false; }
             let second = std::str::byte_at_unchecked(text, i + 1);
-            if (c == 224 && second < 160) || (c == 237 && second > 159) || (c == 240 && second < 144) || (c == 244 && second > 143) { return false; }
+            if (c == 224 && second < 160)
+                || (c == 237 && second > 159)
+                || (c == 240 && second < 144)
+                || (c == 244 && second > 143)
+            {
+                return false;
+            }
             let mut k = 1;
             while k < n {
                 let part = std::str::byte_at_unchecked(text, i + k);
@@ -137,40 +161,71 @@ locus Http {
             let amp = std::str::index_of(rest, "&");
             let pair = if amp < 0 { rest } else { rest[0..amp] };
             let eq = std::str::index_of(pair, "=");
-            if eq <= 0 { return Query { ok: false, error: "query fields require a name and value" }; }
+            if eq <= 0 {
+                return Query { ok: false, error: "query fields require a name and value" };
+            }
             let key = self.decode(pair[0..eq]);
             let value = self.decode(pair[(eq + 1)..len(pair)]);
             if !key.ok || !value.ok { return Query { ok: false, error: "invalid query encoding" }; }
-            if key.text != "id" && key.text != "limit" && key.text != "offset" && key.text != "snapshot" && !(allow_assignee && key.text == "assignee") { return Query { ok: false, error: "unsupported query field" }; }
-            if std::str::contains(seen, "|" + key.text + "|") { return Query { ok: false, error: "duplicate query field" }; }
+            if key.text != "id"
+                && key.text != "limit"
+                && key.text != "offset"
+                && key.text != "snapshot"
+                && !(allow_assignee && key.text == "assignee")
+            {
+                return Query { ok: false, error: "unsupported query field" };
+            }
+            if std::str::contains(seen, "|" + key.text + "|") {
+                return Query { ok: false, error: "duplicate query field" };
+            }
             seen = seen + key.text + "|";
             if key.text == "id" {
-                if len(value.text) == 0 { return Query { ok: false, error: "id must not be empty" }; }
+                if len(value.text) == 0 {
+                    return Query { ok: false, error: "id must not be empty" };
+                }
                 q.id = value.text;
             }
             if key.text == "assignee" {
-                if len(value.text) == 0 || len(value.text) > 256 { return Query { ok: false, error: "assignee must be 1 through 256 UTF-8 bytes" }; }
+                if len(value.text) == 0 || len(value.text) > 256 {
+                    return Query { ok: false, error: "assignee must be 1 through 256 UTF-8 bytes" };
+                }
                 q.assignee = value.text;
             }
             if key.text == "snapshot" {
-                if len(value.text) == 0 { return Query { ok: false, error: "snapshot must not be empty" }; }
+                if len(value.text) == 0 {
+                    return Query { ok: false, error: "snapshot must not be empty" };
+                }
                 q.snapshot = value.text;
             }
             if key.text == "limit" {
                 q.limit = self.integer(value.text, 100);
-                if q.limit < 1 { return Query { ok: false, error: "limit must be an integer from 1 through 100" }; }
+                if q.limit < 1 {
+                    return Query {
+                        ok: false,
+                        error: "limit must be an integer from 1 through 100",
+                    };
+                }
             }
             if key.text == "offset" {
                 q.offset = self.integer(value.text, 1000000);
-                if q.offset < 0 { return Query { ok: false, error: "offset must be an integer from 0 through 1000000" }; }
+                if q.offset < 0 {
+                    return Query {
+                        ok: false,
+                        error: "offset must be an integer from 0 through 1000000",
+                    };
+                }
             }
             if amp < 0 { rest = ""; } else {
                 rest = rest[(amp + 1)..len(rest)];
                 if len(rest) == 0 { return Query { ok: false, error: "empty query field" }; }
             }
         }
-        if q.offset > 0 && len(q.snapshot) == 0 { return Query { ok: false, error: "snapshot is required after the first page" }; }
-        if len(q.id) > 0 && q.offset != 0 { return Query { ok: false, error: "id lookup requires offset zero" }; }
+        if q.offset > 0 && len(q.snapshot) == 0 {
+            return Query { ok: false, error: "snapshot is required after the first page" };
+        }
+        if len(q.id) > 0 && q.offset != 0 {
+            return Query { ok: false, error: "id lookup requires offset zero" };
+        }
         return q;
     }
     fn page(limit: Int, offset: Int, total: Int, snapshot: String) -> String {

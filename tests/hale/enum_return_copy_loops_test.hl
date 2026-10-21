@@ -18,7 +18,10 @@ fn call(n: Int, payload: String) -> Raw {
 }
 
 fn book(json: String) -> Book {
-    return Book { id: std::json::find_int_field(json, "id"), title: std::json::find_string_field(json, "title") };
+    return Book {
+        id: std::json::find_int_field(json, "id"),
+        title: std::json::find_string_field(json, "title"),
+    };
 }
 
 @bounded_by(json)

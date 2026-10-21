@@ -24,7 +24,11 @@ fn toolchain() -> String {
 }
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -32,13 +36,27 @@ fn source() -> String {
 // genome's core made absolute, its two ports the fixture's own.
 fn make(scratch: String, name: String, admin: Int, product: Int) -> String {
     let repo = scratch + "/" + name;
-    let copied = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/faces/shop/.\" \"$1/\"\nsh\n" + repo + "\n" + source());
+    let copied = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/faces/shop/.\" \"$1/\"\nsh\n" + repo + "\n"
+            + source(),
+    );
     std::test::assert_eq_int(copied.code, 0, "the fixture copied: " + copied.stderr);
     let main = std::io::fs::read_file(repo + "/main.hl") or "";
-    let fixed = std::str::replace(std::str::replace(std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""), "port: 1 }", "port: " + to_string(admin) + " }"), "port: 2 }", "port: " + to_string(product) + " }");
+    let fixed = std::str::replace(
+        std::str::replace(
+            std::str::replace(main, "\"../../../core\"", "\"" + source() + "/dna/core\""),
+            "port: 1,",
+            "port: " + to_string(admin) + ",",
+        ),
+        "port: 2,",
+        "port: " + to_string(product) + ",",
+    );
     std::test::assert(fixed != main, "the fixture's import and ports are rewritten");
     std::io::fs::write_file(repo + "/main.hl", fixed) or discard;
-    let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m shop\nsh\n" + repo);
+    let made = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m shop\nsh\n"
+            + repo,
+    );
     std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
     return repo;
 }
@@ -53,7 +71,10 @@ fn graph_of(rows: String) -> String {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
-        if kind == "graph.node" || kind == "graph.edge" { out = out + std::json::find_string_field(line, "entity") + "\t" + std::json::find_string_field(line, "body") + "\n"; }
+        if kind == "graph.node" || kind == "graph.edge" {
+            out = out + std::json::find_string_field(line, "entity") + "\t"
+                + std::json::find_string_field(line, "body") + "\n";
+        }
     }
     return out;
 }
@@ -74,7 +95,10 @@ fn start_face(repo: String, name: String, port: Int) -> Int {
     let bin = repo + "/" + name + ".bin";
     let built = dna::run_tool(toolchain() + "\nbuild\n" + repo + "/faces/" + name + "\n-o\n" + bin);
     std::test::assert_eq_int(built.code, 0, "the " + name + " face builds: " + built.stderr);
-    let started = dna::run_tool("sh\n-c\n\"$1\" \"$2\" </dev/null >/dev/null 2>&1 & echo $!\nsh\n" + bin + "\n" + to_string(port));
+    let started = dna::run_tool(
+        "sh\n-c\n\"$1\" \"$2\" </dev/null >/dev/null 2>&1 & echo $!\nsh\n" + bin + "\n"
+            + to_string(port),
+    );
     return std::str::parse_int(dna::trim_nl(started.stdout)) or 0;
 }
 
@@ -102,67 +126,194 @@ fn main() {
     let faces = std::json::find_field_raw(exported, "faces");
     let admin = face_named(faces, "admin");
     let product = face_named(faces, "product");
-    std::test::assert(len(admin) > 0 && len(product) > 0, "both faces are in the description: " + exported);
-    std::test::assert_eq_str(std::json::find_string_field(admin, "app"), "faces/admin", "admin's application");
+    std::test::assert(
+        len(admin) > 0 && len(product) > 0,
+        "both faces are in the description: " + exported,
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(admin, "app"),
+        "faces/admin",
+        "admin's application",
+    );
     std::test::assert_eq_int(std::json::find_int_field(admin, "port"), admin_port, "admin's port");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(admin, "consumes"), ""), "", "consumes is a list");
-    std::test::assert(std::str::contains(std::json::find_field_raw(admin, "consumes"), "OrdersSurface") && !std::str::contains(std::json::find_field_raw(admin, "consumes"), "CatalogSurface"), "admin consumes OrdersSurface alone");
-    std::test::assert(std::str::contains(std::json::find_field_raw(product, "consumes"), "CatalogSurface") && !std::str::contains(std::json::find_field_raw(product, "consumes"), "OrdersSurface"), "product consumes CatalogSurface alone");
-    std::test::assert(std::str::contains(std::json::find_field_raw(admin, "roles"), "operator") && std::str::contains(std::json::find_field_raw(product, "roles"), "shopper"), "and acts under its roles");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(admin, "consumes"), ""),
+        "",
+        "consumes is a list",
+    );
+    std::test::assert(
+        std::str::contains(std::json::find_field_raw(admin, "consumes"), "OrdersSurface")
+            && !std::str::contains(std::json::find_field_raw(admin, "consumes"), "CatalogSurface"),
+        "admin consumes OrdersSurface alone",
+    );
+    std::test::assert(
+        std::str::contains(std::json::find_field_raw(product, "consumes"), "CatalogSurface")
+            && !std::str::contains(std::json::find_field_raw(product, "consumes"), "OrdersSurface"),
+        "product consumes CatalogSurface alone",
+    );
+    std::test::assert(
+        std::str::contains(std::json::find_field_raw(admin, "roles"), "operator")
+            && std::str::contains(std::json::find_field_raw(product, "roles"), "shopper"),
+        "and acts under its roles",
+    );
 
     // ---- a face is recognised by what its type resolves to, not by the import's alias
     let aliased = make(scratch, "aliased", dna::free_port(2), dna::free_port(3));
     let amain = std::io::fs::read_file(aliased + "/main.hl") or "";
-    std::io::fs::write_file(aliased + "/main.hl", std::str::replace(std::str::replace(amain, "dna::Face", "genome::Face"), "/dna/core\" as dna;", "/dna/core\" as genome;")) or discard;
-    std::test::assert(std::str::contains(std::io::fs::read_file(aliased + "/main.hl") or "", "genome::Face"), "the fixture imports the core as genome");
+    std::io::fs::write_file(
+        aliased + "/main.hl",
+        std::str::replace(
+            std::str::replace(amain, "dna::Face", "genome::Face"),
+            "/dna/core\" as dna;",
+            "/dna/core\" as genome;",
+        ),
+    ) or discard;
+    std::test::assert(
+        std::str::contains(std::io::fs::read_file(aliased + "/main.hl") or "", "genome::Face"),
+        "the fixture imports the core as genome",
+    );
     let adescribed = dna::run_tool(toolchain() + "\ncheck\n--api\n" + aliased);
-    std::test::assert_eq_int(adescribed.code, 0, "the aliased organism describes: " + adescribed.stderr);
-    std::test::assert(len(face_named(std::json::find_field_raw(adescribed.stdout, "faces"), "admin")) > 0 && len(face_named(std::json::find_field_raw(adescribed.stdout, "faces"), "product")) > 0, "both faces are in the description under another alias: " + adescribed.stdout);
+    std::test::assert_eq_int(
+        adescribed.code,
+        0,
+        "the aliased organism describes: " + adescribed.stderr,
+    );
+    std::test::assert(
+        len(face_named(std::json::find_field_raw(adescribed.stdout, "faces"), "admin")) > 0
+            && len(
+                face_named(std::json::find_field_raw(adescribed.stdout, "faces"), "product"),
+            ) > 0,
+        "both faces are in the description under another alias: " + adescribed.stdout,
+    );
     // and a type that is only named Face is no face
     let alike = make(scratch, "alike", dna::free_port(4), dna::free_port(5));
     let lmain = std::io::fs::read_file(alike + "/main.hl") or "";
-    let lfixed = std::str::replace(std::str::replace(std::str::replace(lmain, "import \"" + source() + "/dna/core\" as dna;", "type Face { app: String = \"\"; roles: String = \"\"; consumes: String = \"\"; port: Int = 0; }"), "dna::Face", "Face"), "Face = Face {", "Face = Face {");
+    let lfixed = std::str::replace(
+        std::str::replace(
+            std::str::replace(
+                lmain,
+                "import \"" + source() + "/dna/core\" as dna;",
+                "type Face { app: String = \"\"; roles: String = \"\"; consumes: String = \"\"; port: Int = 0; }",
+            ),
+            "dna::Face",
+            "Face",
+        ),
+        "Face = Face {",
+        "Face = Face {",
+    );
     std::io::fs::write_file(alike + "/main.hl", lfixed) or discard;
     let ldescribed = dna::run_tool(toolchain() + "\ncheck\n--api\n" + alike);
-    std::test::assert_eq_int(ldescribed.code, 0, "the look-alike organism describes: " + ldescribed.stdout + ldescribed.stderr);
-    std::test::assert(!std::str::contains(ldescribed.stdout, "\"faces\""), "a look-alike Face declares no face: " + ldescribed.stdout);
+    std::test::assert_eq_int(
+        ldescribed.code,
+        0,
+        "the look-alike organism describes: " + ldescribed.stdout + ldescribed.stderr,
+    );
+    std::test::assert(
+        !std::str::contains(ldescribed.stdout, "\"faces\""),
+        "a look-alike Face declares no face: " + ldescribed.stdout,
+    );
 
     // and neither is a user library's own face.hl declaring a Face, whatever else it holds (a workspace.hl with a run_tool): the face is the core's own module, byte for byte
     let owned = make(scratch, "owned", dna::free_port(6), dna::free_port(7));
     std::io::fs::mkdir(owned + "/lib") or discard;
-    std::io::fs::write_file(owned + "/lib/face.hl", "type Face { app: String = \"\"; roles: String = \"\"; consumes: String = \"\"; port: Int = 0; }\n") or discard;
-    std::io::fs::write_file(owned + "/lib/workspace.hl", "fn run_tool(argv: String) -> Int { return 0; }\n") or discard;
+    std::io::fs::write_file(
+        owned + "/lib/face.hl",
+        "type Face { app: String = \"\"; roles: String = \"\"; consumes: String = \"\"; port: Int = 0; }\n",
+    ) or discard;
+    std::io::fs::write_file(
+        owned + "/lib/workspace.hl",
+        "fn run_tool(argv: String) -> Int { return 0; }\n",
+    ) or discard;
     let omain = std::io::fs::read_file(owned + "/main.hl") or "";
-    std::io::fs::write_file(owned + "/main.hl", std::str::replace(omain, "\"" + source() + "/dna/core\" as dna;", "\"" + owned + "/lib\" as dna;")) or discard;
+    std::io::fs::write_file(
+        owned + "/main.hl",
+        std::str::replace(
+            omain,
+            "\"" + source() + "/dna/core\" as dna;",
+            "\"" + owned + "/lib\" as dna;",
+        ),
+    ) or discard;
     let odescribed = dna::run_tool(toolchain() + "\ncheck\n--api\n" + owned);
-    std::test::assert_eq_int(odescribed.code, 0, "the organism with its own face.hl describes: " + odescribed.stdout + odescribed.stderr);
-    std::test::assert(!std::str::contains(odescribed.stdout, "\"faces\""), "a Face of a user library's face.hl declares no face: " + odescribed.stdout);
+    std::test::assert_eq_int(
+        odescribed.code,
+        0,
+        "the organism with its own face.hl describes: " + odescribed.stdout + odescribed.stderr,
+    );
+    std::test::assert(
+        !std::str::contains(odescribed.stdout, "\"faces\""),
+        "a Face of a user library's face.hl declares no face: " + odescribed.stdout,
+    );
 
     // ---- a face that consumes no surface of the program, acts under no declared role, or shares a port is refused
     let bad = make(scratch, "bad", admin_port, admin_port);
     let main = std::io::fs::read_file(bad + "/main.hl") or "";
-    std::io::fs::write_file(bad + "/main.hl", std::str::replace(std::str::replace(main, "consumes: \"CatalogSurface\"", "consumes: \"Nope\""), "roles: \"shopper\"", "roles: \"ghost\"")) or discard;
+    std::io::fs::write_file(
+        bad + "/main.hl",
+        std::str::replace(
+            std::str::replace(main, "consumes: \"CatalogSurface\"", "consumes: \"Nope\""),
+            "roles: \"shopper\"",
+            "roles: \"ghost\"",
+        ),
+    ) or discard;
     let refused = dna::run_tool(toolchain() + "\ncheck\n" + bad);
     std::test::assert(refused.code != 0, "the check refuses");
     let said = refused.stdout + refused.stderr;
-    std::test::assert(std::str::contains(said, "consumes `Nope`, which is no surface of the program") && std::str::contains(said, "role `ghost`") && std::str::contains(said, "which face `admin` holds"), "and says why: " + said);
+    std::test::assert(
+        std::str::contains(said, "consumes `Nope`, which is no surface of the program")
+            && std::str::contains(said, "role `ghost`")
+            && std::str::contains(said, "which face `admin` holds"),
+        "and says why: " + said,
+    );
 
     // ---- the record states each face, and each consumes only its own surfaces
-    let g = ops::GraphIngest { root: repo, app: "shop", declared: "shop: sell things.", description: exported };
+    let g = ops::GraphIngest {
+        root: repo,
+        app: "shop",
+        declared: "shop: sell things.",
+        description: exported,
+    };
     std::test::assert_eq_str(g.ingest().error, "", "the organism reads");
     let graph = graph_of(g.rows);
-    std::test::assert(std::str::contains(graph, "\napplication:face/admin\t") && std::str::contains(graph, "\napplication:face/product\t"), "both faces are nodes: " + graph);
-    std::test::assert(std::str::contains(graph, "\nmeets:contract:api:OrdersSurface\t") && std::str::contains(graph, "\nmeets:contract:api:CatalogSurface\t"), "of the contracts they consume: " + graph);
+    std::test::assert(
+        std::str::contains(graph, "\napplication:face/admin\t")
+            && std::str::contains(graph, "\napplication:face/product\t"),
+        "both faces are nodes: " + graph,
+    );
+    std::test::assert(
+        std::str::contains(graph, "\nmeets:contract:api:OrdersSurface\t")
+            && std::str::contains(graph, "\nmeets:contract:api:CatalogSurface\t"),
+        "of the contracts they consume: " + graph,
+    );
     let orders = graph[(std::str::index_of(graph, "\nmeets:contract:api:OrdersSurface\t") + 1)..len(graph)];
     let orders_edge = orders[0..std::str::index_of(orders, "\n")];
-    std::test::assert(std::str::contains(orders_edge, "\"node\": \"application:face/admin\"") && !std::str::contains(orders_edge, "application:face/product"), "admin alone consumes Orders, beside the shop that serves it: " + orders_edge);
+    std::test::assert(
+        std::str::contains(orders_edge, "\"node\": \"application:face/admin\"")
+            && !std::str::contains(orders_edge, "application:face/product"),
+        "admin alone consumes Orders, beside the shop that serves it: " + orders_edge,
+    );
     let indexed = api::index_faces(graph, 200);
     let ia = face_named(indexed, "admin");
     let ip = face_named(indexed, "product");
-    std::test::assert_eq_str(std::json::find_string_field(ia, "consumes"), "OrdersSurface", "the index row: admin consumes Orders alone");
-    std::test::assert_eq_str(std::json::find_string_field(ip, "consumes"), "CatalogSurface", "and product Catalog alone");
-    std::test::assert_eq_str(std::json::find_string_field(ia, "roles"), "operator", "under operator");
-    std::test::assert_eq_int(std::json::find_int_field(ip, "port"), product_port, "on product's port");
+    std::test::assert_eq_str(
+        std::json::find_string_field(ia, "consumes"),
+        "OrdersSurface",
+        "the index row: admin consumes Orders alone",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(ip, "consumes"),
+        "CatalogSurface",
+        "and product Catalog alone",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(ia, "roles"),
+        "operator",
+        "under operator",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(ip, "port"),
+        product_port,
+        "on product's port",
+    );
 
     // ---- both start on their own ports, each with the client of its one surface
     let a = start_face(repo, "admin", admin_port);
@@ -173,9 +324,21 @@ fn main() {
     let admin_client = fetch(admin_port, "/client.js");
     let product_client = fetch(product_port, "/client.js");
     dna::run_tool("kill\n" + to_string(a) + "\n" + to_string(p));
-    std::test::assert(std::str::contains(admin_page, "<title>admin</title>") && std::str::contains(product_page, "<title>product</title>"), "both answer: " + admin_page + product_page);
-    std::test::assert(std::str::contains(admin_client, "OrdersSurface") && !std::str::contains(admin_client, "CatalogSurface"), "admin's client names its surface alone: " + admin_client);
-    std::test::assert(std::str::contains(product_client, "CatalogSurface") && !std::str::contains(product_client, "OrdersSurface"), "product's client names its surface alone: " + product_client);
+    std::test::assert(
+        std::str::contains(admin_page, "<title>admin</title>")
+            && std::str::contains(product_page, "<title>product</title>"),
+        "both answer: " + admin_page + product_page,
+    );
+    std::test::assert(
+        std::str::contains(admin_client, "OrdersSurface")
+            && !std::str::contains(admin_client, "CatalogSurface"),
+        "admin's client names its surface alone: " + admin_client,
+    );
+    std::test::assert(
+        std::str::contains(product_client, "CatalogSurface")
+            && !std::str::contains(product_client, "OrdersSurface"),
+        "product's client names its surface alone: " + product_client,
+    );
 
     dna::scratch_done(scratch);
 }

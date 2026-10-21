@@ -13,8 +13,6 @@ use std::fs;
 ///             files that would change
 ///   --stdin   read source on stdin, write formatted to stdout
 ///             (editor integration)
-///   --wrap    also break every line wider than 100 columns
-///             (spec/testing.md); opt-in until the tree is reflowed
 ///
 /// A file that doesn't lex is reported and skipped (exit 1): the
 /// formatter never touches a file it can't fully tokenize. The
@@ -25,14 +23,12 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
     let mut check = false;
     let mut diff = false;
     let mut stdin_mode = false;
-    let mut wrap = false;
     let mut targets: Vec<PathBuf> = Vec::new();
     for a in rest {
         match a.as_str() {
             "--check" => check = true,
             "--diff" => diff = true,
             "--stdin" => stdin_mode = true,
-            "--wrap" => wrap = true,
             other if other.starts_with('-') => {
                 eprintln!("hale fmt: unknown flag {}", other);
                 return ExitCode::from(2);
@@ -41,14 +37,6 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
         }
     }
 
-    let format = |src: &str| {
-        if wrap {
-            hale_syntax::fmt::format_source_wrapped(src)
-        } else {
-            hale_syntax::fmt::format_source(src)
-        }
-    };
-
     if stdin_mode {
         use std::io::Read;
         let mut src = String::new();
@@ -56,7 +44,7 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
             eprintln!("hale fmt: reading stdin: {}", e);
             return ExitCode::from(1);
         }
-        return match format(&src) {
+        return match hale_syntax::fmt::format_source(&src) {
             Ok(out) => {
                 print!("{}", out);
                 ExitCode::SUCCESS
@@ -100,7 +88,7 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
                 continue;
             }
         };
-        let out = match format(&src) {
+        let out = match hale_syntax::fmt::format_source(&src) {
             Ok(o) => o,
             Err(hale_syntax::fmt::FmtError::Parse(_)) => {
                 eprintln!(
@@ -156,10 +144,33 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The file whose presence freezes the directory holding it against the walk.
+pub(crate) const FROZEN_MARKER: &str = ".hale-fmt-frozen";
+
+/// Whether `path` is frozen against a tool that formats on its own
+/// initiative: its directory (itself, for a directory), or any ancestor
+/// up to and including `stop`, holds the marker. Only a person naming a
+/// file on the command line overrides it.
+pub(crate) fn frozen(path: &Path, stop: &Path) -> bool {
+    let mut cur = if path.is_dir() { Some(path) } else { path.parent() };
+    while let Some(d) = cur {
+        if d.join(FROZEN_MARKER).is_file() {
+            return true;
+        }
+        if d == stop {
+            return false;
+        }
+        cur = d.parent();
+    }
+    false
+}
+
 /// Recursively collect `.hl` files. Directories named `vendor` or
 /// starting with `.` are skipped (vendored pins are frozen — see
 /// pond's promotion banners — and formatting them would churn
-/// upstream diffs).
+/// upstream diffs). So is a directory below the walk's root that holds a
+/// `.hale-fmt-frozen` file (a recorded fixture keyed on its bytes); a
+/// file named on the command line is still formatted.
 pub(crate) fn collect_hl_files(path: &Path, out: &mut Vec<PathBuf>) {
     if path.is_file() {
         if path.extension().is_some_and(|e| e == "hl") {
@@ -171,13 +182,18 @@ pub(crate) fn collect_hl_files(path: &Path, out: &mut Vec<PathBuf>) {
         eprintln!("hale fmt: {} not found", path.display());
         return;
     }
+    // a directory holding the marker is frozen, named or walked into: only a
+    // file named on the command line is formatted regardless
+    if path.join(FROZEN_MARKER).is_file() {
+        return;
+    }
     let Ok(entries) = fs::read_dir(path) else { return };
     for entry in entries.flatten() {
         let p = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if p.is_dir() {
-            if name == "vendor" || name.starts_with('.') {
+            if name == "vendor" || name.starts_with('.') || frozen(&p, &p) {
                 continue;
             }
             collect_hl_files(&p, out);

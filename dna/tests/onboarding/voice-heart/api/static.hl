@@ -18,17 +18,28 @@ fn serve_static(dir: String, req: std::http::Request) -> std::http::Response {
         file = dir + "/index.html";
     }
     if !std::io::fs::file_exists(file) {
-        return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path + " (the ui is not built)");
+        return error_response(
+            404,
+            "not_found",
+            "not_found",
+            "no such endpoint: " + req.method + " " + req.path + " (the ui is not built)",
+        );
     }
     let ct = content_type(file);
     let immutable = std::str::contains(path, "/assets/");
     let cache = if immutable { "public, max-age=31536000, immutable" } else { "no-cache" };
     if req.conn_fd < 0 || !is_binary(file) {
         let body = std::io::fs::read_file(file) or "";
-        return std::http::Response { status: 200, content_type: ct, headers: "Cache-Control: " + cache, body: body };
+        return std::http::Response {
+            status: 200,
+            content_type: ct,
+            headers: "Cache-Control: " + cache,
+            body: body,
+        };
     }
     let bytes = std::io::fs::read_bytes(file) or b"";
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\nContent-Length: " + to_string(len(bytes)) + "\r\nCache-Control: " + cache + "\r\nConnection: close\r\n\r\n";
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\nContent-Length: "
+        + to_string(len(bytes)) + "\r\nCache-Control: " + cache + "\r\nConnection: close\r\n\r\n";
     std::io::tcp::send_fd(req.conn_fd, std::bytes::from_string(head)) or discard;
     std::io::tcp::send_fd(req.conn_fd, bytes) or discard;
     std::io::tcp::close_fd(req.conn_fd);
@@ -37,7 +48,13 @@ fn serve_static(dir: String, req: std::http::Request) -> std::http::Response {
 
 /// True for a request that is the app's, not a plane's.
 fn is_ui_path(path: String) -> Bool {
-    return !(std::str::starts_with(path, "/v1/") || std::str::starts_with(path, "/admin/") || std::str::starts_with(path, "/node/") || path == "/healthz" || path == "/readyz");
+    return !(
+        std::str::starts_with(path, "/v1/")
+            || std::str::starts_with(path, "/admin/")
+            || std::str::starts_with(path, "/node/")
+            || path == "/healthz"
+            || path == "/readyz"
+    );
 }
 
 /// True when the last path segment has a dot in it: a file, not a route.
@@ -54,7 +71,10 @@ fn has_extension(path: String) -> Bool {
 }
 
 fn is_binary(file: String) -> Bool {
-    return std::str::ends_with(file, ".woff2") || std::str::ends_with(file, ".woff") || std::str::ends_with(file, ".png") || std::str::ends_with(file, ".ico");
+    return std::str::ends_with(file, ".woff2")
+        || std::str::ends_with(file, ".woff")
+        || std::str::ends_with(file, ".png")
+        || std::str::ends_with(file, ".ico");
 }
 
 fn content_type(file: String) -> String {

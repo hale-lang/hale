@@ -27,8 +27,13 @@ locus ScriptedKnowledge {
         last_command: ops::KnowledgeCommand = ops::KnowledgeCommand { };
     }
     fn supported() -> Bool { return true; }
-    fn submit(context: api::CommandContext, command: ops::KnowledgeCommand) -> ops::KnowledgeResult {
-        self.submit_calls = self.submit_calls + 1; self.last_context = context; self.last_command = command;
+    fn submit(
+        context: api::CommandContext,
+        command: ops::KnowledgeCommand
+    ) -> ops::KnowledgeResult {
+        self.submit_calls = self.submit_calls + 1;
+        self.last_context = context;
+        self.last_command = command;
         return self.result(context, command);
     }
     fn lookup(context: api::CommandContext, request_id: String) -> ops::KnowledgeResult {
@@ -39,170 +44,595 @@ locus ScriptedKnowledge {
     fn result(context: api::CommandContext, c: ops::KnowledgeCommand) -> ops::KnowledgeResult {
         if len(self.code) > 0 { return ops::KnowledgeResult { code: self.code }; }
         let codec = ops::KnowledgeCommandCodec { };
-        let trusted = ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
-        let node = ops::KnowledgeNodeCommandCodec { }; let binding = ops::KnowledgeBindingCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        let trusted = ops::GovernanceContext {
+            application_id: context.source.identity,
+            principal_mode: context.principal_mode,
+            principal_name: context.principal_name,
+        };
+        let node = ops::KnowledgeNodeCommandCodec { };
+        let binding = ops::KnowledgeBindingCommandCodec { };
+        let native = dna::KnowledgeBindingCodec { };
         let edge = !node.known(c.operation) && !binding.known(c.operation);
         let receipt = ops::KnowledgeReceipt {
-            command_id: codec.identity(trusted, c.request_id), request_id: c.request_id, application_id: context.source.identity,
-            principal_mode: context.principal_mode, principal_name: context.principal_name, operation: c.operation, operation_version: c.operation_version,
-            position_id: c.position_id, target_id: if self.hidden { "" } else { c.target_id }, fingerprint: codec.fingerprint(trusted, c), state: "recorded",
-            edge_id: if self.hidden || !edge { "" } else { codec.edge_id(c.from_id, c.to_id, c.rel) }, event_id: "event-after", admission_head: c.record_head, sequence: 6,
+            command_id: codec.identity(trusted, c.request_id),
+            request_id: c.request_id,
+            application_id: context.source.identity,
+            principal_mode: context.principal_mode,
+            principal_name: context.principal_name,
+            operation: c.operation,
+            operation_version: c.operation_version,
+            position_id: c.position_id, target_id: if self.hidden {
+                ""
+            } else {
+                c.target_id
+            }, fingerprint: codec.fingerprint(trusted, c), state: "recorded",
+            edge_id: if self.hidden || !edge {
+                ""
+            } else {
+                codec.edge_id(c.from_id, c.to_id, c.rel)
+            }, event_id: "event-after", admission_head: c.record_head, sequence: 6,
             authority: "curator", authority_basis: "policy:one", details_visible: !self.hidden,
-            binding: ops::KnowledgeBindingOutcome { binding_id: if binding.known(c.operation) && !self.hidden { native.identity(c.idea_id, c.target, c.author) } else { "" } }
+            binding: ops::KnowledgeBindingOutcome {
+                binding_id: if binding.known(c.operation) && !self.hidden {
+                    native.identity(c.idea_id, c.target, c.author)
+                } else {
+                    ""
+                },
+            }
         };
-        return ops::KnowledgeResult { ok: true, code: "", application_id: context.source.identity, head: "record-after", revision: 7, receipt: receipt };
+        return ops::KnowledgeResult {
+            ok: true,
+            code: "",
+            application_id: context.source.identity,
+            head: "record-after",
+            revision: 7,
+            receipt: receipt,
+        };
     }
 }
 
 locus KnowledgeCases {
-    params { f: fixture::Fixture; host: ScriptedKnowledge; knowledge: api::KnowledgeAdmission; commands: api::Commands; }
-    fn caller() -> std::api::Context { return std::api::Context { caller: std::api::Principal { mode: "unix", name: "uid:1000", uid: 1000, gid: 1000, pid: 1 } }; }
+    params {
+        f: fixture::Fixture;
+        host: ScriptedKnowledge;
+        knowledge: api::KnowledgeAdmission;
+        commands: api::Commands;
+    }
+    fn caller() -> std::api::Context {
+        return std::api::Context {
+            caller: std::api::Principal {
+                mode: "unix",
+                name: "uid:1000",
+                uid: 1000,
+                gid: 1000,
+                pid: 1,
+            },
+        };
+    }
     fn repeat(count: Int) -> String {
         let b = std::bytes::BytesBuilder { }; let mut i = 0;
         while i < count { b.append_u8(120); i = i + 1; }
         return std::str::from_bytes(b.snapshot() or raise);
     }
-    fn link(id: String, rel: String) -> api::KnowledgeLink { return api::KnowledgeLink { request_id: id, record_head: HEAD, target_id: FROM, from_id: FROM, to_id: TO, rel: rel, rationale: RATIONALE }; }
-    fn proposal(id: String, text: String) -> api::KnowledgeNodeProposal {
-        return api::KnowledgeNodeProposal { request_id: id, record_head: HEAD, kind: "idea", name: "Support équipe", text: text, author: "org", target: "org/support", rationale: RATIONALE };
+    fn link(id: String, rel: String) -> api::KnowledgeLink {
+        return api::KnowledgeLink {
+            request_id: id,
+            record_head: HEAD,
+            target_id: FROM,
+            from_id: FROM,
+            to_id: TO,
+            rel: rel,
+            rationale: RATIONALE,
+        };
     }
-    fn bind(id: String) -> api::KnowledgeBind { return api::KnowledgeBind { request_id: id, record_head: HEAD, idea_id: FROM, author: "org", target: "org/support", rationale: RATIONALE }; }
+    fn proposal(id: String, text: String) -> api::KnowledgeNodeProposal {
+        return api::KnowledgeNodeProposal {
+            request_id: id,
+            record_head: HEAD,
+            kind: "idea",
+            name: "Support équipe",
+            text: text,
+            author: "org",
+            target: "org/support",
+            rationale: RATIONALE,
+        };
+    }
+    fn bind(id: String) -> api::KnowledgeBind {
+        return api::KnowledgeBind {
+            request_id: id,
+            record_head: HEAD,
+            idea_id: FROM,
+            author: "org",
+            target: "org/support",
+            rationale: RATIONALE,
+        };
+    }
     fn stopped(reply: api::KnowledgeReply, code: String, label: String) {
-        std::test::assert(!reply.ok && reply.code == code, label + ": expected " + code + ", got " + reply.code);
+        std::test::assert(
+            !reply.ok && reply.code == code,
+            label + ": expected " + code + ", got " + reply.code,
+        );
     }
     // A refusal the provider never saw.
     fn invalid(reply: api::KnowledgeReply, before: Int, label: String) {
         self.stopped(reply, "invalid_command", label);
-        std::test::assert_eq_int(self.host.submit_calls, before, label + ": never reaches the provider");
+        std::test::assert_eq_int(
+            self.host.submit_calls,
+            before,
+            label + ": never reaches the provider",
+        );
     }
 
     fn edge_cases() {
         let refs = self.f.refs();
         let codec = ops::KnowledgeCommandCodec { };
-        let linked = self.commands.link_knowledge(self.link("request/équipe:1", "précise 🧭"), self.caller());
+        let linked = self.commands.link_knowledge(
+            self.link("request/équipe:1", "précise 🧭"),
+            self.caller(),
+        );
         std::test::assert(linked.ok, "an admissible link is submitted: " + linked.code);
-        std::test::assert_eq_str(linked.application_id, self.f.identity, "the reply names this Record");
-        std::test::assert_eq_str(linked.head, "record-after", "the provider's post-operation basis is the reply's");
+        std::test::assert_eq_str(
+            linked.application_id,
+            self.f.identity,
+            "the reply names this Record",
+        );
+        std::test::assert_eq_str(
+            linked.head,
+            "record-after",
+            "the provider's post-operation basis is the reply's",
+        );
         std::test::assert_eq_int(linked.revision, 7, "with its revision");
-        std::test::assert_eq_str(linked.receipt.edge_id, codec.edge_id(FROM, TO, "précise 🧭"), "the receipt comes back typed");
+        std::test::assert_eq_str(
+            linked.receipt.edge_id,
+            codec.edge_id(FROM, TO, "précise 🧭"),
+            "the receipt comes back typed",
+        );
         std::test::assert_eq_int(linked.receipt.sequence, 6, "its sequence an integer");
         let sent = self.host.last_command;
-        std::test::assert(sent.operation == "dna.knowledge.edge.link" && sent.operation_version == "1" && sent.position_id == "org", "the head names the operation");
-        std::test::assert_eq_str(sent.application_id, self.f.identity, "the application is the Record's, never the caller's");
-        std::test::assert(sent.target_id == FROM && sent.from_id == FROM && sent.to_id == TO && sent.edge_id == "", "a link targets the endpoint it is made from");
+        std::test::assert(
+            sent.operation == "dna.knowledge.edge.link"
+                && sent.operation_version == "1"
+                && sent.position_id == "org",
+            "the head names the operation",
+        );
+        std::test::assert_eq_str(
+            sent.application_id,
+            self.f.identity,
+            "the application is the Record's, never the caller's",
+        );
+        std::test::assert(
+            sent.target_id == FROM
+                && sent.from_id == FROM
+                && sent.to_id == TO
+                && sent.edge_id == "",
+            "a link targets the endpoint it is made from",
+        );
         std::test::assert_eq_str(sent.rel, "précise 🧭", "Unicode label stays exact");
-        std::test::assert_eq_str(sent.rationale, RATIONALE, "CRLF and supplementary Unicode preserved");
-        std::test::assert_eq_str(sent.record_head, HEAD, "the prepared head is carried, never the current one");
-        std::test::assert_eq_str(self.host.last_context.principal_name, "alice", "the caller is the person the Record maps them to");
-        std::test::assert_eq_str(self.host.last_context.principal_mode, "local", "a local account the kernel vouched for");
-        std::test::assert_eq_str(self.host.last_context.root, self.f.root, "the provider receives the head's own root");
+        std::test::assert_eq_str(
+            sent.rationale,
+            RATIONALE,
+            "CRLF and supplementary Unicode preserved",
+        );
+        std::test::assert_eq_str(
+            sent.record_head,
+            HEAD,
+            "the prepared head is carried, never the current one",
+        );
+        std::test::assert_eq_str(
+            self.host.last_context.principal_name,
+            "alice",
+            "the caller is the person the Record maps them to",
+        );
+        std::test::assert_eq_str(
+            self.host.last_context.principal_mode,
+            "local",
+            "a local account the kernel vouched for",
+        );
+        std::test::assert_eq_str(
+            self.host.last_context.root,
+            self.f.root,
+            "the provider receives the head's own root",
+        );
         // the codec's rule, before the provider
         let before = self.host.submit_calls;
-        let mut l = self.link("bad", "rel"); l.target_id = "other"; self.invalid(self.knowledge.link(l, self.caller()), before, "the target is one of the endpoints");
-        l = self.link("bad", "rel"); l.from_id = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; l.target_id = l.from_id; self.invalid(self.knowledge.link(l, self.caller()), before, "endpoints are exact digests");
-        self.invalid(self.knowledge.link(self.link("bad", ""), self.caller()), before, "a relationship has a label");
-        self.invalid(self.knowledge.link(self.link("bad", self.repeat(257)), self.caller()), before, "257 label bytes");
-        l = self.link("bad", "rel"); l.rationale = self.repeat(2049); self.invalid(self.knowledge.link(l, self.caller()), before, "2049 rationale bytes");
-        l = self.link("bad", "rel"); l.rationale = ""; self.invalid(self.knowledge.link(l, self.caller()), before, "an empty rationale");
-        l = self.link("bad", "rel"); l.record_head = ""; self.invalid(self.knowledge.link(l, self.caller()), before, "a change names the head it was prepared at");
-        self.invalid(self.knowledge.link(self.link(self.repeat(129), "rel"), self.caller()), before, "129 request-ID bytes");
-        self.invalid(self.knowledge.link(self.link("bad\nkey", "rel"), self.caller()), before, "control bytes in a request identity");
-        std::test::assert(self.knowledge.link(self.link(self.repeat(128), self.repeat(254) + "é"), self.caller()).ok, "the byte bounds are exact");
+        let mut l = self.link("bad", "rel");
+        l.target_id = "other";
+        self.invalid(
+            self.knowledge.link(l, self.caller()),
+            before,
+            "the target is one of the endpoints",
+        );
+        l = self.link("bad", "rel");
+        l.from_id = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        l.target_id = l.from_id;
+        self.invalid(self.knowledge.link(l, self.caller()), before, "endpoints are exact digests");
+        self.invalid(
+            self.knowledge.link(self.link("bad", ""), self.caller()),
+            before,
+            "a relationship has a label",
+        );
+        self.invalid(
+            self.knowledge.link(self.link("bad", self.repeat(257)), self.caller()),
+            before,
+            "257 label bytes",
+        );
+        l = self.link("bad", "rel");
+        l.rationale = self.repeat(2049);
+        self.invalid(self.knowledge.link(l, self.caller()), before, "2049 rationale bytes");
+        l = self.link("bad", "rel");
+        l.rationale = "";
+        self.invalid(self.knowledge.link(l, self.caller()), before, "an empty rationale");
+        l = self.link("bad", "rel");
+        l.record_head = "";
+        self.invalid(
+            self.knowledge.link(l, self.caller()),
+            before,
+            "a change names the head it was prepared at",
+        );
+        self.invalid(
+            self.knowledge.link(self.link(self.repeat(129), "rel"), self.caller()),
+            before,
+            "129 request-ID bytes",
+        );
+        self.invalid(
+            self.knowledge.link(self.link("bad\nkey", "rel"), self.caller()),
+            before,
+            "control bytes in a request identity",
+        );
+        std::test::assert(
+            self.knowledge.link(
+                self.link(self.repeat(128), self.repeat(254) + "é"),
+                self.caller(),
+            ).ok,
+            "the byte bounds are exact",
+        );
         // removal names the exact tuple it removes
         let edge = codec.edge_id(FROM, TO, "rel");
-        let removal = api::KnowledgeUnlink { request_id: "remove/1", record_head: HEAD, target_id: TO, edge_id: edge, from_id: FROM, to_id: TO, rel: "rel", rationale: "Remove it." };
+        let removal = api::KnowledgeUnlink {
+            request_id: "remove/1",
+            record_head: HEAD,
+            target_id: TO,
+            edge_id: edge,
+            from_id: FROM,
+            to_id: TO,
+            rel: "rel",
+            rationale: "Remove it.",
+        };
         let removed = self.commands.unlink_knowledge(removal, self.caller());
-        std::test::assert(removed.ok && removed.receipt.operation == "dna.knowledge.edge.unlink", "an exact removal is submitted: " + removed.code);
-        std::test::assert(self.host.last_command.edge_id == edge && self.host.last_command.target_id == TO, "the removal carries its tuple's identity");
+        std::test::assert(
+            removed.ok && removed.receipt.operation == "dna.knowledge.edge.unlink",
+            "an exact removal is submitted: " + removed.code,
+        );
+        std::test::assert(
+            self.host.last_command.edge_id == edge && self.host.last_command.target_id == TO,
+            "the removal carries its tuple's identity",
+        );
         let before_unlink = self.host.submit_calls;
-        let mut u = removal; u.edge_id = FROM; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "an identity that is not the tuple's");
-        u = removal; u.rel = "other"; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "a label the identity does not name");
-        u = removal; u.edge_id = ""; self.invalid(self.knowledge.unlink(u, self.caller()), before_unlink, "a removal names its identity");
-        std::test::assert_eq_str(self.f.refs(), refs, "admission conformance never writes the Record");
+        let mut u = removal;
+        u.edge_id = FROM;
+        self.invalid(
+            self.knowledge.unlink(u, self.caller()),
+            before_unlink,
+            "an identity that is not the tuple's",
+        );
+        u = removal;
+        u.rel = "other";
+        self.invalid(
+            self.knowledge.unlink(u, self.caller()),
+            before_unlink,
+            "a label the identity does not name",
+        );
+        u = removal;
+        u.edge_id = "";
+        self.invalid(
+            self.knowledge.unlink(u, self.caller()),
+            before_unlink,
+            "a removal names its identity",
+        );
+        std::test::assert_eq_str(
+            self.f.refs(),
+            refs,
+            "admission conformance never writes the Record",
+        );
     }
 
     fn node_cases() {
         let text = "Première ligne\r\n" + self.repeat(8000) + " 🧭";
-        let proposed = self.commands.propose_knowledge(self.proposal("node/propose", text), self.caller());
-        std::test::assert(proposed.ok, "an admissible node proposal is submitted: " + proposed.code);
+        let proposed = self.commands.propose_knowledge(
+            self.proposal("node/propose", text),
+            self.caller(),
+        );
+        std::test::assert(
+            proposed.ok,
+            "an admissible node proposal is submitted: " + proposed.code,
+        );
         let sent = self.host.last_command;
-        std::test::assert(sent.operation == "dna.knowledge.node.propose" && sent.target_id == "org/support" && sent.target == "org/support", "a proposal targets the collection it names");
-        std::test::assert(sent.node_kind == "idea" && sent.name == "Support équipe" && sent.text == text && sent.author == "org", "the node's fields are the payload's");
+        std::test::assert(
+            sent.operation == "dna.knowledge.node.propose"
+                && sent.target_id == "org/support"
+                && sent.target == "org/support",
+            "a proposal targets the collection it names",
+        );
+        std::test::assert(
+            sent.node_kind == "idea"
+                && sent.name == "Support équipe"
+                && sent.text == text
+                && sent.author == "org",
+            "the node's fields are the payload's",
+        );
         let before = self.host.submit_calls;
-        self.invalid(self.knowledge.propose_node(self.proposal("node/over", self.repeat(8193)), self.caller()), before, "8193 text bytes");
-        std::test::assert(self.knowledge.propose_node(self.proposal("node/exact", self.repeat(8190) + "é"), self.caller()).ok, "8192 UTF-8 text bytes accepted exactly");
-        let mut p = self.proposal("node/kind", "t"); p.kind = "retirement"; self.invalid(self.knowledge.propose_node(p, self.caller()), before + 1, "an unknown node kind");
-        p = self.proposal("node/name", "t"); p.name = ""; self.invalid(self.knowledge.propose_node(p, self.caller()), before + 1, "a node has a name");
-        let revision = api::KnowledgeNodeRevision { request_id: "node/revise", record_head: HEAD, supersedes: FROM, kind: "concept", name: "Revised", text: "t", author: "org", target: "org/support", rationale: "why" };
-        std::test::assert(self.commands.revise_knowledge(revision, self.caller()).ok, "a revision is submitted");
-        std::test::assert(self.host.last_command.target_id == FROM && self.host.last_command.supersedes == FROM, "a revision targets the node it supersedes");
-        let mut r = revision; r.supersedes = "not-a-digest"; self.invalid(self.knowledge.revise_node(r, self.caller()), before + 2, "a revision supersedes an exact node");
-        let retirement = api::KnowledgeNodeRetirement { request_id: "node/retire", record_head: HEAD, id: TO, rationale: "why" };
-        std::test::assert(self.commands.retire_knowledge(retirement, self.caller()).ok, "a retirement is submitted");
+        self.invalid(
+            self.knowledge.propose_node(
+                self.proposal("node/over", self.repeat(8193)),
+                self.caller(),
+            ),
+            before,
+            "8193 text bytes",
+        );
+        std::test::assert(
+            self.knowledge.propose_node(
+                self.proposal("node/exact", self.repeat(8190) + "é"),
+                self.caller(),
+            ).ok,
+            "8192 UTF-8 text bytes accepted exactly",
+        );
+        let mut p = self.proposal("node/kind", "t");
+        p.kind = "retirement";
+        self.invalid(
+            self.knowledge.propose_node(p, self.caller()),
+            before + 1,
+            "an unknown node kind",
+        );
+        p = self.proposal("node/name", "t");
+        p.name = "";
+        self.invalid(
+            self.knowledge.propose_node(p, self.caller()),
+            before + 1,
+            "a node has a name",
+        );
+        let revision = api::KnowledgeNodeRevision {
+            request_id: "node/revise",
+            record_head: HEAD,
+            supersedes: FROM,
+            kind: "concept",
+            name: "Revised",
+            text: "t",
+            author: "org",
+            target: "org/support",
+            rationale: "why",
+        };
+        std::test::assert(
+            self.commands.revise_knowledge(revision, self.caller()).ok,
+            "a revision is submitted",
+        );
+        std::test::assert(
+            self.host.last_command.target_id == FROM && self.host.last_command.supersedes == FROM,
+            "a revision targets the node it supersedes",
+        );
+        let mut r = revision;
+        r.supersedes = "not-a-digest";
+        self.invalid(
+            self.knowledge.revise_node(r, self.caller()),
+            before + 2,
+            "a revision supersedes an exact node",
+        );
+        let retirement = api::KnowledgeNodeRetirement {
+            request_id: "node/retire",
+            record_head: HEAD,
+            id: TO,
+            rationale: "why",
+        };
+        std::test::assert(
+            self.commands.retire_knowledge(retirement, self.caller()).ok,
+            "a retirement is submitted",
+        );
         let retired = self.host.last_command;
-        std::test::assert(retired.target_id == TO && retired.text == "" && retired.name == "", "a retirement targets its node and carries no content");
-        let mut t = retirement; t.id = "org/support"; self.invalid(self.knowledge.retire_node(t, self.caller()), before + 3, "a retirement names an exact node");
+        std::test::assert(
+            retired.target_id == TO && retired.text == "" && retired.name == "",
+            "a retirement targets its node and carries no content",
+        );
+        let mut t = retirement;
+        t.id = "org/support";
+        self.invalid(
+            self.knowledge.retire_node(t, self.caller()),
+            before + 3,
+            "a retirement names an exact node",
+        );
     }
 
     fn binding_cases() {
         let native = dna::KnowledgeBindingCodec { };
         let bound = self.commands.bind_knowledge(self.bind("binding/1"), self.caller());
         std::test::assert(bound.ok, "an admissible binding is submitted: " + bound.code);
-        std::test::assert_eq_str(bound.receipt.binding.binding_id, native.identity(FROM, "org/support", "org"), "the binding outcome comes back typed");
+        std::test::assert_eq_str(
+            bound.receipt.binding.binding_id,
+            native.identity(FROM, "org/support", "org"),
+            "the binding outcome comes back typed",
+        );
         let sent = self.host.last_command;
-        std::test::assert(sent.operation == "dna.knowledge.binding.bind" && sent.target_id == FROM && sent.idea_id == FROM && sent.binding_id == "", "a binding targets its item");
-        std::test::assert(sent.author == "org" && sent.target == "org/support", "the locus author is the payload's, not the caller");
+        std::test::assert(
+            sent.operation == "dna.knowledge.binding.bind"
+                && sent.target_id == FROM
+                && sent.idea_id == FROM
+                && sent.binding_id == "",
+            "a binding targets its item",
+        );
+        std::test::assert(
+            sent.author == "org" && sent.target == "org/support",
+            "the locus author is the payload's, not the caller",
+        );
         let before = self.host.submit_calls;
-        let mut b = self.bind("binding/lateral"); b.author = "org/finance"; self.invalid(self.knowledge.bind(b, self.caller()), before, "siblings never bind laterally");
-        b = self.bind("binding/long"); b.author = self.repeat(257); self.invalid(self.knowledge.bind(b, self.caller()), before, "257 locus bytes");
-        b = self.bind("binding/item"); b.idea_id = "org/support"; self.invalid(self.knowledge.bind(b, self.caller()), before, "a binding names an exact item");
-        let unbinding = api::KnowledgeUnbind { request_id: "binding/2", record_head: HEAD, binding_id: native.identity(FROM, "org/support", "org"), idea_id: FROM, author: "org", target: "org/support", rationale: "why" };
-        std::test::assert(self.commands.unbind_knowledge(unbinding, self.caller()).ok, "an exact unbinding is submitted");
-        std::test::assert_eq_str(self.host.last_command.binding_id, unbinding.binding_id, "the unbinding carries the binding's identity");
-        let mut u = unbinding; u.binding_id = TO; self.invalid(self.knowledge.unbind(u, self.caller()), before + 1, "an identity that is not the binding's");
+        let mut b = self.bind("binding/lateral");
+        b.author = "org/finance";
+        self.invalid(
+            self.knowledge.bind(b, self.caller()),
+            before,
+            "siblings never bind laterally",
+        );
+        b = self.bind("binding/long");
+        b.author = self.repeat(257);
+        self.invalid(self.knowledge.bind(b, self.caller()), before, "257 locus bytes");
+        b = self.bind("binding/item");
+        b.idea_id = "org/support";
+        self.invalid(
+            self.knowledge.bind(b, self.caller()),
+            before,
+            "a binding names an exact item",
+        );
+        let unbinding = api::KnowledgeUnbind {
+            request_id: "binding/2",
+            record_head: HEAD,
+            binding_id: native.identity(FROM, "org/support", "org"),
+            idea_id: FROM,
+            author: "org",
+            target: "org/support",
+            rationale: "why",
+        };
+        std::test::assert(
+            self.commands.unbind_knowledge(unbinding, self.caller()).ok,
+            "an exact unbinding is submitted",
+        );
+        std::test::assert_eq_str(
+            self.host.last_command.binding_id,
+            unbinding.binding_id,
+            "the unbinding carries the binding's identity",
+        );
+        let mut u = unbinding;
+        u.binding_id = TO;
+        self.invalid(
+            self.knowledge.unbind(u, self.caller()),
+            before + 1,
+            "an identity that is not the binding's",
+        );
     }
 
     fn recovery_cases() {
         let submitted = self.host.submit_calls;
-        let found = self.commands.lookup_knowledge(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller());
-        std::test::assert(found.ok && found.receipt.request_id == "request/équipe:1", "lookup recovers by the caller's request identity: " + found.code);
+        let found = self.commands.lookup_knowledge(
+            api::KnowledgeRecovery { request_id: "request/équipe:1" },
+            self.caller(),
+        );
+        std::test::assert(
+            found.ok && found.receipt.request_id == "request/équipe:1",
+            "lookup recovers by the caller's request identity: " + found.code,
+        );
         std::test::assert_eq_int(self.host.submit_calls, submitted, "lookup never submits");
-        std::test::assert_eq_str(self.host.last_context.principal_name, "alice", "recovery is scoped to the caller");
+        std::test::assert_eq_str(
+            self.host.last_context.principal_name,
+            "alice",
+            "recovery is scoped to the caller",
+        );
         let looked = self.host.lookup_calls;
-        self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: "" }, self.caller()), "invalid_query", "lookup needs a request identity");
-        self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: self.repeat(129) }, self.caller()), "invalid_query", "lookup identity is bounded");
-        std::test::assert_eq_int(self.host.lookup_calls, looked, "an invalid lookup never reaches the provider");
+        self.stopped(
+            self.knowledge.lookup(api::KnowledgeRecovery { request_id: "" }, self.caller()),
+            "invalid_query",
+            "lookup needs a request identity",
+        );
+        self.stopped(
+            self.knowledge.lookup(
+                api::KnowledgeRecovery { request_id: self.repeat(129) },
+                self.caller(),
+            ),
+            "invalid_query",
+            "lookup identity is bounded",
+        );
+        std::test::assert_eq_int(
+            self.host.lookup_calls,
+            looked,
+            "an invalid lookup never reaches the provider",
+        );
         // the provider's refusals are the reply's code
-        self.host.code = "forbidden"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "forbidden", "the policy's refusal");
-        self.host.code = "stale_subject"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "stale_subject", "a head that moved");
-        self.host.code = "request_conflict"; self.stopped(self.knowledge.link(self.link("refused", "rel"), self.caller()), "request_conflict", "a reused request identity");
-        self.host.code = "command_not_found"; self.stopped(self.knowledge.lookup(api::KnowledgeRecovery { request_id: "missing" }, self.caller()), "command_not_found", "nothing under that identity");
+        self.host.code = "forbidden";
+        self.stopped(
+            self.knowledge.link(self.link("refused", "rel"), self.caller()),
+            "forbidden",
+            "the policy's refusal",
+        );
+        self.host.code = "stale_subject";
+        self.stopped(
+            self.knowledge.link(self.link("refused", "rel"), self.caller()),
+            "stale_subject",
+            "a head that moved",
+        );
+        self.host.code = "request_conflict";
+        self.stopped(
+            self.knowledge.link(self.link("refused", "rel"), self.caller()),
+            "request_conflict",
+            "a reused request identity",
+        );
+        self.host.code = "command_not_found";
+        self.stopped(
+            self.knowledge.lookup(api::KnowledgeRecovery { request_id: "missing" }, self.caller()),
+            "command_not_found",
+            "nothing under that identity",
+        );
         self.host.code = "";
         // details the Record hides stay hidden
         self.host.hidden = true;
-        let hidden = self.knowledge.lookup(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller());
-        std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.target_id == "" && hidden.receipt.edge_id == "", "a hidden receipt carries no tuple");
+        let hidden = self.knowledge.lookup(
+            api::KnowledgeRecovery { request_id: "request/équipe:1" },
+            self.caller(),
+        );
+        std::test::assert(
+            hidden.ok
+                && !hidden.receipt.details_visible
+                && hidden.receipt.target_id == ""
+                && hidden.receipt.edge_id == "",
+            "a hidden receipt carries no tuple",
+        );
         self.host.hidden = false;
         // an unmapped peer is named by its uid, never by $USER
-        let stranger = api::KnowledgeAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "" }, provider: self.host };
-        std::test::assert(stranger.link(self.link("stranger", "rel"), self.caller()).ok, "in-process nothing gates the call");
-        std::test::assert_eq_str(self.host.last_context.principal_name, "uid:1000", "an unmapped caller is recorded as its uid");
+        let stranger = api::KnowledgeAdmission {
+            root: self.f.root,
+            roles: dna::RecordRoles { memory: true, mapping: "" },
+            provider: self.host,
+        };
+        std::test::assert(
+            stranger.link(self.link("stranger", "rel"), self.caller()).ok,
+            "in-process nothing gates the call",
+        );
+        std::test::assert_eq_str(
+            self.host.last_context.principal_name,
+            "uid:1000",
+            "an unmapped caller is recorded as its uid",
+        );
         // a head composed without Knowledge commands admits and recovers nothing
-        let absent = api::KnowledgeAdmission { root: self.f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" } };
-        self.stopped(absent.link(self.link("absent", "rel"), self.caller()), "commands_unsupported", "the default provider admits nothing");
-        self.stopped(absent.lookup(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller()), "commands_unsupported", "nor recovers anything");
+        let absent = api::KnowledgeAdmission {
+            root: self.f.root,
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" },
+        };
+        self.stopped(
+            absent.link(self.link("absent", "rel"), self.caller()),
+            "commands_unsupported",
+            "the default provider admits nothing",
+        );
+        self.stopped(
+            absent.lookup(api::KnowledgeRecovery { request_id: "request/équipe:1" }, self.caller()),
+            "commands_unsupported",
+            "nor recovers anything",
+        );
         // a Record that cannot be read refuses before the provider
         let before = self.host.submit_calls;
-        let nowhere = api::KnowledgeAdmission { root: self.f.root + "/absent", roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: self.host };
+        let nowhere = api::KnowledgeAdmission {
+            root: self.f.root + "/absent",
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" },
+            provider: self.host,
+        };
         let unread = nowhere.link(self.link("nowhere", "rel"), self.caller());
-        std::test::assert(!unread.ok && len(unread.code) > 0, "an unreadable Record refuses: " + unread.code);
+        std::test::assert(
+            !unread.ok && len(unread.code) > 0,
+            "an unreadable Record refuses: " + unread.code,
+        );
         std::test::assert_eq_int(self.host.submit_calls, before, "and the provider never sees it");
     }
 }
 
 fn main() {
     if std::env::var("HALE_KNOWLEDGE_COMMAND_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_COMMAND_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool(
+            "env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_COMMAND_TEST_CLEAN=1\n"
+                + std::env::arg_or(0, ""),
+        );
         print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
@@ -210,8 +640,18 @@ fn main() {
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
     let host = ScriptedKnowledge { };
-    let knowledge = api::KnowledgeAdmission { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host };
-    let commands = api::Commands { knowledge: api::KnowledgeAdmission { root: f.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: host } };
+    let knowledge = api::KnowledgeAdmission {
+        root: f.root,
+        roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" },
+        provider: host,
+    };
+    let commands = api::Commands {
+        knowledge: api::KnowledgeAdmission {
+            root: f.root,
+            roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" },
+            provider: host,
+        },
+    };
     let cases = KnowledgeCases { f: f, host: host, knowledge: knowledge, commands: commands };
     cases.edge_cases(); cases.node_cases(); cases.binding_cases(); cases.recovery_cases();
 }

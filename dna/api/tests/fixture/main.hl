@@ -16,13 +16,26 @@ const SHELL_DEFINITION_DRAFT_JS: String = "window.FaceDefinitionDraft = Object.f
 const SHELL_CSS: String = "main { color: navy; }";
 
 type HttpResponse { status: Int = 0; headers: String = ""; body: String = ""; }
-type Practice { digest: String = ""; review_id: String = ""; name: String = ""; text: String = ""; target: String = ""; question: String = ""; }
+type Practice {
+    digest: String = "";
+    review_id: String = "";
+    name: String = "";
+    text: String = "";
+    target: String = "";
+    question: String = "";
+}
 
 locus Json {
     params { }
-    fn raw(value: String, field: String) -> String { return std::json::find_field_raw(value, field); }
-    fn string(value: String, field: String) -> String { return std::json::find_string_field(value, field); }
-    fn integer(value: String, field: String) -> Int { return std::json::find_int_field(value, field); }
+    fn raw(value: String, field: String) -> String {
+        return std::json::find_field_raw(value, field);
+    }
+    fn string(value: String, field: String) -> String {
+        return std::json::find_string_field(value, field);
+    }
+    fn integer(value: String, field: String) -> Int {
+        return std::json::find_int_field(value, field);
+    }
     fn boolean(value: String, field: String) -> Bool { return self.raw(value, field) == "true"; }
     fn data(value: String) -> String { return self.raw(value, "data"); }
     fn page(value: String) -> String { return self.raw(self.data(value), "page"); }
@@ -50,16 +63,27 @@ locus Json {
 }
 
 fn curl(method: String, url: String, cookie: String, body: String) -> HttpResponse {
-    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n5\n--include\n--path-as-is\n--request\n" + method;
+    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n5\n--include\n--path-as-is\n--request\n"
+        + method;
     if len(cookie) > 0 { argv = argv + "\n--header\nCookie: " + cookie; }
-    if len(body) > 0 { argv = argv + "\n--header\nContent-Type: application/json\n--data\n" + body; }
+    if len(body) > 0 {
+        argv = argv + "\n--header\nContent-Type: application/json\n--data\n" + body;
+    }
     let result = dna::run_tool(argv + "\n" + url);
     let split = std::str::index_of(result.stdout, "\r\n\r\n");
     if split < 0 { return HttpResponse { body: result.stderr }; }
     let headers = result.stdout[0..split];
     let space = std::str::index_of(headers, " ");
-    let status = if space < 0 || len(headers) < space + 4 { 0 } else { std::str::parse_int(headers[(space + 1)..(space + 4)]) or 0 };
-    return HttpResponse { status: status, headers: headers, body: result.stdout[(split + 4)..len(result.stdout)] };
+    let status = if space < 0 || len(headers) < space + 4 {
+        0
+    } else {
+        std::str::parse_int(headers[(space + 1)..(space + 4)]) or 0
+    };
+    return HttpResponse {
+        status: status,
+        headers: headers,
+        body: result.stdout[(split + 4)..len(result.stdout)],
+    };
 }
 
 fn cookie(response: HttpResponse) -> String {
@@ -82,11 +106,16 @@ locus Fixture {
         webroot: String = "";
         api: std::process::Child = std::process::Child { };
         journal: dna::RecordJournal = dna::RecordJournal { repo: "/nonexistent/hale-api-fixture" };
-        receipts: dna::MemoryReceipts = dna::MemoryReceipts { repo: "/nonexistent/hale-api-fixture" };
+        receipts: dna::MemoryReceipts = dna::MemoryReceipts {
+            repo: "/nonexistent/hale-api-fixture",
+        };
         json: Json = Json { };
     }
     birth() {
-        std::test::assert(len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/"), "owned fixture root required");
+        std::test::assert(
+            len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/"),
+            "owned fixture root required",
+        );
         std::io::fs::mkdir(self.root) or discard;
         self.git("init\n-q\n-b\nmain");
         self.git("config\nuser.name\napi-fixture");
@@ -107,10 +136,15 @@ locus Fixture {
     }
     dissolve() {
         self.stop();
-        if len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/") { let removed = dna::run_tool("rm\n-rf\n" + self.root); }
+        if len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/") {
+            let removed = dna::run_tool("rm\n-rf\n" + self.root);
+        }
     }
     fn git(argv: String) -> String {
-        let result = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\ngit\n-C\n" + self.root + "\n" + argv);
+        let result = dna::run_tool(
+            "env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\ngit\n-C\n"
+                + self.root + "\n" + argv,
+        );
         std::test::assert_eq_int(result.code, 0, "git " + argv + ": " + result.stderr);
         return dna::trim_nl(result.stdout);
     }
@@ -119,14 +153,20 @@ locus Fixture {
     // memory's, so a missing or tampered one is made there).
     fn owner_sql(sql: String) {
         let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
-        let r = dna::run_tool("psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\nSET search_path TO " + dna::schema_for(dna::record_scope(self.root)) + ", public\n-c\n" + sql);
+        let r = dna::run_tool(
+            "psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\nSET search_path TO "
+                + dna::schema_for(dna::record_scope(self.root)) + ", public\n-c\n" + sql,
+        );
         std::test::assert_eq_int(r.code, 0, "owner sql " + sql + ": " + r.stderr);
     }
     // The last row of `kind`, the record and its Ledger read as one, as
     // the organism reads them (GH #1590).
     fn last_of(kind: String) -> dna::Event {
         let at = self.root;
-        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: at }, ledger: dna::MemoryLedger { repo: at, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: at },
+            ledger: dna::MemoryLedger { repo: at, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" },
+        };
         let mut found = dna::Event { };
         let mut i = 0;
         while i < j.revision() { let e = j.read(i); if e.kind == kind { found = e; } i = i + 1; }
@@ -136,9 +176,16 @@ locus Fixture {
     // Ledger kind in the Ledger, as the organism routes it.
     fn append(kind: String, entity: String, body: String) {
         if dna::memory_of(kind) == "ledger" {
-            let ledger = dna::MemoryLedger { repo: self.root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+            let ledger = dna::MemoryLedger {
+                repo: self.root,
+                dsn_env: "HALE_DNA_MEMORY_DSN_OWNER",
+            };
             let landed = ledger.append(ledger.revision(), kind, entity, body);
-            std::test::assert(landed.ok, "fixture append " + kind + " to the Ledger: " + landed.error + " " + ledger.last_error());
+            std::test::assert(
+                landed.ok,
+                "fixture append " + kind + " to the Ledger: " + landed.error + " "
+                    + ledger.last_error(),
+            );
             return;
         }
         let refreshed = self.journal.refresh();
@@ -149,14 +196,19 @@ locus Fixture {
     // its revision and head) and the genome's refs.
     fn refs() -> String {
         let moved = self.journal.refresh();
-        return "record " + to_string(self.journal.revision()) + " " + self.journal.head() + "\n" + self.git("for-each-ref");
+        return "record " + to_string(self.journal.revision()) + " " + self.journal.head() + "\n"
+            + self.git("for-each-ref");
     }
     fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
     fn log() -> String { return std::io::fs::read_file(self.root + "/api.log") or ""; }
     // Whether the API announced its commands transport on this fixture's
     // port (no port, no transport to wait for).
     fn commands_announced() -> Bool {
-        return self.commands_port == 0 || std::str::contains(self.log(), "hale dna api: commands http://127.0.0.1:" + to_string(self.commands_port) + "/");
+        return self.commands_port == 0
+            || std::str::contains(
+                self.log(),
+                "hale dna api: commands http://127.0.0.1:" + to_string(self.commands_port) + "/",
+            );
     }
     fn prepare_web() {
         self.web_requested = true;
@@ -165,10 +217,22 @@ locus Fixture {
         std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
         std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
         std::io::fs::write_file(self.webroot + "/application.js", SHELL_APPLICATION_JS) or discard;
-        std::io::fs::write_file(self.webroot + "/definition-draft.js", SHELL_DEFINITION_DRAFT_JS) or discard;
-        std::io::fs::write_file(self.webroot + "/organization-draft.js", SHELL_ORGANIZATION_DRAFT_JS) or discard;
-        std::io::fs::write_file(self.webroot + "/knowledge-draft.js", SHELL_KNOWLEDGE_DRAFT_JS) or discard;
-        std::io::fs::write_file(self.webroot + "/task-administration.js", SHELL_TASK_ADMINISTRATION_JS) or discard;
+        std::io::fs::write_file(
+            self.webroot + "/definition-draft.js",
+            SHELL_DEFINITION_DRAFT_JS,
+        ) or discard;
+        std::io::fs::write_file(
+            self.webroot + "/organization-draft.js",
+            SHELL_ORGANIZATION_DRAFT_JS,
+        ) or discard;
+        std::io::fs::write_file(
+            self.webroot + "/knowledge-draft.js",
+            SHELL_KNOWLEDGE_DRAFT_JS,
+        ) or discard;
+        std::io::fs::write_file(
+            self.webroot + "/task-administration.js",
+            SHELL_TASK_ADMINISTRATION_JS,
+        ) or discard;
         std::io::fs::write_file(self.webroot + "/projects.js", SHELL_PROJECTS_JS) or discard;
         std::io::fs::write_file(self.webroot + "/task-create.js", SHELL_TASK_CREATE_JS) or discard;
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
@@ -176,17 +240,34 @@ locus Fixture {
     fn spawn() {
         // the API's vault is its own: it reaches the record's memory with
         // the entries this fixture drew (GH #1590)
-        std::test::assert_eq_str(dna::fixture_share_vault(self.root, self.root + "/vault"), "", "the API's vault holds the record's roles");
+        std::test::assert_eq_str(
+            dna::fixture_share_vault(self.root, self.root + "/vault"),
+            "",
+            "the API's vault holds the record's roles",
+        );
         let binary = std::env::var("HALE_API_BIN");
-        std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
-        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_VAULT_DIR=\"$1/vault\" HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMANDS_PORT=" + to_string(self.commands_port) + " && unset HALE_VAULT_ADDR && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
+        std::test::assert(
+            len(binary) > 0 && std::io::fs::file_exists(binary),
+            "build dna/api and set absolute HALE_API_BIN",
+        );
+        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_VAULT_DIR=\"$1/vault\" HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMANDS_PORT="
+            + to_string(self.commands_port)
+            + " && unset HALE_VAULT_ADDR && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n"
+            + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n"
+            + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
         // the previous run's log goes first: its commands announcement
         // would read as this run's before the new shell truncates the file
         std::io::fs::unlink(self.root + "/api.log") or discard;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
-        self.api = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
+        self.api = std::process::Child {
+            argv: argv,
+            pid: child.pid,
+            stdin_fd: child.stdin_fd,
+            stdout_fd: child.stdout_fd,
+            stderr_fd: child.stderr_fd,
+        };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
         std::test::assert(self.api.pid > 0, "API process spawned");
     }
@@ -198,9 +279,15 @@ locus Fixture {
             code = std::process::try_wait(self.api) or - 1;
             if code == -2 { std::time::sleep(25ms); }
         }
-        std::test::assert(code != -2 && code != 0, "invalid configuration fails startup: " + self.log());
+        std::test::assert(
+            code != -2 && code != 0,
+            "invalid configuration fails startup: " + self.log(),
+        );
         self.api.pid = -1;
-        std::test::assert(std::str::contains(self.log(), message), "startup diagnostic: " + self.log());
+        std::test::assert(
+            std::str::contains(self.log(), message),
+            "startup diagnostic: " + self.log(),
+        );
     }
     // Spawns the API and waits until both of its ports are up: the reads'
     // server answers, and the process has announced the binding's commands
@@ -212,7 +299,11 @@ locus Fixture {
         while std::time::now() < deadline {
             let state = std::process::try_wait(self.api) or - 1;
             std::test::assert_eq_int(state, -2, "API exited before listening: " + self.log());
-            let response = if self.commands_announced() { self.http("GET", APPLICATIONS, "", "") } else { HttpResponse { } };
+            let response = if self.commands_announced() {
+                self.http("GET", APPLICATIONS, "", "")
+            } else {
+                HttpResponse { }
+            };
             if response.status > 0 {
                 let still_running = std::process::try_wait(self.api) or - 1;
                 std::test::assert_eq_int(still_running, -2, "the owned API is still running");
@@ -225,7 +316,11 @@ locus Fixture {
             }
             std::time::sleep(25ms);
         }
-        std::test::assert(false, "API did not become reachable (the reads answering, the commands transport announced on " + to_string(self.commands_port) + "): " + self.log());
+        std::test::assert(
+            false,
+            "API did not become reachable (the reads answering, the commands transport announced on "
+                + to_string(self.commands_port) + "): " + self.log(),
+        );
     }
     fn stop() {
         std::process::kill(self.api) or discard;
@@ -239,8 +334,17 @@ locus Fixture {
     }
     fn validate(response: HttpResponse, schema: String, status: Int) -> String {
         std::test::assert_eq_int(response.status, status, response.body);
-        std::test::assert(std::str::contains(dna::response_header(response.headers, "Content-Type"), "application/json"), "JSON response content type");
-        std::test::assert(std::str::starts_with(std::str::trim(response.body), "{"), schema + ": not a JSON object\n" + response.body);
+        std::test::assert(
+            std::str::contains(
+                dna::response_header(response.headers, "Content-Type"),
+                "application/json",
+            ),
+            "JSON response content type",
+        );
+        std::test::assert(
+            std::str::starts_with(std::str::trim(response.body), "{"),
+            schema + ": not a JSON object\n" + response.body,
+        );
         return response.body;
     }
     fn source(payload: String) {
@@ -250,8 +354,13 @@ locus Fixture {
         self.json.eq(s, "record_revision", to_string(self.journal.revision()));
     }
     fn read(resource: String, query: String, cookie_value: String) -> String {
-        let path = self.prefix + "/dna/" + resource + (if len(query) > 0 { "?" + query } else { "" });
-        return self.validate(self.http("GET", path, cookie_value, ""), if resource == "practices" { "PracticesResponse" } else { "ReviewsResponse" }, 200);
+        let path = self.prefix + "/dna/" + resource
+            + (if len(query) > 0 { "?" + query } else { "" });
+        return self.validate(
+            self.http("GET", path, cookie_value, ""),
+            if resource == "practices" { "PracticesResponse" } else { "ReviewsResponse" },
+            200,
+        );
     }
     fn item(resource: String, id: String) -> String {
         let payload = self.read(resource, "id=" + dna::url_encode(id), "");
@@ -260,14 +369,34 @@ locus Fixture {
         return self.json.first(payload);
     }
     fn error(method: String, path: String, status: Int, cookie_value: String, body: String) {
-        let payload = self.validate(self.http(method, path, cookie_value, body), "ErrorResponse", status);
-        std::test::assert(len(self.json.string(self.json.raw(payload, "error"), "code")) > 0, "typed error code");
+        let payload = self.validate(
+            self.http(method, path, cookie_value, body),
+            "ErrorResponse",
+            status,
+        );
+        std::test::assert(
+            len(self.json.string(self.json.raw(payload, "error"), "code")) > 0,
+            "typed error code",
+        );
     }
     fn receipt(text: String) -> String { return "sha256:" + self.receipts.store(text); }
     // Canonical receipts and Record rows exercise the real knowledge tail.
     // Relationship state is composed separately into the native graph store.
-    fn knowledge(name: String, text: String, target: String, supersedes: String, ratified: Bool) -> String {
-        let idea = dna::Idea { kind: "goal", name: name, text: text, author: "org", provenance: "proposed", supersedes: supersedes };
+    fn knowledge(
+        name: String,
+        text: String,
+        target: String,
+        supersedes: String,
+        ratified: Bool
+    ) -> String {
+        let idea = dna::Idea {
+            kind: "goal",
+            name: name,
+            text: text,
+            author: "org",
+            provenance: "proposed",
+            supersedes: supersedes,
+        };
         let digest = self.receipt(dna::knowledge_document(idea, target));
         let b = std::json::Builder { };
         b.begin_object();
@@ -276,26 +405,88 @@ locus Fixture {
         b.string_field("target", target);
         b.string_field("class", dna::classify_binding(idea.author, target));
         b.end_object();
-        self.append(if ratified { "knowledge.ratified" } else { "knowledge.proposed" }, digest, b.result());
+        self.append(
+            if ratified { "knowledge.ratified" } else { "knowledge.proposed" },
+            digest,
+            b.result(),
+        );
         return digest;
     }
     fn blob(digest: String) -> String { return self.receipts.read(digest[7..len(digest)]); }
-    fn practice(name: String, text: String, target: String, review: String, design: Bool) -> Practice {
+    fn practice(
+        name: String,
+        text: String,
+        target: String,
+        review: String,
+        design: Bool
+    ) -> Practice {
         let b = std::json::Builder { };
-        let idea = dna::Idea { kind: "practice", name: name, text: text, author: "org", provenance: "proposed" };
-        let document = if design { "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + b.quote(name) + ",\"provenance\":\"design\",\"target\":" + b.quote(target) + ",\"text\":" + b.quote(text) + ",\"toolchain\":\"0.20.0\"}" } else { dna::knowledge_document(idea, target) };
+        let idea = dna::Idea {
+            kind: "practice",
+            name: name,
+            text: text,
+            author: "org",
+            provenance: "proposed",
+        };
+        let document = if design {
+            "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + b.quote(name)
+                + ",\"provenance\":\"design\",\"target\":" + b.quote(target) + ",\"text\":"
+                + b.quote(text) + ",\"toolchain\":\"0.20.0\"}"
+        } else {
+            dna::knowledge_document(idea, target)
+        };
         let digest = self.receipt(document);
         let review_id = if len(review) > 0 { review } else { dna::knowledge_review_id(digest) };
-        self.append("knowledge.proposed", digest, "{\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(review_id) + ",\"kind\":\"practice\",\"author\":\"org\",\"target\":" + b.quote(target) + ",\"class\":\"goal\",\"name\":" + b.quote(name) + "}");
+        self.append(
+            "knowledge.proposed",
+            digest,
+            "{\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(review_id)
+                + ",\"kind\":\"practice\",\"author\":\"org\",\"target\":" + b.quote(target)
+                + ",\"class\":\"goal\",\"name\":" + b.quote(name) + "}",
+        );
         let question = "Ratify " + name + ": " + text + "\nFor " + target + " — exact candidate";
         self.review(review_id, question, digest, digest);
-        self.append("practice.proposed", "request/α/1", "{\"name\":" + b.quote(name) + ",\"digest\":" + b.quote(digest) + ",\"review_id\":" + b.quote(review_id) + ",\"by\":\"alice\",\"because\":\"Two lines\\nexplain why / pourquoi\"}");
-        return Practice { digest: digest, review_id: review_id, name: name, text: text, target: target, question: question };
+        self.append(
+            "practice.proposed",
+            "request/α/1",
+            "{\"name\":" + b.quote(name) + ",\"digest\":" + b.quote(digest) + ",\"review_id\":"
+                + b.quote(review_id)
+                + ",\"by\":\"alice\",\"because\":\"Two lines\\nexplain why / pourquoi\"}",
+        );
+        return Practice {
+            digest: digest,
+            review_id: review_id,
+            name: name,
+            text: text,
+            target: target,
+            question: question,
+        };
     }
-    fn standard() -> Practice { return self.practice("acceptance/résumé", "Première ligne — ✓\n第二行 / preserve", "org/support/équipe", "", false); }
+    fn standard() -> Practice {
+        return self.practice(
+            "acceptance/résumé",
+            "Première ligne — ✓\n第二行 / preserve",
+            "org/support/équipe",
+            "",
+            false,
+        );
+    }
     fn review(id: String, question: String, subject: String, knowledge: String) {
         let b = std::json::Builder { };
-        self.append("review.requested", "review:" + id, "{\"question\":" + b.quote(question) + ",\"subject_digest\":" + b.quote(subject) + ",\"required_authority\":\"board\",\"author\":\"org\"" + (if len(knowledge) > 0 { ",\"knowledge_digest\":" + b.quote(knowledge) } else { "" }) + "}");
+        self.append(
+            "review.requested",
+            "review:" + id,
+            "{\"question\":" + b.quote(question) + ",\"subject_digest\":" + b.quote(subject)
+                + ",\"required_authority\":\"board\",\"author\":\"org\""
+                + (
+                    if len(knowledge) > 0 {
+                        ",\"knowledge_digest\":" + b.quote(knowledge)
+                    } else {
+                        ""
+                    }
+                )
+                + "}",
+        );
     }
     fn hidden(p: Practice, status: String) {
         let item = self.item("practices", p.digest);
@@ -306,30 +497,59 @@ locus Fixture {
         let review = self.item("reviews", p.review_id);
         self.json.is_bool(review, "text_available", false);
         self.json.eq(review, "question", "");
-        std::test::assert(!std::str::contains(self.read("practices", "", ""), p.text), "practice canary absent");
-        std::test::assert(!std::str::contains(self.read("reviews", "", ""), p.text), "review canary absent");
+        std::test::assert(
+            !std::str::contains(self.read("practices", "", ""), p.text),
+            "practice canary absent",
+        );
+        std::test::assert(
+            !std::str::contains(self.read("reviews", "", ""), p.text),
+            "review canary absent",
+        );
     }
     fn uncertain_item(resource: String, id: String, canary: String, invalid: Bool) -> String {
-        let response = self.http("GET", self.prefix + "/dna/" + resource + "?id=" + dna::url_encode(id), "", "");
-        std::test::assert(!std::str::contains(response.body, canary) && !std::str::contains(response.body, "VISIBILITY-DECIDER-CANARY"), "uncertain text suppressed: " + response.body);
+        let response = self.http(
+            "GET",
+            self.prefix + "/dna/" + resource + "?id=" + dna::url_encode(id),
+            "",
+            "",
+        );
+        std::test::assert(
+            !std::str::contains(response.body, canary)
+                && !std::str::contains(response.body, "VISIBILITY-DECIDER-CANARY"),
+            "uncertain text suppressed: " + response.body,
+        );
         if response.status == 503 { self.validate(response, "ErrorResponse", 503); return ""; }
-        let payload = self.validate(response, if resource == "practices" { "PracticesResponse" } else { "ReviewsResponse" }, 200);
+        let payload = self.validate(
+            response,
+            if resource == "practices" { "PracticesResponse" } else { "ReviewsResponse" },
+            200,
+        );
         self.json.is_int(self.json.page(payload), "total", 1);
         std::test::assert_eq_int(self.json.count(payload), 1, "one uncertain item");
         let item = self.json.first(payload);
         self.json.is_bool(item, "text_available", false);
         let status = self.json.string(item, "text_status");
-        std::test::assert(status == "source_unavailable" || status == "protected" || (invalid && (status == "invalid_document" || status == "redacted")), "uncertain text status: " + item);
+        std::test::assert(
+            status == "source_unavailable"
+                || status == "protected"
+                || (invalid && (status == "invalid_document" || status == "redacted")),
+            "uncertain text status: " + item,
+        );
         return item;
     }
     fn uncertain(p: Practice) {
         let item = self.uncertain_item("practices", p.digest, p.text, false);
         if len(item) > 0 {
             self.json.eq(item, "text", ""); self.json.eq(item, "rationale", "");
-            self.json.eq(item, "review_settled", ""); self.json.eq(item, "review_outcome", "approve");
+            self.json.eq(item, "review_settled", "");
+            self.json.eq(item, "review_outcome", "approve");
         }
         let review = self.uncertain_item("reviews", p.review_id, p.text, false);
-        if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
+        if len(review) > 0 {
+            self.json.eq(review, "question", "");
+            self.json.eq(review, "settled", "");
+            self.json.eq(review, "outcome", "approve");
+        }
     }
     fn configure_oidc(issuer: String) {
         self.oidc = true;
@@ -337,9 +557,13 @@ locus Fixture {
         self.git("config\ndna.oidc.client\ndna-api-tests");
         // the client's secret is the vault's entry, as the bootstrap leaves it (GH #989)
         std::io::fs::mkdir(self.root + "/vault") or discard;
-        std::io::fs::write_file(self.root + "/vault/oidc-client-dna-api-tests", "fake-secret") or discard;
+        std::io::fs::write_file(
+            self.root + "/vault/oidc-client-dna-api-tests",
+            "fake-secret",
+        ) or discard;
         self.git("config\ndna.oidc.redirect\n" + self.url() + "/auth/callback");
-        self.git("config\ndna.oidc.member\nalice-sub=alice"); self.git("config\ndna.oidc.board\nalice");
+        self.git("config\ndna.oidc.member\nalice-sub=alice");
+        self.git("config\ndna.oidc.board\nalice");
         // the fixture's issuer is on the loopback: the record pins its key (GH #989)
         self.git("config\ndna.oidc.key\n" + oidc::STUB_SPKI);
         self.start();
@@ -347,7 +571,8 @@ locus Fixture {
     fn sign_in(hint: String) -> HttpResponse {
         let login = self.http("GET", "/auth/login", "", "");
         std::test::assert_eq_int(login.status, 302, login.body);
-        let authorize = dna::response_header(login.headers, "Location") + (if len(hint) > 0 { "&login_hint=" + dna::url_encode(hint) } else { "" });
+        let authorize = dna::response_header(login.headers, "Location")
+            + (if len(hint) > 0 { "&login_hint=" + dna::url_encode(hint) } else { "" });
         let allowed = curl("GET", authorize, "", "");
         std::test::assert_eq_int(allowed.status, 302, allowed.body);
         return curl("GET", dna::response_header(allowed.headers, "Location"), cookie(login), "");
@@ -358,7 +583,13 @@ locus Fixture {
 // This bounded-scope watcher is therefore the failure-path backstop: its own
 // argv names only root, while children name root + "/<case>".
 fn reap_and_remove_on_exit(root: String) {
-    std::test::assert(std::str::starts_with(root, "/tmp/hale-dna-api-native."), "owned suite root for exit cleanup");
-    let started = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null; rm -rf -- \"$2\") </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + root);
+    std::test::assert(
+        std::str::starts_with(root, "/tmp/hale-dna-api-native."),
+        "owned suite root for exit cleanup",
+    );
+    let started = dna::run_tool(
+        "sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null; rm -rf -- \"$2\") </dev/null >/dev/null 2>&1 &\nsh\n"
+            + to_string(std::process::pid()) + "\n" + root,
+    );
     std::test::assert_eq_int(started.code, 0, "fixture exit cleanup watcher");
 }

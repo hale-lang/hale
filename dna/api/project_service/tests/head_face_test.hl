@@ -22,39 +22,111 @@ fn main() {
 
     // the gate: bare, the head's refusal as it came; at the token URL the cookie, then the shell
     let bare = fixture::curl("GET", face + "/", "", "");
-    std::test::assert_eq_int(bare.status, 401, "bare, the head's refusal is passed on: " + bare.body);
+    std::test::assert_eq_int(
+        bare.status,
+        401,
+        "bare, the head's refusal is passed on: " + bare.body,
+    );
     let jar = root + "/jar";
-    let opened = dna::run_tool("curl\n-s\n-L\n-c\n" + jar + "\n-b\n" + jar + "\n-o\n" + root + "/shell.html\n-w\n%{http_code}\n" + face + "/?token=" + f.token());
-    std::test::assert_eq_str(dna::trim_nl(opened.stdout), "200", "the token URL opens the shell: " + opened.stderr);
-    std::test::assert(std::str::contains(std::io::fs::read_file(root + "/shell.html") or "", "Static face head fixture"), "the face's shell");
-    let again = dna::run_tool("curl\n-s\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + face + "/");
+    let opened = dna::run_tool(
+        "curl\n-s\n-L\n-c\n" + jar + "\n-b\n" + jar + "\n-o\n" + root
+            + "/shell.html\n-w\n%{http_code}\n" + face + "/?token=" + f.token(),
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(opened.stdout),
+        "200",
+        "the token URL opens the shell: " + opened.stderr,
+    );
+    std::test::assert(
+        std::str::contains(
+            std::io::fs::read_file(root + "/shell.html") or "",
+            "Static face head fixture",
+        ),
+        "the face's shell",
+    );
+    let again = dna::run_tool(
+        "curl\n-s\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + face + "/",
+    );
     std::test::assert_eq_str(dna::trim_nl(again.stdout), "200", "the cookie opens it again");
     let asset = fixture::curl("GET", face + "/app.js", "", "");
-    std::test::assert(asset.status == 200 && asset.body == fixture::SHELL_JS, "the face's own app.js");
-    std::test::assert(std::str::contains(dna::response_header(asset.headers, "Content-Security-Policy"), "script-src 'self'"), "the shell's CSP");
+    std::test::assert(
+        asset.status == 200 && asset.body == fixture::SHELL_JS,
+        "the face's own app.js",
+    );
+    std::test::assert(
+        std::str::contains(
+            dna::response_header(asset.headers, "Content-Security-Policy"),
+            "script-src 'self'",
+        ),
+        "the shell's CSP",
+    );
 
     // the head's read, and a command from the face's origin, are the head's
     let read = fixture::curl("GET", face + HEAD, "", "");
-    std::test::assert(read.status == 200 && std::str::contains(read.body, "\"state\""), "the head's read through the face: " + read.body);
-    let attach = fixture::curl("POST", face + HEAD + "/commands", "Origin: " + face + "\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + f.token(), fixture::command("face-attach", "dna.project.attach", "", "{\"root\":\"" + f.project + "\"}"));
-    std::test::assert_eq_int(attach.status, 200, "a command from the face's origin is the head's command: " + attach.body);
-    let foreign = fixture::curl("POST", face + HEAD + "/commands", "Origin: http://127.0.0.1:1\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: " + f.token(), fixture::command("face-foreign", "dna.project.attach", "", "{\"root\":\"" + f.project + "\"}"));
-    std::test::assert(foreign.status >= 400, "a foreign origin is still refused by the head: " + foreign.body);
+    std::test::assert(
+        read.status == 200 && std::str::contains(read.body, "\"state\""),
+        "the head's read through the face: " + read.body,
+    );
+    let attach = fixture::curl(
+        "POST",
+        face + HEAD + "/commands",
+        "Origin: " + face + "\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: "
+            + f.token(),
+        fixture::command(
+            "face-attach",
+            "dna.project.attach",
+            "",
+            "{\"root\":\"" + f.project + "\"}",
+        ),
+    );
+    std::test::assert_eq_int(
+        attach.status,
+        200,
+        "a command from the face's origin is the head's command: " + attach.body,
+    );
+    let foreign = fixture::curl(
+        "POST",
+        face + HEAD + "/commands",
+        "Origin: http://127.0.0.1:1\nContent-Type: application/json\nX-Hale-Command: 1\nX-Hale-Token: "
+            + f.token(),
+        fixture::command(
+            "face-foreign",
+            "dna.project.attach",
+            "",
+            "{\"root\":\"" + f.project + "\"}",
+        ),
+    );
+    std::test::assert(
+        foreign.status >= 400,
+        "a foreign origin is still refused by the head: " + foreign.body,
+    );
 
     // an event stream is held open through the face
     let fd = std::io::tcp::connect("127.0.0.1", f.face_port) or - 1;
     std::test::assert(fd >= 0, "connected to the face");
     std::io::tcp::set_recv_timeout(fd, 250ms) or discard;
     let st = std::io::tcp::Stream { conn_fd: fd, owns_fd: false };
-    st.send("GET " + HEAD + "/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n") or discard;
+    st.send(
+        "GET " + HEAD + "/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n",
+    ) or discard;
     let mut seen = "";
     let deadline = std::time::now() + dna::wait_secs(10);
-    while std::time::now() <= deadline && !std::str::contains(seen, "\r\n\r\n") { seen = seen + (st.recv(4096) or ""); }
+    while std::time::now() <= deadline && !std::str::contains(seen, "\r\n\r\n") {
+        seen = seen + (st.recv(4096) or "");
+    }
     std::io::tcp::close_fd(fd);
-    std::test::assert(std::str::starts_with(seen, "HTTP/1.1 200") && std::str::contains(seen, "Content-Type: text/event-stream"), "the stream opens through the face: " + seen);
+    std::test::assert(
+        std::str::starts_with(seen, "HTTP/1.1 200")
+            && std::str::contains(seen, "Content-Type: text/event-stream"),
+        "the stream opens through the face: " + seen,
+    );
 
     // the head serves none of it
-    std::test::assert_eq_int(fixture::curl("GET", f.url() + "/app.js", "", "").status, 404, "the head has no static file");
+    std::test::assert_eq_int(
+        fixture::curl("GET", f.url() + "/app.js", "", "").status,
+        404,
+        "the head has no static file",
+    );
 
     f.stop();
     dna::scratch_done(root);

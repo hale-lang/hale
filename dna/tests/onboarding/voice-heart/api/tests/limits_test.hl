@@ -5,7 +5,14 @@ import ".." as api;
 import "../../store" as st;
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -22,74 +29,305 @@ fn at(text: String) -> Time {
 
 fn windows() {
     // a month counts from its anchor's day, and a short month ends on its last day
-    let m = st::BudgetSet { allowance_micros: 5, period: st::Period::month, period_anchor: at("2026-01-31T00:00:00Z") };
+    let m = st::BudgetSet {
+        allowance_micros: 5,
+        period: st::Period::month,
+        period_anchor: at("2026-01-31T00:00:00Z"),
+    };
     let feb = api::budget_view(m, at("2026-02-15T12:00:00Z"));
-    std::test::assert_eq_str(std::time::iso8601(feb.window_start), "2026-01-31T00:00:00Z", "the January window");
-    std::test::assert_eq_str(std::time::iso8601(feb.window_end), "2026-02-28T00:00:00Z", "ends on February's last day");
+    std::test::assert_eq_str(
+        std::time::iso8601(feb.window_start),
+        "2026-01-31T00:00:00Z",
+        "the January window",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(feb.window_end),
+        "2026-02-28T00:00:00Z",
+        "ends on February's last day",
+    );
     let mar = api::budget_view(m, at("2026-03-30T00:00:00Z"));
-    std::test::assert_eq_str(std::time::iso8601(mar.window_start), "2026-02-28T00:00:00Z", "March's window starts on the 31st, not yet");
-    std::test::assert_eq_str(std::time::iso8601(mar.window_end), "2026-03-31T00:00:00Z", "so February's runs to it");
+    std::test::assert_eq_str(
+        std::time::iso8601(mar.window_start),
+        "2026-02-28T00:00:00Z",
+        "March's window starts on the 31st, not yet",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(mar.window_end),
+        "2026-03-31T00:00:00Z",
+        "so February's runs to it",
+    );
     let dec = api::budget_view(m, at("2026-12-31T00:00:01Z"));
-    std::test::assert_eq_str(std::time::iso8601(dec.window_start), "2026-12-31T00:00:00Z", "a year on");
-    std::test::assert_eq_str(std::time::iso8601(dec.window_end), "2027-01-31T00:00:00Z", "into the next year");
+    std::test::assert_eq_str(
+        std::time::iso8601(dec.window_start),
+        "2026-12-31T00:00:00Z",
+        "a year on",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(dec.window_end),
+        "2027-01-31T00:00:00Z",
+        "into the next year",
+    );
     std::test::assert_eq_int(dec.remaining_micros, 5, "nothing is spent");
 
-    let d = api::budget_view(st::BudgetSet { allowance_micros: 1, period: st::Period::day, period_anchor: at("2026-10-01T06:00:00Z") }, at("2026-10-17T05:00:00Z"));
-    std::test::assert_eq_str(std::time::iso8601(d.window_start), "2026-10-16T06:00:00Z", "a day counts from its anchor's hour");
+    let d = api::budget_view(
+        st::BudgetSet {
+            allowance_micros: 1,
+            period: st::Period::day,
+            period_anchor: at("2026-10-01T06:00:00Z"),
+        },
+        at("2026-10-17T05:00:00Z"),
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(d.window_start),
+        "2026-10-16T06:00:00Z",
+        "a day counts from its anchor's hour",
+    );
     let w = api::period_start(st::Period::week, at("2026-10-17T12:00:00Z"));
-    std::test::assert_eq_str(std::time::iso8601(w), "2026-10-12T00:00:00Z", "a week starts on Monday");
-    std::test::assert_eq_str(std::time::iso8601(api::period_start(st::Period::month, at("2026-10-17T12:00:00Z"))), "2026-10-01T00:00:00Z", "a month on the 1st");
-    let n = api::budget_view(st::BudgetSet { allowance_micros: 1, period: st::Period::none, period_anchor: at("2026-01-01T00:00:00Z") }, at("2026-10-17T00:00:00Z"));
+    std::test::assert_eq_str(
+        std::time::iso8601(w),
+        "2026-10-12T00:00:00Z",
+        "a week starts on Monday",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(api::period_start(st::Period::month, at("2026-10-17T12:00:00Z"))),
+        "2026-10-01T00:00:00Z",
+        "a month on the 1st",
+    );
+    let n = api::budget_view(
+        st::BudgetSet {
+            allowance_micros: 1,
+            period: st::Period::none,
+            period_anchor: at("2026-01-01T00:00:00Z"),
+        },
+        at("2026-10-17T00:00:00Z"),
+    );
     std::test::assert(!n.has_window_end, "a lifetime cap has no end");
-    let early = api::budget_view(st::BudgetSet { allowance_micros: 1, period: st::Period::day, period_anchor: at("2026-11-01T06:00:00Z") }, at("2026-10-17T05:00:00Z"));
-    std::test::assert(early.has_window_end, "before its anchor, a day budget shows its first window");
-    std::test::assert_eq_str(std::time::iso8601(early.window_start), "2026-11-01T06:00:00Z", "which starts at the anchor");
-    std::test::assert_eq_str(std::time::iso8601(early.window_end), "2026-11-02T06:00:00Z", "and ends a day later");
-    let early_month = api::budget_view(st::BudgetSet { allowance_micros: 1, period: st::Period::month, period_anchor: at("2027-01-31T00:00:00Z") }, at("2026-10-17T05:00:00Z"));
-    std::test::assert_eq_str(std::time::iso8601(early_month.window_start), "2027-01-31T00:00:00Z", "a month's first window starts at its anchor");
-    std::test::assert_eq_str(std::time::iso8601(early_month.window_end), "2027-02-28T00:00:00Z", "and ends a month on");
+    let early = api::budget_view(
+        st::BudgetSet {
+            allowance_micros: 1,
+            period: st::Period::day,
+            period_anchor: at("2026-11-01T06:00:00Z"),
+        },
+        at("2026-10-17T05:00:00Z"),
+    );
+    std::test::assert(
+        early.has_window_end,
+        "before its anchor, a day budget shows its first window",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(early.window_start),
+        "2026-11-01T06:00:00Z",
+        "which starts at the anchor",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(early.window_end),
+        "2026-11-02T06:00:00Z",
+        "and ends a day later",
+    );
+    let early_month = api::budget_view(
+        st::BudgetSet {
+            allowance_micros: 1,
+            period: st::Period::month,
+            period_anchor: at("2027-01-31T00:00:00Z"),
+        },
+        at("2026-10-17T05:00:00Z"),
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(early_month.window_start),
+        "2027-01-31T00:00:00Z",
+        "a month's first window starts at its anchor",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(early_month.window_end),
+        "2027-02-28T00:00:00Z",
+        "and ends a month on",
+    );
 }
 
 fn main() {
     windows();
     let e = api::Endpoints { };
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"), 201, "a project");
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"),
+        201,
+        "a project",
+    );
 
     expect(call(e, "GET", "/admin/v1/projects/work/budget", ""), 404, "no budget yet");
     expect(call(e, "GET", "/admin/v1/projects/nope/budget", ""), 404, "an unknown project");
-    let set = call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 50000000, \"period\": \"month\"}");
+    let set = call(
+        e,
+        "PUT",
+        "/admin/v1/projects/work/budget",
+        "{\"allowance_micros\": 50000000, \"period\": \"month\"}",
+    );
     expect(set, 200, "set a budget");
     std::test::assert_eq_str(str(set, "currency"), "USD", "currency defaults to USD");
-    std::test::assert(std::str::ends_with(str(set, "period_anchor"), "-01T00:00:00Z"), "a month counts from the 1st");
-    std::test::assert_eq_int(std::json::find_int_field(set.body, "remaining_micros"), 50000000, "all of it remains");
-    std::test::assert_eq_int(std::json::find_int_field(set.body, "spent_micros"), 0, "nothing spent");
+    std::test::assert(
+        std::str::ends_with(str(set, "period_anchor"), "-01T00:00:00Z"),
+        "a month counts from the 1st",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(set.body, "remaining_micros"),
+        50000000,
+        "all of it remains",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(set.body, "spent_micros"),
+        0,
+        "nothing spent",
+    );
     expect(call(e, "GET", "/admin/v1/projects/work/budget", ""), 200, "read it back");
-    let life = call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 10, \"period\": \"none\", \"period_anchor\": \"2026-01-01T00:00:00Z\"}");
+    let life = call(
+        e,
+        "PUT",
+        "/admin/v1/projects/work/budget",
+        "{\"allowance_micros\": 10, \"period\": \"none\", \"period_anchor\": \"2026-01-01T00:00:00Z\"}",
+    );
     expect(life, 200, "a lifetime cap");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(life.body, "window_end")), "null", "has no window end");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(call(e, "GET", "/admin/v1/projects/work", "").body, "budget"), "allowance_micros"), 10, "the project shows it");
-    expect(call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 10, \"period\": \"year\"}"), 400, "a period is day, week, month or none");
-    expect(call(e, "PUT", "/admin/v1/projects/work/budget", "{\"period\": \"day\"}"), 400, "an allowance is required");
-    expect(call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 1, \"period\": \"day\", \"period_anchor\": \"monday\"}"), 400, "an anchor is a time");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(life.body, "window_end")),
+        "null",
+        "has no window end",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(
+            std::json::find_field_raw(call(e, "GET", "/admin/v1/projects/work", "").body, "budget"),
+            "allowance_micros",
+        ),
+        10,
+        "the project shows it",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/budget",
+            "{\"allowance_micros\": 10, \"period\": \"year\"}",
+        ),
+        400,
+        "a period is day, week, month or none",
+    );
+    expect(
+        call(e, "PUT", "/admin/v1/projects/work/budget", "{\"period\": \"day\"}"),
+        400,
+        "an allowance is required",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/budget",
+            "{\"allowance_micros\": 1, \"period\": \"day\", \"period_anchor\": \"monday\"}",
+        ),
+        400,
+        "an anchor is a time",
+    );
 
     let none = call(e, "GET", "/admin/v1/projects/work/limits", "");
     expect(none, 200, "limits");
-    std::test::assert_eq_str(std::str::trim(none.body), "{\"limits\": [], \"source\": \"stored\"}", "none yet, as stored");
-    let limits = call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 600, \"output_tokens\": 200000, \"concurrent\": 16}, {\"scope\": \"model\", \"model\": \"echo-1\", \"window_seconds\": 3600, \"requests\": 200, \"remaining\": {\"requests\": 1}}]}");
+    std::test::assert_eq_str(
+        std::str::trim(none.body),
+        "{\"limits\": [], \"source\": \"stored\"}",
+        "none yet, as stored",
+    );
+    let limits = call(
+        e,
+        "PUT",
+        "/admin/v1/projects/work/limits",
+        "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 600, \"output_tokens\": 200000, \"concurrent\": 16}, {\"scope\": \"model\", \"model\": \"echo-1\", \"window_seconds\": 3600, \"requests\": 200, \"remaining\": {\"requests\": 1}}]}",
+    );
     expect(limits, 200, "replace them");
     let first = std::json::array_first(std::json::find_field_raw(limits.body, "limits")).element;
     std::test::assert_eq_int(std::json::find_int_field(first, "requests"), 600, "a count");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(first, "input_tokens")), "null", "a count left out is unlimited");
-    std::test::assert(!std::str::contains(limits.body, "remaining"), "remaining is read-only and nothing is counted yet");
-    std::test::assert(std::str::contains(call(e, "GET", "/admin/v1/projects/work", "").body, "\"echo-1\""), "the project shows them");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"key\", \"window_seconds\": 60}]}"), 400, "a key limit lives on its key");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"model\", \"window_seconds\": 60}]}"), 400, "a model limit names its model");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"model\": \"echo-1\", \"window_seconds\": 60}]}"), 400, "only a model limit names a model");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 0}]}"), 400, "a window is at least a second");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": -1}]}"), 400, "a count is at least 0");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 99999999999999999999}]}"), 400, "a count past 64 bits is out of range, not unlimited");
-    expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 99999999999999999999, \"requests\": 1}]}"), 400, "so is a window");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(first, "input_tokens")),
+        "null",
+        "a count left out is unlimited",
+    );
+    std::test::assert(
+        !std::str::contains(limits.body, "remaining"),
+        "remaining is read-only and nothing is counted yet",
+    );
+    std::test::assert(
+        std::str::contains(call(e, "GET", "/admin/v1/projects/work", "").body, "\"echo-1\""),
+        "the project shows them",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"key\", \"window_seconds\": 60}]}",
+        ),
+        400,
+        "a key limit lives on its key",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"model\", \"window_seconds\": 60}]}",
+        ),
+        400,
+        "a model limit names its model",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"model\": \"echo-1\", \"window_seconds\": 60}]}",
+        ),
+        400,
+        "only a model limit names a model",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 0}]}",
+        ),
+        400,
+        "a window is at least a second",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": -1}]}",
+        ),
+        400,
+        "a count is at least 0",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 99999999999999999999}]}",
+        ),
+        400,
+        "a count past 64 bits is out of range, not unlimited",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/limits",
+            "{\"limits\": [{\"scope\": \"project\", \"window_seconds\": 99999999999999999999, \"requests\": 1}]}",
+        ),
+        400,
+        "so is a window",
+    );
     expect(call(e, "PUT", "/admin/v1/projects/work/limits", "{}"), 400, "limits are required");
     let cleared = call(e, "PUT", "/admin/v1/projects/work/limits", "{\"limits\": []}");
-    std::test::assert_eq_str(std::str::trim(cleared.body), "{\"limits\": [], \"source\": \"stored\"}", "an empty set clears them");
+    std::test::assert_eq_str(
+        std::str::trim(cleared.body),
+        "{\"limits\": [], \"source\": \"stored\"}",
+        "an empty set clears them",
+    );
 }

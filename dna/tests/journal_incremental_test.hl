@@ -17,7 +17,11 @@ main locus App {
     }
     // `kept` holds what a journal opened now reads.
     fn same_as_fresh(repo: String, what: String) {
-        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let fresh = dna::RecordJournal { repo: repo, author: "fresh" };
         std::test::assert_eq_int(self.kept.revision(), fresh.revision(), what + ": the rows");
         std::test::assert_eq_str(self.kept.head(), fresh.head(), what + ": the head");
@@ -49,10 +53,19 @@ main locus App {
         let born = self.kept.revision();
         let mut k = 0;
         while k < 3 {
-            let r = self.kept.append(self.kept.revision(), "kept.row", "k" + to_string(k), "{\"n\": " + to_string(k) + ", \"text\": \"tab\\there é\"}");
+            let r = self.kept.append(
+                self.kept.revision(),
+                "kept.row",
+                "k" + to_string(k),
+                "{\"n\": " + to_string(k) + ", \"text\": \"tab\\there é\"}",
+            );
             std::test::assert(r.ok, "kept row " + to_string(k) + " landed: " + r.error);
             // the identity is the first row's digest, the genome's pin
-            std::test::assert_eq_str(self.kept.genesis(), self.kept.read(0).digest, "the identity after row " + to_string(k));
+            std::test::assert_eq_str(
+                self.kept.genesis(),
+                self.kept.read(0).digest,
+                "the identity after row " + to_string(k),
+            );
             k = k + 1;
         }
         self.same_as_fresh(repo, "its own rows on a new record");
@@ -62,7 +75,13 @@ main locus App {
         let rows = dna::RowBatch { };
         k = 0;
         while k < 5 {
-            rows.push(row("other.row", "o" + to_string(k), "a row with \"quotes\", a \\\\ and\nlines " + to_string(k)));
+            rows.push(
+                row(
+                    "other.row",
+                    "o" + to_string(k),
+                    "a row with \"quotes\", a \\\\ and\nlines " + to_string(k),
+                ),
+            );
             k = k + 1;
         }
         let grew = other.append_batch(other.revision(), rows);

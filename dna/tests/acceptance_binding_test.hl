@@ -9,12 +9,24 @@ import "../core" as dna;
 main locus App {
     params {
         // receipts outside the working directory: this fixture files a practice
-        one: dna::Dna = dna::Dna { planned: true, org_id: "bind", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: dna::scratch_root("binding-receipts") } } };
+        one: dna::Dna = dna::Dna {
+            planned: true,
+            org_id: "bind",
+            verification: dna::HaleVerification {
+                receipts: dna::FileReceipts { dir: dna::scratch_root("binding-receipts") },
+            },
+        };
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "bind", charter: "You are the architect.",
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt" },
-                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt" }
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt",
+                },
+                deep: dna::FakeModel {
+                    name: "deep",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt",
+                }
             }
         };
     }
@@ -26,7 +38,11 @@ main locus App {
             let mut i = 0;
             while i < self.one.journal.revision() {
                 let e = self.one.journal.read(i);
-                if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { return e.entity; }
+                if e.kind == "workflow.admitted"
+                    && std::json::find_string_field(e.body, "request") == intent
+                {
+                    return e.entity;
+                }
                 i = i + 1;
             }
             std::time::sleep(20ms);
@@ -36,7 +52,10 @@ main locus App {
     }
     fn until_handed(case: String) {
         let mut tries = 0;
-        while tries < 300 && len(self.last("task.handed", case)) == 0 { std::time::sleep(20ms); tries = tries + 1; }
+        while tries < 300 && len(self.last("task.handed", case)) == 0 {
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
     }
     fn last(kind: String, entity: String) -> String {
         let mut out = "";
@@ -50,28 +69,79 @@ main locus App {
     }
     run() {
         // the Board's practice, ratified in the record
-        let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "An expense closes with its receipt.\nevidence: required", author: "org", name: "acceptance/expense-receipt" }, "org");
+        let doc = dna::knowledge_document(
+            dna::Idea {
+                kind: "practice",
+                text: "An expense closes with its receipt.\nevidence: required",
+                author: "org",
+                name: "acceptance/expense-receipt",
+            },
+            "org",
+        );
         let digest = "sha256:" + self.one.verification.receipts.store(doc);
-        let p = self.one.journal.append(self.one.journal.revision(), "knowledge.proposed", digest, "{\"digest\": \"" + digest + "\", \"name\": \"acceptance/expense-receipt\"}");
-        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), "", "proposed is not in force");
-        let r = self.one.journal.append(self.one.journal.revision(), "knowledge.ratified", digest, "{}");
-        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), digest, "ratified is in force");
+        let p = self.one.journal.append(
+            self.one.journal.revision(),
+            "knowledge.proposed",
+            digest,
+            "{\"digest\": \"" + digest + "\", \"name\": \"acceptance/expense-receipt\"}",
+        );
+        std::test::assert_eq_str(
+            self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"),
+            "",
+            "proposed is not in force",
+        );
+        let r = self.one.journal.append(
+            self.one.journal.revision(),
+            "knowledge.ratified",
+            digest,
+            "{}",
+        );
+        std::test::assert_eq_str(
+            self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"),
+            digest,
+            "ratified is in force",
+        );
 
-        let a1 = self.one.ask(dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "riley" });
+        let a1 = self.one.ask(
+            dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "riley" },
+        );
         let t = self.admitted("i1") + ".s0.p";
         self.until_handed(t);
         let handed = self.last("task.handed", t);
-        std::test::assert(std::str::contains(handed, "\"obligation\": \"expense-receipt\"") && std::str::contains(handed, "\"acceptance\": \"" + digest + "\"") && std::str::contains(handed, "\"evidence_required\": true"), "bound at hand-off: " + handed);
+        std::test::assert(
+            std::str::contains(handed, "\"obligation\": \"expense-receipt\"")
+                && std::str::contains(handed, "\"acceptance\": \"" + digest + "\"")
+                && std::str::contains(handed, "\"evidence_required\": true"),
+            "bound at hand-off: " + handed,
+        );
 
         // retired: in force no more, and the next job is handed without a condition
-        let x = self.one.journal.append(self.one.journal.revision(), "knowledge.retired", digest, "{\"by\": \"sha256:next\"}");
-        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), "", "retired is not in force");
-        let a2 = self.one.ask(dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "riley" });
+        let x = self.one.journal.append(
+            self.one.journal.revision(),
+            "knowledge.retired",
+            digest,
+            "{\"by\": \"sha256:next\"}",
+        );
+        std::test::assert_eq_str(
+            self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"),
+            "",
+            "retired is not in force",
+        );
+        let a2 = self.one.ask(
+            dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "riley" },
+        );
         let t2 = self.admitted("i2") + ".s0.p";
         self.until_handed(t2);
         let handed2 = self.last("task.handed", t2);
-        std::test::assert(std::str::contains(handed2, "\"acceptance\": \"\"") && std::str::contains(handed2, "\"evidence_required\": false"), "nothing bound: " + handed2);
-        std::test::assert(std::str::contains(self.last("task.handed", t), "\"evidence_required\": true"), "and the first job's row is unchanged");
+        std::test::assert(
+            std::str::contains(handed2, "\"acceptance\": \"\"")
+                && std::str::contains(handed2, "\"evidence_required\": false"),
+            "nothing bound: " + handed2,
+        );
+        std::test::assert(
+            std::str::contains(self.last("task.handed", t), "\"evidence_required\": true"),
+            "and the first job's row is unchanged",
+        );
 
         dna::scratch_done("/tmp/dna-binding-receipts-" + to_string(std::process::pid()));
     }

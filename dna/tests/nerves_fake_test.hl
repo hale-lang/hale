@@ -39,9 +39,21 @@ main locus App {
         return false;
     }
     run() {
-        dna::IntentOffered <- dna::IntentOffer { intent_id: "i-nerves-1", outcome: "say hello", from: "riley", to: "" };
-        std::test::assert(self.asked(1, 20), "the organization admits the intent it was told: asked " + to_string(self.org.asked));
-        std::test::assert_eq_int(self.nerves.count("dna.intent.offered"), 1, "the adapter handed the fact to the connection once, on its declared subject");
+        dna::IntentOffered <- dna::IntentOffer {
+            intent_id: "i-nerves-1",
+            outcome: "say hello",
+            from: "riley",
+            to: "",
+        };
+        std::test::assert(
+            self.asked(1, 20),
+            "the organization admits the intent it was told: asked " + to_string(self.org.asked),
+        );
+        std::test::assert_eq_int(
+            self.nerves.count("dna.intent.offered"),
+            1,
+            "the adapter handed the fact to the connection once, on its declared subject",
+        );
         let task = self.org.last_task;
         std::test::assert(len(task) > 0, "a task is born for it");
 
@@ -49,10 +61,26 @@ main locus App {
         // different intent after it is the barrier — one subscriber's
         // deliveries are handled in order, so once the second is admitted
         // the redelivery before it has been handled too
-        std::test::assert_eq_int(self.nerves.replay("dna.intent.offered", "dna.intent.offered"), 1, "the fact, delivered again");
-        dna::IntentOffered <- dna::IntentOffer { intent_id: "i-nerves-2", outcome: "say goodbye", from: "riley", to: "" };
-        std::test::assert(self.asked(2, 20), "the intent after the redelivery is admitted: asked " + to_string(self.org.asked));
-        std::test::assert_eq_int(self.org.asked, 2, "a redelivered intent is admitted once: two intents, two asks, not three");
+        std::test::assert_eq_int(
+            self.nerves.replay("dna.intent.offered", "dna.intent.offered"),
+            1,
+            "the fact, delivered again",
+        );
+        dna::IntentOffered <- dna::IntentOffer {
+            intent_id: "i-nerves-2",
+            outcome: "say goodbye",
+            from: "riley",
+            to: "",
+        };
+        std::test::assert(
+            self.asked(2, 20),
+            "the intent after the redelivery is admitted: asked " + to_string(self.org.asked),
+        );
+        std::test::assert_eq_int(
+            self.org.asked,
+            2,
+            "a redelivered intent is admitted once: two intents, two asks, not three",
+        );
 
         // nothing acknowledged: the connection's closure is violated, and
         // its owner hears why
@@ -61,7 +89,10 @@ main locus App {
             std::time::sleep(50ms);
             self.silent.audit();
         }
-        std::test::assert(std::str::contains(self.lost, "unacknowledged after 200 ms"), "an unacknowledged fact reaches the connection's owner: " + self.lost);
+        std::test::assert(
+            std::str::contains(self.lost, "unacknowledged after 200 ms"),
+            "an unacknowledged fact reaches the connection's owner: " + self.lost,
+        );
     }
 }
 

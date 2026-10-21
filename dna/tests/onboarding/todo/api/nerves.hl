@@ -21,7 +21,11 @@ fn quoted(s: String) -> String {
 /// `todo` when the account does not say. The subject and the concern's
 /// source (`<name>/overdue`, the heart's path syntax) both carry it.
 fn app_name(user: String) -> String {
-    return if std::str::starts_with(user, "app-") && len(user) > 4 { user[4..len(user)] } else { "todo" };
+    return if std::str::starts_with(user, "app-") && len(user) > 4 {
+        user[4..len(user)]
+    } else {
+        "todo"
+    };
 }
 
 locus Nerves {
@@ -46,14 +50,21 @@ locus Nerves {
         if !self.attached() { return; }
         let body = "{\"id\":" + quoted("overdue-" + to_string(id))
             + ",\"source\":" + quoted(app_name(self.user) + "/overdue")
-            + ",\"what\":" + quoted("todo " + to_string(id) + " \"" + title + "\" is overdue (due " + due + ")")
+            + ",\"what\":"
+            + quoted("todo " + to_string(id) + " \"" + title + "\" is overdue (due " + due + ")")
             + ",\"severity\":1"
             + ",\"event\":\"todo.overdue\""
-            + ",\"item\":{\"id\":" + to_string(id) + ",\"title\":" + quoted(title) + ",\"done\":false,\"due\":" + quoted(due) + "}}";
+            + ",\"item\":{\"id\":" + to_string(id) + ",\"title\":" + quoted(title)
+            + ",\"done\":false,\"due\":" + quoted(due) + "}}";
         if self.say("concern.raised", body) {
             self.said = self.said + 1;
         } else {
-            eprintln("todo: the nerves did not take todo.overdue for item ", id, ": ", self.last_error);
+            eprintln(
+                "todo: the nerves did not take todo.overdue for item ",
+                id,
+                ": ",
+                self.last_error,
+            );
         }
     }
 
@@ -62,10 +73,18 @@ locus Nerves {
     // `got` grows by the server's one reply, up to its PONG.
     @bounded_by(stream)
     fn say(event: String, body: String) -> Bool {
-        let rest = if std::str::starts_with(self.url, "nats://") { self.url[7..len(self.url)] } else { self.url };
+        let rest = if std::str::starts_with(self.url, "nats://") {
+            self.url[7..len(self.url)]
+        } else {
+            self.url
+        };
         let colon = std::str::index_of(rest, ":");
         let host = if colon >= 0 { rest[0..colon] } else { rest };
-        let port = if colon >= 0 { std::str::parse_int(rest[(colon + 1)..len(rest)]) or 4222 } else { 4222 };
+        let port = if colon >= 0 {
+            std::str::parse_int(rest[(colon + 1)..len(rest)]) or 4222
+        } else {
+            4222
+        };
         let fd = std::io::tcp::connect(host, port) or - 1;
         if fd < 0 { self.last_error = "no connection to " + self.url; return false; }
         std::io::tcp::set_recv_timeout(fd, 2s) or discard;
@@ -74,10 +93,16 @@ locus Nerves {
         // it may publish on `<org>.app.<name>.>` and nowhere else
         let app = app_name(self.user);
         let subject = self.org + ".app." + app + "." + event;
-        let connect = "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"todo\",\"user\":" + quoted(self.user) + ",\"pass\":";
-        let tail = "}\r\nPUB " + subject + " " + to_string(len(body)) + "\r\n" + body + "\r\nPING\r\n";
+        let connect = "CONNECT {\"verbose\":false,\"pedantic\":false,\"name\":\"todo\",\"user\":"
+            + quoted(self.user) + ",\"pass\":";
+        let tail = "}\r\nPUB " + subject + " " + to_string(len(body)) + "\r\n" + body
+            + "\r\nPING\r\n";
         // the one place the sealed password is revealed: into the CONNECT it authenticates
-        stream.send(connect + "\"" + (if self.credential.ready() { self.credential.reveal_text() } else { "" }) + "\"" + tail) or discard;
+        stream.send(
+            connect + "\""
+                + (if self.credential.ready() { self.credential.reveal_text() } else { "" }) + "\""
+                + tail,
+        ) or discard;
         let mut got = "";
         let mut tries = 0;
         while tries < 5 {

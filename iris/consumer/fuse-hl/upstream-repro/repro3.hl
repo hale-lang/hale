@@ -14,7 +14,10 @@ locus Setter {
         let mut i = 0;
         while i < 100000 {
             let e = self.v.get(i % 1024) or Ent { };
-            self.v.set(i % 1024, Ent { seq: e.seq + 1, ts: self.round, seg: 0, kind: 1 }) or discard;
+            self.v.set(
+                i % 1024,
+                Ent { seq: e.seq + 1, ts: self.round, seg: 0, kind: 1 },
+            ) or discard;
             i = i + 1;
         }
     }

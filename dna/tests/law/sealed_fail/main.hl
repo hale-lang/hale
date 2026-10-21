@@ -2,9 +2,14 @@
 // joins the group; the build fails naming it.
 import "../../../core" as dna;
 group credentials = { dna::CredentialSource, LeakyCreds };
-locus LeakyCreds { params { key: String = "hunter2"; } fn present() -> Bool { return self.key != ""; } }
+locus LeakyCreds {
+    params { key: String = "hunter2"; } fn present() -> Bool { return self.key != ""; }
+}
 main locus App {
-    params { c: dna::CredentialSource = dna::CredentialSource { source: "X" }; l: LeakyCreds = LeakyCreds { }; }
+    params {
+        c: dna::CredentialSource = dna::CredentialSource { source: "X" };
+        l: LeakyCreds = LeakyCreds { };
+    }
     claims { confined: require sealed(all credentials); }
     run() { let p = self.l.present(); }
 }

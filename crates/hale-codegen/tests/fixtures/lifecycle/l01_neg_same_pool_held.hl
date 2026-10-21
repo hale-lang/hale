@@ -34,7 +34,9 @@ locus Owner {
         if self.fired == 1 && self.c.births == 2 {
             println("outcome: delivered-once-resumed");
         } else {
-            println("outcome: fired=" + to_string(self.fired) + " births=" + to_string(self.c.births));
+            println(
+                "outcome: fired=" + to_string(self.fired) + " births=" + to_string(self.c.births),
+            );
         }
     }
 }

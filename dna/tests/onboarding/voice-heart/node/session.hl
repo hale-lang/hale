@@ -87,7 +87,10 @@ locus Session {
     fn on_joined(j: Joined) {
         // a new place, or a new account there (grafted: the nodes' user on
         // the habitat's broker, handed over at registration)
-        if j.nats_url != self.nats_url || j.user != self.client.user || j.password != self.client.pass {
+        if j.nats_url != self.nats_url
+            || j.user != self.client.user
+            || j.password != self.client.pass
+        {
             self.nats_url = j.nats_url;
             self.client.close();
             self.client.url = j.nats_url;
@@ -104,7 +107,9 @@ locus Session {
 
     /// An assignment the plane read: adopted when it is newer.
     fn on_assignment(a: AssignmentText) {
-        if std::json::find_int_field(a.assignment, "version") > self.seats.version { self.adopt(a.assignment); }
+        if std::json::find_int_field(a.assignment, "version") > self.seats.version {
+            self.adopt(a.assignment);
+        }
     }
 
     /// New local controls: the assignment applied again within them.
@@ -130,7 +135,8 @@ locus Session {
             self.subscribed = false;
             if !self.client.open() {
                 self.nats_state = "connecting";
-                self.last_error = "NATS unreachable at " + self.nats_url + ": " + self.client.last_error;
+                self.last_error = "NATS unreachable at " + self.nats_url + ": "
+                    + self.client.last_error;
                 self.report();
                 std::time::sleep(1s);
                 return;
@@ -138,14 +144,17 @@ locus Session {
         }
         let sid = self.client.sub_to(self.subject + ".>", "") or - 1;
         if sid < 0 {
-            self.last_error = "could not subscribe to " + self.subject + ": " + self.client.last_error;
+            self.last_error = "could not subscribe to " + self.subject + ": "
+                + self.client.last_error;
             self.report();
             return;
         }
         self.subscribed = true;
         self.nats_state = "connected";
         self.last_error = "";
-        self.connected_at = std::time::iso8601(std::time::time_from_unix(std::time::unix(std::time::current())));
+        self.connected_at = std::time::iso8601(
+            std::time::time_from_unix(std::time::unix(std::time::current())),
+        );
         self.report();
         NatsConnected <- NatsState { connected: true };
     }
@@ -159,7 +168,10 @@ locus Session {
     }
 
     fn applied() {
-        SeatsApplied <- AppliedSeats { version: self.seats.version, states: states_json(self.seats, self.busy) };
+        SeatsApplied <- AppliedSeats {
+            version: self.seats.version,
+            states: states_json(self.seats, self.busy),
+        };
         self.report();
     }
 
@@ -186,10 +198,17 @@ locus Session {
             let subject = self.client.last.subject;
             let body = std::str::from_bytes(self.client.last.data);
             if subject == self.subject + ".cancel" {
-                if std::json::find_string_field(body, "request_id") == self.serving { self.cancelled = true; }
+                if std::json::find_string_field(body, "request_id") == self.serving {
+                    self.cancelled = true;
+                }
             } else if subject == self.subject + ".serve" {
-                let ack = "{\"request_id\": " + q(std::json::find_string_field(body, "request_id")) + ", \"outcome\": \"refused\", \"reason\": \"the node is serving another request\"}";
-                self.client.pub_msg(self.client.last.reply, "", std::bytes::from_string(ack)) or discard;
+                let ack = "{\"request_id\": " + q(std::json::find_string_field(body, "request_id"))
+                    + ", \"outcome\": \"refused\", \"reason\": \"the node is serving another request\"}";
+                self.client.pub_msg(
+                    self.client.last.reply,
+                    "",
+                    std::bytes::from_string(ack),
+                ) or discard;
             } else if subject == self.subject + ".assign" {
                 let a = std::str::trim(std::json::find_field_raw(body, "assignment"));
                 if std::json::find_int_field(a, "version") > self.seats.version { self.adopt(a); }
@@ -215,13 +234,23 @@ locus Session {
         let seat = seat_of(self.seats, std::json::find_string_field(msg, "seat"));
         let mut refusal = "";
         if len(seat.id) == 0 {
-            refusal = "no seat " + std::json::find_string_field(msg, "seat") + " is assigned to this node";
+            refusal = "no seat " + std::json::find_string_field(msg, "seat")
+                + " is assigned to this node";
         } else if seat.status != "up" {
-            refusal = "seat " + seat.id + " is " + seat.status + (if len(seat.reason) > 0 { ": " + seat.reason } else { "" });
+            refusal = "seat " + seat.id + " is " + seat.status
+                + (if len(seat.reason) > 0 { ": " + seat.reason } else { "" });
         } else if node_cap(self.capabilities, self.seats.max_in_flight, read_local(self.data)) < 1 {
             refusal = "the node takes no requests: its cap is 0";
         }
-        let ack = "{\"request_id\": " + q(id) + ", \"outcome\": " + (if len(refusal) > 0 { "\"refused\", \"reason\": " + q(refusal) } else { "\"accepted\", \"reason\": null" }) + "}";
+        let ack = "{\"request_id\": " + q(id) + ", \"outcome\": "
+            + (
+                if len(refusal) > 0 {
+                    "\"refused\", \"reason\": " + q(refusal)
+                } else {
+                    "\"accepted\", \"reason\": null"
+                }
+            )
+            + "}";
         self.client.pub_msg(inbox, "", std::bytes::from_string(ack)) or discard;
         if len(refusal) > 0 { return; }
 
@@ -233,7 +262,13 @@ locus Session {
         let t0 = std::time::monotonic_ns();
         let model = std::json::find_string_field(msg, "model");
         let engine_model = std::json::string_field(msg, "engine_model");
-        let run = run_static(id, model, if engine_model.kind == "string" { engine_model.text } else { model }, std::str::trim(std::json::find_field_raw(msg, "body")), static_config(seat.config));
+        let run = run_static(
+            id,
+            model,
+            if engine_model.kind == "string" { engine_model.text } else { model },
+            std::str::trim(std::json::find_field_raw(msg, "body")),
+            static_config(seat.config),
+        );
         let mut first = -1;
         let v = std::str::bytes_view(run.script);
         let mut start = 0;
@@ -244,15 +279,29 @@ locus Session {
             if std::str::starts_with(line, "pause ") {
                 self.pause(std::str::parse_int(line[6..len(line)]) or 0);
             } else {
-                if first < 0 && std::str::contains(line, "response.output_text.delta") { first = (std::time::monotonic_ns() - t0) / 1000000; }
-                self.client.pub_msg(reply_to + ".event", "", std::bytes::from_string("{\"type\":\"event\",\"request_id\":" + q(id) + ",\"event\":" + line + "}")) or discard;
+                if first < 0 && std::str::contains(line, "response.output_text.delta") {
+                    first = (std::time::monotonic_ns() - t0) / 1000000;
+                }
+                self.client.pub_msg(
+                    reply_to + ".event",
+                    "",
+                    std::bytes::from_string(
+                        "{\"type\":\"event\",\"request_id\":" + q(id) + ",\"event\":" + line + "}",
+                    ),
+                ) or discard;
                 // a look costs up to a millisecond when nothing waits, so
                 // a run of events looks every 50 ms, not after each
                 if std::time::monotonic_ns() - self.looked > 50000000 { self.interject(); }
             }
         }
         let elapsed = (std::time::monotonic_ns() - t0) / 1000000;
-        let result = if self.cancelled { cancelled_result(id) } else if run.outcome == "failed" { failed_result(id, "engine_failed", run.failure, true) } else { result_message(id, run, if first < 0 { 0 } else { first }, elapsed) };
+        let result = if self.cancelled {
+            cancelled_result(id)
+        } else if run.outcome == "failed" {
+            failed_result(id, "engine_failed", run.failure, true)
+        } else {
+            result_message(id, run, if first < 0 { 0 } else { first }, elapsed)
+        };
         self.client.pub_msg(reply_to + ".result", "", std::bytes::from_string(result)) or discard;
         self.serving = "";
         self.busy = "";
@@ -263,7 +312,10 @@ locus Session {
     /// A request began or ended: the plane's next heartbeat, and the
     /// status, say so.
     fn loaded() {
-        LoadChanged <- Load { in_flight: if len(self.busy) > 0 { 1 } else { 0 }, states: states_json(self.seats, self.busy) };
+        LoadChanged <- Load {
+            in_flight: if len(self.busy) > 0 { 1 } else { 0 },
+            states: states_json(self.seats, self.busy),
+        };
         self.report();
     }
 
@@ -271,11 +323,24 @@ locus Session {
     /// the effective cap and every seat with its state.
     fn report() {
         let local = read_local(self.data);
-        let state = if self.plane_state == "refused" { "refused" } else if self.plane_state == "registered" && self.nats_state == "connected" { "connected" } else { "connecting" };
-        let coordinator = "{\"url\": " + q(self.api) + ", \"state\": " + q(state) + ", \"connected_at\": " + (if len(self.connected_at) > 0 { q(self.connected_at) } else { "null" })
-            + ", \"last_error\": " + (if len(self.last_error) > 0 { q(self.last_error) } else { "null" }) + "}";
-        let body = "{\"coordinator\": " + coordinator + ", \"assignment_version\": " + (if self.seats.version >= 0 { to_string(self.seats.version) } else { "null" })
-            + ", \"max_in_flight\": " + to_string(node_cap(self.capabilities, self.seats.max_in_flight, local)) + ", \"in_flight\": " + (if len(self.busy) > 0 { "1" } else { "0" }) + ", \"seats\": " + status_seats(self.assignment, self.seats, self.busy) + "}";
+        let state = if self.plane_state == "refused" {
+            "refused"
+        } else if self.plane_state == "registered" && self.nats_state == "connected" {
+            "connected"
+        } else {
+            "connecting"
+        };
+        let coordinator = "{\"url\": " + q(self.api) + ", \"state\": " + q(state)
+            + ", \"connected_at\": "
+            + (if len(self.connected_at) > 0 { q(self.connected_at) } else { "null" })
+            + ", \"last_error\": "
+            + (if len(self.last_error) > 0 { q(self.last_error) } else { "null" }) + "}";
+        let body = "{\"coordinator\": " + coordinator + ", \"assignment_version\": "
+            + (if self.seats.version >= 0 { to_string(self.seats.version) } else { "null" })
+            + ", \"max_in_flight\": "
+            + to_string(node_cap(self.capabilities, self.seats.max_in_flight, local))
+            + ", \"in_flight\": " + (if len(self.busy) > 0 { "1" } else { "0" }) + ", \"seats\": "
+            + status_seats(self.assignment, self.seats, self.busy) + "}";
         std::io::fs::write_file(self.data + "/session.json", body) or discard;
     }
 }
@@ -291,7 +356,11 @@ fn status_seats(assignment: String, seats: NodeSeats, busy: String) -> String {
         let st = seat_of(seats, std::json::find_string_field(s, "id"));
         if any { out.append_str(", "); }
         any = true;
-        out.append_str(s[0..(len(s) - 1)] + ", \"status\": " + q(st.status) + ", \"reason\": " + (if len(st.reason) > 0 { q(st.reason) } else { "null" }) + ", \"in_flight\": " + (if st.id == busy { "1" } else { "0" }) + "}");
+        out.append_str(
+            s[0..(len(s) - 1)] + ", \"status\": " + q(st.status) + ", \"reason\": "
+                + (if len(st.reason) > 0 { q(st.reason) } else { "null" }) + ", \"in_flight\": "
+                + (if st.id == busy { "1" } else { "0" }) + "}",
+        );
         it = std::json::array_next(it);
     }
     let b = out.snapshot() or b"";

@@ -19,7 +19,10 @@ locus SshTransport {
     params { scratch: String = ".hale/dna"; }
     fn kind() -> String { return "ssh"; }
     fn probe(target: String) -> dna::Facts {
-        let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm'\nsh\n" + target);
+        let r = dna::run_tool(
+            "sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm'\nsh\n"
+                + target,
+        );
         if r.code != 0 { return dna::Facts { why: dna::trim_nl(r.stderr) }; }
         return dna::Facts { reachable: true, facts: r.stdout };
     }
@@ -28,14 +31,24 @@ locus SshTransport {
     // the shape a secret's install takes, the value never in argv.
     fn execute(target: String, script: String, stdin: String) -> dna::RunResult {
         let tmp = self.scratch + "/transport." + to_string(std::process::pid()) + ".tmp";
-        let mk = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp);
-        if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
+        let mk = dna::run_tool(
+            "sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp,
+        );
+        if mk.code != 0 {
+            return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" };
+        }
         let w = write_text(tmp, if len(stdin) == 0 { script } else { stdin }) or false;
         if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
         let r = if len(stdin) == 0 {
-            dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'sh -s' < \"$2\"\nsh\n" + target + "\n" + tmp)
+            dna::run_tool(
+                "sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'sh -s' < \"$2\"\nsh\n"
+                    + target + "\n" + tmp,
+            )
         } else {
-            dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\" < \"$3\"\nsh\n" + target + "\n" + script + "\n" + tmp)
+            dna::run_tool(
+                "sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\" < \"$3\"\nsh\n"
+                    + target + "\n" + script + "\n" + tmp,
+            )
         };
         std::io::fs::unlink(tmp) or discard;
         return r;
@@ -54,18 +67,34 @@ locus LocalTransport {
         // fixture's home and its stubs first on PATH. Asking this
         // machine's own PATH answered for the developer's box — no
         // systemd on a Mac — instead of for the body (GH #970).
-        let env = if len(self.home) > 0 { "export HOME=\"" + self.home + "\" PATH=\"" + self.home + "/.hale/bin:$PATH\"; " } else { "" };
-        let r = dna::run_tool("sh\n-c\n" + env + "command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm");
+        let env = if len(self.home) > 0 {
+            "export HOME=\"" + self.home + "\" PATH=\"" + self.home + "/.hale/bin:$PATH\"; "
+        } else {
+            ""
+        };
+        let r = dna::run_tool(
+            "sh\n-c\n" + env
+                + "command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm",
+        );
         return dna::Facts { reachable: true, facts: r.stdout };
     }
     fn execute(target: String, script: String, stdin: String) -> dna::RunResult {
         let tmp = self.scratch + "/transport." + to_string(std::process::pid()) + ".tmp";
-        let mk = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp);
-        if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
+        let mk = dna::run_tool(
+            "sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp,
+        );
+        if mk.code != 0 {
+            return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" };
+        }
         let w = write_text(tmp, if len(stdin) == 0 { script } else { stdin }) or false;
         if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
         // the fixture's home is the body's: its stubs on PATH, its files
-        let home = if len(self.home) > 0 { "export HOME=\"" + self.home + "\" PATH=\"" + self.home + "/.hale/bin:$PATH\"; cd \"$HOME\"; " } else { "" };
+        let home = if len(self.home) > 0 {
+            "export HOME=\"" + self.home + "\" PATH=\"" + self.home
+                + "/.hale/bin:$PATH\"; cd \"$HOME\"; "
+        } else {
+            ""
+        };
         let r = if len(stdin) == 0 {
             dna::run_tool("sh\n-c\n" + home + "sh -s < \"$1\"\nsh\n" + tmp)
         } else {
@@ -103,11 +132,17 @@ locus ReferenceInfrastructure {
     fn kind() -> String { return "compose+systemd+envfile"; }
     fn run_at(script: String, stdin: String) -> dna::RunResult {
         if len(self.target) == 0 { return self.local.execute("", script, stdin); }
-        if transport_kind() == "local" { self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME"); return self.local.execute(self.target, script, stdin); }
+        if transport_kind() == "local" {
+            self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME");
+            return self.local.execute(self.target, script, stdin);
+        }
         return self.ssh.execute(self.target, script, stdin);
     }
     fn probe(target: String) -> dna::Facts {
-        if transport_kind() == "local" { self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME"); return self.local.probe(target); }
+        if transport_kind() == "local" {
+            self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME");
+            return self.local.probe(target);
+        }
         return self.ssh.probe(target);
     }
     // GH #1653: an organism's memory, nerves and senses' store are the local
@@ -117,20 +152,29 @@ locus ReferenceInfrastructure {
     // `why` says what is needed instead, when there is no docker compose or
     // the organism has no identity yet.
     fn allocation(role: String) -> String {
-        if len(dna::allocation_key(self.root)) == 0 { return "the organism has no record identity yet: its allocations in the local habitat are named for it (`hale habitat graft` pins one)"; }
-        if dna::run_tool("docker\ncompose\nversion").code != 0 { return "the local habitat's " + role + " runs under docker compose, which is not on PATH"; }
+        if len(dna::allocation_key(self.root)) == 0 {
+            return "the organism has no record identity yet: its allocations in the local habitat are named for it (`hale habitat graft` pins one)";
+        }
+        if dna::run_tool("docker\ncompose\nversion").code != 0 {
+            return "the local habitat's " + role
+                + " runs under docker compose, which is not on PATH";
+        }
         return "";
     }
     // Whether the organism's allocations were ever written: a command that
     // only reads them writes nothing into the habitat.
     fn allocated() -> Bool {
         let dir = dna::allocation_dir(self.root);
-        return len(dir) > 0 && std::io::fs::file_exists(dir + "/compose.yaml") && std::io::fs::file_exists(dir + "/ports.yaml");
+        return len(dir) > 0
+            && std::io::fs::file_exists(dir + "/compose.yaml")
+            && std::io::fs::file_exists(dir + "/ports.yaml");
     }
     // `service`'s published `inner` port, as `host:port`, "" when it is not up.
     fn published(service: String, inner: String) -> String {
         if !self.allocated() { return ""; }
-        let port = dna::run_tool(dna::allocation_compose(self.root) + "\nport\n" + service + "\n" + inner);
+        let port = dna::run_tool(
+            dna::allocation_compose(self.root) + "\nport\n" + service + "\n" + inner,
+        );
         let hp = dna::trim_nl(port.stdout);
         if port.code != 0 || std::str::index_of(hp, ":") < 0 { return ""; }
         return hp;
@@ -139,44 +183,98 @@ locus ReferenceInfrastructure {
     // owner's DSN.
     fn knowledge_database(project: String) -> dna::Database {
         let not = self.allocation("memory");
-        if len(not) > 0 { return dna::Database { why: not + "; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
+        if len(not) > 0 {
+            return dna::Database {
+                why: not + "; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own",
+            };
+        }
         // GH #989: the superuser's password is the vault's, and reaches the
         // server through the file compose mounts: both before `up`, which
         // would otherwise make a directory where the file belongs
         let key = dna::allocation_key(self.root);
         let owner = std::secret::Credential { vault: postgres_owner_vault(key) };
-        if !owner.ready() || !std::io::fs::file_exists(postgres_secrets_path(self.root)) { return dna::Database { why: "the memory allocation's password is not provisioned (" + postgres_owner_vault(key) + " in the vault, and its file beside the allocation; `hale dna upgrade` provisions them, `hale dna secrets` lists them)" }; }
+        if !owner.ready() || !std::io::fs::file_exists(postgres_secrets_path(self.root)) {
+            return dna::Database {
+                why: "the memory allocation's password is not provisioned ("
+                    + postgres_owner_vault(key)
+                    + " in the vault, and its file beside the allocation; `hale dna upgrade` provisions them, `hale dna secrets` lists them)",
+            };
+        }
         let service = dna::allocation_service(self.root, "memory");
         let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
+        if up.code != 0 {
+            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
+        }
         let hp = self.published(service, "5432");
-        if len(hp) == 0 { return dna::Database { why: "cannot read the memory allocation's port from compose" }; }
+        if len(hp) == 0 {
+            return dna::Database { why: "cannot read the memory allocation's port from compose" };
+        }
         // a database made with another password adopts the vault's, from
         // the file compose mounts (read inside the container, never on a
         // command line)
-        let adopt = dna::allocation_compose(self.root) + "\nexec\n-T\n" + service + "\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
+        let adopt = dna::allocation_compose(self.root) + "\nexec\n-T\n" + service
+            + "\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
         let mut tries = 0;
         let mut adopted = dna::run_tool(adopt);
-        while adopted.code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; adopted = dna::run_tool(adopt); }
-        if adopted.code != 0 { return dna::Database { why: "the memory allocation did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
+        while adopted.code != 0 && tries < 20 {
+            std::time::sleep(500ms);
+            tries = tries + 1;
+            adopted = dna::run_tool(adopt);
+        }
+        if adopted.code != 0 {
+            return dna::Database {
+                why: "the memory allocation did not take the vault's password: "
+                    + dna::trim_nl(adopted.stderr),
+            };
+        }
         // the owner's DSN names the vault entry, never the password: the
         // connection presents it in its handshake
-        return dna::Database { present: true, dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(key) };
+        return dna::Database {
+            present: true,
+            dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(key),
+        };
     }
     // The organism's memory, when its allocation is already up: the owner's
     // DSN, never bringing it up (GH #1653: only the habitat's acts do).
     fn knowledge_database_if_up() -> dna::Database {
         let service = dna::allocation_service(self.root, "memory");
-        if len(service) == 0 { return dna::Database { why: "the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale habitat graft` pins one)" }; }
-        let hp = if dna::run_tool("docker\ncompose\nversion").code == 0 { self.published(service, "5432") } else { "" };
-        if len(hp) == 0 { return dna::Database { why: "the organism's memory allocation in the local habitat (" + service + ") is not up: `hale habitat migrate " + self.root + "` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
-        return dna::Database { present: true, dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(dna::allocation_key(self.root)) };
+        if len(service) == 0 {
+            return dna::Database {
+                why: "the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale habitat graft` pins one)",
+            };
+        }
+        let hp = if dna::run_tool("docker\ncompose\nversion").code == 0 {
+            self.published(service, "5432")
+        } else {
+            ""
+        };
+        if len(hp) == 0 {
+            return dna::Database {
+                why: "the organism's memory allocation in the local habitat (" + service
+                    + ") is not up: `hale habitat migrate " + self.root
+                    + "` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own",
+            };
+        }
+        return dna::Database {
+            present: true,
+            dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault="
+                + postgres_owner_vault(dna::allocation_key(self.root)),
+        };
     }
     // The organism's senses' store, when its allocation is already up.
     fn senses_if_up() -> dna::Database {
         let service = dna::allocation_service(self.root, "senses");
-        let hp = if len(service) > 0 && dna::run_tool("docker\ncompose\nversion").code == 0 { self.published(service, "9090") } else { "" };
-        if len(hp) == 0 { return dna::Database { why: "the organism's senses' store in the local habitat is not up (`hale habitat migrate " + self.root + "` brings it up)" }; }
+        let hp = if len(service) > 0 && dna::run_tool("docker\ncompose\nversion").code == 0 {
+            self.published(service, "9090")
+        } else {
+            ""
+        };
+        if len(hp) == 0 {
+            return dna::Database {
+                why: "the organism's senses' store in the local habitat is not up (`hale habitat migrate "
+                    + self.root + "` brings it up)",
+            };
+        }
         return dna::Database { present: true, dsn: "http://" + hp };
     }
     // The organism's allocation for `role`, restarted when it is up (GH
@@ -184,22 +282,39 @@ locus ReferenceInfrastructure {
     // not up or restarted, else why not.
     fn restart_if_up(role: String) -> String {
         let service = dna::allocation_service(self.root, role);
-        if len(service) == 0 || !self.allocated() || dna::run_tool("docker\ncompose\nversion").code != 0 { return ""; }
+        if len(service) == 0
+            || !self.allocated()
+            || dna::run_tool("docker\ncompose\nversion").code != 0
+        {
+            return "";
+        }
         let up = dna::run_tool(dna::allocation_compose(self.root) + "\nps\n-q\n" + service);
         if up.code != 0 || len(dna::trim_nl(up.stdout)) == 0 { return ""; }
         let r = dna::run_tool(dna::allocation_compose(self.root) + "\nrestart\n" + service);
-        return if r.code == 0 { "" } else { "exit " + to_string(r.code) + ": " + dna::trim_nl(r.stderr) };
+        return if r.code == 0 {
+            ""
+        } else {
+            "exit " + to_string(r.code) + ": " + dna::trim_nl(r.stderr)
+        };
     }
     // The organism's nerves (GH #986), its allocation brought up when it is
     // not: its URL, without a user.
     fn nerves_server(project: String) -> dna::Database {
         let not = self.allocation("nerves");
-        if len(not) > 0 { return dna::Database { why: not + "; or set " + dna::NATS_OWNER_URL_ENV + " to a NATS server of your own" }; }
+        if len(not) > 0 {
+            return dna::Database {
+                why: not + "; or set " + dna::NATS_OWNER_URL_ENV + " to a NATS server of your own",
+            };
+        }
         let service = dna::allocation_service(self.root, "nerves");
         let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
+        if up.code != 0 {
+            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
+        }
         let hp = self.published(service, "4222");
-        if len(hp) == 0 { return dna::Database { why: "cannot read the nerves allocation's port from compose" }; }
+        if len(hp) == 0 {
+            return dna::Database { why: "cannot read the nerves allocation's port from compose" };
+        }
         return dna::Database { present: true, dsn: "nats://" + hp };
     }
     // The organism's nerves if their allocation is up, never brought up from
@@ -217,21 +332,31 @@ locus ReferenceInfrastructure {
         if len(not) > 0 { return dna::Database { why: not }; }
         let service = dna::allocation_service(self.root, "senses");
         let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
+        if up.code != 0 {
+            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
+        }
         let hp = self.published(service, "9090");
-        if len(hp) == 0 { return dna::Database { why: "cannot read the senses' store's port from compose" }; }
+        if len(hp) == 0 {
+            return dna::Database { why: "cannot read the senses' store's port from compose" };
+        }
         return dna::Database { present: true, dsn: "http://" + hp };
     }
     // ---- the supervisor: a systemd user unit
     fn unit_name(name: String) -> String { return "hale-dna-" + name; }
     fn install_unit(name: String, unit: String) -> Bool {
-        let script = "umask 077; mkdir -p \"$HOME/.config/systemd/user\"; cat > \"$HOME/.config/systemd/user/" + self.unit_name(name) + ".service\" <<'UNIT'\n" + unit + "UNIT\nloginctl enable-linger \"$USER\" >/dev/null 2>&1 || true; systemctl --user daemon-reload";
+        let script = "umask 077; mkdir -p \"$HOME/.config/systemd/user\"; cat > \"$HOME/.config/systemd/user/"
+            + self.unit_name(name) + ".service\" <<'UNIT'\n" + unit
+            + "UNIT\nloginctl enable-linger \"$USER\" >/dev/null 2>&1 || true; systemctl --user daemon-reload";
         let r = self.run_at(script, "");
         self.last = dna::trim_nl(r.stderr + r.stdout);
         return r.code == 0;
     }
     fn start(name: String) -> Bool {
-        let r = self.run_at("systemctl --user enable --now " + self.unit_name(name) + " && systemctl --user is-active " + self.unit_name(name), "");
+        let r = self.run_at(
+            "systemctl --user enable --now " + self.unit_name(name)
+                + " && systemctl --user is-active " + self.unit_name(name),
+            "",
+        );
         self.last = dna::trim_nl(r.stdout + r.stderr);
         return r.code == 0;
     }
@@ -239,7 +364,11 @@ locus ReferenceInfrastructure {
     // it: stop succeeds when the unit is no longer active.
     fn stop(name: String) -> Bool {
         let u = self.unit_name(name);
-        let r = self.run_at("systemctl --user stop " + u + " || exit 1; if systemctl --user is-active --quiet " + u + "; then echo still active; exit 1; else echo inactive; fi", "");
+        let r = self.run_at(
+            "systemctl --user stop " + u + " || exit 1; if systemctl --user is-active --quiet " + u
+                + "; then echo still active; exit 1; else echo inactive; fi",
+            "",
+        );
         self.last = dna::trim_nl(r.stdout + r.stderr);
         return r.code == 0;
     }
@@ -250,7 +379,12 @@ locus ReferenceInfrastructure {
         return dna::UnitStatus { known: len(detail) > 0, active: r.code == 0, detail: detail };
     }
     fn logs(name: String, lines: Int) -> String {
-        let r = self.run_at("journalctl --user -u " + self.unit_name(name) + " -n " + to_string(lines) + " --no-pager 2>/dev/null || tail -n " + to_string(lines) + " \"$HOME\"/dna/*/.hale/dna/org.log", "");
+        let r = self.run_at(
+            "journalctl --user -u " + self.unit_name(name) + " -n " + to_string(lines)
+                + " --no-pager 2>/dev/null || tail -n " + to_string(lines)
+                + " \"$HOME\"/dna/*/.hale/dna/org.log",
+            "",
+        );
         self.last = dna::trim_nl(r.stderr);
         return r.stdout;
     }
@@ -258,14 +392,23 @@ locus ReferenceInfrastructure {
     // the local vault's directory, mode 600), the value on the shell's
     // stdin, never in argv
     fn put_credential(vault: String, value: String) -> Bool {
-        if !std::secret::vault_name_is_safe(vault) { self.last = "the vault name " + vault + " is not safe"; return false; }
-        let install = "umask 077; d=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}\"; f=\"$d/" + vault + "\"; mkdir -p \"$d\"; IFS= read -r line; printf '%s' \"$line\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
+        if !std::secret::vault_name_is_safe(vault) {
+            self.last = "the vault name " + vault + " is not safe";
+            return false;
+        }
+        let install = "umask 077; d=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}\"; f=\"$d/"
+            + vault
+            + "\"; mkdir -p \"$d\"; IFS= read -r line; printf '%s' \"$line\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
         let r = self.run_at(install, value + "\n");
         self.last = dna::trim_nl(r.stdout + r.stderr);
         return r.code == 0;
     }
     fn credential(vault: String) -> dna::Credential {
-        let r = self.run_at("f=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}/" + vault + "\"; [ -s \"$f\" ] && echo present || echo absent", "");
+        let r = self.run_at(
+            "f=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}/" + vault
+                + "\"; [ -s \"$f\" ] && echo present || echo absent",
+            "",
+        );
         return dna::Credential { name: vault, present: std::str::contains(r.stdout, "present") };
     }
     // ---- the pieces a provisioning script is composed from
@@ -274,7 +417,8 @@ locus ReferenceInfrastructure {
     // names the unit as the body's shell will)
     fn supervisor_fragment(name: String, unit: String) -> String {
         return "umask 077; mkdir -p \"$HOME/.config/systemd/user\" \"$HOME/.config/hale-dna\"\n"
-            + "cat > \"$HOME/.config/systemd/user/hale-dna-$NAME.service\" <<'UNIT'\n" + unit + "UNIT\n"
+            + "cat > \"$HOME/.config/systemd/user/hale-dna-$NAME.service\" <<'UNIT'\n" + unit
+            + "UNIT\n"
             + "loginctl enable-linger \"$USER\" >/dev/null 2>&1 || true\n"
             + "systemctl --user daemon-reload && systemctl --user enable --now \"hale-dna-$NAME\" && echo \"unit hale-dna-$NAME enabled and started (systemctl --user)\"\n";
     }
@@ -290,10 +434,18 @@ locus ReferenceInfrastructure {
     // What the probe must have found for this infrastructure to be
     // installable; "" when it can.
     fn missing(facts: String, dsn: String) -> String {
-        if std::str::contains(facts, "git=no") { return "has no git; the body clones the record with it"; }
-        if std::str::contains(facts, "systemd=no") { return "has no systemd (`systemctl`); the reference supervisor is a user unit — write your own supervisor around `hale dna dev . --no-iris`"; }
-        if std::str::contains(facts, "curl=no") { return "has no curl; the toolchain installs with it"; }
-        if len(dsn) == 0 && std::str::contains(facts, "compose=no") { return "has no docker compose and no --dsn was given; memory has to come from one of them"; }
+        if std::str::contains(facts, "git=no") {
+            return "has no git; the body clones the record with it";
+        }
+        if std::str::contains(facts, "systemd=no") {
+            return "has no systemd (`systemctl`); the reference supervisor is a user unit — write your own supervisor around `hale dna dev . --no-iris`";
+        }
+        if std::str::contains(facts, "curl=no") {
+            return "has no curl; the toolchain installs with it";
+        }
+        if len(dsn) == 0 && std::str::contains(facts, "compose=no") {
+            return "has no docker compose and no --dsn was given; memory has to come from one of them";
+        }
         return "";
     }
 }
@@ -343,8 +495,12 @@ fn compose_key(mark: String) -> String {
     let q = last_index_of(m[0..p], "#");
     return dna::nerves_token(m[(q + 1)..len(m)]);
 }
-fn compose_owner_path(dir: String, mark: String) -> String { return dir + "/" + COMPOSE_OWNER + compose_key(mark); }
-fn compose_override_path(dir: String, mark: String) -> String { return dir + "/" + COMPOSE_OVERRIDE + compose_key(mark) + ".yaml"; }
+fn compose_owner_path(dir: String, mark: String) -> String {
+    return dir + "/" + COMPOSE_OWNER + compose_key(mark);
+}
+fn compose_override_path(dir: String, mark: String) -> String {
+    return dir + "/" + COMPOSE_OVERRIDE + compose_key(mark) + ".yaml";
+}
 const COMPOSE_LABEL: String = "hale.dna.body";
 // How a body's compose services go, by the host and by the fence alike:
 // the containers of the project that carry the body's mark — the daemon's
@@ -357,21 +513,28 @@ const COMPOSE_LABEL: String = "hale.dna.body";
 // Never a project-wide `docker compose down`: that acts on whatever the
 // project holds at that moment, a replacement's services included.
 // Arguments: project, mark, grace.
-const COMPOSE_REMOVE_MARKED: String = "proj=$1 mark=$2 grace=$3; ours=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" --filter \"label=" + COMPOSE_LABEL + "=$mark\") || exit 1; if [ -n \"$ours\" ]; then if [ \"$grace\" -gt 0 ]; then docker stop --time \"$grace\" $ours >/dev/null 2>&1; fi; docker rm -f $ours >/dev/null || exit 1; fi; for n in $(docker network ls -q --filter \"label=com.docker.compose.project=$proj\"); do docker network rm \"$n\" >/dev/null 2>&1 || true; done";
+const COMPOSE_REMOVE_MARKED: String = "proj=$1 mark=$2 grace=$3; ours=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" --filter \"label="
+    + COMPOSE_LABEL
+    + "=$mark\") || exit 1; if [ -n \"$ours\" ]; then if [ \"$grace\" -gt 0 ]; then docker stop --time \"$grace\" $ours >/dev/null 2>&1; fi; docker rm -f $ours >/dev/null || exit 1; fi; for n in $(docker network ls -q --filter \"label=com.docker.compose.project=$proj\"); do docker network rm \"$n\" >/dev/null 2>&1 || true; done";
 
 // The repository's compose file, where compose itself looks for one; ""
 // when there is none.
 fn compose_file_at(root: String) -> String {
     if std::io::fs::file_exists(root + "/compose.yaml") { return root + "/compose.yaml"; }
     if std::io::fs::file_exists(root + "/compose.yml") { return root + "/compose.yml"; }
-    if std::io::fs::file_exists(root + "/docker-compose.yaml") { return root + "/docker-compose.yaml"; }
-    if std::io::fs::file_exists(root + "/docker-compose.yml") { return root + "/docker-compose.yml"; }
+    if std::io::fs::file_exists(root + "/docker-compose.yaml") {
+        return root + "/docker-compose.yaml";
+    }
+    if std::io::fs::file_exists(root + "/docker-compose.yml") {
+        return root + "/docker-compose.yml";
+    }
     return "";
 }
 
 // The organism's compose project for its repository's services.
 fn compose_project(record_id: String, app: String) -> String {
-    return dna::schema_for(record_id) + "-" + (if len(app) > 0 { dna::nerves_app_name(app) } else { "app" });
+    return dna::schema_for(record_id) + "-"
+        + (if len(app) > 0 { dna::nerves_app_name(app) } else { "app" });
 }
 
 locus RepositoryCompose {
@@ -393,7 +556,10 @@ locus RepositoryCompose {
     // `docker compose` on this project and file, newline-separated, run
     // under `env` without the organism's credentials and with `self.env`
     fn base() -> String {
-        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file + (if len(self.override) > 0 { "\n-f\n" + self.override } else { "" }) + "\n--project-directory\n" + self.root;
+        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env
+            + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file
+            + (if len(self.override) > 0 { "\n-f\n" + self.override } else { "" })
+            + "\n--project-directory\n" + self.root;
     }
     // Before `up`: every service labelled with the body's mark, and the
     // record of who owns them, so the body fence can bring down what this
@@ -402,8 +568,14 @@ locus RepositoryCompose {
     fn own(dir: String, host_pid: Int, mark: String) -> String {
         let record = compose_owner_path(dir, mark);
         let labels = compose_override_path(dir, mark);
-        let script = "ovr=$1 rec=$2 pid=$3 mark=$4 proj=$5 file=$6 pdir=$7; shift 7; svcs=$(\"$@\" config --services) || exit 1; umask 077; { echo services:; for s in $svcs; do printf '  %s:\\n    labels:\\n      " + COMPOSE_LABEL + ": \"%s\"\\n' \"$s\" \"$mark\"; done; } > \"$ovr\" && printf '%s\\n' \"$pid\" \"$mark\" \"$proj\" \"$file\" \"$pdir\" \"$ovr\" > \"$rec\"";
-        let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + labels + "\n" + record + "\n" + to_string(host_pid) + "\n" + mark + "\n" + self.project + "\n" + self.file + "\n" + self.root + "\n" + self.base());
+        let script = "ovr=$1 rec=$2 pid=$3 mark=$4 proj=$5 file=$6 pdir=$7; shift 7; svcs=$(\"$@\" config --services) || exit 1; umask 077; { echo services:; for s in $svcs; do printf '  %s:\\n    labels:\\n      "
+            + COMPOSE_LABEL
+            + ": \"%s\"\\n' \"$s\" \"$mark\"; done; } > \"$ovr\" && printf '%s\\n' \"$pid\" \"$mark\" \"$proj\" \"$file\" \"$pdir\" \"$ovr\" > \"$rec\"";
+        let r = dna::run_tool(
+            "sh\n-c\n" + script + "\nsh\n" + labels + "\n" + record + "\n" + to_string(host_pid)
+                + "\n" + mark + "\n" + self.project + "\n" + self.file + "\n" + self.root + "\n"
+                + self.base(),
+        );
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
         self.owner = record;
         self.override = labels;
@@ -418,7 +590,9 @@ locus RepositoryCompose {
     fn up(wait: Int) -> String {
         // from here on something may be up: it goes down with the body
         self.active = true;
-        let r = dna::run_tool(self.argv("up\n-d\n--wait\n--wait-timeout\n" + to_string(wait) + "\n--remove-orphans"));
+        let r = dna::run_tool(
+            self.argv("up\n-d\n--wait\n--wait-timeout\n" + to_string(wait) + "\n--remove-orphans"),
+        );
         self.checked = std::time::now();
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr + "\n" + r.stdout)); }
         return "";
@@ -442,7 +616,10 @@ locus RepositoryCompose {
         if len(down) == 0 { return ""; }
         let again = dna::run_tool(self.argv("up\n-d\n--remove-orphans"));
         let said = std::str::replace(down, "\n", ", ");
-        if again.code != 0 { return "compose: " + said + "; bringing it up again failed: " + dna::last_line(dna::trim_nl(again.stderr)); }
+        if again.code != 0 {
+            return "compose: " + said + "; bringing it up again failed: "
+                + dna::last_line(dna::trim_nl(again.stderr));
+        }
         return "compose: " + said + "; brought up again";
     }
     // Down with the body: "" when it went, else why not.
@@ -453,7 +630,10 @@ locus RepositoryCompose {
         if !self.active { return ""; }
         self.active = false;
         if len(self.mark) == 0 { return ""; }
-        let r = dna::run_tool("sh\n-c\n" + COMPOSE_REMOVE_MARKED + "\nsh\n" + self.project + "\n" + self.mark + "\n10");
+        let r = dna::run_tool(
+            "sh\n-c\n" + COMPOSE_REMOVE_MARKED + "\nsh\n" + self.project + "\n" + self.mark
+                + "\n10",
+        );
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
         if len(self.owner) > 0 { std::io::fs::unlink(self.owner) or discard; }
         if len(self.override) > 0 { std::io::fs::unlink(self.override) or discard; }
@@ -471,7 +651,10 @@ locus RepositoryCompose {
 // own files, never another body's — go once its containers are gone.
 fn fence_compose_down(dir: String, host_pid: Int, mark: String) -> String {
     let script = "f=$1 pid=$2 mark=$3; [ -f \"$f\" ] || exit 0; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ \"$p\" = \"$pid\" ] && [ \"$m\" = \"$mark\" ] || { echo \"not this body's: $proj\"; exit 0; }; sh -c \"$4\" sh \"$proj\" \"$mark\" 0 || { echo \"this body's containers of $proj not removed\"; exit 0; }; rm -f \"$f\" \"$ovr\"; echo \"removed this body's containers of $proj\"";
-    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + compose_owner_path(dir, mark) + "\n" + to_string(host_pid) + "\n" + mark + "\n" + COMPOSE_REMOVE_MARKED);
+    let r = dna::run_tool(
+        "sh\n-c\n" + script + "\nsh\n" + compose_owner_path(dir, mark) + "\n" + to_string(host_pid)
+            + "\n" + mark + "\n" + COMPOSE_REMOVE_MARKED,
+    );
     return dna::trim_nl(r.stdout + r.stderr);
 }
 
@@ -481,7 +664,11 @@ fn fence_compose_down(dir: String, host_pid: Int, mark: String) -> String {
 // then their files. A record whose host still runs is that body's, and its
 // fence's, to settle. The marks swept, one a line.
 fn compose_sweep(dir: String, own_mark: String) -> String {
-    let script = "dir=$1 own=$2 rm=$3; for f in \"$dir\"/" + COMPOSE_OWNER + "*; do [ -f \"$f\" ] || continue; [ \"$f\" = \"$own\" ] && continue; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ -n \"$p\" ] && ps -p \"$p\" >/dev/null 2>&1 && continue; sh -c \"$rm\" sh \"$proj\" \"$m\" 0 || continue; rm -f \"$f\" \"$ovr\"; echo \"$m\"; done";
-    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "\n" + compose_owner_path(dir, own_mark) + "\n" + COMPOSE_REMOVE_MARKED);
+    let script = "dir=$1 own=$2 rm=$3; for f in \"$dir\"/" + COMPOSE_OWNER
+        + "*; do [ -f \"$f\" ] || continue; [ \"$f\" = \"$own\" ] && continue; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ -n \"$p\" ] && ps -p \"$p\" >/dev/null 2>&1 && continue; sh -c \"$rm\" sh \"$proj\" \"$m\" 0 || continue; rm -f \"$f\" \"$ovr\"; echo \"$m\"; done";
+    let r = dna::run_tool(
+        "sh\n-c\n" + script + "\nsh\n" + dir + "\n" + compose_owner_path(dir, own_mark) + "\n"
+            + COMPOSE_REMOVE_MARKED,
+    );
     return dna::trim_nl(r.stdout);
 }

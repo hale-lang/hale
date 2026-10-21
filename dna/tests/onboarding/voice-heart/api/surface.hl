@@ -143,7 +143,11 @@ type Check { name: String = ""; status: HealthStatus; }
 
 /// `Health`. `checks` is each dependency's state on readiness, a map of
 /// values (`{"store": "ok"}`); liveness has none.
-type Health { status: HealthStatus; version: String = ""; checks: bounded[Check; 8] indexed_by name -> status; }
+type Health {
+    status: HealthStatus;
+    version: String = "";
+    checks: bounded[Check; 8] indexed_by name -> status;
+}
 
 // ---- the catalog -----------------------------------------------------
 

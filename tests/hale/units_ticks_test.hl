@@ -21,7 +21,11 @@ fn main() {
     let ask = price(103);
 
     let spread = ask - bid; // Tick
-    std::test::assert_eq_str(to_string(spread), "3tick", "two prices differ by a quantity of ticks");
+    std::test::assert_eq_str(
+        to_string(spread),
+        "3tick",
+        "two prices differ by a quantity of ticks",
+    );
     std::test::assert_eq_int(spread / 1tick, 3, "three of them");
     let mid = bid + (spread / 2 or floor); // half a tick does not exist
     std::test::assert_eq_str(to_string(mid), "101", "1.5 ticks floored: a price prints its count");

@@ -64,34 +64,64 @@ type OrganizationSourcePreparation {
 interface OrganizationSourceInputs {
     fn current(r: OrganizationSourceRequest) -> OrganizationSourceCheck;
     fn materialize(r: OrganizationSourceRequest, worktree: String) -> OrganizationSourceCheck;
-    fn candidate(r: OrganizationSourceRequest, worktree: String, commit: String) -> OrganizationSourceCheck;
+    fn candidate(
+        r: OrganizationSourceRequest,
+        worktree: String,
+        commit: String
+    ) -> OrganizationSourceCheck;
 }
 locus NoOrganizationSourceInputs {
     params { }
-    fn current(r: OrganizationSourceRequest) -> OrganizationSourceCheck { return OrganizationSourceCheck { }; }
-    fn materialize(r: OrganizationSourceRequest, worktree: String) -> OrganizationSourceCheck { return OrganizationSourceCheck { }; }
-    fn candidate(r: OrganizationSourceRequest, worktree: String, commit: String) -> OrganizationSourceCheck { return OrganizationSourceCheck { }; }
+    fn current(r: OrganizationSourceRequest) -> OrganizationSourceCheck {
+        return OrganizationSourceCheck { };
+    }
+    fn materialize(r: OrganizationSourceRequest, worktree: String) -> OrganizationSourceCheck {
+        return OrganizationSourceCheck { };
+    }
+    fn candidate(
+        r: OrganizationSourceRequest,
+        worktree: String,
+        commit: String
+    ) -> OrganizationSourceCheck {
+        return OrganizationSourceCheck { };
+    }
 }
 
 // Post-apply proof is deliberately separate: current/candidate keep their
 // original-base requirements and cannot silently accept a moved destination.
 interface OrganizationSourceApplyInputs {
     fn available() -> Bool;
-    fn applied(r: OrganizationSourceRequest, worktree: String, candidate: String) -> OrganizationSourceCheck;
+    fn applied(
+        r: OrganizationSourceRequest,
+        worktree: String,
+        candidate: String
+    ) -> OrganizationSourceCheck;
 }
 locus NoOrganizationSourceApplyInputs {
     params { }
     fn available() -> Bool { return false; }
-    fn applied(r: OrganizationSourceRequest, worktree: String, candidate: String) -> OrganizationSourceCheck { return OrganizationSourceCheck { }; }
+    fn applied(
+        r: OrganizationSourceRequest,
+        worktree: String,
+        candidate: String
+    ) -> OrganizationSourceCheck {
+        return OrganizationSourceCheck { };
+    }
 }
 
 locus OrganizationSourceRequestCodec {
     params { }
     fn module_path() -> String { return "dna/org/main.hl"; }
-    fn module_for(r: OrganizationSourceRequest) -> String { return if r.source_module == "" { self.module_path() } else { "" }; }
+    fn module_for(r: OrganizationSourceRequest) -> String {
+        return if r.source_module == "" { self.module_path() } else { "" };
+    }
     fn seed() -> String { return "dna/org"; }
     fn mutation_id(r: OrganizationSourceRequest) -> String {
-        return if len(r.request_id) > 0 && self.owner_token(r.source_owner) { own_prefix(r.source_owner) + "source-" + hex_digest(r.request_id) } else { "" };
+        return if len(r.request_id) > 0 && self.owner_token(r.source_owner) {
+            own_prefix(r.source_owner) + "source-" + hex_digest(r.request_id)
+        } else {
+            ""
+        };
     }
     fn candidate_key(r: OrganizationSourceRequest) -> String {
         let id = self.mutation_id(r);
@@ -103,25 +133,45 @@ locus OrganizationSourceRequestCodec {
         let mut i = 0;
         while i < len(value) {
             let c = std::str::byte_at_unchecked(value, i);
-            if !(c >= 48 && c <= 57) && !(c >= 65 && c <= 90) && !(c >= 97 && c <= 122) && c != 45 && c != 95 { return false; }
+            if !(c >= 48 && c <= 57)
+                && !(c >= 65 && c <= 90)
+                && !(c >= 97 && c <= 122)
+                && c != 45
+                && c != 95
+            {
+                return false;
+            }
             i = i + 1;
         }
         return true;
     }
     fn valid(r: OrganizationSourceRequest) -> Bool {
         let text = KnowledgeNodeRequestCodec { };
-        if self.module_for(r) == "" || !text.bounded(r.application_id, 256, true, false) || !text.bounded(r.request_id, 256, true, false)
-            || !digest_well_formed(r.command_fingerprint) || (r.principal_mode != "local" && r.principal_mode != "oidc")
+        if self.module_for(r) == ""
+            || !text.bounded(r.application_id, 256, true, false)
+            || !text.bounded(r.request_id, 256, true, false)
+            || !digest_well_formed(r.command_fingerprint)
+            || (r.principal_mode != "local" && r.principal_mode != "oidc")
             || !text.bounded(r.by, 256, true, false) || !text.bounded(r.authority, 256, true, false)
-            || !text.bounded(r.authority_basis, 2048, true, false) || !self.owner_token(r.source_owner)
+            || !text.bounded(r.authority_basis, 2048, true, false)
+            || !self.owner_token(r.source_owner)
             || !text.bounded(r.source_head, 256, true, false)
             || !digest_well_formed(r.module_digest) || !digest_well_formed(r.dependency_digest)
-            || !text.bounded(r.record_head, 256, true, false) || !text.bounded(r.source_text, 16384, true, true)
+            || !text.bounded(r.record_head, 256, true, false)
+            || !text.bounded(r.source_text, 16384, true, true)
             || !digest_well_formed(r.source_digest) || !text.bounded(r.rationale, 2048, true, true)
             || r.source_digest != digest_of(r.source_text) { return false; }
-        if r.dependency_source != "none" && r.dependency_source != "committed_source" && r.dependency_source != "local_vendor_snapshot" { return false; }
-        if len(r.dependency_receipt) > 0 && !digest_well_formed(r.dependency_receipt) { return false; }
-        return r.dependency_source != "local_vendor_snapshot" || digest_well_formed(r.dependency_receipt);
+        if r.dependency_source != "none"
+            && r.dependency_source != "committed_source"
+            && r.dependency_source != "local_vendor_snapshot"
+        {
+            return false;
+        }
+        if len(r.dependency_receipt) > 0 && !digest_well_formed(r.dependency_receipt) {
+            return false;
+        }
+        return r.dependency_source != "local_vendor_snapshot"
+            || digest_well_formed(r.dependency_receipt);
     }
     // Native subset extraction only. The injected facts adapter validates
     // strict JSON, exact fields/types, canonical bytes and command correlation.
@@ -149,7 +199,10 @@ locus OrganizationSourceRequestCodec {
         };
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) {
-        b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(record_json_quote(value));
+        b.append_str(",\"");
+        b.append_str(key);
+        b.append_str("\":");
+        b.append_str(record_json_quote(value));
     }
     fn fields(b: std::bytes::BytesBuilder, r: OrganizationSourceRequest) {
         b.append_str("{\"application_id\":"); b.append_str(record_json_quote(r.application_id));
@@ -187,23 +240,49 @@ locus OrganizationSourceRequestCodec {
     }
     fn proposed(r: OrganizationSourceRequest, candidate: String) -> String {
         let b = std::bytes::BytesBuilder { }; self.pins(b, r);
-        self.field(b, "candidate_commit", candidate); self.field(b, "review_id", self.mutation_id(r));
+        self.field(b, "candidate_commit", candidate);
+        self.field(b, "review_id", self.mutation_id(r));
         self.field(b, "source_digest", r.source_digest); b.append_str("}");
         return std::str::from_bytes(b.snapshot() or raise);
     }
-    fn failed(r: OrganizationSourceRequest, stage: String, reason_code: String, why: String) -> String {
+    fn failed(
+        r: OrganizationSourceRequest,
+        stage: String,
+        reason_code: String,
+        why: String
+    ) -> String {
         let b = std::bytes::BytesBuilder { }; self.pins(b, r);
-        self.field(b, "stage", stage); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}");
+        self.field(b, "stage", stage);
+        self.field(b, "reason_code", reason_code);
+        self.field(b, "why", why);
+        b.append_str("}");
         return std::str::from_bytes(b.snapshot() or raise);
     }
-    fn refused(r: OrganizationSourceRequest, stage: String, reason_code: String, why: String) -> String { return self.failed(r, stage, reason_code, why); }
-    fn apply_refused(r: OrganizationSourceRequest, decision_command_id: String, candidate: String, reason_code: String) -> String {
+    fn refused(
+        r: OrganizationSourceRequest,
+        stage: String,
+        reason_code: String,
+        why: String
+    ) -> String {
+        return self.failed(r, stage, reason_code, why);
+    }
+    fn apply_refused(
+        r: OrganizationSourceRequest,
+        decision_command_id: String,
+        candidate: String,
+        reason_code: String
+    ) -> String {
         let b = std::bytes::BytesBuilder { };
         b.append_str("{\"format\":\"dna.organization-source.apply-refusal/1\"");
-        self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
-        self.field(b, "request_digest", digest_of(self.canonical(r))); self.field(b, "mutation_id", self.mutation_id(r));
-        self.field(b, "source_owner", r.source_owner); self.field(b, "decision_command_id", decision_command_id);
-        self.field(b, "candidate_commit", candidate); self.field(b, "reason_code", reason_code); b.append_str("}");
+        self.field(b, "request_id", r.request_id);
+        self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "request_digest", digest_of(self.canonical(r)));
+        self.field(b, "mutation_id", self.mutation_id(r));
+        self.field(b, "source_owner", r.source_owner);
+        self.field(b, "decision_command_id", decision_command_id);
+        self.field(b, "candidate_commit", candidate);
+        self.field(b, "reason_code", reason_code);
+        b.append_str("}");
         return std::str::from_bytes(b.snapshot() or raise);
     }
     fn fact(j: Journal, kind: String, entity: String) -> Event {
@@ -221,13 +300,22 @@ locus OrganizationSourceRequestCodec {
     // Gate the Review itself before any live or persisted acceptance. The
     // caller supplies a strict cutoff so later rows cannot legitimize an older
     // untagged decision during restoration.
-    fn verdict_admitted(j: Journal, facts: OrganizationSourceFacts, r: OrganizationSourceRequest, v: Verdict, before: Int) -> Bool {
-        if !self.valid(r) || len(v.command_id) == 0 || v.review_id != self.mutation_id(r) { return false; }
+    fn verdict_admitted(
+        j: Journal,
+        facts: OrganizationSourceFacts,
+        r: OrganizationSourceRequest,
+        v: Verdict,
+        before: Int
+    ) -> Bool {
+        if !self.valid(r) || len(v.command_id) == 0 || v.review_id != self.mutation_id(r) {
+            return false;
+        }
         let original = self.started_request(j, facts, r.request_id);
         if !self.valid(original) || self.canonical(original) != self.canonical(r) { return false; }
         let proposed = self.fact(j, "organization.source.proposed", r.request_id);
         let req = self.fact(j, "review.requested", "review:" + v.review_id);
-        if proposed.kind != "organization.source.proposed" || proposed.body != self.proposed(r, v.subject_digest)
+        if proposed.kind != "organization.source.proposed"
+            || proposed.body != self.proposed(r, v.subject_digest)
             || req.kind != "review.requested" || req.seq >= proposed.seq || proposed.seq >= before
             || native_json_string(req.body, "organization_source_request_id") != r.request_id
             || native_json_string(req.body, "organization_source_digest") != r.source_digest
@@ -235,28 +323,62 @@ locus OrganizationSourceRequestCodec {
         let mut found = false; let mut i = proposed.seq + 1;
         while i < before {
             let e = j.read(i);
-            if e.kind == "review.verdict" && native_json_string(e.body, "command_id") == v.command_id {
+            if e.kind == "review.verdict"
+                && native_json_string(e.body, "command_id") == v.command_id
+            {
                 let exact = facts.verdict(e);
-                if e.entity != v.review_id || native_json_string(e.body, "command_authority_profile") != "dna.organization-review/1"
-                    || native_json_string(native_json_string(e.body, "command_payload"), "application_id") != r.application_id
-                    || exact.command_id != v.command_id || exact.review_id != v.review_id || exact.subject_digest != v.subject_digest
-                    || exact.verdict != v.verdict || exact.reviewer != v.reviewer || exact.authority != v.authority || exact.comment != v.comment { return false; }
+                if e.entity != v.review_id
+                    || native_json_string(
+                        e.body,
+                        "command_authority_profile",
+                    ) != "dna.organization-review/1"
+                    || native_json_string(
+                        native_json_string(e.body, "command_payload"),
+                        "application_id",
+                    ) != r.application_id
+                    || exact.command_id != v.command_id
+                    || exact.review_id != v.review_id
+                    || exact.subject_digest != v.subject_digest
+                    || exact.verdict != v.verdict
+                    || exact.reviewer != v.reviewer
+                    || exact.authority != v.authority
+                    || exact.comment != v.comment
+                {
+                    return false;
+                }
                 found = true;
             }
             i = i + 1;
         }
         return found;
     }
-    fn admitted(j: Journal, facts: OrganizationSourceFacts, request_id: String) -> OrganizationSourceRequest {
+    fn admitted(
+        j: Journal,
+        facts: OrganizationSourceFacts,
+        request_id: String
+    ) -> OrganizationSourceRequest {
         let e = self.fact(j, "organization.source.requested", request_id); let r = facts.decode(e);
         if e.kind != "organization.source.requested" || !self.valid(r) || r.request_id != request_id
-            || j.revision() == 0 || j.read(0).digest != r.application_id { return OrganizationSourceRequest { }; }
+            || j.revision() == 0 || j.read(0).digest != r.application_id {
+                return OrganizationSourceRequest { };
+            }
         return r;
     }
-    fn started_request(j: Journal, facts: OrganizationSourceFacts, request_id: String) -> OrganizationSourceRequest {
-        let r = self.admitted(j, facts, request_id); let e = self.fact(j, "organization.source.started", request_id);
+    fn started_request(
+        j: Journal,
+        facts: OrganizationSourceFacts,
+        request_id: String
+    ) -> OrganizationSourceRequest {
+        let r = self.admitted(j, facts, request_id);
+        let e = self.fact(j, "organization.source.started", request_id);
         let incoming = self.fact(j, "organization.source.requested", request_id);
-        if !self.valid(r) || e.kind != "organization.source.started" || e.body != self.started(r) || incoming.seq >= e.seq { return OrganizationSourceRequest { }; }
+        if !self.valid(r)
+            || e.kind != "organization.source.started"
+            || e.body != self.started(r)
+            || incoming.seq >= e.seq
+        {
+            return OrganizationSourceRequest { };
+        }
         return r;
     }
 }

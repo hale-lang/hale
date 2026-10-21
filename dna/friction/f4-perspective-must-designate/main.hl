@@ -2,8 +2,12 @@
 // dispatches through the program-global slot the ASSEMBLY designated.
 perspective Performing { fn perform(x: Int) -> Int; fn name() -> String; }
 
-locus Doubler : serves Performing { fn perform(x: Int) -> Int { return x * 2; } fn name() -> String { return "doubler"; } }
-locus Tripler : serves Performing { fn perform(x: Int) -> Int { return x * 3; } fn name() -> String { return "tripler"; } }
+locus Doubler : serves Performing {
+    fn perform(x: Int) -> Int { return x * 2; } fn name() -> String { return "doubler"; }
+}
+locus Tripler : serves Performing {
+    fn perform(x: Int) -> Int { return x * 3; } fn name() -> String { return "tripler"; }
+}
 
 locus Attempt {
     params { performer: perspective(Performing); out: Int = 0; }

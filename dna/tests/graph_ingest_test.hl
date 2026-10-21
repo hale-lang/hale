@@ -15,7 +15,11 @@
 import "../core" as dna;
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -71,7 +75,8 @@ fn edge_line(body: String) -> String {
     let mut out = std::json::find_string_field(body, "kind");
     let mut it = std::json::array_first(std::json::find_field_raw(body, "members"));
     while !it.done {
-        out = out + "|" + std::json::find_string_field(it.element, "role") + "=" + std::json::find_string_field(it.element, "node");
+        out = out + "|" + std::json::find_string_field(it.element, "role") + "="
+            + std::json::find_string_field(it.element, "node");
         it = std::json::array_next(it);
     }
     let via = std::json::find_string_field(body, "via");
@@ -117,13 +122,30 @@ locus App {
         let scratch = dna::scratch_root("graph-ingest");
         let repo = scratch + "/voice";
         let made = dna::voice_repo(source(), repo, "t", false);
-        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+        std::test::assert_eq_int(
+            made.code,
+            0,
+            "the fixture, a repository of its own: " + made.stderr,
+        );
 
         // ---- init on the repository: no application at its root
         let init = dna::grafted(repo, ".\n--attach");
-        std::test::assert_eq_int(init.code, 0, "graft reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "graph   178 node(s)"), "and says what it read: " + init.stdout);
-        std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 6 process, 8 seed, 6 contract, 98 noun, 3 deployment, 0 gate, 8 document, 31 witness, 0 position, 0 work"), "by kind: " + init.stdout);
+        std::test::assert_eq_int(
+            init.code,
+            0,
+            "graft reads the repository: " + init.stdout + init.stderr,
+        );
+        std::test::assert(
+            std::str::contains(init.stdout, "graph   178 node(s)"),
+            "and says what it read: " + init.stdout,
+        );
+        std::test::assert(
+            std::str::contains(
+                init.stdout,
+                "1 purpose, 17 axiom, 6 process, 8 seed, 6 contract, 98 noun, 3 deployment, 0 gate, 8 document, 31 witness, 0 position, 0 work",
+            ),
+            "by kind: " + init.stdout,
+        );
 
         // ---- the record, read back
         let journal = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
@@ -135,20 +157,33 @@ locus App {
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             let kind = std::json::find_string_field(line, "kind");
             let body = std::json::find_string_field(line, "body");
-            if kind == "graph.node" { self.nodes = self.nodes + std::json::find_string_field(body, "kind") + ":" + std::json::find_string_field(body, "name") + "\n"; }
+            if kind == "graph.node" {
+                self.nodes = self.nodes + std::json::find_string_field(body, "kind") + ":"
+                    + std::json::find_string_field(body, "name") + "\n";
+            }
             if kind == "graph.edge" {
                 self.edges = self.edges + edge_line(body) + "\n";
                 // a node before any edge that names it
                 let mut m = std::json::array_first(std::json::find_field_raw(body, "members"));
                 while !m.done {
                     let node = std::json::find_string_field(m.element, "node");
-                    if std::json::find_string_field(m.element, "role") != "holder" && !std::str::starts_with(node, "practice:") && !std::str::contains("\n" + self.nodes, "\n" + node + "\n") { self.dangling = self.dangling + std::json::find_string_field(line, "entity") + " names " + node + "\n"; }
+                    if std::json::find_string_field(m.element, "role") != "holder"
+                        && !std::str::starts_with(node, "practice:")
+                        && !std::str::contains("\n" + self.nodes, "\n" + node + "\n")
+                    {
+                        self.dangling = self.dangling + std::json::find_string_field(line, "entity")
+                            + " names " + node + "\n";
+                    }
                     m = std::json::array_next(m);
                 }
             }
         }
 
-        std::test::assert_eq_str(self.dangling, "", "every edge names nodes the record already holds");
+        std::test::assert_eq_str(
+            self.dangling,
+            "",
+            "every edge names nodes the record already holds",
+        );
 
         // GRAPH.md, "Checkable"
         let kinds = "purpose axiom process seed contract deployment gate document witness position work";
@@ -156,12 +191,27 @@ locus App {
         let mut k = 0;
         while len(dna::nth_word(kinds, k)) > 0 {
             let kind = dna::nth_word(kinds, k);
-            std::test::assert_eq_int(self.count(self.nodes, kind + ":"), std::str::parse_int(dna::nth_word(want, k)) or - 1, "the " + kind + " nodes: " + self.nodes);
+            std::test::assert_eq_int(
+                self.count(self.nodes, kind + ":"),
+                std::str::parse_int(dna::nth_word(want, k)) or - 1,
+                "the " + kind + " nodes: " + self.nodes,
+            );
             k = k + 1;
         }
-        std::test::assert(std::str::contains(self.nodes, "purpose:voice\n"), "the purpose is the README's");
-        std::test::assert(std::str::contains(self.nodes, "deployment:personal\n") && std::str::contains(self.nodes, "deployment:scaled-out\n"), "the deployments the README's table names");
-        std::test::assert(std::str::contains(self.nodes, "seed:ui\n") && !std::str::contains(self.nodes, "seed:ui/"), "ui is one seed: its workspace members are its own");
+        std::test::assert(
+            std::str::contains(self.nodes, "purpose:voice\n"),
+            "the purpose is the README's",
+        );
+        std::test::assert(
+            std::str::contains(self.nodes, "deployment:personal\n")
+                && std::str::contains(self.nodes, "deployment:scaled-out\n"),
+            "the deployments the README's table names",
+        );
+        std::test::assert(
+            std::str::contains(self.nodes, "seed:ui\n")
+                && !std::str::contains(self.nodes, "seed:ui/"),
+            "ui is one seed: its workspace members are its own",
+        );
 
         // "The edges, as they stand": each, member for member
         let mut edges = EDGES;
@@ -169,22 +219,37 @@ locus App {
             let nl = std::str::index_of(edges, "\n");
             let e = edges[0..nl];
             edges = edges[(nl + 1)..len(edges)];
-            std::test::assert(std::str::contains(self.edges, "\n" + e + "\n"), "GRAPH.md's edge: " + e);
+            std::test::assert(
+                std::str::contains(self.edges, "\n" + e + "\n"),
+                "GRAPH.md's edge: " + e,
+            );
         }
         let counted = "meets 6 constrains 13 runs 3 gates 0 witnesses 12";
         k = 0;
         while len(dna::nth_word(counted, k)) > 0 {
             let kind = dna::nth_word(counted, k);
-            std::test::assert_eq_int(self.count(self.edges, kind + "|"), std::str::parse_int(dna::nth_word(counted, k + 1)) or - 1, "exactly GRAPH.md's " + kind + " edges");
+            std::test::assert_eq_int(
+                self.count(self.edges, kind + "|"),
+                std::str::parse_int(dna::nth_word(counted, k + 1)) or - 1,
+                "exactly GRAPH.md's " + kind + " edges",
+            );
             k = k + 2;
         }
-        std::test::assert_eq_int(self.count(self.edges, "unfold|parent=purpose:voice|child=axiom:"), 17, "the purpose unfolds into every axiom");
+        std::test::assert_eq_int(
+            self.count(self.edges, "unfold|parent=purpose:voice|child=axiom:"),
+            17,
+            "the purpose unfolds into every axiom",
+        );
 
         // ---- grafted again: the graft goes on where it stopped, which is
         // its end; the record stands, nothing is read twice
         let again = dna::grafted(repo, ".\n--attach");
         std::test::assert_eq_int(again.code, 0, "grafted again: " + again.stderr);
-        std::test::assert(std::str::contains(again.stdout, "kept    the record (memory holds it; not reseeded)") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
+        std::test::assert(
+            std::str::contains(again.stdout, "kept    the record (memory holds it; not reseeded)")
+                && !std::str::contains(again.stdout, "graph   "),
+            "the record is not reseeded: " + again.stdout,
+        );
 
         // ---- the structure policy, written before init (GH #1091): the
         // operational roles it names, each once, under every deployment;
@@ -193,15 +258,45 @@ locus App {
         let odd = scratch + "/odd";
         let opted_made = dna::voice_repo(source(), opted, "t", false);
         let odd_made = dna::voice_repo(source(), odd, "t", false);
-        std::test::assert(opted_made.code == 0 && odd_made.code == 0, "two more copies: " + opted_made.stderr + odd_made.stderr);
-        let copies = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d/dna/org\" || exit 1; done && printf 'fn operational_roles() -> String {\\n    return \"support on-call support\";\\n}\\n' > \"$1/dna/org/structure.hl\" && printf 'fn operational_roles() -> String {\\n    return \"oncall\";\\n}\\n' > \"$2/dna/org/structure.hl\" && for d in \"$1\" \"$2\"; do (cd \"$d\" && git add -A && git commit -q -m structure) || exit 1; done\nsh\n" + opted + "\n" + odd);
-        std::test::assert_eq_int(copies.code, 0, "two copies with a structure policy each: " + copies.stderr);
+        std::test::assert(
+            opted_made.code == 0 && odd_made.code == 0,
+            "two more copies: " + opted_made.stderr + odd_made.stderr,
+        );
+        let copies = dna::run_tool(
+            "sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d/dna/org\" || exit 1; done && printf 'fn operational_roles() -> String {\\n    return \"support on-call support\";\\n}\\n' > \"$1/dna/org/structure.hl\" && printf 'fn operational_roles() -> String {\\n    return \"oncall\";\\n}\\n' > \"$2/dna/org/structure.hl\" && for d in \"$1\" \"$2\"; do (cd \"$d\" && git add -A && git commit -q -m structure) || exit 1; done\nsh\n"
+                + opted + "\n" + odd,
+        );
+        std::test::assert_eq_int(
+            copies.code,
+            0,
+            "two copies with a structure policy each: " + copies.stderr,
+        );
         let with_roles = dna::grafted(opted, ".\n--attach");
-        std::test::assert_eq_int(with_roles.code, 0, "init with roles: " + with_roles.stdout + with_roles.stderr);
-        std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 34 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
+        std::test::assert_eq_int(
+            with_roles.code,
+            0,
+            "init with roles: " + with_roles.stdout + with_roles.stderr,
+        );
+        std::test::assert(
+            std::str::contains(with_roles.stdout, "structure.hl (already exists)")
+                && std::str::contains(with_roles.stdout, "; 34 proposal(s)"),
+            "the policy is kept, and two roles under each of three deployments: "
+                + with_roles.stdout,
+        );
         let refused = dna::grafted(odd, ".\n--attach");
-        std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "dna/org/structure.hl names `oncall`, which is not an operational role"), "a word that is no role is refused: " + refused.stdout + refused.stderr);
-        std::test::assert_eq_str(seeded(odd), "", "and nothing is seeded: the record holds its birth alone");
+        std::test::assert(
+            refused.code != 0
+                && std::str::contains(
+                    refused.stderr,
+                    "dna/org/structure.hl names `oncall`, which is not an operational role",
+                ),
+            "a word that is no role is refused: " + refused.stdout + refused.stderr,
+        );
+        std::test::assert_eq_str(
+            seeded(odd),
+            "",
+            "and nothing is seeded: the record holds its birth alone",
+        );
 
         dna::scratch_done(scratch);
     }

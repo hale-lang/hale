@@ -18,26 +18,61 @@ fn check() {
     std::io::fs::mkdir(root) or discard;
     let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
     std::test::assert_eq_int(init.code, 0, "native relay Record");
-    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(root),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let journal = dna::RecordJournal { repo: root, author: "board-member" };
     let born = journal.revision();
-    let v = dna::Verdict { command_id: "command/unsigned", review_id: "k:pending", subject_digest: "sha256:pending", verdict: "approve", reviewer: "board-member", authority: "board" };
+    let v = dna::Verdict {
+        command_id: "command/unsigned",
+        review_id: "k:pending",
+        subject_digest: "sha256:pending",
+        verdict: "approve",
+        reviewer: "board-member",
+        authority: "board",
+    };
     let b = std::json::Builder { };
-    b.begin_object(); b.string_field("command_id", v.command_id); b.string_field("review_id", v.review_id);
+    b.begin_object();
+    b.string_field("command_id", v.command_id);
+    b.string_field("review_id", v.review_id);
     b.string_field("subject_digest", v.subject_digest); b.string_field("verdict", v.verdict);
-    b.string_field("reviewer", v.reviewer); b.string_field("authority", v.authority); b.string_field("comment", ""); b.end_object();
+    b.string_field("reviewer", v.reviewer);
+    b.string_field("authority", v.authority);
+    b.string_field("comment", "");
+    b.end_object();
     let input = journal.append_exact(journal.revision(), "review.verdict", v.review_id, b.result());
     std::test::assert(input.ok, "unsigned native trigger input");
     let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
     std::test::assert_eq_int(trust.code, 0, "signed policy");
-    std::test::assert_eq_int(relay_once(root, "\n"), 0, "first unsigned attempt never reaches the nerves");
+    std::test::assert_eq_int(
+        relay_once(root, "\n"),
+        0,
+        "first unsigned attempt never reaches the nerves",
+    );
     let refreshed = journal.refresh();
     std::test::assert_eq_int(journal.revision(), born + 2, "its refusal is recorded");
     let p = host::open_projection(root, ".", "", dna::Memory { repo: root });
-    let expired = host::relay_mark("\n", host::fact_key(p, born), std::time::now() - host::RELAY_AGAIN_AFTER - 1);
-    std::test::assert_eq_int(relay_once(root, expired), 0, "expired retry still refuses the unverified row before transport");
-    let fresh = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
-    std::test::assert_eq_int(fresh.revision(), born + 2, "retry creates no acceptance and no second refusal");
+    let expired = host::relay_mark(
+        "\n",
+        host::fact_key(p, born),
+        std::time::now() - host::RELAY_AGAIN_AFTER - 1,
+    );
+    std::test::assert_eq_int(
+        relay_once(root, expired),
+        0,
+        "expired retry still refuses the unverified row before transport",
+    );
+    let fresh = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: root },
+        ledger: dna::MemoryLedger { repo: root },
+    };
+    std::test::assert_eq_int(
+        fresh.revision(),
+        born + 2,
+        "retry creates no acceptance and no second refusal",
+    );
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }
 

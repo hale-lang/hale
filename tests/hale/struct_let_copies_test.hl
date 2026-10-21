@@ -12,12 +12,19 @@ locus Child {
     fn replace() { self.row = Row { value: "replaced", n: 4 }; }
 }
 main locus App {
-    params { row: Row = Row { value: "pending", n: 7, inner: Inner { tag: "t1" } }; kid: Child = Child { }; }
+    params {
+        row: Row = Row { value: "pending", n: 7, inner: Inner { tag: "t1" } };
+        kid: Child = Child { };
+    }
     run() {
         // replacement of the source, same locus
         let saved = self.row;
         self.row = Row { value: "next", n: 8 };
-        std::test::assert_eq_str(saved.value, "pending", "the binding kept the String it was read with");
+        std::test::assert_eq_str(
+            saved.value,
+            "pending",
+            "the binding kept the String it was read with",
+        );
         std::test::assert_eq_int(saved.n, 7, "and the Int");
         std::test::assert_eq_str(saved.inner.tag, "t1", "and the nested struct");
         // mutation through the binding
@@ -25,10 +32,18 @@ main locus App {
         copy.value = "changed";
         copy.n = 99;
         copy.inner.tag = "t2";
-        std::test::assert_eq_str(self.row.value, "next", "writing the binding's String left the source alone");
+        std::test::assert_eq_str(
+            self.row.value,
+            "next",
+            "writing the binding's String left the source alone",
+        );
         std::test::assert_eq_int(self.row.n, 8, "and its Int");
         std::test::assert_eq_str(self.row.inner.tag, "", "and its nested struct");
-        std::test::assert_eq_str(copy.value + to_string(copy.n) + copy.inner.tag, "changed99t2", "the binding holds the writes");
+        std::test::assert_eq_str(
+            copy.value + to_string(copy.n) + copy.inner.tag,
+            "changed99t2",
+            "the binding holds the writes",
+        );
         // mutation through the source
         self.row.n = 10;
         self.row.value = "again";
@@ -37,9 +52,17 @@ main locus App {
         // a child's field, replaced by the child
         let theirs = self.kid.row;
         self.kid.replace();
-        std::test::assert_eq_str(theirs.value, "child", "a child's struct field, read before the child replaced it");
+        std::test::assert_eq_str(
+            theirs.value,
+            "child",
+            "a child's struct field, read before the child replaced it",
+        );
         std::test::assert_eq_int(theirs.n, 3, "keeps its Int");
-        std::test::assert_eq_str(self.kid.row.value, "replaced", "while the child holds the new one");
+        std::test::assert_eq_str(
+            self.kid.row.value,
+            "replaced",
+            "while the child holds the new one",
+        );
         // local to local
         let local = Row { value: "loc", n: 1 };
         let mut c2 = local;

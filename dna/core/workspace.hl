@@ -33,7 +33,11 @@ fn reap_on_exit(dir: String) { reap_after(to_string(std::process::pid()), dir); 
 // while it exists: by the time the watcher fires, `scratch_done` has
 // removed it and there is nothing left to resolve.
 fn reap_after(pid: String, dir: String) {
-    let r = run_tool("sh\n-c\n" + REAP_ROOTS + " (while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; " + REAP_MATCH + " | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + pid + "\n" + dir);
+    let r = run_tool(
+        "sh\n-c\n" + REAP_ROOTS + " (while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; "
+            + REAP_MATCH + " | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n"
+            + pid + "\n" + dir,
+    );
 }
 
 // The processes under `dir`, one pid a line: those whose command line names
@@ -86,7 +90,8 @@ const REAP_MATCH: String = "{ ps -eo pid=,args= | awk -v d=\"$d/\" '$2 != \"awk\
 // the environment it was given are its own — and from `start`, whose
 // child never leads a group, so is its pid.
 fn in_new_session(argv: String) -> String {
-    return "sh\n-c\nif command -v setsid >/dev/null 2>&1; then exec setsid \"$@\"; fi; exec perl -MPOSIX -e 'if (getpgrp() == $$) { defined(my $k = fork) or die \"fork: $!\\n\"; exit 0 if $k } POSIX::setsid() >= 0 or die \"setsid: $!\\n\"; exec @ARGV or die \"exec $ARGV[0]: $!\\n\"' \"$@\"\nsh\n" + argv;
+    return "sh\n-c\nif command -v setsid >/dev/null 2>&1; then exec setsid \"$@\"; fi; exec perl -MPOSIX -e 'if (getpgrp() == $$) { defined(my $k = fork) or die \"fork: $!\\n\"; exit 0 if $k } POSIX::setsid() >= 0 or die \"setsid: $!\\n\"; exec @ARGV or die \"exec $ARGV[0]: $!\\n\"' \"$@\"\nsh\n"
+        + argv;
 }
 
 // Every process in the session `leader` began, newline-separated ("" when
@@ -145,7 +150,9 @@ fn body_scan() -> String {
     // probing shell itself: macOS shows a process its own environment and
     // no one else's, so a self-probe said "ps" where the scan then found
     // nothing (GH #970).
-    let probe = run_tool("env\nHALE_DNA_SCAN_PROBE=yes\nsh\n-c\nsleep 5 & p=$!; n=$(ps -E -ww -o command= -p $p 2>/dev/null | grep -c HALE_DNA_SCAN_PROBE=yes); kill $p 2>/dev/null; echo $n");
+    let probe = run_tool(
+        "env\nHALE_DNA_SCAN_PROBE=yes\nsh\n-c\nsleep 5 & p=$!; n=$(ps -E -ww -o command= -p $p 2>/dev/null | grep -c HALE_DNA_SCAN_PROBE=yes); kill $p 2>/dev/null; echo $n",
+    );
     if probe.code == 0 && trim_nl(probe.stdout) != "0" { return "ps"; }
     return "";
 }
@@ -159,7 +166,10 @@ fn marked(mark: String) -> String {
     if scan == "proc" {
         // the needle is this call's argument, never its environment, so
         // the shell reading /proc does not match itself
-        let r = run_tool("sh\n-c\nfor e in /proc/[0-9]*/environ; do if grep -a -q -F \"$1\" \"$e\" 2>/dev/null; then p=${e#/proc/}; echo ${p%/environ}; fi; done\nsh\n" + needle);
+        let r = run_tool(
+            "sh\n-c\nfor e in /proc/[0-9]*/environ; do if grep -a -q -F \"$1\" \"$e\" 2>/dev/null; then p=${e#/proc/}; echo ${p%/environ}; fi; done\nsh\n"
+                + needle,
+        );
         return trim_nl(r.stdout);
     }
     if scan == "ps" {
@@ -171,7 +181,10 @@ fn marked(mark: String) -> String {
         // `-A`: every process, not the ones sharing this call's terminal,
         // which is how a BSD `ps` given no selection reads — and an orphan
         // shares no terminal with anything (macOS, first run of this scan)
-        let r = run_tool("env\nHALE_DNA_SCAN_NEEDLE=" + needle + "\nsh\n-c\nps -A -E -ww -o pid=,ppid=,command= 2>/dev/null | awk -v me=$$ '$1 != me && $2 != me && index($0, ENVIRON[\"HALE_DNA_SCAN_NEEDLE\"]) { print $1 }'");
+        let r = run_tool(
+            "env\nHALE_DNA_SCAN_NEEDLE=" + needle
+                + "\nsh\n-c\nps -A -E -ww -o pid=,ppid=,command= 2>/dev/null | awk -v me=$$ '$1 != me && $2 != me && index($0, ENVIRON[\"HALE_DNA_SCAN_NEEDLE\"]) { print $1 }'",
+        );
         return trim_nl(r.stdout);
     }
     return "";
@@ -201,7 +214,10 @@ fn run_failed(e: IoError) -> std::process::ProcessOutput {
 // is no such file. std::io::fs reads no permissions, and stat spells the
 // question per platform: `-f %Lp` on macOS (BSD), `-c %a` elsewhere (GNU).
 fn file_mode(path: String) -> String {
-    let r = run_tool("sh\n-c\nif [ \"$(uname -s)\" = Darwin ]; then stat -f %Lp \"$1\"; else stat -c %a \"$1\"; fi\nsh\n" + path);
+    let r = run_tool(
+        "sh\n-c\nif [ \"$(uname -s)\" = Darwin ]; then stat -f %Lp \"$1\"; else stat -c %a \"$1\"; fi\nsh\n"
+            + path,
+    );
     return if r.code == 0 { trim_nl(r.stdout) } else { "" };
 }
 
@@ -225,7 +241,10 @@ fn clone_repo(src: String, dst: String) -> RunResult {
 // `clone_repo` with more of `git clone`'s flags, one per line and each
 // line ended (`"-b\nmain\n"` checks out `main`).
 fn clone_repo_with(flags: String, src: String, dst: String) -> RunResult {
-    return run_tool("git\nclone\n--quiet\n--no-local\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + flags + src + "\n" + dst);
+    return run_tool(
+        "git\nclone\n--quiet\n--no-local\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n"
+            + flags + src + "\n" + dst,
+    );
 }
 
 // `argv` under a wall-clock limit of `secs`; exit 124 when the limit
@@ -235,7 +254,10 @@ fn clone_repo_with(flags: String, src: String, dst: String) -> RunResult {
 // ends the tool (perl ships on every Mac). Without this, a Mac's every
 // timed git transfer failed on the missing tool (GH #970).
 fn run_tool_timeout(secs: Int, argv: String) -> RunResult {
-    return run_tool("sh\n-c\nif command -v timeout >/dev/null 2>&1; then exec timeout \"$@\"; fi; s=$1; shift; perl -e 'alarm shift; exec @ARGV or exit 127' \"$s\" \"$@\"; rc=$?; [ $rc -eq 142 ] && rc=124; exit $rc\nsh\n" + to_string(secs) + "\n" + argv);
+    return run_tool(
+        "sh\n-c\nif command -v timeout >/dev/null 2>&1; then exec timeout \"$@\"; fi; s=$1; shift; perl -e 'alarm shift; exec @ARGV or exit 127' \"$s\" \"$@\"; rc=$?; [ $rc -eq 142 ] && rc=124; exit $rc\nsh\n"
+            + to_string(secs) + "\n" + argv,
+    );
 }
 
 // A file's SHA-256 as lowercase hex, "" when it cannot be read.
@@ -253,7 +275,10 @@ fn sha256_file(path: String) -> String {
 // vendor, `.git` (a worktree's is a FILE, so it is named as well as
 // its tree) and `.hale` are never part of a change (GH #583 M3/M4).
 fn list_files(dir: String) -> String {
-    let r = run_tool("sh\n-c\ncd \"$0\" && find . -type f ! -path \"./vendor/*\" ! -path \"./.git\" ! -path \"./.git/*\" ! -path \"./.hale\" ! -path \"./.hale/*\" | sed \"s|^./||\" | sort\n" + dir);
+    let r = run_tool(
+        "sh\n-c\ncd \"$0\" && find . -type f ! -path \"./vendor/*\" ! -path \"./.git\" ! -path \"./.git/*\" ! -path \"./.hale\" ! -path \"./.hale/*\" | sed \"s|^./||\" | sort\n"
+            + dir,
+    );
     return if r.code == 0 { r.stdout } else { "" };
 }
 
@@ -280,12 +305,17 @@ fn apply_patch_in(worktree: String, patch: String) -> RunResult {
 // Every path a worktree's index changes, one per line, a rename's source
 // and destination both, unquoted (GH #1156).
 fn staged_paths(worktree: String) -> RunResult {
-    return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--cached\n--name-only\n--no-renames");
+    return run_tool(
+        "git\n-C\n" + worktree
+            + "\n-c\ncore.quotePath=false\ndiff\n--cached\n--name-only\n--no-renames",
+    );
 }
 
 fn trim_nl(s: String) -> String {
     let mut e = len(s);
-    while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }
+    while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") {
+        e = e - 1;
+    }
     return s[0..e];
 }
 
@@ -368,7 +398,9 @@ fn graph_ownership_of(lines: String) -> String {
 // the port, which the pid-hashed starts below keep apart.
 fn free_port(index: Int) -> Int {
     let span = 12768;
-    let h = std::crypto::sha256(std::bytes::from_string("free_port:" + to_string(std::process::pid())));
+    let h = std::crypto::sha256(
+        std::bytes::from_string("free_port:" + to_string(std::process::pid())),
+    );
     let offset = (std::bytes::at(h, 0) or 0) * 256 + (std::bytes::at(h, 1) or 0);
     let start = (offset + index * 512) % span;
     let mut i = 0;
@@ -381,7 +413,11 @@ fn free_port(index: Int) -> Int {
         }
         i = i + 1;
     }
-    println("dna::free_port: every port from ", 20000 + start, " on (512 candidates in 20000..32767) was refused at bind; each errno is above. The caller is handed -1.");
+    println(
+        "dna::free_port: every port from ",
+        20000 + start,
+        " on (512 candidates in 20000..32767) was refused at bind; each errno is above. The caller is handed -1.",
+    );
     return -1;
 }
 
@@ -455,16 +491,43 @@ fn test_habitat() -> String {
     if len(slice) > 0 {
         let vault = trim_nl(std::env::var("HALE_DNA_TEST_HABITAT_VAULT"));
         // the habitat's secrets, lent: copied where this file's vault has none
-        let lent = run_tool("sh\n-c\numask 077 && mkdir -p \"$2\" && for f in \"$1\"/*; do [ -f \"$f\" ] || continue; b=$(basename \"$f\"); [ -e \"$2/$b\" ] || cp \"$f\" \"$2/$b\"; done\nsh\n" + vault + "\n" + std::secret::vault_local_dir());
-        if lent.code != 0 { eprintln("dna: the slice habitat's secrets could not be lent: ", lent.stderr); return ""; }
+        let lent = run_tool(
+            "sh\n-c\numask 077 && mkdir -p \"$2\" && for f in \"$1\"/*; do [ -f \"$f\" ] || continue; b=$(basename \"$f\"); [ -e \"$2/$b\" ] || cp \"$f\" \"$2/$b\"; done\nsh\n"
+                + vault + "\n" + std::secret::vault_local_dir(),
+        );
+        if lent.code != 0 {
+            eprintln("dna: the slice habitat's secrets could not be lent: ", lent.stderr);
+            return "";
+        }
         return slice;
     }
     let dir = local_habitat_dir();
-    if std::io::fs::file_exists(dir + "/genome/hale.toml") && !std::io::fs::file_exists(dir + "/birth.pending") && len(record_scope(dir + "/genome")) > 0 { return dir; }
-    let operator = len(trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0 && len(trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
+    if std::io::fs::file_exists(dir + "/genome/hale.toml")
+        && !std::io::fs::file_exists(dir + "/birth.pending")
+        && len(record_scope(dir + "/genome")) > 0
+    {
+        return dir;
+    }
+    let operator = len(trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0
+        && len(trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
     let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
-    let up = run_tool_timeout(900, "sh\n-c\n" + (if operator { "" } else { "unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; " }) + "export HALE_DNA_DISCOVER=off; exec \"$1\" habitat up --no-body --backends \"$2\"\nsh\n" + hale + "\n" + (if operator { "operator" } else { "own" }));
-    if up.code != 0 { eprintln("dna: the test's habitat was not born: ", up.stdout, up.stderr); return ""; }
+    let up = run_tool_timeout(
+        900,
+        "sh\n-c\n"
+            + (
+                if operator {
+                    ""
+                } else {
+                    "unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; "
+                }
+            )
+            + "export HALE_DNA_DISCOVER=off; exec \"$1\" habitat up --no-body --backends \"$2\"\nsh\n"
+            + hale + "\n" + (if operator { "operator" } else { "own" }),
+    );
+    if up.code != 0 {
+        eprintln("dna: the test's habitat was not born: ", up.stdout, up.stderr);
+        return "";
+    }
     return dir;
 }
 
@@ -482,7 +545,11 @@ fn grafted(dir: String, args: String) -> RunResult {
     let habitat = test_habitat();
     if len(habitat) == 0 { return RunResult { code: -1, stderr: "no habitat to graft into" }; }
     let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
-    return run_tool_timeout(900, "sh\n-c\ncd \"$1\" && export HALE_DNA_HABITAT=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && exec \"$@\"\nsh\n" + dir + "\n" + habitat + "\n" + hale + "\nhabitat\ngraft\n" + args);
+    return run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && export HALE_DNA_HABITAT=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && exec \"$@\"\nsh\n"
+            + dir + "\n" + habitat + "\n" + hale + "\nhabitat\ngraft\n" + args,
+    );
 }
 
 // The CI jobs of the voice repository, as the gates a fixture about routing
@@ -533,11 +600,18 @@ jobs:
 // The result is the chain's last step.
 fn voice_repo(source: String, dir: String, who: String, gates: Bool) -> RunResult {
     let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
-    let copied = run_tool("sh\n-c\nmkdir -p \"$2/.github/workflows\" && cp -r \"$1/dna/tests/onboarding/voice-heart/.\" \"$2/\" && cd \"$2\" && sed 's/^needs = .*/needs = [\"memory\", \"nerves\", \"database\"]/' hale.toml > hale.toml.next && mv hale.toml.next hale.toml && grep -qF 'needs = [\"memory\", \"nerves\", \"database\"]' hale.toml\nsh\n" + source + "\n" + dir);
+    let copied = run_tool(
+        "sh\n-c\nmkdir -p \"$2/.github/workflows\" && cp -r \"$1/dna/tests/onboarding/voice-heart/.\" \"$2/\" && cd \"$2\" && sed 's/^needs = .*/needs = [\"memory\", \"nerves\", \"database\"]/' hale.toml > hale.toml.next && mv hale.toml.next hale.toml && grep -qF 'needs = [\"memory\", \"nerves\", \"database\"]' hale.toml\nsh\n"
+            + source + "\n" + dir,
+    );
     if copied.code != 0 { return copied; }
     if gates { std::io::fs::write_file(dir + "/.github/workflows/ci.yml", VOICE_GATES) or discard; }
     else { let bare = run_tool("rmdir\n-p\n" + dir + "/.github/workflows"); }
-    return run_tool_timeout(900, "sh\n-c\ncd \"$1\" && git init -q -b main && printf '/api/api\\n' >> .git/info/exclude && git config user.name \"$2\" && git config user.email \"$2@dna\" && git add -A && git commit -q -m voice && \"$3\" build api\nsh\n" + dir + "\n" + who + "\n" + hale);
+    return run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && git init -q -b main && printf '/api/api\\n' >> .git/info/exclude && git config user.name \"$2\" && git config user.email \"$2@dna\" && git add -A && git commit -q -m voice && \"$3\" build api\nsh\n"
+            + dir + "\n" + who + "\n" + hale,
+    );
 }
 
 // The fixture is done with `dir` and passed: the root goes, and its
@@ -557,8 +631,18 @@ fn scratch_done(dir: String) {
     // under its root). A teardown that failed, or left anything, fails the fixture and keeps the root, its registry
     // entry and the projects it names, for the sweep or a run by hand
     let left = scratch_compose_down(dir);
-    if len(left) > 0 { eprintln("dna: the compose projects rooted in ", dir, " did not come down; the root and its record are kept for another attempt:\n", left); }
-    std::test::assert(len(left) == 0, "compose projects rooted in " + dir + " survived their teardown: " + left);
+    if len(left) > 0 {
+        eprintln(
+            "dna: the compose projects rooted in ",
+            dir,
+            " did not come down; the root and its record are kept for another attempt:\n",
+            left,
+        );
+    }
+    std::test::assert(
+        len(left) == 0,
+        "compose projects rooted in " + dir + " survived their teardown: " + left,
+    );
     let gone = run_tool("rm\n-rf\n" + dir);
     let reg = scratch_registry();
     if len(reg) == 0 { return; }
@@ -587,8 +671,15 @@ type DockerAnswer { ok: Bool = false; absent: Bool = false; out: String = ""; wh
 fn docker_ask(argv: String) -> DockerAnswer {
     let r = run_tool("docker\n" + argv);
     if r.code == 0 { return DockerAnswer { ok: true, out: r.stdout }; }
-    if r.code == -1 || std::str::contains(r.stderr, "Cannot connect to the Docker daemon") || std::str::contains(r.stderr, "Is the docker daemon running") { return DockerAnswer { absent: true }; }
-    return DockerAnswer { why: "docker " + std::str::replace(argv, "\n", " ") + ": " + trim_nl(r.stderr) };
+    if r.code == -1
+        || std::str::contains(r.stderr, "Cannot connect to the Docker daemon")
+        || std::str::contains(r.stderr, "Is the docker daemon running")
+    {
+        return DockerAnswer { absent: true };
+    }
+    return DockerAnswer {
+        why: "docker " + std::str::replace(argv, "\n", " ") + ": " + trim_nl(r.stderr),
+    };
 }
 
 // `line` added to the line set `set` ("\n"-terminated lines), once.
@@ -603,9 +694,18 @@ fn line_set_add(set: String, line: String) -> String {
 // answer's `out` is one project per line.
 @bounded_by(dir)
 fn scratch_compose_projects(dir: String) -> DockerAnswer {
-    let ps = docker_ask("ps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}");
+    let ps = docker_ask(
+        "ps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}",
+    );
     if !ps.ok { return ps; }
-    return DockerAnswer { ok: true, out: scratch_projects_in(ps.out, dir, std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "") };
+    return DockerAnswer {
+        ok: true,
+        out: scratch_projects_in(
+            ps.out,
+            dir,
+            std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "",
+        ),
+    };
 }
 
 // The projects of docker's `listed` (`<project>|<working dir>` lines)
@@ -619,7 +719,11 @@ fn scratch_compose_projects(dir: String) -> DockerAnswer {
 fn scratch_projects_in(listed: String, dir: String, recorded: String) -> String {
     let mine = developer_habitat_project();
     let here = local_habitat_dir();
-    let current = if here == dir || std::str::starts_with(here, dir + "/") { "" } else { local_habitat_project() };
+    let current = if here == dir || std::str::starts_with(here, dir + "/") {
+        ""
+    } else {
+        local_habitat_project()
+    };
     let mut out = "";
     let mut rest = listed + recorded;
     while len(rest) > 0 {
@@ -658,11 +762,20 @@ fn scratch_compose_down(dir: String) -> String {
         rest = rest[(nl + 1)..len(rest)];
         let down = docker_ask("compose\n-p\n" + project + "\ndown\n-v\n--remove-orphans");
         if !down.ok && !down.absent { failed = failed + down.why + "\n"; }
-        let containers = docker_ask("ps\n-a\n-q\n--filter\nlabel=com.docker.compose.project=" + project);
-        let volumes = docker_ask("volume\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project);
+        let containers = docker_ask(
+            "ps\n-a\n-q\n--filter\nlabel=com.docker.compose.project=" + project,
+        );
+        let volumes = docker_ask(
+            "volume\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project,
+        );
         if !containers.ok && !containers.absent { failed = failed + containers.why + "\n"; }
         if !volumes.ok && !volumes.absent { failed = failed + volumes.why + "\n"; }
-        if len(trim_nl(containers.out)) > 0 || len(trim_nl(volumes.out)) > 0 { failed = failed + "compose project " + project + " still has " + (if len(trim_nl(containers.out)) > 0 { "containers " } else { "" }) + (if len(trim_nl(volumes.out)) > 0 { "volumes " } else { "" }) + "after its teardown\n"; }
+        if len(trim_nl(containers.out)) > 0 || len(trim_nl(volumes.out)) > 0 {
+            failed = failed + "compose project " + project + " still has "
+                + (if len(trim_nl(containers.out)) > 0 { "containers " } else { "" })
+                + (if len(trim_nl(volumes.out)) > 0 { "volumes " } else { "" })
+                + "after its teardown\n";
+        }
     }
     if len(failed) == 0 { std::io::fs::unlink(dir + "/" + SCRATCH_COMPOSE_FILE) or discard; }
     return failed;
@@ -718,10 +831,16 @@ locus IsolatedWorktrees {
     fn open(mutation_id: String, base_commit: String) -> Worktree {
         let path = self.path_of(mutation_id);
         std::io::fs::mkdir(self.root) or discard;
-        let r = run_tool("git\n-C\n" + self.repo + "\nworktree\nadd\n--detach\n" + path + "\n" + base_commit);
+        let r = run_tool(
+            "git\n-C\n" + self.repo + "\nworktree\nadd\n--detach\n" + path + "\n" + base_commit,
+        );
         if r.code != 0 {
             self.last_error = trim_nl(r.stderr);
-            return Worktree { mutation_id: mutation_id, base_commit: base_commit, error: self.last_error };
+            return Worktree {
+                mutation_id: mutation_id,
+                base_commit: base_commit,
+                error: self.last_error,
+            };
         }
         self.opened = self.opened + 1;
         // vendor/ is toolchain-managed and ignored by git (the graft's
@@ -739,7 +858,9 @@ locus IsolatedWorktrees {
     }
     @effects(is: { worktree_io })
     fn remove(mutation_id: String) -> Bool {
-        let r = run_tool("git\n-C\n" + self.repo + "\nworktree\nremove\n--force\n" + self.path_of(mutation_id));
+        let r = run_tool(
+            "git\n-C\n" + self.repo + "\nworktree\nremove\n--force\n" + self.path_of(mutation_id),
+        );
         if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
         self.removed = self.removed + 1;
         return true;
@@ -815,12 +936,18 @@ locus LocalGit {
         if a.code != 0 { self.last_error = trim_nl(a.stderr); return ""; }
         let v = run_tool("git\n-C\n" + path + "\nreset\n-q\n--\nvendor");
         if v.code != 0 { self.last_error = trim_nl(v.stderr); return ""; }
-        let c = run_tool("git\n-C\n" + path + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n" + message + "\n--author\n" + self.author);
+        let c = run_tool(
+            "git\n-C\n" + path
+                + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n"
+                + message + "\n--author\n" + self.author,
+        );
         if c.code != 0 { self.last_error = trim_nl(c.stderr); return ""; }
         return self.head(path);
     }
     fn mark_candidate(mutation_id: String, commit: String) -> Bool {
-        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n" + candidate_ref(mutation_id) + "\n" + commit);
+        let r = run_tool(
+            "git\n-C\n" + self.repo + "\nupdate-ref\n" + candidate_ref(mutation_id) + "\n" + commit,
+        );
         if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
         return true;
     }
@@ -880,14 +1007,19 @@ locus LocalGit {
     fn candidate_inputs(seed: String, worktree: String) -> String {
         if seed != "." || root_is_seed(worktree) { return self.untracked_inputs(seed, worktree); }
         let changed = changed_paths(worktree, self.head(self.repo), "HEAD");
-        if changed.code != 0 { return "!! the candidate's changed files cannot be listed: " + trim_nl(changed.stderr) + "\n"; }
+        if changed.code != 0 {
+            return "!! the candidate's changed files cannot be listed: " + trim_nl(changed.stderr)
+                + "\n";
+        }
         let mut out = "";
         let mut rest = seeds_of_files(worktree, trim_nl(changed.stdout), "\n");
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let s = if nl < 0 { rest } else { rest[0..nl] };
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-            if len(s) > 0 && s != "." && holds_source(worktree + "/" + s) { out = out + self.untracked_inputs(s, worktree); }
+            if len(s) > 0 && s != "." && holds_source(worktree + "/" + s) {
+                out = out + self.untracked_inputs(s, worktree);
+            }
         }
         return out;
     }
@@ -899,9 +1031,16 @@ locus LocalGit {
         let hale = resolve_toolchain(self.hale_bin);
         let dir = if seed == "." { worktree } else { worktree + "/" + seed };
         let ins = run_tool(hale + "\ninputs\n" + dir);
-        if ins.code != 0 { return "!! the candidate's build inputs cannot be inspected (`hale inputs " + dir + "` exited " + to_string(ins.code) + "): " + trim_nl(ins.stderr) + "\n"; }
-        let wroot = trim_nl(run_tool("git\n-C\n" + worktree + "\nrev-parse\n--show-toplevel").stdout);
-        if len(wroot) == 0 { return "!! the candidate's worktree is not a repository: " + worktree + "\n"; }
+        if ins.code != 0 {
+            return "!! the candidate's build inputs cannot be inspected (`hale inputs " + dir
+                + "` exited " + to_string(ins.code) + "): " + trim_nl(ins.stderr) + "\n";
+        }
+        let wroot = trim_nl(
+            run_tool("git\n-C\n" + worktree + "\nrev-parse\n--show-toplevel").stdout,
+        );
+        if len(wroot) == 0 {
+            return "!! the candidate's worktree is not a repository: " + worktree + "\n";
+        }
         // the graph, as directories and as files, relative to the tree
         let mut dirs = "\n";
         let mut files = "\n";
@@ -916,21 +1055,32 @@ locus LocalGit {
             let sl = last_slash(rel);
             dirs = dirs + (if sl < 0 { "." } else { rel[0..sl] }) + "\n";
         }
-        let others = run_tool("git\n-C\n" + self.repo + "\n-c\ncore.quotePath=false\nls-files\n--others");
-        if others.code != 0 { return "!! the destination's untracked files cannot be listed: " + trim_nl(others.stderr) + "\n"; }
+        let others = run_tool(
+            "git\n-C\n" + self.repo + "\n-c\ncore.quotePath=false\nls-files\n--others",
+        );
+        if others.code != 0 {
+            return "!! the destination's untracked files cannot be listed: "
+                + trim_nl(others.stderr) + "\n";
+        }
         let mut out = "";
         let mut urest = trim_nl(others.stdout) + "\n";
         while len(urest) > 0 {
             let nl = std::str::index_of(urest, "\n");
             let u = if nl < 0 { urest } else { urest[0..nl] };
             if nl < 0 { urest = ""; } else { urest = urest[(nl + 1)..len(urest)]; }
-            if len(u) == 0 || std::str::starts_with(u, ".hale/") || std::str::starts_with(u, "vendor/") { continue; }
+            if len(u) == 0
+                || std::str::starts_with(u, ".hale/")
+                || std::str::starts_with(u, "vendor/")
+            {
+                continue;
+            }
             let sl = last_slash(u);
             let udir = if sl < 0 { "." } else { u[0..sl] };
             let name = if sl < 0 { u } else { u[(sl + 1)..len(u)] };
             let named = std::str::contains(files, "\n" + u + "\n");
             let in_graph = std::str::contains(dirs, "\n" + udir + "\n");
-            let kind = (len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl") || name == "hale.toml";
+            let kind = (len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl")
+                || name == "hale.toml";
             if named || (in_graph && kind) { out = out + "?? " + u + "\n"; }
         }
         return out;
@@ -959,22 +1109,26 @@ locus LocalGit {
     fn apply(candidate: String) -> Bool {
         let dirty = self.dirty_for("", "");
         if len(dirty) > 0 {
-            self.last_error = "the genome has uncommitted changes; commit or stash them before an apply:\n" + dirty;
+            self.last_error = "the genome has uncommitted changes; commit or stash them before an apply:\n"
+                + dirty;
             return false;
         }
         let ff = run_tool("git\n-C\n" + self.repo + "\nmerge\n-q\n--ff-only\n" + candidate);
         if ff.code != 0 {
-            self.last_error = "not a fast-forward onto " + self.head(self.repo) + ": " + trim_nl(ff.stderr);
+            self.last_error = "not a fast-forward onto " + self.head(self.repo) + ": "
+                + trim_nl(ff.stderr);
             return false;
         }
         let now = self.head(self.repo);
         if now != candidate {
-            self.last_error = "the genome is " + now + ", not the candidate " + candidate + ": it moved during the apply; propose again on the new base";
+            self.last_error = "the genome is " + now + ", not the candidate " + candidate
+                + ": it moved during the apply; propose again on the new base";
             return false;
         }
         let after = self.dirty_for("", "");
         if len(after) > 0 {
-            self.last_error = "the genome's files are not the candidate's after the apply:\n" + after;
+            self.last_error = "the genome's files are not the candidate's after the apply:\n"
+                + after;
             return false;
         }
         self.applied = self.applied + 1;
@@ -1023,21 +1177,43 @@ locus MutationGateway {
     }
     // What the destination has uncommitted, for the caller's check
     // before an apply is requested at all.
-    fn dirty(seed: String, worktree: String) -> String { return self.repo.dirty_for(seed, worktree); }
+    fn dirty(seed: String, worktree: String) -> String {
+        return self.repo.dirty_for(seed, worktree);
+    }
     fn refuse(why: String) -> GateResult {
         self.refusals = self.refusals + 1;
         return GateResult { refused: why };
     }
     // Open the Mutation's worktree at `base`. Idempotent per Mutation:
     // a retry finds the request journaled and re-reads the path.
-    fn open(j: Journal, mutation_id: String, base_commit: String, token: Int, now: Int) -> GateResult {
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+    fn open(
+        j: Journal,
+        mutation_id: String,
+        base_commit: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let key = "worktree.open:" + mutation_id;
         let fresh = effect_request(j, key, base_commit);
         if !fresh {
             let st = effect_status(j, key);
-            if st.done && st.ok { return GateResult { ok: true, value: self.workspaces.path_of(mutation_id), replayed: true }; }
-            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
+            if st.done && st.ok {
+                return GateResult {
+                    ok: true,
+                    value: self.workspaces.path_of(mutation_id),
+                    replayed: true,
+                };
+            }
+            if st.unknown {
+                return self.refuse(
+                    "the outcome of " + key
+                        + " is unknown after a restart; resolve it first (`hale dna effect resolve "
+                        + key + " --outcome ok|failed`)",
+                );
+            }
             if st.done { return self.refuse("earlier open failed; not retried"); }
             // another request holds the claim and has no result yet (#635)
             return self.refuse("open in flight");
@@ -1051,23 +1227,58 @@ locus MutationGateway {
     }
     // Commit the worktree's state as a candidate. `step` names the
     // commit within the Mutation, so each is its own idempotent effect.
-    fn commit(j: Journal, mutation_id: String, step: String, message: String, token: Int, now: Int) -> GateResult {
+    fn commit(
+        j: Journal,
+        mutation_id: String,
+        step: String,
+        message: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
         return self.commit_key(j, mutation_id, step, message, mutation_id, token, now);
     }
     // Prepared source retains owner-qualified IDs under a Git-safe pointer.
     // The Record entity and native mutation routing remain the full ID.
-    fn commit_prepared(j: Journal, mutation_id: String, step: String, message: String, candidate_key: String, token: Int, now: Int) -> GateResult {
-        if candidate_key != "source-" + hex_digest(mutation_id) { return self.refuse("invalid prepared candidate key"); }
+    fn commit_prepared(
+        j: Journal,
+        mutation_id: String,
+        step: String,
+        message: String,
+        candidate_key: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
+        if candidate_key != "source-" + hex_digest(mutation_id) {
+            return self.refuse("invalid prepared candidate key");
+        }
         return self.commit_key(j, mutation_id, step, message, candidate_key, token, now);
     }
-    fn commit_key(j: Journal, mutation_id: String, step: String, message: String, candidate_key: String, token: Int, now: Int) -> GateResult {
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+    fn commit_key(
+        j: Journal,
+        mutation_id: String,
+        step: String,
+        message: String,
+        candidate_key: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let key = "commit:" + mutation_id + ":" + step;
         let fresh = effect_request(j, key, message);
         if !fresh {
             let st = effect_status(j, key);
-            if st.done && st.ok { return GateResult { ok: true, value: self.recorded(j, key), replayed: true }; }
-            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
+            if st.done && st.ok {
+                return GateResult { ok: true, value: self.recorded(j, key), replayed: true };
+            }
+            if st.unknown {
+                return self.refuse(
+                    "the outcome of " + key
+                        + " is unknown after a restart; resolve it first (`hale dna effect resolve "
+                        + key + " --outcome ok|failed`)",
+                );
+            }
             if st.done { return self.refuse("earlier commit failed; not retried"); }
             return self.refuse("commit in flight");
         }
@@ -1081,20 +1292,42 @@ locus MutationGateway {
     // A prepared-source caller has proved this exact owned worktree's commit,
     // parent and complete tree through its source guard. Repair acknowledgments
     // of the already-claimed commit; this method NEVER creates another commit.
-    fn recover_prepared_commit(j: Journal, mutation_id: String, step: String, candidate: String, candidate_key: String, token: Int, now: Int) -> GateResult {
-        if candidate_key != "source-" + hex_digest(mutation_id) { return self.refuse("invalid prepared candidate key"); }
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+    fn recover_prepared_commit(
+        j: Journal,
+        mutation_id: String,
+        step: String,
+        candidate: String,
+        candidate_key: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
+        if candidate_key != "source-" + hex_digest(mutation_id) {
+            return self.refuse("invalid prepared candidate key");
+        }
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let key = "commit:" + mutation_id + ":" + step;
         let refreshed = j.refresh(); let st = effect_status(j, key);
-        if !st.requested || (st.done && !st.ok && !st.unknown) { return self.refuse("no recoverable commit claim"); }
-        if len(candidate) == 0 || self.repo.head(self.workspaces.path_of(mutation_id)) != candidate { return self.refuse("candidate moved during commit recovery"); }
+        if !st.requested || (st.done && !st.ok && !st.unknown) {
+            return self.refuse("no recoverable commit claim");
+        }
+        if len(candidate) == 0
+            || self.repo.head(self.workspaces.path_of(mutation_id)) != candidate
+        {
+            return self.refuse("candidate moved during commit recovery");
+        }
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "mutation.candidate" && e.entity == mutation_id && e.body != candidate { return self.refuse("a different candidate was already recorded"); }
+            if e.kind == "mutation.candidate" && e.entity == mutation_id && e.body != candidate {
+                return self.refuse("a different candidate was already recorded");
+            }
             i = i + 1;
         }
-        if !self.repo.mark_candidate(candidate_key, candidate) { return self.refuse("candidate pointer unavailable"); }
+        if !self.repo.mark_candidate(candidate_key, candidate) {
+            return self.refuse("candidate pointer unavailable");
+        }
         let mut tries = 0;
         while tries < 20 {
             let moved = j.refresh(); let revision = j.revision();
@@ -1102,34 +1335,61 @@ locus MutationGateway {
             while k < revision {
                 let e = j.read(k);
                 if e.kind == "mutation.candidate" && e.entity == mutation_id {
-                    if e.body != candidate { return self.refuse("a different candidate was already recorded"); }
+                    if e.body != candidate {
+                        return self.refuse("a different candidate was already recorded");
+                    }
                     recorded = true;
                 }
                 k = k + 1;
             }
             if recorded { break; }
             let appended = j.append_exact(revision, "mutation.candidate", mutation_id, candidate);
-            if !appended.ok && appended.error != "stale_revision" { return self.refuse("candidate acknowledgment pending"); }
+            if !appended.ok && appended.error != "stale_revision" {
+                return self.refuse("candidate acknowledgment pending");
+            }
             tries = tries + 1;
         }
-        if self.recorded(j, key) != candidate { return self.refuse("candidate acknowledgment pending"); }
+        if self.recorded(j, key) != candidate {
+            return self.refuse("candidate acknowledgment pending");
+        }
         let current = effect_status(j, key);
         if !(current.done && current.ok) {
-            let completed = j.append_exact(j.revision(), "effect.result", key, "ok (exact prepared candidate recovered)");
+            let completed = j.append_exact(
+                j.revision(),
+                "effect.result",
+                key,
+                "ok (exact prepared candidate recovered)",
+            );
             if !completed.ok { return self.refuse("commit result acknowledgment pending"); }
         }
         return GateResult { ok: true, value: candidate, replayed: true };
     }
     // Apply the exact candidate to the repository. Keyed by the
     // candidate itself: a crashed and retried apply cannot commit twice.
-    fn apply(j: Journal, mutation_id: String, candidate: String, token: Int, now: Int) -> GateResult {
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+    fn apply(
+        j: Journal,
+        mutation_id: String,
+        candidate: String,
+        token: Int,
+        now: Int
+    ) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let key = effect_key(self.namespace, "apply", candidate);
         let fresh = effect_request(j, key, mutation_id);
         if !fresh {
             let st = effect_status(j, key);
-            if st.done && st.ok { return GateResult { ok: true, value: candidate, replayed: true }; }
-            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
+            if st.done && st.ok {
+                return GateResult { ok: true, value: candidate, replayed: true };
+            }
+            if st.unknown {
+                return self.refuse(
+                    "the outcome of " + key
+                        + " is unknown after a restart; resolve it first (`hale dna effect resolve "
+                        + key + " --outcome ok|failed`)",
+                );
+            }
             if st.done { return self.refuse("earlier apply failed; not retried"); }
             return self.refuse("apply in flight");
         }
@@ -1143,13 +1403,21 @@ locus MutationGateway {
     // observation window went badly, or the host could not express the
     // candidate. Idempotent per (Mutation, base), fenced like an apply.
     fn rollback(j: Journal, mutation_id: String, base: String, token: Int, now: Int) -> GateResult {
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let key = "rollback:" + mutation_id + ":" + base;
         let fresh = effect_request(j, key, base);
         if !fresh {
             let st = effect_status(j, key);
             if st.done && st.ok { return GateResult { ok: true, value: base, replayed: true }; }
-            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
+            if st.unknown {
+                return self.refuse(
+                    "the outcome of " + key
+                        + " is unknown after a restart; resolve it first (`hale dna effect resolve "
+                        + key + " --outcome ok|failed`)",
+                );
+            }
             if st.done { return self.refuse("earlier rollback failed; not retried"); }
             return self.refuse("rollback in flight");
         }
@@ -1161,7 +1429,9 @@ locus MutationGateway {
     }
     // Remove the worktree (the Mutation dissolves; its history stays).
     fn remove(j: Journal, mutation_id: String, token: Int, now: Int) -> GateResult {
-        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) {
+            return self.refuse("stale or missing lease");
+        }
         let ok = self.workspaces.remove(mutation_id);
         if !ok { return self.refuse("remove failed"); }
         let j = j.append(j.revision(), "mutation.worktree", mutation_id, "removed");
@@ -1174,7 +1444,11 @@ locus MutationGateway {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "mutation.candidate" && std::str::starts_with(key, "commit:" + e.entity + ":") { out = e.body; }
+            if e.kind == "mutation.candidate"
+                && std::str::starts_with(key, "commit:" + e.entity + ":")
+            {
+                out = e.body;
+            }
             i = i + 1;
         }
         return out;
@@ -1188,10 +1462,16 @@ fn fixture_keep_head(repo: String, head_dsn: String) -> String {
     std::io::fs::mkdir(repo + "/.hale") or discard;
     std::io::fs::mkdir(repo + "/.hale/dna") or discard;
     // (a directory that is no repository has nothing to exclude it from)
-    let excluded = run_tool("sh\n-c\ncd \"$1\" && { git rev-parse --git-dir >/dev/null 2>&1 || exit 0; } && { git check-ignore -q .hale/dna/memory.env || { mkdir -p \"$(git rev-parse --git-path info)\" && echo /.hale/ >> \"$(git rev-parse --git-path info/exclude)\"; }; }\nsh\n" + repo);
+    let excluded = run_tool(
+        "sh\n-c\ncd \"$1\" && { git rev-parse --git-dir >/dev/null 2>&1 || exit 0; } && { git check-ignore -q .hale/dna/memory.env || { mkdir -p \"$(git rev-parse --git-path info)\" && echo /.hale/ >> \"$(git rev-parse --git-path info/exclude)\"; }; }\nsh\n"
+            + repo,
+    );
     if excluded.code != 0 { return "the clone could not ignore .hale/: " + excluded.stderr; }
     // the fixture's memory is the owner's, never a checkout's compose
-    let kept = run_tool("sh\n-c\numask 077 && printf '%s=%s\\n%s=owner\\n' \"$2\" \"$3\" \"$4\" > \"$1/.hale/dna/memory.env\" && chmod 600 \"$1/.hale/dna/memory.env\"\nsh\n" + repo + "\n" + HEAD_DSN_ENV + "\n" + head_dsn + "\n" + MEMORY_FROM_KEY);
+    let kept = run_tool(
+        "sh\n-c\numask 077 && printf '%s=%s\\n%s=owner\\n' \"$2\" \"$3\" \"$4\" > \"$1/.hale/dna/memory.env\" && chmod 600 \"$1/.hale/dna/memory.env\"\nsh\n"
+            + repo + "\n" + HEAD_DSN_ENV + "\n" + head_dsn + "\n" + MEMORY_FROM_KEY,
+    );
     if kept.code != 0 { return "the clone's memory.env could not be written: " + kept.stderr; }
     return "";
 }
@@ -1212,7 +1492,8 @@ fn fixture_keep_head(repo: String, head_dsn: String) -> String {
 fn memory_fixture(repo: String) -> String {
     let owner_env = "HALE_DNA_MEMORY_DSN_OWNER";
     let owner = if std::env::var_exists(owner_env) { std::env::var(owner_env) } else { "" };
-    let unnamed = owner_env + " is not set: a fixture's record is memory's, and there is no memory to keep it in";
+    let unnamed = owner_env
+        + " is not set: a fixture's record is memory's, and there is no memory to keep it in";
     // a record already born is this one: born once, whoever asks again (a
     // process that reaches it needs no owner); a clone of its genome that
     // does not reach it yet keeps the head's DSN, as `hale dna memory
@@ -1225,22 +1506,34 @@ fn memory_fixture(repo: String) -> String {
             // memory left as it is (a migration rewrites the principals, and
             // one that names no owners drops a shared record's heads)
             let born = RecordJournal { repo: repo, dsn: owner, author: "dna" };
-            let head = if born.revision() > 0 { dsn_text(role_dsn(parse_dsn(owner), head_role(pinned))) } else { "" };
-            let again = if len(head) > 0 { Migrated { ok: true, head_dsn: head } } else { migrate(parse_dsn(owner), pinned) };
+            let head = if born.revision() > 0 {
+                dsn_text(role_dsn(parse_dsn(owner), head_role(pinned)))
+            } else {
+                ""
+            };
+            let again = if len(head) > 0 {
+                Migrated { ok: true, head_dsn: head }
+            } else {
+                migrate(parse_dsn(owner), pinned)
+            };
             if !again.ok { return "memory's schema: " + again.why; }
             let kept_here = fixture_keep_head(repo, again.head_dsn);
             if len(kept_here) > 0 { return kept_here; }
         }
         let held = RecordJournal { repo: repo, author: "dna" };
         if held.revision() > 0 { return ""; }
-        return repo + "/hale.toml pins record " + pinned + ", and memory holds none of it: " + held.last_error();
+        return repo + "/hale.toml pins record " + pinned + ", and memory holds none of it: "
+            + held.last_error();
     }
     if !std::str::starts_with(owner, "postgres") { return unnamed; }
     // the genome is not named: a fixture's last commit is amended with the
     // pin below, which would move a root commit the row named
     let has_head = run_tool("git\n-C\n" + repo + "\nrev-parse\n-q\n--verify\nHEAD").code == 0;
     let genome = "";
-    let nonce = digest_of(repo + "\n" + to_string(std::process::pid()) + "\n" + to_string(std::time::nanos(std::time::current())))[7..39];
+    let nonce = digest_of(
+        repo + "\n" + to_string(std::process::pid()) + "\n"
+            + to_string(std::time::nanos(std::time::current())),
+    )[7..39];
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("genome", genome);
@@ -1251,24 +1544,46 @@ fn memory_fixture(repo: String) -> String {
     // the pin, in the manifest's `dna` table
     let manifest = repo + "/hale.toml";
     let text = std::io::fs::read_file(manifest) or "";
-    let pinned = if std::str::starts_with(text, "[dna]\n") { "[dna]\nrecord = \"" + id + "\"\n" + text[6..len(text)] }
-    else if std::str::contains(text, "\n[dna]\n") { std::str::replace(text, "\n[dna]\n", "\n[dna]\nrecord = \"" + id + "\"\n") }
-    else { text + (if len(text) > 0 && !std::str::ends_with(text, "\n") { "\n" } else { "" }) + "\n[dna]\nrecord = \"" + id + "\"\n" };
+    let pinned = if std::str::starts_with(text, "[dna]\n") {
+        "[dna]\nrecord = \"" + id + "\"\n" + text[6..len(text)]
+    }
+    else if std::str::contains(text, "\n[dna]\n") {
+        std::str::replace(text, "\n[dna]\n", "\n[dna]\nrecord = \"" + id + "\"\n")
+    }
+    else {
+        text + (if len(text) > 0 && !std::str::ends_with(text, "\n") { "\n" } else { "" })
+            + "\n[dna]\nrecord = \"" + id + "\"\n"
+    };
     let made = run_tool("mkdir\n-p\n" + repo);
-    std::io::fs::write_file(manifest, pinned) or { return "the pin could not be written to " + manifest; };
-    if record_scope(repo) != id { return "the pin in " + manifest + " does not read back as " + id; }
+    std::io::fs::write_file(manifest, pinned) or {
+        return "the pin could not be written to " + manifest;
+    };
+    if record_scope(repo) != id {
+        return "the pin in " + manifest + " does not read back as " + id;
+    }
     // a genome with commits keeps the pin in its last commit, amended, as a
     // person commits what `init` wrote: the tree stays clean and the count
     // of commits the fixture sees is its own
     if has_head {
-        let c = run_tool("sh\n-c\ncd \"$1\" && git add hale.toml && git -c user.name=dna -c user.email=dna@local -c commit.gpgsign=false commit -q --amend --no-edit\nsh\n" + repo);
-        if c.code != 0 { return "the pin could not be committed: " + trim_nl(c.stderr) + trim_nl(c.stdout); }
+        let c = run_tool(
+            "sh\n-c\ncd \"$1\" && git add hale.toml && git -c user.name=dna -c user.email=dna@local -c commit.gpgsign=false commit -q --amend --no-edit\nsh\n"
+                + repo,
+        );
+        if c.code != 0 {
+            return "the pin could not be committed: " + trim_nl(c.stderr) + trim_nl(c.stdout);
+        }
     }
     // the vault's: the roles' passwords and the record's key
     let sch = schema_for(id);
-    if len(provision_role(spine_role(id))) == 0 || len(provision_role(head_role(id))) == 0 { return "the vault could not hold the roles' passwords"; }
+    if len(provision_role(spine_role(id))) == 0 || len(provision_role(head_role(id))) == 0 {
+        return "the vault could not hold the roles' passwords";
+    }
     let key_vault = exchange_key_vault(sch);
-    if !std::secret::Credential { vault: key_vault }.ready() && len(vault_provision_local(key_vault)) == 0 { return "the vault could not hold the record's key"; }
+    if !std::secret::Credential { vault: key_vault }.ready()
+        && len(vault_provision_local(key_vault)) == 0
+    {
+        return "the vault could not hold the record's key";
+    }
     let m = migrate(parse_dsn(owner), id);
     if !m.ok { return "memory's schema: " + m.why; }
     let kept_here = fixture_keep_head(repo, m.head_dsn);
@@ -1276,7 +1591,9 @@ fn memory_fixture(repo: String) -> String {
     // the birth, as init writes it
     let j = RecordJournal { repo: repo, author: "dna", dsn: m.spine_dsn };
     let g = j.append_as(0, "record.genesis", "record", body, "dna", true);
-    if !g.ok { return "memory refused the record's first row (" + g.error + "): " + j.last_error(); }
+    if !g.ok {
+        return "memory refused the record's first row (" + g.error + "): " + j.last_error();
+    }
     let k = std::json::Builder { };
     k.begin_object();
     k.string_field("key", record_key(sch).public());
@@ -1291,7 +1608,11 @@ fn memory_fixture(repo: String) -> String {
 // with (`MemoryLedger { dsn_env: fixture_spine(repo) }`, a DSN in place of
 // the name). Never kept on disk; "" when the record or the owner is missing.
 fn fixture_spine(repo: String) -> String {
-    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+    } else {
+        ""
+    };
     let id = record_scope(repo);
     if !std::str::starts_with(owner, "postgres") || len(id) == 0 { return ""; }
     return dsn_text(role_dsn(parse_dsn(owner), spine_role(id)));
@@ -1304,8 +1625,12 @@ fn fixture_spine(repo: String) -> String {
 fn fixture_share_vault(repo: String, dir: String) -> String {
     let id = record_scope(repo);
     if len(id) == 0 { return repo + " pins no record"; }
-    let names = role_vault_name(spine_role(id)) + " " + role_vault_name(head_role(id)) + " " + exchange_key_vault(schema_for(id));
-    let r = run_tool("sh\n-c\numask 077 && mkdir -p \"$2\" && chmod 700 \"$2\" && for n in $3; do [ -f \"$1/$n\" ] && cp \"$1/$n\" \"$2/$n\" && chmod 600 \"$2/$n\"; done; true\nsh\n" + std::secret::vault_local_dir() + "\n" + dir + "\n" + names);
+    let names = role_vault_name(spine_role(id)) + " " + role_vault_name(head_role(id)) + " "
+        + exchange_key_vault(schema_for(id));
+    let r = run_tool(
+        "sh\n-c\numask 077 && mkdir -p \"$2\" && chmod 700 \"$2\" && for n in $3; do [ -f \"$1/$n\" ] && cp \"$1/$n\" \"$2/$n\" && chmod 600 \"$2/$n\"; done; true\nsh\n"
+            + std::secret::vault_local_dir() + "\n" + dir + "\n" + names,
+    );
     return if r.code == 0 { "" } else { trim_nl(r.stderr) };
 }
 
@@ -1314,14 +1639,23 @@ fn fixture_share_vault(repo: String, dir: String) -> String {
 // revokes its roles' right to call them, and grants it back. "" when done,
 // else why not.
 fn fixture_record_refuses(repo: String, refusing: Bool) -> String {
-    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+        std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+    } else {
+        ""
+    };
     let id = record_scope(repo);
-    if !std::str::starts_with(owner, "postgres") || len(id) == 0 { return "no owner's DSN or no record to refuse"; }
+    if !std::str::starts_with(owner, "postgres") || len(id) == 0 {
+        return "no owner's DSN or no record to refuse";
+    }
     let sch = schema_for(id);
     let verb = if refusing { "REVOKE" } else { "GRANT" };
     let dir = if refusing { "FROM" } else { "TO" };
-    let fns = sch + ".record_append(bigint, text, text, text, text, text, text, text), " + sch + ".record_append_rows(bigint, text, text), " + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text)";
-    let sql = verb + " EXECUTE ON FUNCTION " + fns + " " + dir + " " + spine_role(id) + ", " + head_role(id);
+    let fns = sch + ".record_append(bigint, text, text, text, text, text, text, text), " + sch
+        + ".record_append_rows(bigint, text, text), " + sch
+        + ".ledger_append(bigint, text, text, text, text, text, bigint, text)";
+    let sql = verb + " EXECUTE ON FUNCTION " + fns + " " + dir + " " + spine_role(id) + ", "
+        + head_role(id);
     let r = run_tool("psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\n" + sql);
     return if r.code == 0 { "" } else { trim_nl(r.stderr) };
 }

@@ -26,25 +26,41 @@ const OWNER_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_OWNER";
 // `hale habitat migrate`, and init and upgrade, which are graft's and the
 // habitat's until graft lands.
 fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
-    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
+    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) {
+        std::env::var(OWNER_DSN_ENV)
+    } else {
+        ""
+    };
     if len(owner) == 0 {
         let infra = ReferenceInfrastructure { root: root };
-        let db = if derive { infra.knowledge_database_if_up() } else { infra.knowledge_database(root) };
+        let db = if derive {
+            infra.knowledge_database_if_up()
+        } else {
+            infra.knowledge_database(root)
+        };
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
     }
     let who = dna::record_identity_at(root);
     if len(who.why) > 0 { return fail("memory migrate: " + who.why); }
-    let m = if derive { dna::derived_dsns(dna::parse_dsn(owner), who.id) } else { dna::migrate(dna::parse_dsn(owner), who.id) };
+    let m = if derive {
+        dna::derived_dsns(dna::parse_dsn(owner), who.id)
+    } else {
+        dna::migrate(dna::parse_dsn(owner), who.id)
+    };
     if !m.ok { return fail("memory migrate: " + m.why); }
-    let mut out = dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n";
+    let mut out = dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "="
+        + m.head_dsn + "\n";
     let mut rest = m.owner_dsns;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let eq = std::str::index_of(line, "=");
-        if eq > 0 { out = out + dna::HEAD_DSN_ENV + "_" + std::str::upper(line[0..eq]) + "=" + line[(eq + 1)..len(line)] + "\n"; }
+        if eq > 0 {
+            out = out + dna::HEAD_DSN_ENV + "_" + std::str::upper(line[0..eq]) + "="
+                + line[(eq + 1)..len(line)] + "\n";
+        }
     }
     // GH #1653: the version a migration moved the schema to, which the
     // habitat records for the allocation
@@ -52,7 +68,10 @@ fn memory_migrate_verb(root: String, derive: Bool) -> Answer {
     if !derive {
         out = out + "allocation.schema_version=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\n";
         let key = dna::allocation_key(root);
-        out = out + "allocation.vault_slots=" + (if len(key) > 0 { postgres_owner_vault(key) + " " } else { "" }) + dna::role_vault_name(dna::spine_role(who.id)) + " " + dna::role_vault_name(dna::head_role(who.id)) + "\n";
+        out = out + "allocation.vault_slots="
+            + (if len(key) > 0 { postgres_owner_vault(key) + " " } else { "" })
+            + dna::role_vault_name(dna::spine_role(who.id)) + " "
+            + dna::role_vault_name(dna::head_role(who.id)) + "\n";
     }
     return answer(out);
 }
@@ -77,18 +96,32 @@ fn memory_fence_for(spine: String, root: String) -> String {
 // the heart its DSN) provisions nothing: the DSN of the database on memory
 // that is up.
 fn database_provision_verb(root: String, derive: Bool) -> Answer {
-    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) { std::env::var(OWNER_DSN_ENV) } else { "" };
+    let mut owner = if std::env::var_exists(OWNER_DSN_ENV) {
+        std::env::var(OWNER_DSN_ENV)
+    } else {
+        ""
+    };
     if len(owner) == 0 {
         let infra = ReferenceInfrastructure { root: root };
-        let db = if derive { infra.knowledge_database_if_up() } else { infra.knowledge_database(root) };
+        let db = if derive {
+            infra.knowledge_database_if_up()
+        } else {
+            infra.knowledge_database(root)
+        };
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
     }
     let key = dna::allocation_key(root);
-    let h = if derive { dna::heart_dsn(dna::parse_dsn(owner), key) } else { dna::provision_heart_database(dna::parse_dsn(owner), key) };
+    let h = if derive {
+        dna::heart_dsn(dna::parse_dsn(owner), key)
+    } else {
+        dna::provision_heart_database(dna::parse_dsn(owner), key)
+    };
     if !h.ok { return fail("database provision: " + h.why); }
     let mut out = "HALE_DNA_DATABASE_DSN=" + h.dsn + "\n";
-    if !derive { out = out + "allocation.schema_version=0\nallocation.vault_slots=" + h.slot + "\n"; }
+    if !derive {
+        out = out + "allocation.schema_version=0\nallocation.vault_slots=" + h.slot + "\n";
+    }
     return answer(out);
 }
 
@@ -113,10 +146,15 @@ fn heart_handover_verb(root: String, derive: Bool, with: String) -> Answer {
     let head = dna::trim_nl(rec.git("config\n--get\ndna.head.url").stdout);
     let issuer = dna::trim_nl(rec.git("config\n--get\ndna.oidc.issuer").stdout);
     let attached = attached_application(root);
-    let client = if len(attached) > 0 { dna::nerves_app_name(attached) } else { dna::nerves_app_name(root[(dna::last_slash(root) + 1)..len(root)]) };
+    let client = if len(attached) > 0 {
+        dna::nerves_app_name(attached)
+    } else {
+        dna::nerves_app_name(root[(dna::last_slash(root) + 1)..len(root)])
+    };
     let mut out = "HALE_DNA_APPLICATION_ID=" + id + "\n"
         + "HALE_DNA_HEAD_URL=" + (if len(head) > 0 { head } else { "http://127.0.0.1:8792" }) + "\n"
-        + "HALE_DNA_OIDC_ISSUER=" + (if len(issuer) > 0 { issuer } else { "http://127.0.0.1:8794" }) + "\n"
+        + "HALE_DNA_OIDC_ISSUER=" + (if len(issuer) > 0 { issuer } else { "http://127.0.0.1:8794" })
+        + "\n"
         + "HALE_DNA_OIDC_CLIENT=" + client + "\n"
         + "HALE_DNA_OIDC_CLIENT_VAULT=oidc-service-" + client + "\n";
     let named = " " + with + " ";
@@ -127,17 +165,29 @@ fn heart_handover_verb(root: String, derive: Bool, with: String) -> Answer {
         out = out + d.text;
     }
     if dna::allocated_role(root, "broker") || std::str::contains(named, " broker ") {
-        if std::env::var_exists(dna::NATS_OWNER_URL_ENV) && len(std::env::var(dna::NATS_OWNER_URL_ENV)) > 0 { return answer("none: the broker heart role is a user of the organism's own nerves server, which the habitat configures; the operator's NATS is not the habitat's to configure\n"); }
+        if std::env::var_exists(dna::NATS_OWNER_URL_ENV)
+            && len(std::env::var(dna::NATS_OWNER_URL_ENV)) > 0
+        {
+            return answer(
+                "none: the broker heart role is a user of the organism's own nerves server, which the habitat configures; the operator's NATS is not the habitat's to configure\n",
+            );
+        }
         let infra = ReferenceInfrastructure { root: root };
         let server = if derive { infra.nerves_if_up() } else { infra.nerves_server(root).dsn };
-        if len(server) == 0 { return answer("none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate " + root + "` brings it up)\n"); }
+        if len(server) == 0 {
+            return answer(
+                "none: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate "
+                    + root + "` brings it up)\n",
+            );
+        }
         let key = dna::allocation_key(root);
         out = out + "HALE_DNA_BROKER_URL=" + dna::nerves_server_url(server) + "\n"
             + "HALE_DNA_BROKER_USER=" + dna::heart_broker_user(key) + "\n"
             + "HALE_DNA_BROKER_VAULT=" + dna::heart_broker_vault(dna::schema_for(id)) + "\n"
             + "HALE_DNA_BROKER_SUBJECTS=" + dna::heart_broker_subjects(key) + "\n"
             + "HALE_DNA_BROKER_NODE_USER=" + dna::heart_broker_node_user(key) + "\n"
-            + "HALE_DNA_BROKER_NODE_VAULT=" + dna::heart_broker_node_vault(dna::schema_for(id)) + "\n";
+            + "HALE_DNA_BROKER_NODE_VAULT=" + dna::heart_broker_node_vault(dna::schema_for(id))
+            + "\n";
     }
     return answer(out);
 }

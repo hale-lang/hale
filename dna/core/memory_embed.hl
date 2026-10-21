@@ -114,7 +114,11 @@ fn url_decode(s: String) -> String {
         if c == "%" && i + 2 < n + 0 && i + 3 <= n {
             let hx = s[(i + 1)..(i + 3)];
             let v = hex_pair(hx);
-            if v >= 0 { std::str::builder_append(out, std::str::from_bytes(std::bytes::from_int(v))); i = i + 3; continue; }
+            if v >= 0 {
+                std::str::builder_append(out, std::str::from_bytes(std::bytes::from_int(v)));
+                i = i + 3;
+                continue;
+            }
         }
         std::str::builder_append(out, c);
         i = i + 1;

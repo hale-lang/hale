@@ -66,7 +66,9 @@ fn window_of(ws: Windows, key: String, l: st::Limit, now_ns: Int) -> Window {
     while i < ws.len() {
         let w = ws.get(i) or Window { };
         if w.key == key {
-            if now_ns - w.start_ns >= l.window_seconds * 1000000000 { return Window { key: key, start_ns: now_ns }; }
+            if now_ns - w.start_ns >= l.window_seconds * 1000000000 {
+                return Window { key: key, start_ns: now_ns };
+            }
             return w;
         }
         i = i + 1;
@@ -98,24 +100,47 @@ fn rate_limited(l: st::Limit, what: String, retry: Int) -> ApiError {
     let mut voice = ErrorVoice { };
     voice.has_limit = true;
     voice.limit = l;
-    return ApiError { status: 429, kind: "too_many_requests", code: ErrorCode::rate_limited, message: what, has_voice: true, voice: voice, retry_after: if retry > 0 { retry } else { 1 } };
+    return ApiError {
+        status: 429,
+        kind: "too_many_requests",
+        code: ErrorCode::rate_limited,
+        message: what,
+        has_voice: true,
+        voice: voice,
+        retry_after: if retry > 0 { retry } else { 1 },
+    };
 }
 
 /// No ratified limits read yet: a keyed request is refused, since the
 /// limits fail closed, until the reader's first read lands (it tries every
 /// second until then).
 fn limits_unavailable(retry: Int) -> ApiError {
-    return ApiError { status: 503, kind: "server_error", code: ErrorCode::metering_unavailable, message: "the project's rate limits are not read yet: they are the organization's, and its head has not answered", retry_after: retry };
+    return ApiError {
+        status: 503,
+        kind: "server_error",
+        code: ErrorCode::metering_unavailable,
+        message: "the project's rate limits are not read yet: they are the organization's, and its head has not answered",
+        retry_after: retry,
+    };
 }
 
 /// A project whose ratified practices are ambiguous, with no limit read
 /// for it before: its keyed requests are refused until the Board settles
 /// them.
 fn limit_unsettled(p: PracticeLimit) -> ApiError {
-    return ApiError { status: 503, kind: "server_error", code: ErrorCode::metering_unavailable, message: "project " + p.project + "'s rate limit is not known: " + p.why + " (" + p.name + ")", retry_after: 30 };
+    return ApiError {
+        status: 503,
+        kind: "server_error",
+        code: ErrorCode::metering_unavailable,
+        message: "project " + p.project + "'s rate limit is not known: " + p.why + " (" + p.name
+            + ")",
+        retry_after: 30,
+    };
 }
 
 /// The rate-limit headers of an admitted request under `l`.
 fn limited_headers(l: st::Limit, remaining: Int, reset: Int) -> String {
-    return "x-ratelimit-limit-requests: " + to_string(l.requests) + "\r\nx-ratelimit-remaining-requests: " + to_string(remaining) + "\r\nx-ratelimit-reset-requests: " + duration(reset);
+    return "x-ratelimit-limit-requests: " + to_string(l.requests)
+        + "\r\nx-ratelimit-remaining-requests: " + to_string(remaining)
+        + "\r\nx-ratelimit-reset-requests: " + duration(reset);
 }

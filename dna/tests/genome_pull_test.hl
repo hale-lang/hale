@@ -19,7 +19,10 @@ fn toolchain() -> String {
 }
 
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
 // The commit a revision names in `repo`.
@@ -31,7 +34,10 @@ main locus App {
     params { node: String = ""; }
     // The `sha` of each of the record's rows of `kind`, in order, one per line.
     fn shas(kind: String) -> String {
-        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.node }, ledger: dna::MemoryLedger { repo: self.node } };
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: self.node },
+            ledger: dna::MemoryLedger { repo: self.node },
+        };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -115,7 +121,12 @@ main locus App {
     fn logged(text: String, secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
-            if std::str::contains(std::io::fs::read_file(self.node + "/.hale/node.log") or "", text) { return true; }
+            if std::str::contains(
+                std::io::fs::read_file(self.node + "/.hale/node.log") or "",
+                text,
+            ) {
+                return true;
+            }
             std::time::sleep(500ms);
         }
         return false;
@@ -124,13 +135,24 @@ main locus App {
     // to the forge's default branch; the commit.
     fn push(dev: String, path: String, text: String, message: String) -> String {
         std::io::fs::write_file(dev + "/" + path, text) or discard;
-        let c = in_dir(dev, "sh\n-c\ngit add -A && git commit -q -m \"$1\" && git push -q origin main\nsh\n" + message);
+        let c = in_dir(
+            dev,
+            "sh\n-c\ngit add -A && git commit -q -m \"$1\" && git push -q origin main\nsh\n"
+                + message,
+        );
         std::test::assert_eq_int(c.code, 0, "pushed: " + c.stdout + c.stderr);
         return head_of(dev, "HEAD");
     }
     run() {
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-        if len(owner) == 0 { eprintln("genome_pull_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
+        if len(owner) == 0 {
+            eprintln("genome_pull_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+            return;
+        }
         let scratch = dna::scratch_root("genome-pull");
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
@@ -138,11 +160,18 @@ main locus App {
         let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\npulled"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         self.node = scratch + "/pulled";
-        let c0 = in_dir(self.node, "sh\n-c\ngit config user.name node && git config user.email node@local && git add -A && git commit -q -m 'the organization'");
+        let c0 = in_dir(
+            self.node,
+            "sh\n-c\ngit config user.name node && git config user.email node@local && git add -A && git commit -q -m 'the organization'",
+        );
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stdout + c0.stderr);
         let a1 = in_dir(self.node, "git\nremote\nadd\norigin\n" + bare);
         let a2 = in_dir(self.node, "git\npush\n-q\norigin\nmain");
-        std::test::assert_eq_int(a2.code, 0, "the genome and the record at the forge: " + a2.stderr);
+        std::test::assert_eq_int(
+            a2.code,
+            0,
+            "the genome and the record at the forge: " + a2.stderr,
+        );
         let dev = scratch + "/dev";
         let cl = dna::clone_repo(bare, dev);
         std::test::assert_eq_int(cl.code, 0, "a developer's clone: " + cl.stderr);
@@ -154,39 +183,102 @@ main locus App {
         // genome-restart code (75) and stops on anything else. Stopped, it
         // stops the node as a unit stops it (SIGTERM, which the node's own
         // drain passes to its organization) and waits for it
-        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout --foreground 900 sh -c 'stop() { kill -TERM \"$p\" 2>/dev/null; wait \"$p\"; exit 0; }; trap stop TERM; while true; do \"$0\" dna dev . --no-iris & p=$!; wait $p; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        let started = in_dir(
+            self.node,
+            "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout --foreground 900 sh -c 'stop() { kill -TERM \"$p\" 2>/dev/null; wait \"$p\"; exit 0; }; trap stop TERM; while true; do \"$0\" dna dev . --no-iris & p=$!; wait $p; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n"
+                + toolchain() + "\n" + owner,
+        );
         let loop = dna::trim_nl(started.stdout);
         std::test::assert(len(loop) > 0, "the supervisor started");
-        std::test::assert(self.recorded("node.started", first, 300), "the node records the genome it runs: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        std::test::assert(
+            self.recorded("node.started", first, 300),
+            "the node records the genome it runs: "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
 
         // ---- a genome change on the forge: the node restarts onto it
-        let moved = self.push(dev, "dna/org/NOTE.md", "a note the organization keeps\n", "a change of the genome");
-        std::test::assert(self.recorded("node.started", moved, 300), "a genome pushed to the forge restarts the node onto it, within its interval: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
-        std::test::assert_eq_str(head_of(self.node, "HEAD"), moved, "the node's genome is the forge's");
+        let moved = self.push(
+            dev,
+            "dna/org/NOTE.md",
+            "a note the organization keeps\n",
+            "a change of the genome",
+        );
+        std::test::assert(
+            self.recorded("node.started", moved, 300),
+            "a genome pushed to the forge restarts the node onto it, within its interval: "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
+        std::test::assert_eq_str(
+            head_of(self.node, "HEAD"),
+            moved,
+            "the node's genome is the forge's",
+        );
 
         // ---- a genome that does not build: a failure row, and the old sha served
-        let broken = self.push(dev, "dna/org/broken.hl", "fn broken( {\n", "a genome that does not build");
-        std::test::assert(self.recorded("node.build_failed", broken, 300), "the failed build is a row naming its sha: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
-        std::test::assert(self.fell_back(300) && head_of(self.node, "HEAD") == moved, "it started again after the failure, on the genome that built: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        let broken = self.push(
+            dev,
+            "dna/org/broken.hl",
+            "fn broken( {\n",
+            "a genome that does not build",
+        );
+        std::test::assert(
+            self.recorded("node.build_failed", broken, 300),
+            "the failed build is a row naming its sha: "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
+        std::test::assert(
+            self.fell_back(300) && head_of(self.node, "HEAD") == moved,
+            "it started again after the failure, on the genome that built: "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
         // it does not restart for the broken sha again: its next poll sees
         // the forge still there, and says it stays
         let n = self.starts();
         let org = std::io::fs::read_file(self.node + "/.hale/dna/org.pid") or "";
-        std::test::assert(self.logged("which did not build here; staying on " + moved[0..12], 120), "the next poll sees the broken head and stays: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        std::test::assert(
+            self.logged("which did not build here; staying on " + moved[0..12], 120),
+            "the next poll sees the broken head and stays: "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
         // two more polls pass, and the node is the same process on the same genome
         let p0 = self.polls();
-        std::test::assert(self.polled_past(p0 + 2, 120), "the node keeps polling: " + (std::io::fs::read_file(self.node + "/.hale/dna/genome.json") or ""));
-        std::test::assert_eq_int(self.starts(), n, "the node does not restart for a genome that did not build");
-        std::test::assert_eq_str(std::io::fs::read_file(self.node + "/.hale/dna/org.pid") or "", org, "its organization is the same process");
+        std::test::assert(
+            self.polled_past(p0 + 2, 120),
+            "the node keeps polling: "
+                + (std::io::fs::read_file(self.node + "/.hale/dna/genome.json") or ""),
+        );
+        std::test::assert_eq_int(
+            self.starts(),
+            n,
+            "the node does not restart for a genome that did not build",
+        );
+        std::test::assert_eq_str(
+            std::io::fs::read_file(self.node + "/.hale/dna/org.pid") or "",
+            org,
+            "its organization is the same process",
+        );
         let status = in_dir(self.node, toolchain() + "\ndna\nstatus");
-        std::test::assert(std::str::contains(status.stdout, "genome:") && std::str::contains(status.stdout, moved[0..12]) && std::str::contains(status.stdout, broken[0..12] + " did not build"), "status names the genome the node runs and the one that did not build: " + status.stdout);
+        std::test::assert(
+            std::str::contains(status.stdout, "genome:")
+                && std::str::contains(status.stdout, moved[0..12])
+                && std::str::contains(status.stdout, broken[0..12] + " did not build"),
+            "status names the genome the node runs and the one that did not build: "
+                + status.stdout,
+        );
 
         // ---- down: the supervisor stopped and waited for, then nothing that
         // runs from or in the scratch root is left before it goes, so the
         // slice's leftover-process guard never races this teardown
-        let stopped = dna::run_tool("sh\n-c\nkill -TERM \"$1\" 2>/dev/null; for i in $(seq 1 600); do kill -0 \"$1\" 2>/dev/null || exit 0; sleep 0.1; done; exit 1\nsh\n" + loop);
+        let stopped = dna::run_tool(
+            "sh\n-c\nkill -TERM \"$1\" 2>/dev/null; for i in $(seq 1 600); do kill -0 \"$1\" 2>/dev/null || exit 0; sleep 0.1; done; exit 1\nsh\n"
+                + loop,
+        );
         let left = quiet_under(scratch, 30);
-        std::test::assert(stopped.code == 0 && len(left) == 0, "the node and its organization stop, and are waited for (still running: " + left + "): " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
+        std::test::assert(
+            stopped.code == 0 && len(left) == 0,
+            "the node and its organization stop, and are waited for (still running: " + left + "): "
+                + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""),
+        );
         dna::scratch_done(scratch);
     }
 }

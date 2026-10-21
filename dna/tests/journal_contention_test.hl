@@ -44,12 +44,25 @@ main locus App {
         std::io::fs::write_file(repo + "/.hale/dna/appender.sh", SCRIPT) or discard;
         // the other writer, detached: it compare-and-swaps like a host does
         let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
-        let spawn = dna::run_tool("sh\n-c\nnohup sh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + repo + "/.hale/dna/appender.sh\n" + owner + "\n" + dna::schema_for(dna::record_scope(repo)) + "\n" + repo + "/.hale/dna");
+        let spawn = dna::run_tool(
+            "sh\n-c\nnohup sh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + repo
+                + "/.hale/dna/appender.sh\n" + owner + "\n"
+                + dna::schema_for(dna::record_scope(repo)) + "\n" + repo + "/.hale/dna",
+        );
         std::test::assert_eq_int(spawn.code, 0, "the appender started: " + spawn.stderr);
         let mut i = 0;
         while i < 40 {
-            let r = self.j.append(self.j.revision(), "org.row", "o" + to_string(i), "org row " + to_string(i));
-            std::test::assert(r.ok, "org row " + to_string(i) + " landed (" + r.error + ": " + self.j.last_error() + ")");
+            let r = self.j.append(
+                self.j.revision(),
+                "org.row",
+                "o" + to_string(i),
+                "org row " + to_string(i),
+            );
+            std::test::assert(
+                r.ok,
+                "org row " + to_string(i) + " landed (" + r.error + ": " + self.j.last_error()
+                    + ")",
+            );
             i = i + 1;
         }
         let mut waited = 0;
@@ -64,7 +77,10 @@ main locus App {
         std::test::assert_eq_int(self.j.revision(), born + 241, "and nothing else");
         i = 0;
         while i < 40 {
-            std::test::assert(self.has_body("org row " + to_string(i)), "org row " + to_string(i) + " is in the record");
+            std::test::assert(
+                self.has_body("org row " + to_string(i)),
+                "org row " + to_string(i) + " is in the record",
+            );
             i = i + 1;
         }
         dna::scratch_done(repo);

@@ -37,9 +37,17 @@ main locus App {
         }
         return out;
     }
-    fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
+    fn head() -> String {
+        return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
+    }
     fn approve(id: String, digest: String) {
-        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: id,
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "board",
+        };
         std::time::sleep(150ms);
     }
     run() {
@@ -50,32 +58,71 @@ main locus App {
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
         // the gateway: a script that logs what it was asked and answers as told
         let script = repo + "/deploy.sh";
-        std::io::fs::write_file(script, "#!/bin/sh\necho \"$1 $2 $3\" >> " + repo + "/deploy.log\nif [ -f " + repo + "/deploy.fail ] && [ \"$1\" = express ]; then echo unhealthy; exit 3; fi\nexit 0\n") or discard;
+        std::io::fs::write_file(
+            script,
+            "#!/bin/sh\necho \"$1 $2 $3\" >> " + repo + "/deploy.log\nif [ -f " + repo
+                + "/deploy.fail ] && [ \"$1\" = express ]; then echo unhealthy; exit 3; fi\nexit 0\n",
+        ) or discard;
         let chmod = sh("chmod\n+x\n" + script);
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
-        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let base = self.head();
         self.dna = dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             gateway: dna::MutationGateway {
                 leases: dna::MemoryLeases { repo: repo },
-                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: repo,
+                    root: repo + "/.hale/dna/worktrees",
+                },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: repo },
+                scratch: repo + "/.hale/dna/scratch",
+                repo: repo,
+            },
             editor: dna::SourceEditor {
-                models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" }, deep: dna::FakeModel { name: "deep", answer: "readability +" } },
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel {
+                        name: "quick",
+                        answer: DOCUMENTED,
+                        answer_role: "edit",
+                    },
+                    deep: dna::FakeModel { name: "deep", answer: "readability +" },
+                },
                 tools: dna::WorktreeTools { hale_bin: toolchain() }
             },
             deployment: dna::ShellDeployment { command: script, seed: "." },
             review_policy: dna::OrgPolicy { },
             board: dna::Board { },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "application", max_magnitude: 40, review: "pre" } }
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "application",
+                    max_magnitude: 40,
+                    review: "pre",
+                },
+            }
         };
-        std::test::assert(std::str::contains(self.dna.status(), "\"deployment\": \"shell\""), self.dna.status());
+        std::test::assert(
+            std::str::contains(self.dna.status(), "\"deployment\": \"shell\""),
+            self.dna.status(),
+        );
 
         // ---- 1. approval expresses through the gateway; its exit is the observation
         let m1 = self.dna.mutate("t1", "application", "document A in main.hl", "main.hl", 100);
@@ -83,24 +130,62 @@ main locus App {
         let cand1 = self.last("mutation.candidate", "m1");
         self.approve("m1", cand1);
         std::test::assert_eq_str(self.head(), cand1, "applied to the genome");
-        std::test::assert(std::str::contains(self.last("expression.deployed", "m1"), "expressed " + cand1 + " via shell"), self.last("expression.deployed", "m1"));
-        std::test::assert(std::str::contains(self.last("expression.observed", "m1"), "healthy"), "the command's exit is the observation: " + self.last("expression.observed", "m1"));
-        std::test::assert(std::str::contains(self.last("mutation.retained", "m1"), cand1), "retained with no host");
-        std::test::assert_eq_str(self.last("expression.restart_requested", "m1"), "", "nothing asked of a host");
+        std::test::assert(
+            std::str::contains(
+                self.last("expression.deployed", "m1"),
+                "expressed " + cand1 + " via shell",
+            ),
+            self.last("expression.deployed", "m1"),
+        );
+        std::test::assert(
+            std::str::contains(self.last("expression.observed", "m1"), "healthy"),
+            "the command's exit is the observation: " + self.last("expression.observed", "m1"),
+        );
+        std::test::assert(
+            std::str::contains(self.last("mutation.retained", "m1"), cand1),
+            "retained with no host",
+        );
+        std::test::assert_eq_str(
+            self.last("expression.restart_requested", "m1"),
+            "",
+            "nothing asked of a host",
+        );
         let log = std::io::fs::read_file(repo + "/deploy.log") or "";
-        std::test::assert(std::str::contains(log, "express " + cand1 + " ."), "the gateway was asked to express the candidate: " + log);
+        std::test::assert(
+            std::str::contains(log, "express " + cand1 + " ."),
+            "the gateway was asked to express the candidate: " + log,
+        );
         std::test::assert_eq_int(self.dna.deployment.applied(), 1, "one expression");
 
         // ---- 2. a candidate the gateway cannot express is rolled back through it
         std::io::fs::write_file(repo + "/deploy.fail", "1") or discard;
-        let m2 = self.dna.mutate("t2", "application", "document A in main.hl once more", "main.hl", 200);
+        let m2 = self.dna.mutate(
+            "t2",
+            "application",
+            "document A in main.hl once more",
+            "main.hl",
+            200,
+        );
         let cand2 = self.last("mutation.candidate", "m2");
         self.approve("m2", cand2);
-        std::test::assert(std::str::contains(self.last("expression.deployed", "m2"), "restored " + cand1 + " via shell"), "the base restored through the gateway: " + self.last("expression.deployed", "m2"));
-        std::test::assert_eq_str(self.last("mutation.rolled_back", "m2"), cand1, "rolled back to m2's base");
+        std::test::assert(
+            std::str::contains(
+                self.last("expression.deployed", "m2"),
+                "restored " + cand1 + " via shell",
+            ),
+            "the base restored through the gateway: " + self.last("expression.deployed", "m2"),
+        );
+        std::test::assert_eq_str(
+            self.last("mutation.rolled_back", "m2"),
+            cand1,
+            "rolled back to m2's base",
+        );
         std::test::assert_eq_str(self.head(), cand1, "HEAD is the base again");
         let log2 = std::io::fs::read_file(repo + "/deploy.log") or "";
-        std::test::assert(std::str::contains(log2, "rollback " + cand1 + " ."), "the gateway restored the base: " + log2);
+        std::test::assert(
+            std::str::contains(log2, "rollback " + cand1 + " ."),
+            "the gateway restored the base: " + log2,
+        );
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
         dna::scratch_done(repo);
     }

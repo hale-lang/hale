@@ -35,7 +35,10 @@ fn toolchain() -> String {
 // DSN or NATS named alone is dropped, as `main` falls back to the
 // habitat's own backends then, which refuse either.
 fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && { [ -n \"$HALE_DNA_MEMORY_DSN_OWNER\" ] && [ -n \"$HALE_DNA_NATS_URL_OWNER\" ] || unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; } && exec \"$@\"\nsh\n" + dir + "\n" + vault + "\n" + argv);
+    return dna::run_tool(
+        "sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && { [ -n \"$HALE_DNA_MEMORY_DSN_OWNER\" ] && [ -n \"$HALE_DNA_NATS_URL_OWNER\" ] || unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER; } && exec \"$@\"\nsh\n"
+            + dir + "\n" + vault + "\n" + argv,
+    );
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
@@ -44,41 +47,108 @@ fn main() {
     let scratch = dna::scratch_root("compose-projects");
     let vault = scratch + "/vault";
     let habitat = dna::local_habitat_dir();
-    if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("compose_projects_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); dna::scratch_done(scratch); return; }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "compose_projects_test: not exercised (outside `hale test`, the local habitat would be the developer's)",
+        );
+        dna::scratch_done(scratch);
+        return;
+    }
     let a = "twin-a" + to_string(std::process::pid());
     let b = "twin-b" + to_string(std::process::pid());
-    let operator = len(dna::trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0 && len(dna::trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
-    if !operator && dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("compose_projects_test: not exercised (no owner's servers, and docker compose is not on PATH)"); dna::scratch_done(scratch); return; }
+    let operator = len(dna::trim_nl(std::env::var("HALE_DNA_MEMORY_DSN_OWNER"))) > 0
+        && len(dna::trim_nl(std::env::var("HALE_DNA_NATS_URL_OWNER"))) > 0;
+    if !operator && dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln(
+            "compose_projects_test: not exercised (no owner's servers, and docker compose is not on PATH)",
+        );
+        dna::scratch_done(scratch);
+        return;
+    }
     // the file's habitat, under this run's vault, which every graft reads
-    let born = in_dir(scratch, vault, toolchain() + "\nhabitat\nup\n--no-body\n--backends\n" + (if operator { "operator" } else { "own" }));
-    std::test::assert_eq_int(born.code, 0, "the file's habitat is born: " + born.stdout + born.stderr);
+    let born = in_dir(
+        scratch,
+        vault,
+        toolchain() + "\nhabitat\nup\n--no-body\n--backends\n"
+            + (if operator { "operator" } else { "own" }),
+    );
+    std::test::assert_eq_int(
+        born.code,
+        0,
+        "the file's habitat is born: " + born.stdout + born.stderr,
+    );
     let made_a = in_dir(scratch, vault, toolchain() + "\nhabitat\ngraft\n" + a);
-    std::test::assert_eq_int(made_a.code, 0, "hale habitat graft " + a + ": " + made_a.stdout + made_a.stderr);
+    std::test::assert_eq_int(
+        made_a.code,
+        0,
+        "hale habitat graft " + a + ": " + made_a.stdout + made_a.stderr,
+    );
     let made_b = in_dir(scratch, vault, toolchain() + "\nhabitat\ngraft\n" + b);
-    std::test::assert_eq_int(made_b.code, 0, "hale habitat graft " + b + ": " + made_b.stdout + made_b.stderr);
+    std::test::assert_eq_int(
+        made_b.code,
+        0,
+        "hale habitat graft " + b + ": " + made_b.stdout + made_b.stderr,
+    );
     let root_a = scratch + "/" + a;
     let root_b = scratch + "/" + b;
     let key_a = dna::allocation_key(root_a);
     let key_b = dna::allocation_key(root_b);
-    std::test::assert(len(key_a) == 12 && len(key_b) == 12 && key_a != key_b, "each organism's allocations are keyed by its own record identity: " + key_a + " " + key_b);
+    std::test::assert(
+        len(key_a) == 12 && len(key_b) == 12 && key_a != key_b,
+        "each organism's allocations are keyed by its own record identity: " + key_a + " " + key_b,
+    );
 
     // ---- no checkout holds the organism's infrastructure
-    std::test::assert(!std::io::fs::file_exists(root_a + "/dna/compose.yaml") && !std::io::fs::file_exists(root_a + "/dna/nats.conf") && !std::io::fs::file_exists(root_a + "/dna/nats.secrets.conf") && !std::io::fs::file_exists(root_a + "/dna/postgres.secrets") && !std::io::fs::file_exists(root_a + "/dna/senses.yml"), "the checkout holds no compose file, server configuration or password file");
-    std::test::assert(!std::str::contains(text_of(root_a + "/.gitignore"), "secrets"), "and its .gitignore names no secrets file: " + text_of(root_a + "/.gitignore"));
+    std::test::assert(
+        !std::io::fs::file_exists(root_a + "/dna/compose.yaml")
+            && !std::io::fs::file_exists(root_a + "/dna/nats.conf")
+            && !std::io::fs::file_exists(root_a + "/dna/nats.secrets.conf")
+            && !std::io::fs::file_exists(root_a + "/dna/postgres.secrets")
+            && !std::io::fs::file_exists(root_a + "/dna/senses.yml"),
+        "the checkout holds no compose file, server configuration or password file",
+    );
+    std::test::assert(
+        !std::str::contains(text_of(root_a + "/.gitignore"), "secrets"),
+        "and its .gitignore names no secrets file: " + text_of(root_a + "/.gitignore"),
+    );
 
     // ---- the database's password: the vault's, beside the allocation
     let alloc_a = habitat + "/allocations/" + key_a;
     let alloc_b = habitat + "/allocations/" + key_b;
     let pw_a = text_of(alloc_a + "/postgres.secrets");
     let pw_b = text_of(alloc_b + "/postgres.secrets");
-    std::test::assert(len(pw_a) == 32 && len(pw_b) == 32 && pw_a != pw_b, "each organism's password is drawn, and its own");
-    std::test::assert_eq_str(dna::file_mode(alloc_a + "/postgres.secrets"), "600", "the password's file is yours alone");
-    std::test::assert_eq_str(dna::file_mode(alloc_a), "700", "and so is the allocation's directory");
+    std::test::assert(
+        len(pw_a) == 32 && len(pw_b) == 32 && pw_a != pw_b,
+        "each organism's password is drawn, and its own",
+    );
+    std::test::assert_eq_str(
+        dna::file_mode(alloc_a + "/postgres.secrets"),
+        "600",
+        "the password's file is yours alone",
+    );
+    std::test::assert_eq_str(
+        dna::file_mode(alloc_a),
+        "700",
+        "and so is the allocation's directory",
+    );
     std::test::assert_eq_str(dna::file_mode(vault), "700", "and the vault");
-    std::test::assert_eq_str(dna::file_mode(vault + "/postgres-owner-" + key_a), "600", "and its entry");
+    std::test::assert_eq_str(
+        dna::file_mode(vault + "/postgres-owner-" + key_a),
+        "600",
+        "and its entry",
+    );
     let listed = in_dir(root_a, vault, toolchain() + "\ndna\nsecrets\n.");
-    std::test::assert(std::str::contains(listed.stdout, "present  postgres-owner-" + key_a + "  ") && !std::str::contains(listed.stdout, pw_a), "`hale dna secrets` names the entry, never its value: " + listed.stdout + listed.stderr);
-    let held = in_dir(root_a, vault, "sh\n-c\ncmp -s \"$HALE_VAULT_DIR/postgres-owner-$1\" \"$2/postgres.secrets\"\nsh\n" + key_a + "\n" + alloc_a);
+    std::test::assert(
+        std::str::contains(listed.stdout, "present  postgres-owner-" + key_a + "  ")
+            && !std::str::contains(listed.stdout, pw_a),
+        "`hale dna secrets` names the entry, never its value: " + listed.stdout + listed.stderr,
+    );
+    let held = in_dir(
+        root_a,
+        vault,
+        "sh\n-c\ncmp -s \"$HALE_VAULT_DIR/postgres-owner-$1\" \"$2/postgres.secrets\"\nsh\n" + key_a
+            + "\n" + alloc_a,
+    );
     std::test::assert_eq_int(held.code, 0, "the vault's entry and the server's file are one draw");
 
     // ---- a clone elsewhere, under another directory name, is the same
@@ -88,50 +158,125 @@ fn main() {
     // ("failed to copy file to ../elsewhere/.git/objects/…"): the seed runs
     // none, and the clone reads through git's object store (`--no-local`),
     // which finds an object loose or packed.
-    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name dna && git config user.email dna@dna && git config maintenance.auto false && git config gc.auto 0 && git add -A && git commit -q -m seed && git clone -q --no-local . ../elsewhere");
-    std::test::assert_eq_int(committed.code, 0, "the seed committed and cloned: " + committed.stderr);
+    let committed = in_dir(
+        root_a,
+        vault,
+        "sh\n-c\ngit config user.name dna && git config user.email dna@dna && git config maintenance.auto false && git config gc.auto 0 && git add -A && git commit -q -m seed && git clone -q --no-local . ../elsewhere",
+    );
+    std::test::assert_eq_int(
+        committed.code,
+        0,
+        "the seed committed and cloned: " + committed.stderr,
+    );
     let clone_a = scratch + "/elsewhere";
     std::test::assert_eq_str(dna::allocation_key(clone_a), key_a, "the clone is the same organism");
     // the clone reaches the record's memory through the habitat's act
     // (GH #1590, #1653)
     let reached = in_dir(clone_a, vault, toolchain() + "\nhabitat\nmigrate\n.");
-    std::test::assert(std::str::contains(reached.stdout, "memory  migrated"), "the clone reaches the record's memory: " + reached.stdout + reached.stderr);
+    std::test::assert(
+        std::str::contains(reached.stdout, "memory  migrated"),
+        "the clone reaches the record's memory: " + reached.stdout + reached.stderr,
+    );
     let cloned = in_dir(clone_a, vault, toolchain() + "\ndna\nupgrade\n.");
-    std::test::assert(cloned.code == 0 && !std::io::fs::file_exists(clone_a + "/dna/compose.yaml"), "upgrade writes no infrastructure into the clone: " + cloned.stdout + cloned.stderr);
-    std::test::assert_eq_str(text_of(alloc_a + "/postgres.secrets"), pw_a, "and the allocation's password is the vault's entry, not a new draw");
+    std::test::assert(
+        cloned.code == 0 && !std::io::fs::file_exists(clone_a + "/dna/compose.yaml"),
+        "upgrade writes no infrastructure into the clone: " + cloned.stdout + cloned.stderr,
+    );
+    std::test::assert_eq_str(
+        text_of(alloc_a + "/postgres.secrets"),
+        pw_a,
+        "and the allocation's password is the vault's entry, not a new draw",
+    );
 
     // ---- one habitat project; services named for the organism and the
     // role; ports stepped once, for the habitat
     let project = dna::local_habitat_project();
-    std::test::assert(std::str::starts_with(project, "hale-habitat-local-") && !std::str::contains(project, a) && !std::str::contains(project, key_a), "the project is the habitat's, named for no seed and no checkout: " + project);
-    std::test::assert(dna::habitat_project_at(habitat) != dna::developer_habitat_project() && project != dna::developer_habitat_project(), "a test's habitat is never the developer's");
-    std::test::assert(dna::allocation_service(root_a, "memory") == "memory-" + key_a && dna::allocation_service(root_b, "nerves") == "nerves-" + key_b, "a service is the role and the organism");
+    std::test::assert(
+        std::str::starts_with(project, "hale-habitat-local-")
+            && !std::str::contains(project, a)
+            && !std::str::contains(project, key_a),
+        "the project is the habitat's, named for no seed and no checkout: " + project,
+    );
+    std::test::assert(
+        dna::habitat_project_at(habitat) != dna::developer_habitat_project()
+            && project != dna::developer_habitat_project(),
+        "a test's habitat is never the developer's",
+    );
+    std::test::assert(
+        dna::allocation_service(root_a, "memory") == "memory-" + key_a
+            && dna::allocation_service(root_b, "nerves") == "nerves-" + key_b,
+        "a service is the role and the organism",
+    );
     let argv_a = dna::allocation_compose(root_a);
     let argv_b = dna::allocation_compose(root_b);
     let argv_clone = dna::allocation_compose(clone_a);
-    std::test::assert_eq_str(argv_clone, argv_a, "two checkouts of one organism drive the same allocations");
-    std::test::assert(std::str::contains(argv_a, "\n-p\n" + project + "\n") && std::str::contains(argv_b, "\n-p\n" + project + "\n") && argv_a != argv_b, "two organisms, one project, allocations of their own: " + argv_a + " | " + argv_b);
+    std::test::assert_eq_str(
+        argv_clone,
+        argv_a,
+        "two checkouts of one organism drive the same allocations",
+    );
+    std::test::assert(
+        std::str::contains(argv_a, "\n-p\n" + project + "\n")
+            && std::str::contains(argv_b, "\n-p\n" + project + "\n")
+            && argv_a != argv_b,
+        "two organisms, one project, allocations of their own: " + argv_a + " | " + argv_b,
+    );
     let ports_a = text_of(dna::allocation_dir(root_a) + "/ports.yaml");
     let ports_b = text_of(dna::allocation_dir(root_b) + "/ports.yaml");
-    std::test::assert(std::str::contains(ports_a, ":5432\"]") && std::str::contains(ports_a, ":4222\"]") && std::str::contains(ports_a, ":9090\"]") && ports_a != ports_b, "each organism's allocations publish on host ports of their own: " + ports_a + ports_b);
+    std::test::assert(
+        std::str::contains(ports_a, ":5432\"]")
+            && std::str::contains(ports_a, ":4222\"]")
+            && std::str::contains(ports_a, ":9090\"]")
+            && ports_a != ports_b,
+        "each organism's allocations publish on host ports of their own: " + ports_a + ports_b,
+    );
     let again = dna::allocation_compose(root_a);
-    std::test::assert(again == argv_a && text_of(dna::allocation_dir(root_a) + "/ports.yaml") == ports_a, "chosen once, and kept");
+    std::test::assert(
+        again == argv_a && text_of(dna::allocation_dir(root_a) + "/ports.yaml") == ports_a,
+        "chosen once, and kept",
+    );
     if dna::run_tool("docker\ncompose\nversion").code == 0 {
         let seen_a = dna::run_tool(argv_a + "\nconfig");
         let seen_b = dna::run_tool(argv_b + "\nconfig");
-        std::test::assert(std::str::starts_with(seen_a.stdout, "name: " + project + "\n") && std::str::starts_with(seen_b.stdout, "name: " + project + "\n"), "compose resolves the habitat's one project: " + seen_a.stdout + seen_a.stderr + seen_b.stdout + seen_b.stderr);
-        std::test::assert(std::str::contains(seen_a.stdout, "  memory-" + key_a + ":") && std::str::contains(seen_a.stdout, "name: " + project + "_memory-" + key_a) && !std::str::contains(seen_a.stdout, key_b), "and the organism's own services and volumes: " + seen_a.stdout);
+        std::test::assert(
+            std::str::starts_with(seen_a.stdout, "name: " + project + "\n")
+                && std::str::starts_with(seen_b.stdout, "name: " + project + "\n"),
+            "compose resolves the habitat's one project: " + seen_a.stdout + seen_a.stderr
+                + seen_b.stdout + seen_b.stderr,
+        );
+        std::test::assert(
+            std::str::contains(seen_a.stdout, "  memory-" + key_a + ":")
+                && std::str::contains(seen_a.stdout, "name: " + project + "_memory-" + key_a)
+                && !std::str::contains(seen_a.stdout, key_b),
+            "and the organism's own services and volumes: " + seen_a.stdout,
+        );
     } else {
-        eprintln("compose_projects_test: docker compose is not on PATH; the resolved project is not checked");
+        eprintln(
+            "compose_projects_test: docker compose is not on PATH; the resolved project is not checked",
+        );
     }
 
     // ---- what an older toolchain left in a checkout, removed by upgrade
     // (a hard cut: the allocation's files are the habitat's)
-    std::io::fs::write_file(root_b + "/dna/compose.yaml", "name: hale-dna-" + b + "\nservices: {}\n") or discard;
+    std::io::fs::write_file(
+        root_b + "/dna/compose.yaml",
+        "name: hale-dna-" + b + "\nservices: {}\n",
+    ) or discard;
     std::io::fs::write_file(root_b + "/dna/postgres.secrets", "old") or discard;
     let upgraded = in_dir(root_b, vault, toolchain() + "\ndna\nupgrade\n.");
-    std::test::assert(upgraded.code == 0 && std::str::contains(upgraded.stdout, "removed") && !std::io::fs::file_exists(root_b + "/dna/compose.yaml") && !std::io::fs::file_exists(root_b + "/dna/postgres.secrets"), "upgrade removes an older checkout's infrastructure files: " + upgraded.stdout + upgraded.stderr);
-    std::test::assert_eq_str(text_of(alloc_b + "/postgres.secrets"), pw_b, "and keeps the allocation's");
+    std::test::assert(
+        upgraded.code == 0
+            && std::str::contains(upgraded.stdout, "removed")
+            && !std::io::fs::file_exists(root_b + "/dna/compose.yaml")
+            && !std::io::fs::file_exists(root_b + "/dna/postgres.secrets"),
+        "upgrade removes an older checkout's infrastructure files: " + upgraded.stdout
+            + upgraded.stderr,
+    );
+    std::test::assert_eq_str(
+        text_of(alloc_b + "/postgres.secrets"),
+        pw_b,
+        "and keeps the allocation's",
+    );
 
     dna::scratch_done(scratch);
 }

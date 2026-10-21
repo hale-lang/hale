@@ -61,7 +61,11 @@ fn main() {
     std::test::assert_eq_str(l.classify(std::bytes::from_string("Dabcd")), "data 4", "data");
     std::test::assert_eq_str(l.classify(std::bytes::from_string("A9")), "ack 9", "ack");
     std::test::assert_eq_str(l.classify(std::bytes::from_string("B")), "bye", "bye");
-    std::test::assert_eq_str(l.classify(std::bytes::from_string("zzz")), "unknown of 3", "the fallthrough member");
+    std::test::assert_eq_str(
+        l.classify(std::bytes::from_string("zzz")),
+        "unknown of 3",
+        "the fallthrough member",
+    );
     std::test::assert_eq_str(l.classify(std::bytes::from_string("P7")), "ping 7", "another ping");
     std::test::assert_eq_int(l.session.pings, 2, "the session's state, counted by its own methods");
     std::test::assert_eq_int(l.session.bytes, 4, "and its byte count");

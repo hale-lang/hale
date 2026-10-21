@@ -23,7 +23,10 @@ fn write_text(path: String, text: String) -> Bool fallible(IoError) {
     return true;
 }
 
-fn record_head(root: String) -> dna::Head { let authority = org_runtime::HostAuthority { root: root }; return authority.record_head(); }
+fn record_head(root: String) -> dna::Head {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.record_head();
+}
 
 // The genome's remote, its forge (`dna.remote`, else `origin`; "" when the
 // repository has none): what revisions and candidates travel to and from.
@@ -37,13 +40,22 @@ fn genome_remote(repo: String) -> String {
 // only when it carries a signature the record's trust verifies: the
 // record's key for the organism's parts, a key the record enrolled for a
 // person — `hale dna signers`, GH #1590).
-fn trust_mode(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.trust(); }
+fn trust_mode(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.trust();
+}
 
 // GH #664: the organization this clone's body is (`git config dna.owner`,
 // the name of its `organization` node, GH #1123), "" when unnamed.
-fn owner_here(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.owner(); }
+fn owner_here(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.owner();
+}
 // Whether this body is one of a shared record's: it names its organization.
-fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.shared(); }
+fn shared_here(root: String) -> Bool {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.shared();
+}
 // GH #1123: the graph's ownership, read from memory as the head reads it
 // (the spine's DSN where no head's is named); "" when no memory is named or
 // it does not answer — one owner, or, for a body that names its
@@ -52,7 +64,13 @@ fn ownership_graph_here(root: String) -> String {
     // one owner — the record states no organization and this body names
     // none — asks memory nothing
     if len(owner_here(root)) == 0 && len(organizations_in_record(root)) == 0 { return ""; }
-    let env = if dna::dsn_set(dna::HEAD_DSN_ENV) { dna::HEAD_DSN_ENV } else if dna::dsn_set(dna::SPINE_DSN_ENV) { dna::SPINE_DSN_ENV } else { "" };
+    let env = if dna::dsn_set(dna::HEAD_DSN_ENV) {
+        dna::HEAD_DSN_ENV
+    } else if dna::dsn_set(dna::SPINE_DSN_ENV) {
+        dna::SPINE_DSN_ENV
+    } else {
+        ""
+    };
     if len(env) == 0 { return ""; }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
@@ -78,7 +96,9 @@ fn organizations_in_record(root: String) -> String {
                 let mut kept = "";
                 let mut k = 0;
                 while len(dna::nth_word(out, k)) > 0 {
-                    if dna::nth_word(out, k) != name { kept = dna::word_add(kept, dna::nth_word(out, k)); }
+                    if dna::nth_word(out, k) != name {
+                        kept = dna::word_add(kept, dna::nth_word(out, k));
+                    }
                     k = k + 1;
                 }
                 out = kept;
@@ -101,9 +121,15 @@ fn attached_application(root: String) -> String {
         let e = j.read(i);
         if e.kind == "application.attached" {
             let named = std::json::find_string_field(e.body, "name");
-            name = dna::nerves_app_name(if len(named) > 0 { named } else { project_dir_name(root) });
+            name = dna::nerves_app_name(
+                if len(named) > 0 { named } else { project_dir_name(root) },
+            );
         }
-        if e.kind == "application.detached" && dna::nerves_app_name(std::json::find_string_field(e.body, "name")) == name { name = ""; }
+        if e.kind == "application.detached"
+            && dna::nerves_app_name(std::json::find_string_field(e.body, "name")) == name
+        {
+            name = "";
+        }
         i = i + 1;
     }
     return name;
@@ -133,7 +159,10 @@ fn ownership_note(root: String, to: String) -> String {
     return o.why_not(to);
 }
 
-fn row_verified(root: String, sha: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.row_verified(sha); }
+fn row_verified(root: String, sha: String) -> Bool {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.row_verified(sha);
+}
 
 fn short(s: String) -> String {
     if len(s) > 12 { return s[0..12]; }
@@ -171,21 +200,35 @@ fn journal_text_at(repo: String, commit: String) -> String {
 fn routing_line(root: String, memory: dna::Memory) -> String {
     let sl = memory.leases;
     let probe = sl.current(store_lease_key(root));
-    let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
+    let reach = if sl.reachable {
+        ""
+    } else {
+        "; THE LEDGER IS UNREACHABLE (" + sl.last_error
+            + "): what is read here is the last projection, and nothing is admitted until it answers"
+    };
     return "record + ledger (operations and leases live in memory" + reach + ")";
 }
 
 // An operational row goes to the Ledger, never into
 // the record itself (#646 decision 3), written straight in by this
 // process under its own role (GH #1026).
-fn ledger_append(root: String, kind: String, entity: String, body: String, memory: dna::Memory) -> Bool {
+fn ledger_append(
+    root: String,
+    kind: String,
+    entity: String,
+    body: String,
+    memory: dna::Memory
+) -> Bool {
     return ledger_submit(root, kind, entity, body, "", memory);
 }
 
 // A write's request id, minted when it is made: a write retried after an
 // answer that was lost lands once.
 fn request_id(root: String) -> String {
-    let d = dna::digest_of(root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n" + to_string(millis()));
+    let d = dna::digest_of(
+        root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n"
+            + to_string(millis()),
+    );
     return if std::str::starts_with(d, "sha256:") { d[7..31] } else { d[0..24] };
 }
 
@@ -204,9 +247,19 @@ fn owner_json(root: String) -> String {
 // an author this role does not write as, a claim already taken). A write
 // is done when it lands, and the verb says so; there is no request to
 // wait on and no spine to admit it.
-fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
+fn ledger_submit(
+    root: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> Bool {
     let why = ledger_write(root, -1, kind, entity, body, author, memory);
-    if len(why) > 0 { eprintln("hale dna: `", kind, " ", entity, "` was not written to the ledger: ", why); return false; }
+    if len(why) > 0 {
+        eprintln("hale dna: `", kind, " ", entity, "` was not written to the ledger: ", why);
+        return false;
+    }
     return true;
 }
 
@@ -215,9 +268,20 @@ fn ledger_submit(root: String, kind: String, entity: String, body: String, autho
 // the tail), else why it was refused. One reason per write: it outlives
 // the call only in a caller that writes several rows, one per row.
 @bounded_by(rows)
-fn ledger_write(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+fn ledger_write(
+    root: String,
+    expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
     let l = memory.ledger;
-    if !l.ready() { return "no memory is named here (" + l.dsn_env + "); the organism's operations live in its Ledger, in memory"; }
+    if !l.ready() {
+        return "no memory is named here (" + l.dsn_env
+            + "); the organism's operations live in its Ledger, in memory";
+    }
     let who = if len(author) > 0 { author } else { "host" };
     let r = l.write(expected, kind, entity, body, who, request_id(root));
     if r.ok { return ""; }
@@ -238,7 +302,15 @@ fn ledger_revision(root: String, memory: dna::Memory) -> Int {
 // revision a decision was read at). "" when it landed, `stale_revision`
 // when the Ledger moved (read again and decide again), else why it was
 // refused.
-fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
+fn ledger_submit_at(
+    root: String,
+    expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
     if expected < 0 { return "the ledger's revision was not read"; }
     return ledger_write(root, expected, kind, entity, body, author, memory);
 }
@@ -256,8 +328,17 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // wedged repository reaches. Three tries used to be the bound, and a
 // host reconciling beside a busy organism lost them all and dropped the
 // row (GH #603).
-fn append_as(repo: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
-    if dna::memory_of(kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
+fn append_as(
+    repo: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> Bool {
+    if dna::memory_of(kind) == "ledger" {
+        return ledger_submit(repo, kind, entity, body, author, memory);
+    }
     return len(record_append(repo, kind, entity, body, author)) > 0;
 }
 
@@ -266,11 +347,27 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
 // One row per try, two hundred at most.
 // GH #1590: the row lands through memory's insert function, signed as its
 // writer signs; "" names whoever runs this.
-fn record_append(repo: String, kind: String, entity: String, body: String, author: String) -> String {
+fn record_append(
+    repo: String,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String
+) -> String {
     let who = if len(author) > 0 { author } else { who_am_i() };
     let j = dna::RecordJournal { repo: repo, author: who };
     let r = j.append(j.revision(), kind, entity, body);
-    if !r.ok { eprintln("hale dna: `", kind, " ", entity, "` was not written to the record: ", if len(j.last_error()) > 0 { j.last_error() } else { r.error }); return ""; }
+    if !r.ok {
+        eprintln(
+            "hale dna: `",
+            kind,
+            " ",
+            entity,
+            "` was not written to the record: ",
+            if len(j.last_error()) > 0 { j.last_error() } else { r.error },
+        );
+        return "";
+    }
     return j.head();
 }
 
@@ -294,8 +391,25 @@ fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
     let mut i = 0;
     while i < rows.len() {
         let row = rows.get(i) or dna::Row { };
-        let r = j.append_as(j.revision(), row.kind, row.entity, row.body, if len(row.author) > 0 { row.author } else { who_am_i() }, false);
-        if !r.ok { eprintln("hale dna: `", row.kind, " ", row.entity, "` was not written to the record: ", j.last_error()); return ""; }
+        let r = j.append_as(
+            j.revision(),
+            row.kind,
+            row.entity,
+            row.body,
+            if len(row.author) > 0 { row.author } else { who_am_i() },
+            false,
+        );
+        if !r.ok {
+            eprintln(
+                "hale dna: `",
+                row.kind,
+                " ",
+                row.entity,
+                "` was not written to the record: ",
+                j.last_error(),
+            );
+            return "";
+        }
         i = i + 1;
     }
     return j.head();
@@ -340,13 +454,33 @@ fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
 // (nothing appended; read again and decide again), else why it was
 // refused (#636: a redaction that read "no hold" must not land after a
 // hold did — on either memory).
-fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
-    if dna::memory_of(kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory); }
-    let r = dna::MemoryRecord { repo: repo, author: if len(author) > 0 { author } else { who_am_i() } };
+fn append_as_at(
+    repo: String,
+    expected: String,
+    ledger_expected: Int,
+    kind: String,
+    entity: String,
+    body: String,
+    author: String,
+    memory: dna::Memory
+) -> String {
+    if dna::memory_of(kind) == "ledger" {
+        return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory);
+    }
+    let r = dna::MemoryRecord {
+        repo: repo,
+        author: if len(author) > 0 { author } else { who_am_i() },
+    };
     let now = r.head(JOURNAL);
     if !now.ok { return "the record's head could not be read: " + now.why; }
     if now.id != expected && !(now.absent && len(expected) == 0) { return "stale_revision"; }
-    let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, false, "");
+    let a = r.append(
+        JOURNAL,
+        expected,
+        dna::Row { kind: kind, entity: entity, body: body, author: author },
+        false,
+        "",
+    );
     if a.ok { return ""; }
     if a.error == "stale" { return "stale_revision"; }
     return "the row could not be written: " + a.error;
@@ -383,7 +517,11 @@ fn sync_record_over(repo: String, j: dna::RoutedJournal, from: Int) -> SyncResul
         i = i + 1;
         if e.kind == "candidate.dropped" { let gone = drop_here(repo, e.entity); }
     }
-    return SyncResult { ok: true, summary: "the record is memory's: nothing to sync", seen: j.revision() };
+    return SyncResult {
+        ok: true,
+        summary: "the record is memory's: nothing to sync",
+        seen: j.revision(),
+    };
 }
 
 // A record's identity names its memory: the digest of its first row
@@ -468,13 +606,38 @@ fn body_holder(root: String) -> String {
 // GH #665: the store's key for this body's lease — one per owner over a
 // shared record (`owner/<owner>`), `body` when the organization is the
 // one owner. Its token is the epoch every write the body makes carries.
-fn store_lease_key(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.lease_key(); }
+fn store_lease_key(root: String) -> String {
+    let authority = org_runtime::HostAuthority { root: root };
+    return authority.lease_key();
+}
 
-fn body_lease_from_store(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.store_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+fn body_lease_from_store(repo: String, memory: dna::Memory) -> BodyLease {
+    let authority = org_runtime::HostAuthority { root: repo };
+    let l = authority.store_lease(memory.leases);
+    return BodyLease {
+        ok: l.ok,
+        present: l.present,
+        holder: l.holder,
+        token: l.token,
+        expires: l.expires,
+        sha: l.sha,
+    };
+}
 
 // The lease as memory has it; `ok` false when memory could not be
 // reached. `sha` carries the token.
-fn body_lease_read(repo: String, memory: dna::Memory) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.body_lease(memory.leases); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
+fn body_lease_read(repo: String, memory: dna::Memory) -> BodyLease {
+    let authority = org_runtime::HostAuthority { root: repo };
+    let l = authority.body_lease(memory.leases);
+    return BodyLease {
+        ok: l.ok,
+        present: l.present,
+        holder: l.holder,
+        token: l.token,
+        expires: l.expires,
+        sha: l.sha,
+    };
+}
 
 // Write a lease where `expected` is the token it has now ("" = no lease),
 // swapped by that token in memory. False when someone else moved it first.
@@ -482,7 +645,17 @@ fn body_lease_write(repo: String, l: BodyLease, expected: String, memory: dna::M
     let sl = memory.leases;
     let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
     let key = store_lease_key(repo);
-    return sl.put(key, dna::Lease { key: key, holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
+    return sl.put(
+        key,
+        dna::Lease {
+            key: key,
+            holder: l.holder,
+            token: l.token,
+            expires: l.expires,
+            present: l.present,
+        },
+        expected_token,
+    );
 }
 
 fn body_live(l: BodyLease, now: Int) -> Bool { return l.present && l.expires > now; }
@@ -500,22 +673,55 @@ fn organism_here(root: String, memory: dna::Memory) -> Bool {
 // lease of another holder is refused (present false, holder theirs),
 // unless `force`. A refused acquire because of a partition is `ok`
 // false.
-fn body_acquire(repo: String, holder: String, now: Int, force: Bool, memory: dna::Memory) -> BodyLease {
+fn body_acquire(
+    repo: String,
+    holder: String,
+    now: Int,
+    force: Bool,
+    memory: dna::Memory
+) -> BodyLease {
     let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if body_live(cur, now) && cur.holder != holder && !force {
         // theirs, not ours: `present` is false for the caller, `holder` says whose
-        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+        return BodyLease {
+            present: false,
+            holder: cur.holder,
+            token: cur.token,
+            expires: cur.expires,
+            sha: cur.sha,
+        };
     }
-    let l = BodyLease { present: true, holder: holder, token: cur.token + 1, expires: now + BODY_TTL };
+    let l = BodyLease {
+        present: true,
+        holder: holder,
+        token: cur.token + 1,
+        expires: now + BODY_TTL,
+    };
     if !body_lease_write(repo, l, cur.sha, memory) {
         let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         if again.holder == holder && body_live(again, now) { return again; }
-        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+        return BodyLease {
+            present: false,
+            holder: again.holder,
+            token: again.token,
+            expires: again.expires,
+            sha: again.sha,
+        };
     }
     let mine = body_lease_read(repo, memory);
-    return if mine.ok && mine.holder == holder && mine.token == l.token { mine } else { BodyLease { present: true, holder: holder, token: l.token, expires: l.expires, sha: to_string(l.token) } };
+    return if mine.ok && mine.holder == holder && mine.token == l.token {
+        mine
+    } else {
+        BodyLease {
+            present: true,
+            holder: holder,
+            token: l.token,
+            expires: l.expires,
+            sha: to_string(l.token),
+        }
+    };
 }
 
 // Renew a lease that is still ours; the renewed lease, or the lease as
@@ -526,26 +732,58 @@ fn body_renew(repo: String, mine: BodyLease, now: Int, memory: dna::Memory) -> B
     let cur = body_lease_read(repo, memory);
     if !cur.ok { return cur; }
     if !(cur.present && cur.holder == mine.holder && cur.token == mine.token) {
-        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+        return BodyLease {
+            present: false,
+            holder: cur.holder,
+            token: cur.token,
+            expires: cur.expires,
+            sha: cur.sha,
+        };
     }
-    let l = BodyLease { present: true, holder: mine.holder, token: mine.token, expires: now + BODY_TTL };
+    let l = BodyLease {
+        present: true,
+        holder: mine.holder,
+        token: mine.token,
+        expires: now + BODY_TTL,
+    };
     if !body_lease_write(repo, l, cur.sha, memory) {
         let again = body_lease_read(repo, memory);
         if !again.ok { return again; }
         // the write failed and the lease is still ours as it was: not lost,
         // only unrenewed — kept until it expires, like a partition
-        if again.present && again.holder == mine.holder && again.token == mine.token { return BodyLease { ok: false }; }
-        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+        if again.present && again.holder == mine.holder && again.token == mine.token {
+            return BodyLease { ok: false };
+        }
+        return BodyLease {
+            present: false,
+            holder: again.holder,
+            token: again.token,
+            expires: again.expires,
+            sha: again.sha,
+        };
     }
-    return BodyLease { present: true, holder: mine.holder, token: mine.token, expires: l.expires, sha: to_string(l.token) };
+    return BodyLease {
+        present: true,
+        holder: mine.holder,
+        token: mine.token,
+        expires: l.expires,
+        sha: to_string(l.token),
+    };
 }
 
 // Give the lease up (present false, token kept so a late renewal of it
 // is refused). True when it was ours to give up.
 fn body_release(repo: String, mine: BodyLease, memory: dna::Memory) -> Bool {
     let cur = body_lease_read(repo, memory);
-    if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token { return false; }
-    return body_lease_write(repo, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha, memory);
+    if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token {
+        return false;
+    }
+    return body_lease_write(
+        repo,
+        BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 },
+        cur.sha,
+        memory,
+    );
 }
 
 fn ago(secs: Int) -> String {
@@ -561,9 +799,17 @@ fn ago(secs: Int) -> String {
 fn body_line(repo: String, now: Int, memory: dna::Memory) -> String {
     let l = body_lease_read(repo, memory);
     if !l.ok { return "unknown (memory cannot be reached)"; }
-    if len(l.holder) == 0 { return "none (no body has run this record; `hale dna run` takes the lease)"; }
+    if len(l.holder) == 0 {
+        return "none (no body has run this record; `hale dna run` takes the lease)";
+    }
     let ticked = ago(now - (l.expires - BODY_TTL));
-    if body_live(l, now) { return "live on " + l.holder + ", ticked " + ticked + ", lease expires in " + to_string(l.expires - now) + "s"; }
-    if l.present { return "stale: " + l.holder + " last ticked " + ticked + " and its lease has expired; `hale dna run` takes it, `hale dna body claim` says so"; }
+    if body_live(l, now) {
+        return "live on " + l.holder + ", ticked " + ticked + ", lease expires in "
+            + to_string(l.expires - now) + "s";
+    }
+    if l.present {
+        return "stale: " + l.holder + " last ticked " + ticked
+            + " and its lease has expired; `hale dna run` takes it, `hale dna body claim` says so";
+    }
     return "released by " + l.holder + "; `hale dna run` takes the lease";
 }

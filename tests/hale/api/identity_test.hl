@@ -41,7 +41,9 @@ locus Revised {
     @unbounded
     fn grants(p: std::api::Principal) -> std::api::Grants {
         self.asked = self.asked + 1;
-        if p.name == "t-new" { return std::api::Grants { roles: "trader", revision: self.revision }; }
+        if p.name == "t-new" {
+            return std::api::Grants { roles: "trader", revision: self.revision };
+        }
         return std::api::Grants { roles: "", revision: self.revision };
     }
 }
@@ -71,10 +73,30 @@ main locus App {
         revised: Revised = Revised { };
         plain: Plain = Plain { };
         svc: Svc = Svc { };
-        revised_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.revised };
-        plain_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.plain };
-        a: api::Exposure = api::serve(Desk, self.revised_f, as: "revised", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
-        b: api::Exposure = api::serve(Desk, self.plain_f, as: "plain", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        revised_f: std::api::test::Rpc = std::api::test::Rpc {
+            principals: self.tokens,
+            roles: self.revised,
+        };
+        plain_f: std::api::test::Rpc = std::api::test::Rpc {
+            principals: self.tokens,
+            roles: self.plain,
+        };
+        a: api::Exposure = api::serve(
+            Desk,
+            self.revised_f,
+            as: "revised",
+            receivers: { Svc: self.svc },
+            bound: 8,
+            on_full: refuse
+        );
+        b: api::Exposure = api::serve(
+            Desk,
+            self.plain_f,
+            as: "plain",
+            receivers: { Svc: self.svc },
+            bound: 8,
+            on_full: refuse
+        );
     }
     placement { svc: cooperative(pool = work) where async_io; }
 
@@ -84,16 +106,28 @@ main locus App {
 
         // expiry
         r.call(1, "Svc::trade", "{\"n\":1}", "t-old");
-        std::test::assert_eq_str(r.await_outcome(1, 2000), "refusal:unauthenticated", "a credential past its expiry is refused");
+        std::test::assert_eq_str(
+            r.await_outcome(1, 2000),
+            "refusal:unauthenticated",
+            "a credential past its expiry is refused",
+        );
         std::test::assert(std::str::contains(r.line(1), "expired"), "saying why");
         r.call(2, "Svc::trade", "{\"n\":2}", "t-new");
-        std::test::assert_eq_str(r.await_outcome(2, 2000), "result", "one before its expiry is not");
+        std::test::assert_eq_str(
+            r.await_outcome(2, 2000),
+            "result",
+            "one before its expiry is not",
+        );
         std::test::assert_eq_int(self.svc.ran, 1, "and only that one ran");
 
         // the grants-and-revision pair decides, not holds
         std::test::assert(self.revised.asked >= 1, "the source was asked for its pair");
         r.call(3, "Svc::trade", "{\"n\":3}", "t-open");
-        std::test::assert_eq_str(r.await_outcome(3, 2000), "refusal:unauthorized", "a credential with no grant in the pair is refused, whatever holds says elsewhere");
+        std::test::assert_eq_str(
+            r.await_outcome(3, 2000),
+            "refusal:unauthorized",
+            "a credential with no grant in the pair is refused, whatever holds says elsewhere",
+        );
         std::test::assert_eq_int(self.svc.ran, 1, "without reaching the handler");
 
         // a source that answers only `holds` is asked `holds`
@@ -101,10 +135,18 @@ main locus App {
         std::test::assert_eq_str(p.await_outcome(4, 2000), "result", "holds says yes to t-open");
         std::test::assert(self.plain.asked >= 1, "it was asked");
         p.call(5, "Svc::trade", "{\"n\":5}", "t-new");
-        std::test::assert_eq_str(p.await_outcome(5, 2000), "refusal:unauthorized", "and no to the others");
+        std::test::assert_eq_str(
+            p.await_outcome(5, 2000),
+            "refusal:unauthorized",
+            "and no to the others",
+        );
         // both exposures name the same bearer source, which states expiries
         p.call(6, "Svc::trade", "{\"n\":6}", "t-old");
-        std::test::assert_eq_str(p.await_outcome(6, 2000), "refusal:unauthenticated", "so the plain-roles exposure refuses an expired credential too");
+        std::test::assert_eq_str(
+            p.await_outcome(6, 2000),
+            "refusal:unauthenticated",
+            "so the plain-roles exposure refuses an expired credential too",
+        );
 
         self.a.stop();
         self.b.stop();

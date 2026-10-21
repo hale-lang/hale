@@ -10,7 +10,12 @@ fn t(text: String) -> Time {
 }
 
 fn ch(action: String, target: String) -> st::ChangeRow {
-    return st::ChangeRow { at: t("2026-10-17T12:00:00Z"), action: action, target: target, after: "{\"target\": \"" + target + "\"}" };
+    return st::ChangeRow {
+        at: t("2026-10-17T12:00:00Z"),
+        action: action,
+        target: target,
+        after: "{\"target\": \"" + target + "\"}",
+    };
 }
 
 fn names(a: String, b: String) -> st::Names {
@@ -24,12 +29,41 @@ fn exercise(s: st::Store, label: String) {
     let at = t("2026-10-17T12:00:00Z");
 
     // the catalog
-    let m = st::ModelRow { id: "echo-1", owned_by: "local", kind: "local", context_length: 8192, priced: true, price: st::ModelPrice { input_per_mtok_micros: 3, output_per_mtok_micros: 15, currency: "USD" }, created_at: at };
-    std::test::assert(s.insert_model(m, ch("create", "models/echo-1")) or false, label + ": a model is added");
-    std::test::assert(!(s.insert_model(m, ch("create", "models/echo-1")) or true), label + ": once");
+    let m = st::ModelRow {
+        id: "echo-1",
+        owned_by: "local",
+        kind: "local",
+        context_length: 8192,
+        priced: true,
+        price: st::ModelPrice {
+            input_per_mtok_micros: 3,
+            output_per_mtok_micros: 15,
+            currency: "USD",
+        },
+        created_at: at,
+    };
+    std::test::assert(
+        s.insert_model(m, ch("create", "models/echo-1")) or false,
+        label + ": a model is added",
+    );
+    std::test::assert(
+        !(s.insert_model(m, ch("create", "models/echo-1")) or true),
+        label + ": once",
+    );
     let got = s.model("echo-1") or st::ModelRow { };
-    std::test::assert(got.present && got.priced && got.price.output_per_mtok_micros == 15 && got.context_length == 8192 && got.max_output_tokens == 0, label + ": and reads back");
-    std::test::assert_eq_str(std::time::iso8601(got.created_at), "2026-10-17T12:00:00Z", label + ": its time");
+    std::test::assert(
+        got.present
+            && got.priced
+            && got.price.output_per_mtok_micros == 15
+            && got.context_length == 8192
+            && got.max_output_tokens == 0,
+        label + ": and reads back",
+    );
+    std::test::assert_eq_str(
+        std::time::iso8601(got.created_at),
+        "2026-10-17T12:00:00Z",
+        label + ": its time",
+    );
     let mut gone = got;
     gone.removed = true;
     gone.removed_at = at;
@@ -40,32 +74,92 @@ fn exercise(s: st::Store, label: String) {
     std::test::assert(!(s.model("nope") or st::ModelRow { }).present, label + ": an absent model");
 
     // accounts, projects, keys
-    std::test::assert(s.insert_account(st::AccountRow { id: "static", name: "Static", billing: "none", created_at: at }, ch("create", "accounts/static")) or false, label + ": an account");
+    std::test::assert(
+        s.insert_account(
+            st::AccountRow { id: "static", name: "Static", billing: "none", created_at: at },
+            ch("create", "accounts/static"),
+        ) or false,
+        label + ": an account",
+    );
     let mut lim = st::Limits { };
-    push(lim.items, st::counted(st::Limit { scope: st::LimitScope::account, account: "static", window_seconds: 60, requests: 5 })) or discard;
+    push(
+        lim.items,
+        st::counted(
+            st::Limit {
+                scope: st::LimitScope::account,
+                account: "static",
+                window_seconds: 60,
+                requests: 5,
+            },
+        ),
+    ) or discard;
     let mut acc = s.account("static") or st::AccountRow { };
     acc.limits = lim;
     acc.provider = "anthropic";
     s.update_account(acc, ch("update", "accounts/static")) or discard;
     let acc2 = s.account("static") or st::AccountRow { };
     let l0 = at(acc2.limits.items, 0) or st::Limit { scope: st::LimitScope::project };
-    std::test::assert(acc2.provider == "anthropic" && count(acc2.limits.items) == 1 && l0.requests == 5, label + ": its limits");
+    std::test::assert(
+        acc2.provider == "anthropic" && count(acc2.limits.items) == 1 && l0.requests == 5,
+        label + ": its limits",
+    );
     std::test::assert_eq_int(l0.input_tokens, -1, label + ": a null count");
 
-    let mut p = st::ProjectRow { id: "work", name: "Work", owners: names("op", ""), data_classes: names("public", "internal"), accounts: st::Restriction { any: false, names: names("static", "") }, created_at: at };
+    let mut p = st::ProjectRow {
+        id: "work",
+        name: "Work",
+        owners: names("op", ""),
+        data_classes: names("public", "internal"),
+        accounts: st::Restriction { any: false, names: names("static", "") },
+        created_at: at,
+    };
     p.budgeted = true;
-    p.budget = st::BudgetSet { allowance_micros: 1000, currency: "USD", period: st::Period::month, period_anchor: t("2026-10-01T00:00:00Z") };
-    push(p.limits.items, st::counted(st::Limit { scope: st::LimitScope::project, window_seconds: 60, requests: 600 })) or discard;
-    push(p.limits.items, st::counted(st::Limit { scope: st::LimitScope::model, model: "echo-1", window_seconds: 3600, concurrent: 4 })) or discard;
-    std::test::assert(s.insert_project(p, ch("create", "projects/work")) or false, label + ": a project");
+    p.budget = st::BudgetSet {
+        allowance_micros: 1000,
+        currency: "USD",
+        period: st::Period::month,
+        period_anchor: t("2026-10-01T00:00:00Z"),
+    };
+    push(
+        p.limits.items,
+        st::counted(
+            st::Limit { scope: st::LimitScope::project, window_seconds: 60, requests: 600 },
+        ),
+    ) or discard;
+    push(
+        p.limits.items,
+        st::counted(
+            st::Limit {
+                scope: st::LimitScope::model,
+                model: "echo-1",
+                window_seconds: 3600,
+                concurrent: 4,
+            },
+        ),
+    ) or discard;
+    std::test::assert(
+        s.insert_project(p, ch("create", "projects/work")) or false,
+        label + ": a project",
+    );
     let pr = s.project("work") or st::ProjectRow { };
-    std::test::assert(pr.models.any && !pr.accounts.any && count(pr.accounts.names.items) == 1, label + ": a null list and a list");
+    std::test::assert(
+        pr.models.any && !pr.accounts.any && count(pr.accounts.names.items) == 1,
+        label + ": a null list and a list",
+    );
     let dc1 = at(pr.data_classes.items, 1) or "";
     std::test::assert(count(pr.data_classes.items) == 2 && dc1 == "internal", label + ": in order");
-    std::test::assert(pr.budgeted && pr.budget.allowance_micros == 1000 && std::time::iso8601(pr.budget.period_anchor) == "2026-10-01T00:00:00Z", label + ": its budget");
+    std::test::assert(
+        pr.budgeted
+            && pr.budget.allowance_micros == 1000
+            && std::time::iso8601(pr.budget.period_anchor) == "2026-10-01T00:00:00Z",
+        label + ": its budget",
+    );
     std::test::assert_eq_int(count(pr.limits.items), 2, label + ": its limits");
     let pl0 = at(pr.limits.items, 0) or st::Limit { scope: st::LimitScope::project };
-    std::test::assert(pl0.model == "" && pl0.account == "" && pl0.input_tokens == -1, label + ": a project limit names no model, and a null count stays null");
+    std::test::assert(
+        pl0.model == "" && pl0.account == "" && pl0.input_tokens == -1,
+        label + ": a project limit names no model, and a null count stays null",
+    );
     std::test::assert_eq_str(pr.position, "", label + ": a null text is empty");
     let pl1 = at(pr.limits.items, 1) or st::Limit { scope: st::LimitScope::project };
     std::test::assert_eq_str(pl1.model, "echo-1", label + ": a model limit names its model");
@@ -74,16 +168,40 @@ fn exercise(s: st::Store, label: String) {
     narrowed.budgeted = false;
     s.update_project(narrowed, ch("update", "projects/work")) or discard;
     let pr2 = s.project("work") or st::ProjectRow { };
-    std::test::assert(!pr2.models.any && count(pr2.models.names.items) == 0 && !pr2.budgeted, label + ": an empty list is not null; the budget gone");
+    std::test::assert(
+        !pr2.models.any && count(pr2.models.names.items) == 0 && !pr2.budgeted,
+        label + ": an empty list is not null; the budget gone",
+    );
 
-    let k = st::KeyRow { id: "k_1", project: "work", name: "ci", prefix: "vk-abcd", digest: "00ff", created_at: at, expires: true, expires_at: t("2099-01-01T00:00:00Z") };
-    std::test::assert(s.insert_key(k, ch("create", "projects/work/keys/k_1")) or false, label + ": a key");
+    let k = st::KeyRow {
+        id: "k_1",
+        project: "work",
+        name: "ci",
+        prefix: "vk-abcd",
+        digest: "00ff",
+        created_at: at,
+        expires: true,
+        expires_at: t("2099-01-01T00:00:00Z"),
+    };
+    std::test::assert(
+        s.insert_key(k, ch("create", "projects/work/keys/k_1")) or false,
+        label + ": a key",
+    );
     let kd = s.key_by_digest("00ff") or st::KeyRow { };
-    std::test::assert(kd.present && kd.id == "k_1" && kd.expires && !kd.used, label + ": found by its digest");
-    std::test::assert(!(s.key_by_digest("00fe") or st::KeyRow { }).present, label + ": and only by its own");
+    std::test::assert(
+        kd.present && kd.id == "k_1" && kd.expires && !kd.used,
+        label + ": found by its digest",
+    );
+    std::test::assert(
+        !(s.key_by_digest("00fe") or st::KeyRow { }).present,
+        label + ": and only by its own",
+    );
     s.touch_key("k_1", t("2026-10-17T12:30:00Z")) or discard;
     let touched = s.key("k_1") or st::KeyRow { };
-    std::test::assert(touched.used && std::time::iso8601(touched.last_used_at) == "2026-10-17T12:30:00Z", label + ": a key's last use");
+    std::test::assert(
+        touched.used && std::time::iso8601(touched.last_used_at) == "2026-10-17T12:30:00Z",
+        label + ": a key's last use",
+    );
     let ks = s.keys("work") or st::KeyRows { };
     std::test::assert_eq_int(count(ks.rows), 1, label + ": the project's keys");
     let mut archived = pr2;
@@ -96,37 +214,104 @@ fn exercise(s: st::Store, label: String) {
     push(revoked.keys, gone) or discard;
     push(revoked.changes, ch("revoke", "projects/work/keys/k_1")) or discard;
     s.archive_project(archived, ch("archive", "projects/work"), revoked) or discard;
-    std::test::assert((s.key("k_1") or st::KeyRow { }).revoked, label + ": archiving revokes the keys");
-    std::test::assert((s.project("work") or st::ProjectRow { }).archived, label + ": and archives the project");
+    std::test::assert(
+        (s.key("k_1") or st::KeyRow { }).revoked,
+        label + ": archiving revokes the keys",
+    );
+    std::test::assert(
+        (s.project("work") or st::ProjectRow { }).archived,
+        label + ": and archives the project",
+    );
 
     // nodes and seats
-    std::test::assert(s.insert_node(st::NodeRow { id: "laptop", name: "Laptop", token_digest: "abcd", created_at: at }, ch("create", "nodes/laptop")) or false, label + ": a node");
-    std::test::assert_eq_int((s.node("laptop") or st::NodeRow { }).assignment_version, 1, label + ": at its first assignment");
-    let mut seat = st::SeatRow { node: "laptop", id: "static", engine: "static", account: "static", data_classes: names("internal", ""), concurrency: 2, config: "{\"text\": \"hi\"}" };
-    push(seat.serves.items, st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" }) or discard;
-    std::test::assert(s.insert_seat(seat, ch("create", "nodes/laptop/seats/static")) or false, label + ": a seat");
-    std::test::assert_eq_int((s.node("laptop") or st::NodeRow { }).assignment_version, 2, label + ": a new assignment with it");
+    std::test::assert(
+        s.insert_node(
+            st::NodeRow { id: "laptop", name: "Laptop", token_digest: "abcd", created_at: at },
+            ch("create", "nodes/laptop"),
+        ) or false,
+        label + ": a node",
+    );
+    std::test::assert_eq_int(
+        (s.node("laptop") or st::NodeRow { }).assignment_version,
+        1,
+        label + ": at its first assignment",
+    );
+    let mut seat = st::SeatRow {
+        node: "laptop",
+        id: "static",
+        engine: "static",
+        account: "static",
+        data_classes: names("internal", ""),
+        concurrency: 2,
+        config: "{\"text\": \"hi\"}",
+    };
+    push(
+        seat.serves.items,
+        st::SeatModel { model: "echo-1", has_engine_name: true, engine_name: "echo" },
+    ) or discard;
+    std::test::assert(
+        s.insert_seat(seat, ch("create", "nodes/laptop/seats/static")) or false,
+        label + ": a seat",
+    );
+    std::test::assert_eq_int(
+        (s.node("laptop") or st::NodeRow { }).assignment_version,
+        2,
+        label + ": a new assignment with it",
+    );
     let sr = s.seat("laptop", "static") or st::SeatRow { };
-    std::test::assert(sr.present && sr.ref == "laptop/static" && sr.concurrency == 2 && sr.enabled, label + ": the seat reads back");
+    std::test::assert(
+        sr.present && sr.ref == "laptop/static" && sr.concurrency == 2 && sr.enabled,
+        label + ": the seat reads back",
+    );
     let sm0 = at(sr.serves.items, 0) or st::SeatModel { };
     std::test::assert_eq_str(sm0.engine_name, "echo", label + ": its model's own name");
-    std::test::assert_eq_str(std::json::find_string_field(sr.config, "text"), "hi", label + ": its config");
+    std::test::assert_eq_str(
+        std::json::find_string_field(sr.config, "text"),
+        "hi",
+        label + ": its config",
+    );
     s.delete_seat(sr, ch("delete", "nodes/laptop/seats/static")) or discard;
-    std::test::assert(!(s.seat("laptop", "static") or st::SeatRow { }).present, label + ": removed");
+    std::test::assert(
+        !(s.seat("laptop", "static") or st::SeatRow { }).present,
+        label + ": removed",
+    );
     s.insert_seat(seat, ch("create", "nodes/laptop/seats/static")) or discard;
-    std::test::assert_eq_int((s.node("laptop") or st::NodeRow { }).assignment_version, 4, label + ": every seat change moves it");
+    std::test::assert_eq_int(
+        (s.node("laptop") or st::NodeRow { }).assignment_version,
+        4,
+        label + ": every seat change moves it",
+    );
 
     // the fleet as reported
     std::test::assert(!(s.fleet("laptop") or st::FleetRow { }).present, label + ": not registered");
-    s.put_fleet(st::FleetRow { node: "laptop", version: "0.1.0", capabilities: "{\"max_in_flight\": 4, \"engines\": []}", local: "{\"paused\": false, \"paused_seats\": []}", registered_at: at }) or discard;
+    s.put_fleet(
+        st::FleetRow {
+            node: "laptop",
+            version: "0.1.0",
+            capabilities: "{\"max_in_flight\": 4, \"engines\": []}",
+            local: "{\"paused\": false, \"paused_seats\": []}",
+            registered_at: at,
+        },
+    ) or discard;
     s.put_beat("laptop", t("2026-10-17T12:00:05Z"), 2) or discard;
     let f = s.fleet("laptop") or st::FleetRow { };
-    std::test::assert(f.present && f.applied_version == -1 && !f.draining && f.version == "0.1.0", label + ": registered");
-    std::test::assert_eq_int(std::json::find_int_field(f.capabilities, "max_in_flight"), 4, label + ": its capabilities");
+    std::test::assert(
+        f.present && f.applied_version == -1 && !f.draining && f.version == "0.1.0",
+        label + ": registered",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(f.capabilities, "max_in_flight"),
+        4,
+        label + ": its capabilities",
+    );
     let b = s.beat("laptop") or st::Beat { };
     // the memory store keeps the time it is given; Postgres writes its own
     // clock's, which the brain judges a beat by
-    let when_ok = if label == "postgres" { std::time::unix(std::time::current()) - std::time::unix(b.at) < 60 } else { std::time::iso8601(b.at) == "2026-10-17T12:00:05Z" };
+    let when_ok = if label == "postgres" {
+        std::time::unix(std::time::current()) - std::time::unix(b.at) < 60
+    } else {
+        std::time::iso8601(b.at) == "2026-10-17T12:00:05Z"
+    };
     std::test::assert(b.present && b.in_flight == 2 && when_ok, label + ": its heartbeat");
     let mut f2 = f;
     f2.applied_version = 4;
@@ -134,36 +319,85 @@ fn exercise(s: st::Store, label: String) {
     s.put_fleet(f2) or discard;
     let f3 = s.fleet("laptop") or st::FleetRow { };
     std::test::assert(f3.applied_version == 4 && f3.draining, label + ": what it reported since");
-    s.put_seat_state(st::SeatStateRow { ref: "laptop/static", node: "laptop", seat: "static", status: "refused", reason: "no engine" }) or discard;
+    s.put_seat_state(
+        st::SeatStateRow {
+            ref: "laptop/static",
+            node: "laptop",
+            seat: "static",
+            status: "refused",
+            reason: "no engine",
+        },
+    ) or discard;
     let states = s.seat_states("laptop") or st::SeatStateRows { };
     let st = at(states.rows, 0) or st::SeatStateRow { };
-    std::test::assert(st.status == "refused" && st.reason == "no engine", label + ": a seat's state");
-    s.put_windows("static", "[{\"name\": \"five_hour\", \"used_percent\": 12.5, \"observed_at\": \"2026-10-17T00:00:00Z\", \"seat\": \"laptop/static\"}]") or discard;
-    std::test::assert(std::str::contains(s.windows("static") or "", "five_hour"), label + ": an account's windows");
-    s.put_windows("static", "[{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"2026-10-17T00:00:00Z\"}]") or discard;
+    std::test::assert(
+        st.status == "refused" && st.reason == "no engine",
+        label + ": a seat's state",
+    );
+    s.put_windows(
+        "static",
+        "[{\"name\": \"five_hour\", \"used_percent\": 12.5, \"observed_at\": \"2026-10-17T00:00:00Z\", \"seat\": \"laptop/static\"}]",
+    ) or discard;
+    std::test::assert(
+        std::str::contains(s.windows("static") or "", "five_hour"),
+        label + ": an account's windows",
+    );
+    s.put_windows(
+        "static",
+        "[{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"2026-10-17T00:00:00Z\"}]",
+    ) or discard;
     let seatless = s.windows("static") or "";
-    std::test::assert(std::str::contains(seatless, "\"day\"") && !std::str::contains(seatless, "seat"), label + ": a window reported without a seat has no seat key: " + seatless);
+    std::test::assert(
+        std::str::contains(seatless, "\"day\"") && !std::str::contains(seatless, "seat"),
+        label + ": a window reported without a seat has no seat key: " + seatless,
+    );
 
     // the change log
     let all = s.changes(st::ChangeQuery { }) or st::ChangeRows { };
-    std::test::assert_eq_int(count(all.rows), 13, label + ": every write recorded its change, the refused one none");
-    let archive_log = s.changes(st::ChangeQuery { target: "projects/work/keys" }) or st::ChangeRows { };
-    std::test::assert_eq_str((at(archive_log.rows, 0) or st::ChangeRow { }).action, "revoke", label + ": the archive recorded its key's revocation");
-    std::test::assert(!(s.changes(st::ChangeQuery { cursor: "chg_999999" }) or st::ChangeRows { }).cursor_known, label + ": a cursor that names no change");
-    std::test::assert(!(s.changes(st::ChangeQuery { cursor: "nothing" }) or st::ChangeRows { }).cursor_known, label + ": nor one that names nothing");
+    std::test::assert_eq_int(
+        count(all.rows),
+        13,
+        label + ": every write recorded its change, the refused one none",
+    );
+    let archive_log = s.changes(
+        st::ChangeQuery { target: "projects/work/keys" },
+    ) or st::ChangeRows { };
+    std::test::assert_eq_str(
+        (at(archive_log.rows, 0) or st::ChangeRow { }).action,
+        "revoke",
+        label + ": the archive recorded its key's revocation",
+    );
+    std::test::assert(
+        !(s.changes(st::ChangeQuery { cursor: "chg_999999" }) or st::ChangeRows { }).cursor_known,
+        label + ": a cursor that names no change",
+    );
+    std::test::assert(
+        !(s.changes(st::ChangeQuery { cursor: "nothing" }) or st::ChangeRows { }).cursor_known,
+        label + ": nor one that names nothing",
+    );
     let newest = at(all.rows, 0) or st::ChangeRow { };
     std::test::assert_eq_str(newest.target, "nodes/laptop/seats/static", label + ": newest first");
-    std::test::assert_eq_str(std::json::find_string_field(newest.after, "target"), "nodes/laptop/seats/static", label + ": with what it became");
+    std::test::assert_eq_str(
+        std::json::find_string_field(newest.after, "target"),
+        "nodes/laptop/seats/static",
+        label + ": with what it became",
+    );
     let page = s.changes(st::ChangeQuery { limit: 2 }) or st::ChangeRows { };
     std::test::assert(page.more && count(page.rows) == 2, label + ": a page");
     let second = at(page.rows, 1) or st::ChangeRow { };
     let next = s.changes(st::ChangeQuery { limit: 2, cursor: second.id }) or st::ChangeRows { };
     let n1 = at(next.rows, 1) or st::ChangeRow { };
-    std::test::assert_eq_str(n1.target, "nodes/laptop", label + ": the next page goes on from the cursor");
+    std::test::assert_eq_str(
+        n1.target,
+        "nodes/laptop",
+        label + ": the next page goes on from the cursor",
+    );
     std::test::assert(next.cursor_known, label + ": a page's own cursor is known");
     let pattern = s.changes(st::ChangeQuery { target: "%" }) or st::ChangeRows { };
     std::test::assert_eq_int(count(pattern.rows), 0, label + ": a target is a path, not a pattern");
-    let underscore = s.changes(st::ChangeQuery { target: "projects/work/keys/k_" }) or st::ChangeRows { };
+    let underscore = s.changes(
+        st::ChangeQuery { target: "projects/work/keys/k_" },
+    ) or st::ChangeRows { };
     std::test::assert_eq_int(count(underscore.rows), 0, label + ": `_` matches only itself");
     let own = s.changes(st::ChangeQuery { target: "projects/work/keys/k_1" }) or st::ChangeRows { };
     std::test::assert_eq_int(count(own.rows), 2, label + ": a key's own changes");
@@ -182,38 +416,92 @@ fn full(e: st::StoreError) -> Bool {
 fn bounded(s: st::Store, label: String) {
     let mut i = 0;
     while i < 64 {
-        std::test::assert(s.insert_account(st::AccountRow { id: "a" + to_string(i), name: "A" }, ch("create", "accounts/a" + to_string(i))) or false, label + ": account " + to_string(i));
+        std::test::assert(
+            s.insert_account(
+                st::AccountRow { id: "a" + to_string(i), name: "A" },
+                ch("create", "accounts/a" + to_string(i)),
+            ) or false,
+            label + ": account " + to_string(i),
+        );
         i = i + 1;
     }
-    let added = s.insert_account(st::AccountRow { id: "a64", name: "A" }, ch("create", "accounts/a64")) or full(err);
+    let added = s.insert_account(
+        st::AccountRow { id: "a64", name: "A" },
+        ch("create", "accounts/a64"),
+    ) or full(err);
     std::test::assert(!added, label + ": the 65th account is refused as full");
     let all = s.accounts() or st::AccountRows { };
     std::test::assert_eq_int(count(all.rows), 64, label + ": and every account reads back");
 }
 
 fn main() {
-    std::test::assert_eq_str(st::parse_dsn("postgres://u:p@db:5433/v?sslmode=disable").problem, "", "a database URL");
-    std::test::assert(len(st::parse_dsn("postgres://u:p@db:54x3/v").problem) > 0, "a port that is not one is refused, not read as 5432");
-    std::test::assert(!std::str::contains(st::parse_dsn("postgres://u:p@db:54x3/v").problem, "54x3"), "without quoting the URL");
+    std::test::assert_eq_str(
+        st::parse_dsn("postgres://u:p@db:5433/v?sslmode=disable").problem,
+        "",
+        "a database URL",
+    );
+    std::test::assert(
+        len(st::parse_dsn("postgres://u:p@db:54x3/v").problem) > 0,
+        "a port that is not one is refused, not read as 5432",
+    );
+    std::test::assert(
+        !std::str::contains(st::parse_dsn("postgres://u:p@db:54x3/v").problem, "54x3"),
+        "without quoting the URL",
+    );
     let at = st::parse_dsn("postgres://voice:p@ss@db:5433/voice");
-    std::test::assert(at.host == "db" && at.port == 5433 && at.password == "p@ss" && at.user == "voice", "the credentials end at the last @");
+    std::test::assert(
+        at.host == "db" && at.port == 5433 && at.password == "p@ss" && at.user == "voice",
+        "the credentials end at the last @",
+    );
     let enc = st::parse_dsn("postgres://vo%69ce:p%40ss%2F1@db/my%20db?sslmode=disable");
-    std::test::assert(enc.user == "voice" && enc.password == "p@ss/1" && enc.database == "my db" && enc.sslmode == "disable" && enc.port == 5432, "and are percent-decoded");
-    std::test::assert(!std::str::contains(st::redact("auth failed for voice with p@ss", at), "p@ss"), "an error never quotes the password");
+    std::test::assert(
+        enc.user == "voice"
+            && enc.password == "p@ss/1"
+            && enc.database == "my db"
+            && enc.sslmode == "disable"
+            && enc.port == 5432,
+        "and are percent-decoded",
+    );
+    std::test::assert(
+        !std::str::contains(st::redact("auth failed for voice with p@ss", at), "p@ss"),
+        "an error never quotes the password",
+    );
     // the habitat's DSN for a grafted heart: no password, its vault entry
-    let habitat = st::parse_dsn("postgres://heart_abc@127.0.0.1:5544/heart_abc?sslmode=disable&vault=postgres-heart_abc");
-    std::test::assert(habitat.problem == "" && habitat.user == "heart_abc" && habitat.password == "" && habitat.vault == "postgres-heart_abc" && habitat.database == "heart_abc" && habitat.sslmode == "disable" && habitat.port == 5544, "the habitat's DSN names its password's vault entry");
+    let habitat = st::parse_dsn(
+        "postgres://heart_abc@127.0.0.1:5544/heart_abc?sslmode=disable&vault=postgres-heart_abc",
+    );
+    std::test::assert(
+        habitat.problem == ""
+            && habitat.user == "heart_abc"
+            && habitat.password == ""
+            && habitat.vault == "postgres-heart_abc"
+            && habitat.database == "heart_abc"
+            && habitat.sslmode == "disable"
+            && habitat.port == 5544,
+        "the habitat's DSN names its password's vault entry",
+    );
     let first = st::parse_dsn("postgres://h@db/d?vault=postgres-h&sslmode=require");
     std::test::assert(first.vault == "postgres-h" && first.sslmode == "require", "in either order");
-    std::test::assert(len(st::parse_dsn("postgres://h:pw@db/d?vault=postgres-h").problem) > 0, "a password and a vault entry both are refused");
-    std::test::assert_eq_str(st::database_or_habitat("postgres://u:p@db/v"), "postgres://u:p@db/v", "a database given is the one used");
+    std::test::assert(
+        len(st::parse_dsn("postgres://h:pw@db/d?vault=postgres-h").problem) > 0,
+        "a password and a vault entry both are refused",
+    );
+    std::test::assert_eq_str(
+        st::database_or_habitat("postgres://u:p@db/v"),
+        "postgres://u:p@db/v",
+        "a database given is the one used",
+    );
     exercise(st::MemoryStore { }, "memory");
     bounded(st::MemoryStore { }, "memory");
     if !std::env::var_exists("VOICE_TEST_DATABASE_URL") { return; }
     let pg = st::PgStore { url: std::env::var("VOICE_TEST_DATABASE_URL") };
     std::test::assert(pg.ready(), "the test database answers");
-    pg.conn.exec("TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE");
+    pg.conn.exec(
+        "TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE",
+    );
     exercise(pg, "postgres");
-    pg.conn.exec("TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE");
+    pg.conn.exec(
+        "TRUNCATE change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE",
+    );
     bounded(pg, "postgres");
 }

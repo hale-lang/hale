@@ -13,5 +13,9 @@ fn json_response(status: Int, body: String) -> std::http::Response {
 }
 
 fn error_response(status: Int, kind: String, code: String, message: String) -> std::http::Response {
-    return json_response(status, "{\"error\": {\"message\": \"" + std::json::escape_string(message) + "\", \"type\": \"" + kind + "\", \"code\": \"" + code + "\"}}");
+    return json_response(
+        status,
+        "{\"error\": {\"message\": \"" + std::json::escape_string(message) + "\", \"type\": \""
+            + kind + "\", \"code\": \"" + code + "\"}}",
+    );
 }

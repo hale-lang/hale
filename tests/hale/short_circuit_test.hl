@@ -38,7 +38,10 @@ main locus App {
         std::test::assert(!(d != 0 && 10 / d > 1), "a zero divisor is never divided by");
         std::test::assert(d == 0 || 10 / d > 1, "nor under ||");
         let s = "ab";
-        std::test::assert(!(len(s) >= 3 && s[0..3] == "abc"), "a short string is never sliced past its end");
+        std::test::assert(
+            !(len(s) >= 3 && s[0..3] == "abc"),
+            "a short string is never sliced past its end",
+        );
 
         // in conditions: if, while
         let mut ran = 0;
@@ -50,7 +53,11 @@ main locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(i, 3, "while: three rounds");
-        std::test::assert_eq_int(self.calls, 7, "while: the right side ran once per true left, not on the exit test");
+        std::test::assert_eq_int(
+            self.calls,
+            7,
+            "while: the right side ran once per true left, not on the exit test",
+        );
 
         // the value is a Bool like any other
         let both = true && false;

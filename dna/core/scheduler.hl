@@ -63,9 +63,19 @@ locus Scheduler {
             b.int_field("first", missed.first);
             b.int_field("last", missed.last);
             b.int_field("count", missed.count);
-            b.string_field("why", "no tick evaluated " + (if missed.count == 1 { "it" } else { "them" }) + " in " + (if missed.count == 1 { "its" } else { "their" }) + " period: the organization was not running");
+            b.string_field(
+                "why",
+                "no tick evaluated " + (if missed.count == 1 { "it" } else { "them" }) + " in "
+                    + (if missed.count == 1 { "its" } else { "their" })
+                    + " period: the organization was not running",
+            );
             b.end_object();
-            let x = self.journal.append(self.journal.revision(), "schedule.missed", s.id, b.result());
+            let x = self.journal.append(
+                self.journal.revision(),
+                "schedule.missed",
+                s.id,
+                b.result(),
+            );
             if missed.last > s.last_occurrence { s.last_occurrence = missed.last; }
         }
         if cur > s.last_occurrence { s.last_occurrence = cur; }
@@ -75,7 +85,12 @@ locus Scheduler {
             b.int_field("occurrence", cur);
             b.string_field("task", s.task);
             b.end_object();
-            let k = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, b.result());
+            let k = self.journal.append(
+                self.journal.revision(),
+                "schedule.skipped",
+                s.id,
+                b.result(),
+            );
             self.rows.set(i, s) or discard;
             return 0;
         }
@@ -99,7 +114,12 @@ locus Scheduler {
             b.int_field("occurrence", t);
             b.string_field("why", if len(task) == 0 { "not admitted" } else { task });
             b.end_object();
-            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, b.result());
+            let x = self.journal.append(
+                self.journal.revision(),
+                "schedule.refused",
+                s.id,
+                b.result(),
+            );
             return;
         }
         s.task = task;
@@ -124,7 +144,12 @@ locus Scheduler {
             // the hole a convener nobody holds leaves, for #1091's path
             if std::str::starts_with(why, "nobody holds ") { b.string_field("hole", s.convener); }
             b.end_object();
-            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, b.result());
+            let x = self.journal.append(
+                self.journal.revision(),
+                "schedule.refused",
+                s.id,
+                b.result(),
+            );
             return "schedule " + s.id + ": " + why;
         }
         let mut last = "";
@@ -143,13 +168,23 @@ locus Scheduler {
             let now = wall_ms();
             d.from = occurrence_at(s, now);
             if d.from <= 0 { d.from = now; }
-            let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, schedule_json(d));
-            if !x.ok { return "schedule " + s.id + ": the record did not take the declaration (" + x.error + ")"; }
+            let x = self.journal.append(
+                self.journal.revision(),
+                "schedule.declared",
+                s.id,
+                schedule_json(d),
+            );
+            if !x.ok {
+                return "schedule " + s.id + ": the record did not take the declaration (" + x.error
+                    + ")";
+            }
             self.read_rows();
             self.convenes_rows(s.convener, s.definition);
             // re-declared for another pair: the rhythm it left
             let was = schedule_of(s.id, last);
-            if len(last) > 0 && (was.convener != s.convener || was.definition != s.definition) { self.convenes_rows(was.convener, was.definition); }
+            if len(last) > 0 && (was.convener != s.convener || was.definition != s.definition) {
+                self.convenes_rows(was.convener, was.definition);
+            }
         }
         self.read_rows();
         return "";
@@ -173,7 +208,9 @@ locus Scheduler {
             k = k + 1;
         }
         if len(ids) == 0 {
-            if row_exists(self.journal, "graph.edge", edge) { let r = self.journal.append(self.journal.revision(), "graph.retired", edge, "{}"); }
+            if row_exists(self.journal, "graph.edge", edge) {
+                let r = self.journal.append(self.journal.revision(), "graph.retired", edge, "{}");
+            }
             return;
         }
         if !row_exists(self.journal, "graph.node", node) {
@@ -188,8 +225,14 @@ locus Scheduler {
         b.begin_object();
         b.string_field("kind", "convenes");
         b.begin_array_field("members");
-        b.begin_object(); b.string_field("role", "position"); b.string_field("node", convener); b.end_object();
-        b.begin_object(); b.string_field("role", "definition"); b.string_field("node", node); b.end_object();
+        b.begin_object();
+        b.string_field("role", "position");
+        b.string_field("node", convener);
+        b.end_object();
+        b.begin_object();
+        b.string_field("role", "definition");
+        b.string_field("node", node);
+        b.end_object();
         b.end_array();
         b.string_field("cadence", cadence);
         b.string_field("schedule", ids);
@@ -198,14 +241,20 @@ locus Scheduler {
     }
     // Why `s` cannot be declared, "" when it can.
     fn refusal(s: Schedule, catalog: WorkflowCatalog, knowledge: MemoryKnowledge) -> String {
-        if len(s.id) == 0 || std::str::contains(s.id, "@") || std::str::contains(s.id, " ") { return "a schedule needs an id, with no `@` or space"; }
-        if s.every_ms <= 0 && len(s.cron) == 0 { return "an interval (every_ms) or a cron expression"; }
+        if len(s.id) == 0 || std::str::contains(s.id, "@") || std::str::contains(s.id, " ") {
+            return "a schedule needs an id, with no `@` or space";
+        }
+        if s.every_ms <= 0 && len(s.cron) == 0 {
+            return "an interval (every_ms) or a cron expression";
+        }
         if s.every_ms > 0 && len(s.cron) > 0 { return "an interval or a cron, not both"; }
         if len(s.cron) > 0 {
             let bad = cron_check(s.cron);
             if len(bad) > 0 { return "cron `" + s.cron + "`: " + bad; }
         }
-        if !std::str::starts_with(s.convener, "position:") || len(s.convener) <= 9 { return "a convener, the position that convenes it (`position:<name>`)"; }
+        if !std::str::starts_with(s.convener, "position:") || len(s.convener) <= 9 {
+            return "a convener, the position that convenes it (`position:<name>`)";
+        }
         let hole = self.convener_hole(s.convener, knowledge);
         if len(hole) > 0 { return hole; }
         let rev = catalog.latest(s.definition);
@@ -215,11 +264,16 @@ locus Scheduler {
         let unperformed = catalog.unperformed(s.definition, rev);
         if len(unperformed) > 0 { return "the catalog would refuse it: " + unperformed; }
         let inputs = std::str::trim(s.args);
-        if !std::str::starts_with(inputs, "{") || !std::json::valid(inputs) { return "its inputs are a JSON object"; }
+        if !std::str::starts_with(inputs, "{") || !std::json::valid(inputs) {
+            return "its inputs are a JSON object";
+        }
         let takes = catalog.definition(s.definition, rev).takes;
         let mut k = 0;
         while len(nth_word(takes, k)) > 0 {
-            if len(std::json::find_field_raw(inputs, nth_word(takes, k))) == 0 { return definition_name(s.definition, rev) + " takes `" + nth_word(takes, k) + "`, which the inputs do not name"; }
+            if len(std::json::find_field_raw(inputs, nth_word(takes, k))) == 0 {
+                return definition_name(s.definition, rev) + " takes `" + nth_word(takes, k)
+                    + "`, which the inputs do not name";
+            }
             k = k + 1;
         }
         return "";
@@ -232,10 +286,18 @@ locus Scheduler {
     // the declaration names. With no memory to ask, nothing is assumed.
     fn convener_hole(convener: String, knowledge: MemoryKnowledge) -> String {
         if word_in(convener[9..len(convener)], ORGANISM_POSITIONS) { return ""; }
-        if !knowledge.ready() { return "who holds " + convener + " is the graph's, and no memory is named to ask"; }
+        if !knowledge.ready() {
+            return "who holds " + convener + " is the graph's, and no memory is named to ask";
+        }
         let data = knowledge.routing();
-        if len(data) == 0 { return "who holds " + convener + " is the graph's, and memory did not answer"; }
-        if len(route_held_by(data, convener)) == 0 { return "nobody holds " + convener + ": it convenes nothing until someone does (`hale dna fill " + convener[9..len(convener)] + " <holder>`)"; }
+        if len(data) == 0 {
+            return "who holds " + convener + " is the graph's, and memory did not answer";
+        }
+        if len(route_held_by(data, convener)) == 0 {
+            return "nobody holds " + convener
+                + ": it convenes nothing until someone does (`hale dna fill "
+                + convener[9..len(convener)] + " <holder>`)";
+        }
         return "";
     }
     // GH #1143: the schedules as the record holds them — declarations,
@@ -251,7 +313,10 @@ locus Scheduler {
                 let mut k = 0;
                 while k < self.rows.len() {
                     let mut s = self.rows.get(k) or Schedule { };
-                    if s.id == e.entity { s.paused = e.kind == "schedule.paused"; self.rows.set(k, s) or discard; }
+                    if s.id == e.entity {
+                        s.paused = e.kind == "schedule.paused";
+                        self.rows.set(k, s) or discard;
+                    }
                     k = k + 1;
                 }
             }
@@ -272,7 +337,9 @@ locus Scheduler {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "workflow.admitted" && std::str::starts_with(native_json_string(e.body, "request"), prefix) {
+            if e.kind == "workflow.admitted"
+                && std::str::starts_with(native_json_string(e.body, "request"), prefix)
+            {
                 let req = native_json_string(e.body, "request");
                 let t = std::str::parse_int(req[len(prefix)..len(req)]) or 0;
                 if t > s.last_occurrence { s.last_occurrence = t; }
@@ -293,7 +360,9 @@ locus Scheduler {
                 // resumed while the organization was down: the paused span
                 // was not due, so misses count from the resume
                 let at = std::json::find_int_field(e.body, "at");
-                if at > 0 && occurrence_at(s, at) > s.last_occurrence { s.last_occurrence = occurrence_at(s, at); }
+                if at > 0 && occurrence_at(s, at) > s.last_occurrence {
+                    s.last_occurrence = occurrence_at(s, at);
+                }
             }
             i = i + 1;
         }
@@ -313,7 +382,22 @@ locus Scheduler {
         if len(r.request_id) == 0 { return; }
         if len(first_row(self.journal, "schedule.answered", r.request_id).kind) > 0 { return; }
         let denied = self.authority(r.by, r.convener, knowledge);
-        let why = if len(denied) > 0 { denied } else { self.declare(Schedule { id: r.schedule, every_ms: r.every_ms, cron: r.cron, definition: r.definition, args: if len(r.args) > 0 { r.args } else { "{}" }, convener: r.convener }, catalog, knowledge) };
+        let why = if len(denied) > 0 {
+            denied
+        } else {
+            self.declare(
+                Schedule {
+                    id: r.schedule,
+                    every_ms: r.every_ms,
+                    cron: r.cron,
+                    definition: r.definition,
+                    args: if len(r.args) > 0 { r.args } else { "{}" },
+                    convener: r.convener,
+                },
+                catalog,
+                knowledge,
+            )
+        };
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("schedule", r.schedule);
@@ -336,13 +420,22 @@ locus Scheduler {
         let board = route_held_by(data, "position:board");
         if len(board) == 0 { return ""; }
         if word_in(by, std::str::replace(board, ",", " ")) { return ""; }
-        if std::str::starts_with(convener, "position:") && word_in(by, std::str::replace(route_held_by(data, convener), ",", " ")) { return ""; }
-        return by + " holds neither the Board nor " + convener + ": declaring a schedule is the Board's, or the convener's own holder's";
+        if std::str::starts_with(convener, "position:")
+            && word_in(by, std::str::replace(route_held_by(data, convener), ",", " "))
+        {
+            return "";
+        }
+        return by + " holds neither the Board nor " + convener
+            + ": declaring a schedule is the Board's, or the convener's own holder's";
     }
     // The definition an occurrence of `s` binds: the catalog's newest.
-    fn definition_of(s: Schedule, catalog: WorkflowCatalog) -> WorkflowDef { return catalog.definition(s.definition, catalog.latest(s.definition)); }
+    fn definition_of(s: Schedule, catalog: WorkflowCatalog) -> WorkflowDef {
+        return catalog.definition(s.definition, catalog.latest(s.definition));
+    }
     // Whether an execution is still open: admitted, and not settled.
-    fn execution_open(task: String) -> Bool { return len(task) > 0 && !row_exists(self.journal, "workflow.settled", task); }
+    fn execution_open(task: String) -> Bool {
+        return len(task) > 0 && !row_exists(self.journal, "workflow.settled", task);
+    }
 }
 
 // ---- schedules (GH #610): their rows, cadences and occurrences ---------
@@ -366,7 +459,8 @@ fn civil_fields(secs: Int) -> String {
     let dom = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let dow = (days + 4) - ((days + 4) / 7) * 7;
-    return to_string(minute) + " " + to_string(hour) + " " + to_string(dom) + " " + to_string(month) + " " + to_string(if dow < 0 { dow + 7 } else { dow });
+    return to_string(minute) + " " + to_string(hour) + " " + to_string(dom) + " " + to_string(month)
+        + " " + to_string(if dow < 0 { dow + 7 } else { dow });
 }
 
 fn nth_word(s: String, n: Int) -> String {
@@ -421,7 +515,10 @@ fn cron_field(field: String, lo: Int, hi: Int, v: Int, name: String) -> String {
                 b = if slash >= 0 { hi } else { a };
             }
             if a < 0 || b < 0 { return "bad: `" + range + "` is not a number or range in " + name; }
-            if a < lo || b > hi || a > b { return "bad: `" + range + "` is outside " + to_string(lo) + "-" + to_string(hi) + " in " + name; }
+            if a < lo || b > hi || a > b {
+                return "bad: `" + range + "` is outside " + to_string(lo) + "-" + to_string(hi)
+                    + " in " + name;
+            }
         }
         // dow 7 is Sunday too
         let vv = if name == "day-of-week" && v == 0 && a > 0 { 7 } else { v };
@@ -432,7 +529,10 @@ fn cron_field(field: String, lo: Int, hi: Int, v: Int, name: String) -> String {
 
 // Validate a cron expression: "" when well-formed, else why.
 fn cron_check(expr: String) -> String {
-    if word_count(expr) != 5 { return "a cron expression has five fields (minute hour day-of-month month day-of-week), not " + to_string(word_count(expr)); }
+    if word_count(expr) != 5 {
+        return "a cron expression has five fields (minute hour day-of-month month day-of-week), not "
+            + to_string(word_count(expr));
+    }
     let r0 = cron_field(nth_word(expr, 0), 0, 59, 0, "minute");
     if std::str::starts_with(r0, "bad") { return r0[5..len(r0)]; }
     let r1 = cron_field(nth_word(expr, 1), 0, 23, 0, "hour");
@@ -497,22 +597,34 @@ const ORGANISM_POSITIONS: String = "leader editor";
 // The position whose owner admits an occurrence of `s` (GH #664): a graph
 // position's name, or "" — the organization — for the organism's own.
 fn schedule_to(s: Schedule) -> String {
-    let p = if std::str::starts_with(s.convener, "position:") { s.convener[9..len(s.convener)] } else { s.convener };
+    let p = if std::str::starts_with(s.convener, "position:") {
+        s.convener[9..len(s.convener)]
+    } else {
+        s.convener
+    };
     return if word_in(p, ORGANISM_POSITIONS) { "" } else { p };
 }
 
 // A declaration's terms — everything but the occurrence it was made at —
 // so declaring the same schedule again writes nothing.
 fn schedule_terms(body: String) -> String {
-    return to_string(std::json::find_int_field(body, "every_ms")) + "|" + std::json::find_string_field(body, "cron") + "|" + std::json::find_string_field(body, "definition") + "|" + std::json::find_string_field(body, "args") + "|" + std::json::find_string_field(body, "convener");
+    return to_string(std::json::find_int_field(body, "every_ms")) + "|"
+        + std::json::find_string_field(body, "cron") + "|"
+        + std::json::find_string_field(body, "definition") + "|"
+        + std::json::find_string_field(body, "args") + "|"
+        + std::json::find_string_field(body, "convener");
 }
 
 // A schedule as its declaration row holds it.
 fn schedule_of(id: String, body: String) -> Schedule {
     return Schedule {
-        id: id, every_ms: std::json::find_int_field(body, "every_ms"), cron: std::json::find_string_field(body, "cron"),
-        definition: std::json::find_string_field(body, "definition"), args: std::json::find_string_field(body, "args"),
-        convener: std::json::find_string_field(body, "convener"), from: std::json::find_int_field(body, "from")
+        id: id,
+        every_ms: std::json::find_int_field(body, "every_ms"),
+        cron: std::json::find_string_field(body, "cron"),
+        definition: std::json::find_string_field(body, "definition"),
+        args: std::json::find_string_field(body, "args"),
+        convener: std::json::find_string_field(body, "convener"),
+        from: std::json::find_int_field(body, "from")
     };
 }
 
@@ -546,7 +658,11 @@ fn missed_between(s: Schedule, after: Int, before: Int) -> OccurrenceRun {
         return OccurrenceRun { count: n, first: after + s.every_ms, last: before - s.every_ms };
     }
     let mut out = OccurrenceRun { };
-    let low = if before / 60000 - after / 60000 > 10080 { before / 60000 - 10080 } else { after / 60000 + 1 };
+    let low = if before / 60000 - after / 60000 > 10080 {
+        before / 60000 - 10080
+    } else {
+        after / 60000 + 1
+    };
     let mut m = before / 60000 - 1;
     while m >= low {
         if cron_matches(s.cron, m * 60) {

@@ -31,7 +31,11 @@ type Rec {
     tags: bounded[String; 3];
     items: bounded[Item; 4] indexed_by name;
 }
-type AllDefault { scope: Scope = Scope::org; inner: Inner = Inner { a: 9, b: "x" }; n: Int = 4 * 4; }
+type AllDefault {
+    scope: Scope = Scope::org;
+    inner: Inner = Inner { a: 9, b: "x" };
+    n: Int = 4 * 4;
+}
 
 api Defaults {
     rpc Probe::rec;
@@ -55,7 +59,14 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(Defaults, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "d", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            Defaults,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "d",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     fn check(r: Rec, what: String) {
@@ -68,10 +79,22 @@ main locus Desk {
         std::test::assert_eq_int(r.wait / 1ms, 5000, what + ": a Duration default");
         std::test::assert_eq_int(r.longer / 1ms, 10000, what + ": a computed Duration default");
         std::test::assert_eq_int(r.price / 1cent, 7, what + ": a quantity default");
-        std::test::assert_eq_str(std::time::iso8601(r.at), "2026-01-01T00:00:00Z", what + ": a Time default");
-        let scope_ok = match r.scope { Scope::key -> true, Scope::team -> false, Scope::org -> false, };
+        std::test::assert_eq_str(
+            std::time::iso8601(r.at),
+            "2026-01-01T00:00:00Z",
+            what + ": a Time default",
+        );
+        let scope_ok = match r.scope {
+            Scope::key -> true,
+            Scope::team -> false,
+            Scope::org -> false,
+        };
         std::test::assert(scope_ok, what + ": an enum default");
-        let shape_ok = match r.shape { Shape::Empty -> false, Shape::Circle(f) -> f == 1.5, Shape::Tag(t) -> false, };
+        let shape_ok = match r.shape {
+            Shape::Empty -> false,
+            Shape::Circle(f) -> f == 1.5,
+            Shape::Tag(t) -> false,
+        };
         std::test::assert(shape_ok, what + ": an enum default with a payload");
         std::test::assert_eq_int(r.inner.a, 7, what + ": a record default");
         std::test::assert_eq_str(r.inner.b, "in", what + ": the record default's own default");
@@ -87,11 +110,20 @@ main locus Desk {
         };
         self.check(r, "json");
         // a field sent is the value sent, not its default
-        let s = __api_decode_Rec("{\"name\":\"x\",\"scope\":\"org\",\"inner\":{\"a\":1},\"sum\":8}") or {
-            std::test::assert(false, "the JSON decoder, fields sent: " + err.kind + " " + err.field);
+        let s = __api_decode_Rec(
+            "{\"name\":\"x\",\"scope\":\"org\",\"inner\":{\"a\":1},\"sum\":8}",
+        ) or {
+            std::test::assert(
+                false,
+                "the JSON decoder, fields sent: " + err.kind + " " + err.field,
+            );
             return;
         };
-        let sent_ok = match s.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
+        let sent_ok = match s.scope {
+            Scope::key -> false,
+            Scope::team -> false,
+            Scope::org -> true,
+        };
         std::test::assert(sent_ok, "an enum sent");
         std::test::assert_eq_int(s.inner.a, 1, "a record sent");
         std::test::assert_eq_int(s.sum, 8, "a scalar sent");
@@ -107,11 +139,18 @@ main locus Desk {
             return;
         };
         let b = __api_pb_decode_AllDefault(std::bytes::from_string("")) or {
-            std::test::assert(false, "an empty message for all defaults: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "an empty message for all defaults: " + err.kind + " " + err.field,
+            );
             return;
         };
         for v in [a, b] {
-            let org = match v.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
+            let org = match v.scope {
+                Scope::key -> false,
+                Scope::team -> false,
+                Scope::org -> true,
+            };
             std::test::assert(org, "an absent enum is its default");
             std::test::assert_eq_int(v.inner.a, 9, "an absent record is its default");
             std::test::assert_eq_str(v.inner.b, "x", "the default as written");

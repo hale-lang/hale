@@ -146,7 +146,11 @@ locus Inference {
         return s;
     }
 
-    fn serve_held(r: InferenceRequest, ctx: std::api::Context, candidates: Candidates) -> Served fallible(ApiError) {
+    fn serve_held(
+        r: InferenceRequest,
+        ctx: std::api::Context,
+        candidates: Candidates
+    ) -> Served fallible(ApiError) {
         let started = std::time::monotonic_ns();
         let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
         let m = self.store.model(r.model) or fail metering_failed(err);
@@ -161,23 +165,73 @@ locus Inference {
             n = n + 1;
             let reply_to = self.link.root() + ".reply." + request_id + "." + to_string(n);
             let t0 = std::time::monotonic_ns();
-            let o = serve_over(self.link, c.seat.node, reply_to, serve_message(request_id, reply_to, c, r), self.first, self.idle);
+            let o = serve_over(
+                self.link,
+                c.seat.node,
+                reply_to,
+                serve_message(request_id, reply_to, c, r),
+                self.first,
+                self.idle,
+            );
             let ms = (std::time::monotonic_ns() - t0) / 1000000;
-            if o.ack == "accepted" && (o.outcome == "served" || o.outcome == "incomplete") && len(o.response) > 0 {
-                push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::served, wall_ms: ms }) or discard;
-                let s = served(request_id, r.model, k, m, c, o, attempts.items, (std::time::monotonic_ns() - started) / 1000000);
+            if o.ack == "accepted"
+                && (o.outcome == "served" || o.outcome == "incomplete")
+                && len(o.response) > 0
+            {
+                push(
+                    attempts.items,
+                    Attempt {
+                        seat: c.seat.ref,
+                        account: c.seat.account,
+                        outcome: AttemptOutcome::served,
+                        wall_ms: ms,
+                    },
+                ) or discard;
+                let s = served(
+                    request_id,
+                    r.model,
+                    k,
+                    m,
+                    c,
+                    o,
+                    attempts.items,
+                    (std::time::monotonic_ns() - started) / 1000000,
+                );
                 self.settled(r, s);
                 return s;
             }
             let reason = failure_of(o);
             why = c.seat.ref + ": " + reason;
-            push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::failed, error: reason, wall_ms: ms }) or discard;
+            push(
+                attempts.items,
+                Attempt {
+                    seat: c.seat.ref,
+                    account: c.seat.account,
+                    outcome: AttemptOutcome::failed,
+                    error: reason,
+                    wall_ms: ms,
+                },
+            ) or discard;
             if o.output || (o.ack == "accepted" && o.outcome == "failed" && !o.retryable) {
                 if o.output { self.unfinished(r, request_id, k, m, c, "failed", started); }
-                fail ApiError { status: 502, kind: "model_error", code: ErrorCode::upstream_failed, message: "seat " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+                fail ApiError {
+                    status: 502,
+                    kind: "model_error",
+                    code: ErrorCode::upstream_failed,
+                    message: "seat " + why,
+                    has_voice: true,
+                    voice: attempts_voice(request_id, attempts.items),
+                };
             }
         }
-        fail ApiError { status: 502, kind: "server_error", code: ErrorCode::upstream_failed, message: "every eligible seat failed; the last, " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+        fail ApiError {
+            status: 502,
+            kind: "server_error",
+            code: ErrorCode::upstream_failed,
+            message: "every eligible seat failed; the last, " + why,
+            has_voice: true,
+            voice: attempts_voice(request_id, attempts.items),
+        };
     }
 
     /// A streamed answer (stream.hl): admitted as any request, then
@@ -185,22 +239,38 @@ locus Inference {
     /// seat sends its first event, or one that accepted stays quiet for the
     /// keep-alive span, nothing is sent, so a request every seat refuses is
     /// answered whole, as a `502`.
-    fn stream(r: InferenceRequest, ctx: std::api::Context, out: EventStream) -> std::http::Response fallible(ApiError) {
+    fn stream(
+        r: InferenceRequest,
+        ctx: std::api::Context,
+        out: EventStream
+    ) -> std::http::Response fallible(ApiError) {
         let held = self.hold(r, ctx) or raise;
         let candidates = self.admit(r, ctx) or raise;
         return self.stream_held(r, ctx, out, candidates, held) or raise;
     }
 
-    fn stream_held(r: InferenceRequest, ctx: std::api::Context, out: EventStream, candidates: Candidates, held: Held) -> std::http::Response fallible(ApiError) {
+    fn stream_held(
+        r: InferenceRequest,
+        ctx: std::api::Context,
+        out: EventStream,
+        candidates: Candidates,
+        held: Held
+    ) -> std::http::Response fallible(ApiError) {
         let started = std::time::monotonic_ns();
         let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
         let m = self.store.model(r.model) or fail metering_failed(err);
         let id_hex = random_hex(12) or fail entropy_failed(err.message);
         let request_id = "resp_" + id_hex;
-        out.headers = "X-Request-Id: " + request_id + (if len(held.headers) > 0 { "\r\n" + held.headers } else { "" });
+        out.headers = "X-Request-Id: " + request_id
+            + (if len(held.headers) > 0 { "\r\n" + held.headers } else { "" });
         // the keep-alive span runs from here until something is sent
         out.sent_ns = std::time::monotonic_ns();
-        let mut st = StreamState { endpoint: r.endpoint, request_id: request_id, model: r.model, created: std::time::unix(now_seconds()) };
+        let mut st = StreamState {
+            endpoint: r.endpoint,
+            request_id: request_id,
+            model: r.model,
+            created: std::time::unix(now_seconds()),
+        };
         let mut attempts = Attempts { };
         // attempts already told the caller (`voice:attempt`)
         let mut told = 0;
@@ -210,7 +280,11 @@ locus Inference {
             n = n + 1;
             let reply_to = self.link.root() + ".reply." + request_id + "." + to_string(n);
             let t0 = std::time::monotonic_ns();
-            let mut o = self.link.offer(c.seat.node, reply_to, serve_message(request_id, reply_to, c, r));
+            let mut o = self.link.offer(
+                c.seat.node,
+                reply_to,
+                serve_message(request_id, reply_to, c, r),
+            );
             let mut ending = "";
             if o.ack == "accepted" {
                 st.output = false;
@@ -226,7 +300,9 @@ locus Inference {
                             ending = msg.json;
                         } else {
                             while told < count(attempts.items) {
-                                let a = at(attempts.items, told) or Attempt { outcome: AttemptOutcome::failed };
+                                let a = at(attempts.items, told) or Attempt {
+                                    outcome: AttemptOutcome::failed,
+                                };
                                 st = attempt_event(out, st, a, c.seat.ref);
                                 told = told + 1;
                             }
@@ -242,54 +318,151 @@ locus Inference {
                         // nothing has, and finds a caller that has gone
                         out.keep_alive(self.keep_alive);
                     }
-                    if msg.kind == "event" || msg.kind == "result" { deadline = std::time::monotonic() + (if o.output { self.idle } else { self.first }); }
+                    if msg.kind == "event" || msg.kind == "result" {
+                        deadline = std::time::monotonic()
+                            + (if o.output { self.idle } else { self.first });
+                    }
                     if out.gone {
                         // the caller went away: the seat is told to stop,
                         // and what it spent on the caller is told
                         self.link.finish();
-                        if st.output || o.output { self.unfinished(r, request_id, k, m, c, "cancelled", started); }
+                        if st.output || o.output {
+                            self.unfinished(r, request_id, k, m, c, "cancelled", started);
+                        }
                         return out.end();
                     }
                 }
                 self.link.finish();
             }
             let ms = (std::time::monotonic_ns() - t0) / 1000000;
-            if o.ack == "accepted" && (o.outcome == "served" || o.outcome == "incomplete") && len(o.response) > 0 {
+            if o.ack == "accepted"
+                && (o.outcome == "served" || o.outcome == "incomplete")
+                && len(o.response) > 0
+            {
                 while told < count(attempts.items) {
                     let a = at(attempts.items, told) or Attempt { outcome: AttemptOutcome::failed };
                     st = attempt_event(out, st, a, c.seat.ref);
                     told = told + 1;
                 }
-                push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::served, wall_ms: ms }) or discard;
-                let s = served(request_id, r.model, k, m, c, o, attempts.items, (std::time::monotonic_ns() - started) / 1000000);
+                push(
+                    attempts.items,
+                    Attempt {
+                        seat: c.seat.ref,
+                        account: c.seat.account,
+                        outcome: AttemptOutcome::served,
+                        wall_ms: ms,
+                    },
+                ) or discard;
+                let s = served(
+                    request_id,
+                    r.model,
+                    k,
+                    m,
+                    c,
+                    o,
+                    attempts.items,
+                    (std::time::monotonic_ns() - started) / 1000000,
+                );
                 finish_stream(out, st, ending, s);
                 self.settled(r, s);
                 return out.end();
             }
             let reason = failure_of(o);
             why = c.seat.ref + ": " + reason;
-            push(attempts.items, Attempt { seat: c.seat.ref, account: c.seat.account, outcome: AttemptOutcome::failed, error: reason, wall_ms: ms }) or discard;
-            if st.output || o.output || (o.ack == "accepted" && o.outcome == "failed" && !o.retryable) {
-                if st.output || o.output { self.unfinished(r, request_id, k, m, c, "failed", started); }
+            push(
+                attempts.items,
+                Attempt {
+                    seat: c.seat.ref,
+                    account: c.seat.account,
+                    outcome: AttemptOutcome::failed,
+                    error: reason,
+                    wall_ms: ms,
+                },
+            ) or discard;
+            if st.output
+                || o.output
+                || (o.ack == "accepted" && o.outcome == "failed" && !o.retryable)
+            {
+                if st.output || o.output {
+                    self.unfinished(r, request_id, k, m, c, "failed", started);
+                }
                 if out.opened {
-                    fail_stream(out, st, "upstream_failed", "seat " + why, failed_voice(request_id, k, m, c, attempts.items, (std::time::monotonic_ns() - started) / 1000000));
+                    fail_stream(
+                        out,
+                        st,
+                        "upstream_failed",
+                        "seat " + why,
+                        failed_voice(
+                            request_id,
+                            k,
+                            m,
+                            c,
+                            attempts.items,
+                            (std::time::monotonic_ns() - started) / 1000000,
+                        ),
+                    );
                     return out.end();
                 }
-                fail ApiError { status: 502, kind: "model_error", code: ErrorCode::upstream_failed, message: "seat " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+                fail ApiError {
+                    status: 502,
+                    kind: "model_error",
+                    code: ErrorCode::upstream_failed,
+                    message: "seat " + why,
+                    has_voice: true,
+                    voice: attempts_voice(request_id, attempts.items),
+                };
             }
         }
         if out.opened {
             let last = at(candidates.items, count(candidates.items) - 1) or Candidate { };
-            fail_stream(out, st, "upstream_failed", "every eligible seat failed; the last, " + why, failed_voice(request_id, k, m, last, attempts.items, (std::time::monotonic_ns() - started) / 1000000));
+            fail_stream(
+                out,
+                st,
+                "upstream_failed",
+                "every eligible seat failed; the last, " + why,
+                failed_voice(
+                    request_id,
+                    k,
+                    m,
+                    last,
+                    attempts.items,
+                    (std::time::monotonic_ns() - started) / 1000000,
+                ),
+            );
             return out.end();
         }
-        fail ApiError { status: 502, kind: "server_error", code: ErrorCode::upstream_failed, message: "every eligible seat failed; the last, " + why, has_voice: true, voice: attempts_voice(request_id, attempts.items) };
+        fail ApiError {
+            status: 502,
+            kind: "server_error",
+            code: ErrorCode::upstream_failed,
+            message: "every eligible seat failed; the last, " + why,
+            has_voice: true,
+            voice: attempts_voice(request_id, attempts.items),
+        };
     }
 
     /// A request that seat `c` began and did not finish: its usage told,
     /// `status` saying how it ended (`cancelled`, `failed`).
-    fn unfinished(r: InferenceRequest, request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, status: String, started: Int) {
-        if self.pulse { UsageToTell <- unfinished_usage(r, request_id, k, m, c, status, (std::time::monotonic_ns() - started) / 1000000); }
+    fn unfinished(
+        r: InferenceRequest,
+        request_id: String,
+        k: st::KeyRow,
+        m: st::ModelRow,
+        c: Candidate,
+        status: String,
+        started: Int
+    ) {
+        if self.pulse {
+            UsageToTell <- unfinished_usage(
+                r,
+                request_id,
+                k,
+                m,
+                c,
+                status,
+                (std::time::monotonic_ns() - started) / 1000000,
+            );
+        }
     }
 
     /// The limits `r` is held to, from the one source in force: the
@@ -297,7 +470,11 @@ locus Inference {
     /// here: governance.hl), the stored limits otherwise (the project's, its
     /// model-scope ones for `r.model`, and the key's).
     @unbounded
-    fn applied(r: InferenceRequest, k: st::KeyRow, p: st::ProjectRow) -> Applied fallible(ApiError) {
+    fn applied(
+        r: InferenceRequest,
+        k: st::KeyRow,
+        p: st::ProjectRow
+    ) -> Applied fallible(ApiError) {
         let mut out = Applied { };
         if self.governed {
             if !limits_landed(self.held) { fail limits_unavailable(1); }
@@ -308,7 +485,13 @@ locus Inference {
         }
         for l in p.limits.items {
             let model = l.scope == st::LimitScope::model && l.model == r.model;
-            if l.scope == st::LimitScope::project || model { out = apply(out, if model { "model:" + p.id + "/" + l.model } else { "project:" + p.id }, l); }
+            if l.scope == st::LimitScope::project || model {
+                out = apply(
+                    out,
+                    if model { "model:" + p.id + "/" + l.model } else { "project:" + p.id },
+                    l,
+                );
+            }
         }
         for l in k.limits.items {
             if l.scope == st::LimitScope::key { out = apply(out, "key:" + k.id, l); }
@@ -347,7 +530,12 @@ locus Inference {
             let l = at(a.limits, i) or st::Limit { scope: st::LimitScope::project };
             let w = window_of(self.windows, key, l, now);
             if w.used >= l.requests {
-                fail rate_limited(l, "project " + k.project + " is past its limit of " + to_string(l.requests) + " requests per " + to_string(l.window_seconds) + "s", reset_of(w, l, now));
+                fail rate_limited(
+                    l,
+                    "project " + k.project + " is past its limit of " + to_string(l.requests)
+                        + " requests per " + to_string(l.window_seconds) + "s",
+                    reset_of(w, l, now)
+                );
             }
             i = i + 1;
         }
@@ -391,26 +579,65 @@ locus Inference {
     fn admit(r: InferenceRequest, ctx: std::api::Context) -> Candidates fallible(ApiError) {
         if !r.has_model { fail invalid("`model` is a required string", "model"); }
         if r.has_previous_response_id {
-            fail ApiError { status: 400, kind: "invalid_request", code: ErrorCode::previous_response_not_found, message: "responses are not stored, so no previous response can be continued", has_param: true, param: "previous_response_id" };
+            fail ApiError {
+                status: 400,
+                kind: "invalid_request",
+                code: ErrorCode::previous_response_not_found,
+                message: "responses are not stored, so no previous response can be continued",
+                has_param: true,
+                param: "previous_response_id",
+            };
         }
         let k = self.store.key(ctx.caller.name) or fail metering_failed(err);
         if !k.present { fail invalid_key(); }
         let p = self.store.project(k.project) or fail metering_failed(err);
         let m = self.store.model(r.model) or fail metering_failed(err);
         if !m.present || m.removed {
-            fail ApiError { status: 404, kind: "not_found", code: ErrorCode::model_not_found, message: "no model " + r.model + " in the catalog", has_param: true, param: "model" };
+            fail ApiError {
+                status: 404,
+                kind: "not_found",
+                code: ErrorCode::model_not_found,
+                message: "no model " + r.model + " in the catalog",
+                has_param: true,
+                param: "model",
+            };
         }
         if !visible(p, k, r.model) {
-            fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::model_not_permitted, message: "this key may not use model " + r.model, has_param: true, param: "model" };
+            fail ApiError {
+                status: 403,
+                kind: "permission_error",
+                code: ErrorCode::model_not_permitted,
+                message: "this key may not use model " + r.model,
+                has_param: true,
+                param: "model",
+            };
         }
         if len(r.account) > 0 {
             let a = self.store.account(r.account) or fail metering_failed(err);
-            if !a.present || a.archived || !allows(p.accounts, r.account) || !allows(k.accounts, r.account) {
-                fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::account_not_permitted, message: "this key may not spend account " + r.account, has_param: true, param: "voice.account" };
+            if !a.present
+                || a.archived
+                || !allows(p.accounts, r.account)
+                || !allows(k.accounts, r.account)
+            {
+                fail ApiError {
+                    status: 403,
+                    kind: "permission_error",
+                    code: ErrorCode::account_not_permitted,
+                    message: "this key may not spend account " + r.account,
+                    has_param: true,
+                    param: "voice.account",
+                };
             }
         }
         if !has_name(p.data_classes.items, r.data_class) {
-            fail ApiError { status: 403, kind: "permission_error", code: ErrorCode::data_class_refused, message: "project " + p.id + " may not send data of class " + r.data_class, has_param: true, param: "voice.data_class" };
+            fail ApiError {
+                status: 403,
+                kind: "permission_error",
+                code: ErrorCode::data_class_refused,
+                message: "project " + p.id + " may not send data of class " + r.data_class,
+                has_param: true,
+                param: "voice.data_class",
+            };
         }
 
         let seats = self.store.seats() or fail metering_failed(err);
@@ -420,13 +647,32 @@ locus Inference {
                 if sm.model == r.model {
                     out.serving = out.serving + 1;
                     let eligible = self.eligible(s, p, k, r) or raise;
-                    if eligible { push(out.items, Candidate { seat: s, engine_name: if sm.has_engine_name { sm.engine_name } else { "" } }) or discard; }
+                    if eligible {
+                        push(
+                            out.items,
+                            Candidate {
+                                seat: s,
+                                engine_name: if sm.has_engine_name { sm.engine_name } else { "" },
+                            },
+                        ) or discard;
+                    }
                 }
             }
         }
         if count(out.items) == 0 {
-            let why = if out.serving == 0 { "no seat serves model " + r.model } else { to_string(out.serving) + " seat(s) serve model " + r.model + ", none up on a node that is up, with an account this key may spend and data class " + r.data_class };
-            fail ApiError { status: 503, kind: "server_error", code: ErrorCode::no_eligible_seat, message: why };
+            let why = if out.serving == 0 {
+                "no seat serves model " + r.model
+            } else {
+                to_string(out.serving) + " seat(s) serve model " + r.model
+                    + ", none up on a node that is up, with an account this key may spend and data class "
+                    + r.data_class
+            };
+            fail ApiError {
+                status: 503,
+                kind: "server_error",
+                code: ErrorCode::no_eligible_seat,
+                message: why,
+            };
         }
         return out;
     }
@@ -436,7 +682,12 @@ locus Inference {
     /// it names one) that is not archived, reported `up` by its node for
     /// the node's current assignment, on a node that is up, not draining
     /// and not holding the seat by a local control.
-    fn eligible(s: st::SeatRow, p: st::ProjectRow, k: st::KeyRow, r: InferenceRequest) -> Bool fallible(ApiError) {
+    fn eligible(
+        s: st::SeatRow,
+        p: st::ProjectRow,
+        k: st::KeyRow,
+        r: InferenceRequest
+    ) -> Bool fallible(ApiError) {
         if !s.enabled || !has_name(s.data_classes.items, r.data_class) { return false; }
         if len(r.account) > 0 && s.account != r.account { return false; }
         if !allows(p.accounts, s.account) || !allows(k.accounts, s.account) { return false; }
@@ -449,22 +700,49 @@ fn failure_of(o: ServeOutcome) -> String {
     if o.ack == "refused" { return "refused: " + o.reason; }
     if o.ack != "accepted" { return o.ack + ": " + o.reason; }
     if o.outcome == "failed" { return "failed (" + o.error_code + "): " + o.error_message; }
-    if o.outcome == "unfinished" { return if o.output { "the seat sent nothing within the idle span" } else { "the seat sent no output within the first-output span" }; }
+    if o.outcome == "unfinished" {
+        return if o.output {
+            "the seat sent nothing within the idle span"
+        } else {
+            "the seat sent no output within the first-output span"
+        };
+    }
     return o.outcome;
 }
 
 /// The answer: the node's response, its text and usage, and the voice
 /// object that says what served it and what it cost.
-fn served(request_id: String, model: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, o: ServeOutcome, attempts: bounded[Attempt; 8], wall_ms: Int) -> Served {
+fn served(
+    request_id: String,
+    model: String,
+    k: st::KeyRow,
+    m: st::ModelRow,
+    c: Candidate,
+    o: ServeOutcome,
+    attempts: bounded[Attempt; 8],
+    wall_ms: Int
+) -> Served {
     let usage = std::json::find_field_raw(o.response, "usage");
     let input = std::json::find_int_field(usage, "input_tokens");
     let output = std::json::find_int_field(usage, "output_tokens");
-    let price = if m.priced { (input * m.price.input_per_mtok_micros + output * m.price.output_per_mtok_micros + 999999) / 1000000 } else { 0 };
+    let price = if m.priced {
+        (
+            input * m.price.input_per_mtok_micros + output * m.price.output_per_mtok_micros + 999999
+        ) / 1000000
+    } else {
+        0
+    };
     let mut voice = VoiceExtension {
         request_id: request_id,
         project: k.project,
         key: k.id,
-        served: ServedBy { model: if len(o.model) > 0 { o.model } else { model }, node: c.seat.node, seat: c.seat.ref, account: c.seat.account, engine: c.seat.engine },
+        served: ServedBy {
+            model: if len(o.model) > 0 { o.model } else { model },
+            node: c.seat.node,
+            seat: c.seat.ref,
+            account: c.seat.account,
+            engine: c.seat.engine,
+        },
         price_micros: price,
         currency: if m.priced { m.price.currency } else { "USD" },
         wall_ms: wall_ms
@@ -484,12 +762,25 @@ fn served(request_id: String, model: String, k: st::KeyRow, m: st::ModelRow, c: 
 
 /// The `voice` object of a request that failed on seat `c` once its stream
 /// had begun: nothing charged, every attempt listed.
-fn failed_voice(request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, attempts: bounded[Attempt; 8], wall_ms: Int) -> VoiceExtension {
+fn failed_voice(
+    request_id: String,
+    k: st::KeyRow,
+    m: st::ModelRow,
+    c: Candidate,
+    attempts: bounded[Attempt; 8],
+    wall_ms: Int
+) -> VoiceExtension {
     let mut v = VoiceExtension {
         request_id: request_id,
         project: k.project,
         key: k.id,
-        served: ServedBy { model: m.id, node: c.seat.node, seat: c.seat.ref, account: c.seat.account, engine: c.seat.engine },
+        served: ServedBy {
+            model: m.id,
+            node: c.seat.node,
+            seat: c.seat.ref,
+            account: c.seat.account,
+            engine: c.seat.engine,
+        },
         price_micros: 0,
         currency: if m.priced { m.price.currency } else { "USD" },
         wall_ms: wall_ms
@@ -517,10 +808,18 @@ fn output_text(response: String) -> String {
 }
 
 /// The `serve` message (protocol.yaml `Serve`).
-fn serve_message(request_id: String, reply_to: String, c: Candidate, r: InferenceRequest) -> String {
-    return "{\"type\": \"serve\", \"request_id\": " + jq(request_id) + ", \"reply_to\": " + jq(reply_to) + ", \"seat\": " + jq(c.seat.id)
-        + ", \"model\": " + jq(r.model) + ", \"engine_model\": " + (if len(c.engine_name) > 0 { jq(c.engine_name) } else { "null" })
-        + ", \"deadline\": " + (if len(r.deadline) > 0 { jq(r.deadline) } else { "null" }) + ", \"body\": " + r.body + "}";
+fn serve_message(
+    request_id: String,
+    reply_to: String,
+    c: Candidate,
+    r: InferenceRequest
+) -> String {
+    return "{\"type\": \"serve\", \"request_id\": " + jq(request_id) + ", \"reply_to\": "
+        + jq(reply_to) + ", \"seat\": " + jq(c.seat.id)
+        + ", \"model\": " + jq(r.model) + ", \"engine_model\": "
+        + (if len(c.engine_name) > 0 { jq(c.engine_name) } else { "null" })
+        + ", \"deadline\": " + (if len(r.deadline) > 0 { jq(r.deadline) } else { "null" })
+        + ", \"body\": " + r.body + "}";
 }
 
 // ---- the wire ----------------------------------------------------------
@@ -577,15 +876,35 @@ fn chat_body(body: String) -> String fallible(ApiError) {
         it = std::json::array_next(it);
     }
     let input = input_list.text();
-    let mut out = "{\"model\": " + jq(std::json::find_string_field(body, "model")) + ", \"input\": [" + input + "]";
-    let cap = std::str::trim(if sets(body, "max_completion_tokens") { std::json::find_field_raw(body, "max_completion_tokens") } else { std::json::find_field_raw(body, "max_tokens") });
+    let mut out = "{\"model\": " + jq(std::json::find_string_field(body, "model"))
+        + ", \"input\": [" + input + "]";
+    let cap = std::str::trim(
+        if sets(body, "max_completion_tokens") {
+            std::json::find_field_raw(body, "max_completion_tokens")
+        } else {
+            std::json::find_field_raw(body, "max_tokens")
+        },
+    );
     if len(cap) > 0 { out = out + ", \"max_output_tokens\": " + cap; }
-    if sets(body, "temperature") { out = out + ", \"temperature\": " + std::str::trim(std::json::find_field_raw(body, "temperature")); }
-    if sets(body, "top_p") { out = out + ", \"top_p\": " + std::str::trim(std::json::find_field_raw(body, "top_p")); }
-    if kind_of(body, "metadata") == "object" { out = out + ", \"metadata\": " + std::str::trim(std::json::find_field_raw(body, "metadata")); }
+    if sets(body, "temperature") {
+        out = out + ", \"temperature\": "
+            + std::str::trim(std::json::find_field_raw(body, "temperature"));
+    }
+    if sets(body, "top_p") {
+        out = out + ", \"top_p\": " + std::str::trim(std::json::find_field_raw(body, "top_p"));
+    }
+    if kind_of(body, "metadata") == "object" {
+        out = out + ", \"metadata\": "
+            + std::str::trim(std::json::find_field_raw(body, "metadata"));
+    }
     if sets(body, "tools") { out = out + ", \"tools\": " + (chat_tools(body) or raise); }
-    if sets(body, "tool_choice") { out = out + ", \"tool_choice\": " + (chat_tool_choice(body) or raise); }
-    if kind_of(body, "parallel_tool_calls") == "bool" { out = out + ", \"parallel_tool_calls\": " + std::str::trim(std::json::find_field_raw(body, "parallel_tool_calls")); }
+    if sets(body, "tool_choice") {
+        out = out + ", \"tool_choice\": " + (chat_tool_choice(body) or raise);
+    }
+    if kind_of(body, "parallel_tool_calls") == "bool" {
+        out = out + ", \"parallel_tool_calls\": "
+            + std::str::trim(std::json::find_field_raw(body, "parallel_tool_calls"));
+    }
     return out + "}";
 }
 
@@ -596,23 +915,45 @@ fn chat_message(msg: String, out: st::JsonList) -> Bool fallible(ApiError) {
     let content = std::str::trim(std::json::find_field_raw(msg, "content"));
     let ckind = kind_of(msg, "content");
     if role == "tool" {
-        if kind_of(msg, "tool_call_id") != "string" { fail invalid("a `tool` message names its `tool_call_id`", "messages"); }
-        let output = if ckind == "string" { std::json::find_string_field(msg, "content") } else { parts_text(content) or raise };
-        out.add("{\"type\": \"function_call_output\", \"call_id\": " + jq(std::json::find_string_field(msg, "tool_call_id")) + ", \"output\": " + jq(output) + "}");
+        if kind_of(msg, "tool_call_id") != "string" {
+            fail invalid("a `tool` message names its `tool_call_id`", "messages");
+        }
+        let output = if ckind == "string" {
+            std::json::find_string_field(msg, "content")
+        } else {
+            parts_text(content) or raise
+        };
+        out.add(
+            "{\"type\": \"function_call_output\", \"call_id\": "
+                + jq(std::json::find_string_field(msg, "tool_call_id")) + ", \"output\": "
+                + jq(output) + "}",
+        );
         return true;
     }
     if role != "system" && role != "developer" && role != "user" && role != "assistant" {
-        fail invalid("a message's `role` is system, developer, user, assistant or tool", "messages");
+        fail invalid(
+            "a message's `role` is system, developer, user, assistant or tool",
+            "messages"
+        );
     }
     let calls = kind_of(msg, "tool_calls");
-    if calls != "missing" && calls != "null" && role != "assistant" { fail invalid("only an assistant's message has `tool_calls`", "messages"); }
+    if calls != "missing" && calls != "null" && role != "assistant" {
+        fail invalid("only an assistant's message has `tool_calls`", "messages");
+    }
     let has_calls = role == "assistant" && calls == "array";
     if ckind == "array" {
-        out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": " + (chat_parts(content, role) or raise) + "}");
+        out.add(
+            "{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": "
+                + (chat_parts(content, role) or raise) + "}",
+        );
     } else if ckind == "string" {
-        out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": " + content + "}");
+        out.add(
+            "{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": " + content + "}",
+        );
     } else if ckind == "missing" || ckind == "null" {
-        if !has_calls { out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": \"\"}"); }
+        if !has_calls {
+            out.add("{\"type\": \"message\", \"role\": " + jq(role) + ", \"content\": \"\"}");
+        }
     } else {
         fail invalid("a message's `content` is text, a list of content parts or null", "messages");
     }
@@ -620,11 +961,24 @@ fn chat_message(msg: String, out: st::JsonList) -> Bool fallible(ApiError) {
         let mut c = std::json::array_first(std::json::find_field_raw(msg, "tool_calls"));
         while !c.done {
             let call = std::str::trim(c.element);
-            if std::json::find_string_field(call, "type") != "function" { fail unsupported("only `function` tool calls are supported", "messages"); }
+            if std::json::find_string_field(call, "type") != "function" {
+                fail unsupported("only `function` tool calls are supported", "messages");
+            }
             let f = std::str::trim(std::json::find_field_raw(call, "function"));
-            if kind_of(call, "id") != "string" || kind_of(f, "name") != "string" { fail invalid("a tool call has an `id` and a `function.name`", "messages"); }
-            let args = if kind_of(f, "arguments") == "string" { std::json::find_string_field(f, "arguments") } else { "{}" };
-            out.add("{\"type\": \"function_call\", \"call_id\": " + jq(std::json::find_string_field(call, "id")) + ", \"name\": " + jq(std::json::find_string_field(f, "name")) + ", \"arguments\": " + jq(args) + "}");
+            if kind_of(call, "id") != "string" || kind_of(f, "name") != "string" {
+                fail invalid("a tool call has an `id` and a `function.name`", "messages");
+            }
+            let args = if kind_of(f, "arguments") == "string" {
+                std::json::find_string_field(f, "arguments")
+            } else {
+                "{}"
+            };
+            out.add(
+                "{\"type\": \"function_call\", \"call_id\": "
+                    + jq(std::json::find_string_field(call, "id")) + ", \"name\": "
+                    + jq(std::json::find_string_field(f, "name")) + ", \"arguments\": " + jq(args)
+                    + "}",
+            );
             c = std::json::array_next(c);
         }
     }
@@ -639,16 +993,40 @@ fn chat_parts(parts: String, role: String) -> String fallible(ApiError) {
         let p = std::str::trim(it.element);
         let kind = std::json::find_string_field(p, "type");
         if kind == "text" {
-            if kind_of(p, "text") != "string" { fail invalid("a `text` content part has `text`", "messages"); }
-            out.add("{\"type\": " + (if role == "assistant" { "\"output_text\"" } else { "\"input_text\"" }) + ", \"text\": " + jq(std::json::find_string_field(p, "text")) + "}");
+            if kind_of(p, "text") != "string" {
+                fail invalid("a `text` content part has `text`", "messages");
+            }
+            out.add(
+                "{\"type\": "
+                    + (if role == "assistant" { "\"output_text\"" } else { "\"input_text\"" })
+                    + ", \"text\": " + jq(std::json::find_string_field(p, "text")) + "}",
+            );
         } else if kind == "image_url" && role != "assistant" {
             let image = std::str::trim(std::json::find_field_raw(p, "image_url"));
-            let url = if kind_of(p, "image_url") == "string" { std::json::find_string_field(p, "image_url") } else { std::json::find_string_field(image, "url") };
-            if len(url) == 0 { fail invalid("an `image_url` content part has a `url`", "messages"); }
-            let detail = if kind_of(image, "detail") == "string" { std::json::find_string_field(image, "detail") } else { "auto" };
-            out.add("{\"type\": \"input_image\", \"image_url\": " + jq(url) + ", \"detail\": " + jq(detail) + "}");
+            let url = if kind_of(p, "image_url") == "string" {
+                std::json::find_string_field(p, "image_url")
+            } else {
+                std::json::find_string_field(image, "url")
+            };
+            if len(url) == 0 {
+                fail invalid("an `image_url` content part has a `url`", "messages");
+            }
+            let detail = if kind_of(image, "detail") == "string" {
+                std::json::find_string_field(image, "detail")
+            } else {
+                "auto"
+            };
+            out.add(
+                "{\"type\": \"input_image\", \"image_url\": " + jq(url) + ", \"detail\": "
+                    + jq(detail) + "}",
+            );
         } else {
-            fail unsupported("a content part of type `" + kind + "`" + (if role == "assistant" { " in an assistant's message" } else { "" }) + " is not supported", "messages");
+            fail unsupported(
+                "a content part of type `" + kind + "`"
+                    + (if role == "assistant" { " in an assistant's message" } else { "" })
+                    + " is not supported",
+                "messages"
+            );
         }
         it = std::json::array_next(it);
     }
@@ -662,7 +1040,9 @@ fn parts_text(parts: String) -> String fallible(ApiError) {
     let mut it = std::json::array_first(parts);
     while !it.done {
         let p = std::str::trim(it.element);
-        if std::json::find_string_field(p, "type") != "text" { fail unsupported("a `tool` message's content is text", "messages"); }
+        if std::json::find_string_field(p, "type") != "text" {
+            fail unsupported("a `tool` message's content is text", "messages");
+        }
         text.append_str(std::json::find_string_field(p, "text"));
         it = std::json::array_next(it);
     }
@@ -677,13 +1057,25 @@ fn chat_tools(body: String) -> String fallible(ApiError) {
     let mut it = std::json::array_first(std::json::find_field_raw(body, "tools"));
     while !it.done {
         let t = std::str::trim(it.element);
-        if std::json::find_string_field(t, "type") != "function" { fail unsupported("only `function` tools are supported", "tools"); }
+        if std::json::find_string_field(t, "type") != "function" {
+            fail unsupported("only `function` tools are supported", "tools");
+        }
         let f = std::str::trim(std::json::find_field_raw(t, "function"));
-        if kind_of(f, "name") != "string" { fail invalid("a tool's `function` has a `name`", "tools"); }
-        let mut one = "{\"type\": \"function\", \"name\": " + jq(std::json::find_string_field(f, "name"));
-        if kind_of(f, "description") == "string" { one = one + ", \"description\": " + jq(std::json::find_string_field(f, "description")); }
-        if kind_of(f, "parameters") == "object" { one = one + ", \"parameters\": " + std::str::trim(std::json::find_field_raw(f, "parameters")); }
-        if kind_of(f, "strict") == "bool" { one = one + ", \"strict\": " + std::str::trim(std::json::find_field_raw(f, "strict")); }
+        if kind_of(f, "name") != "string" {
+            fail invalid("a tool's `function` has a `name`", "tools");
+        }
+        let mut one = "{\"type\": \"function\", \"name\": "
+            + jq(std::json::find_string_field(f, "name"));
+        if kind_of(f, "description") == "string" {
+            one = one + ", \"description\": " + jq(std::json::find_string_field(f, "description"));
+        }
+        if kind_of(f, "parameters") == "object" {
+            one = one + ", \"parameters\": "
+                + std::str::trim(std::json::find_field_raw(f, "parameters"));
+        }
+        if kind_of(f, "strict") == "bool" {
+            one = one + ", \"strict\": " + std::str::trim(std::json::find_field_raw(f, "strict"));
+        }
         out.add(one + "}");
         it = std::json::array_next(it);
     }
@@ -696,12 +1088,17 @@ fn chat_tool_choice(body: String) -> String fallible(ApiError) {
     let kind = kind_of(body, "tool_choice");
     if kind == "string" {
         let c = std::json::find_string_field(body, "tool_choice");
-        if c != "none" && c != "auto" && c != "required" { fail invalid("`tool_choice` is none, auto, required or a function", "tool_choice"); }
+        if c != "none" && c != "auto" && c != "required" {
+            fail invalid("`tool_choice` is none, auto, required or a function", "tool_choice");
+        }
         return jq(c);
     }
     let choice = std::str::trim(std::json::find_field_raw(body, "tool_choice"));
     let name = std::json::find_string_field(std::json::find_field_raw(choice, "function"), "name");
-    if kind != "object" || std::json::find_string_field(choice, "type") != "function" || len(name) == 0 {
+    if kind != "object"
+        || std::json::find_string_field(choice, "type") != "function"
+        || len(name) == 0
+    {
         fail invalid("`tool_choice` is none, auto, required or a function", "tool_choice");
     }
     return "{\"type\": \"function\", \"name\": " + jq(name) + "}";
@@ -713,10 +1110,14 @@ fn read_inference(body: String, endpoint: String) -> InferenceRequest fallible(A
     object_body(body) or raise;
     let model = required_string(body, "model") or raise;
     if endpoint == "chat" {
-        if kind_of(body, "messages") != "array" { fail invalid("`messages` is a required list", "messages"); }
+        if kind_of(body, "messages") != "array" {
+            fail invalid("`messages` is a required list", "messages");
+        }
         let first = std::json::array_first(std::json::find_field_raw(body, "messages"));
         if first.done { fail invalid("`messages` holds at least one message", "messages"); }
-        if sets(body, "n") && std::json::find_int_field(body, "n") != 1 { fail unsupported("`n` greater than 1 is not supported", "n"); }
+        if sets(body, "n") && std::json::find_int_field(body, "n") != 1 {
+            fail unsupported("`n` greater than 1 is not supported", "n");
+        }
     }
     let voice = std::json::find_field_raw(body, "voice");
     let has_voice = kind_of(body, "voice") == "object";
@@ -726,10 +1127,19 @@ fn read_inference(body: String, endpoint: String) -> InferenceRequest fallible(A
         has_model: true,
         model: model,
         stream: bool_or(body, "stream", false) or raise,
-        has_previous_response_id: endpoint == "responses" && kind_of(body, "previous_response_id") == "string",
-        previous_response_id: if endpoint == "responses" { nullable_string(body, "previous_response_id") or raise } else { "" },
+        has_previous_response_id: endpoint == "responses"
+            && kind_of(body, "previous_response_id") == "string",
+        previous_response_id: if endpoint == "responses" {
+            nullable_string(body, "previous_response_id") or raise
+        } else {
+            ""
+        },
         account: if has_voice { nullable_string(voice, "account") or raise } else { "" },
-        data_class: if has_voice { string_or(voice, "data_class", "internal") or raise } else { "internal" },
+        data_class: if has_voice {
+            string_or(voice, "data_class", "internal") or raise
+        } else {
+            "internal"
+        },
         deadline: if has_voice { nullable_string(voice, "deadline") or raise } else { "" },
         body: standard
     };
@@ -739,7 +1149,8 @@ fn read_inference(body: String, endpoint: String) -> InferenceRequest fallible(A
 fn attempts_json(attempts: bounded[Attempt; 8]) -> String {
     let attempts_list = st::JsonList { };
     for a in attempts {
-        let mut one = "{\"seat\": " + jq(a.seat) + ", \"account\": " + jq(a.account) + ", \"outcome\": " + jq(outcome_name(a.outcome));
+        let mut one = "{\"seat\": " + jq(a.seat) + ", \"account\": " + jq(a.account)
+            + ", \"outcome\": " + jq(outcome_name(a.outcome));
         if len(a.error) > 0 { one = one + ", \"error\": " + jq(a.error); }
         attempts_list.add(one + ", \"wall_ms\": " + to_string(a.wall_ms) + "}");
     }
@@ -769,11 +1180,16 @@ fn error_voice_json(v: ErrorVoice) -> String {
 fn voice_json(v: VoiceExtension) -> String {
     let attempts = attempts_json(v.attempts);
     let s = v.served;
-    return "{\"request_id\": " + jq(v.request_id) + ", \"project\": " + jq(v.project) + ", \"key\": " + jq(v.key)
-        + ", \"served\": {\"model\": " + jq(s.model) + ", \"quantization\": " + jstring_or_null(s.has_quantization, s.quantization) + ", \"node\": " + jq(s.node) + ", \"seat\": " + jq(s.seat)
-        + ", \"account\": " + jq(s.account) + ", \"engine\": " + jq(s.engine) + ", \"provider\": " + jstring_or_null(s.has_provider, s.provider) + "}"
+    return "{\"request_id\": " + jq(v.request_id) + ", \"project\": " + jq(v.project)
+        + ", \"key\": " + jq(v.key)
+        + ", \"served\": {\"model\": " + jq(s.model) + ", \"quantization\": "
+        + jstring_or_null(s.has_quantization, s.quantization) + ", \"node\": " + jq(s.node)
+        + ", \"seat\": " + jq(s.seat)
+        + ", \"account\": " + jq(s.account) + ", \"engine\": " + jq(s.engine) + ", \"provider\": "
+        + jstring_or_null(s.has_provider, s.provider) + "}"
         + ", \"price_micros\": " + to_string(v.price_micros) + ", \"currency\": " + jq(v.currency)
-        + ", \"timing\": {\"wall_ms\": " + to_string(v.wall_ms) + ", \"queue_ms\": 0, \"load_ms\": 0}, \"attempts\": " + attempts + "}";
+        + ", \"timing\": {\"wall_ms\": " + to_string(v.wall_ms)
+        + ", \"queue_ms\": 0, \"load_ms\": 0}, \"attempts\": " + attempts + "}";
 }
 
 /// The node's response object with voice's `voice` object in it.
@@ -786,12 +1202,24 @@ fn response_json(s: Served) -> String {
 fn chat_completion_json(s: Served) -> String {
     let calls = tool_calls_json(s.response);
     let called = len(calls) > 0;
-    let finish = if called { "tool_calls" } else if s.status == "incomplete" { "length" } else { "stop" };
+    let finish = if called {
+        "tool_calls"
+    } else if s.status == "incomplete" {
+        "length"
+    } else {
+        "stop"
+    };
     let content = if called && len(s.text) == 0 { "null" } else { jq(s.text) };
-    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion\", \"created\": " + to_string(std::time::unix(now_seconds()))
-        + ", \"model\": " + jq(s.model) + ", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": " + content
-        + (if called { ", \"tool_calls\": [" + calls + "]" } else { "" }) + "}, \"finish_reason\": " + jq(finish) + "}]"
-        + ", \"usage\": {\"prompt_tokens\": " + to_string(s.input_tokens) + ", \"completion_tokens\": " + to_string(s.output_tokens) + ", \"total_tokens\": " + to_string(s.input_tokens + s.output_tokens) + "}"
+    return "{\"id\": " + jq(s.request_id) + ", \"object\": \"chat.completion\", \"created\": "
+        + to_string(std::time::unix(now_seconds()))
+        + ", \"model\": " + jq(s.model)
+        + ", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": "
+        + content
+        + (if called { ", \"tool_calls\": [" + calls + "]" } else { "" }) + "}, \"finish_reason\": "
+        + jq(finish) + "}]"
+        + ", \"usage\": {\"prompt_tokens\": " + to_string(s.input_tokens)
+        + ", \"completion_tokens\": " + to_string(s.output_tokens) + ", \"total_tokens\": "
+        + to_string(s.input_tokens + s.output_tokens) + "}"
         + ", \"voice\": " + voice_json(s.voice) + "}";
 }
 
@@ -803,8 +1231,12 @@ fn tool_calls_json(response: String) -> String {
     while !items.done {
         let item = std::str::trim(items.element);
         if std::json::find_string_field(item, "type") == "function_call" {
-            out.add("{\"id\": " + jq(std::json::find_string_field(item, "call_id")) + ", \"type\": \"function\", \"function\": {\"name\": " + jq(std::json::find_string_field(item, "name"))
-                    + ", \"arguments\": " + jq(std::json::find_string_field(item, "arguments")) + "}}");
+            out.add(
+                "{\"id\": " + jq(std::json::find_string_field(item, "call_id"))
+                    + ", \"type\": \"function\", \"function\": {\"name\": "
+                    + jq(std::json::find_string_field(item, "name"))
+                    + ", \"arguments\": " + jq(std::json::find_string_field(item, "arguments"))
+                    + "}}");
         }
         items = std::json::array_next(items);
     }
@@ -822,9 +1254,15 @@ fn seat_ready(store: st::Store, s: st::SeatRow) -> Bool fallible(ApiError) {
     let status = node_status(store, n, now_seconds()) or raise;
     if status != "up" { return false; }
     let f = store.fleet(n.id) or fail metering_failed(err);
-    if f.draining || f.applied_version < n.assignment_version || locally_paused(f.local, s.id) { return false; }
+    if f.draining || f.applied_version < n.assignment_version || locally_paused(f.local, s.id) {
+        return false;
+    }
     // a node whose local cap is 0 refuses every request: it is at its cap
-    if kind_of(f.local, "max_in_flight") == "number" && std::json::find_int_field(f.local, "max_in_flight") < 1 { return false; }
+    if kind_of(f.local, "max_in_flight") == "number"
+        && std::json::find_int_field(f.local, "max_in_flight") < 1
+    {
+        return false;
+    }
     let states = store.seat_states(n.id) or fail metering_failed(err);
     for st in states.rows {
         if st.seat == s.id { return st.status == "up"; }

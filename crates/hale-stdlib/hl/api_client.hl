@@ -124,12 +124,26 @@ fn __api_client_slot(table: String, role: String) -> String {
 /// `digest` a Hale row's member digest ("" for an imported row) and `roles`
 /// the roles the row requires, joined by `,`.
 interface __StdApiClientTransport {
-    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw;
+    fn call(
+        member: String,
+        wire: String,
+        tool: String,
+        digest: String,
+        roles: String,
+        payload: String
+    ) -> __StdApiClientRaw;
 }
 
 /// The transport a client has before it is built.
 locus __StdApiNoClient {
-    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+    fn call(
+        member: String,
+        wire: String,
+        tool: String,
+        digest: String,
+        roles: String,
+        payload: String
+    ) -> __StdApiClientRaw {
         return __api_client_lost("the client has no transport");
     }
 }
@@ -156,7 +170,14 @@ locus __StdApiHttpClient {
         }
         return self.principals.bearer("");
     }
-    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+    fn call(
+        member: String,
+        wire: String,
+        tool: String,
+        digest: String,
+        roles: String,
+        payload: String
+    ) -> __StdApiClientRaw {
         let bearer = self.bearer_for(roles);
         if len(wire) == 0 {
             return __api_client_hale_http(self.base, bearer, member, digest, payload);
@@ -193,7 +214,8 @@ locus __StdApiMcpClient {
         return self.principals.bearer("");
     }
     fn post(bearer: String, digest: String, message: String) -> std::http::ClientResponse {
-        let mut headers = __api_client_auth(bearer) + "Content-Type: application/json\r\nAccept: application/json, text/event-stream";
+        let mut headers = __api_client_auth(bearer)
+            + "Content-Type: application/json\r\nAccept: application/json, text/event-stream";
         if len(self.session) > 0 {
             headers = headers + "\r\nMcp-Session-Id: " + self.session;
         }
@@ -203,7 +225,10 @@ locus __StdApiMcpClient {
         if len(digest) > 0 {
             headers = headers + "\r\nHale-Surface-Digest: " + digest;
         }
-        return __api_client_send("POST", self.url, headers, message) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+        return __api_client_send("POST", self.url, headers, message) or std::http::ClientResponse {
+            status: 0,
+            body: std::bytes::from_string(err.kind + " " + err.detail),
+        };
     }
     /// Open the session: a result with outcome 0, or what the call is.
     fn open(bearer: String) -> __StdApiClientRaw {
@@ -220,20 +245,38 @@ locus __StdApiMcpClient {
                 return __api_client_mcp_outcome(reply);
             }
             if r.status == 401 {
-                return __StdApiClientRaw { outcome: 2, kind: "unauthenticated", reason: text, status: 401 };
+                return __StdApiClientRaw {
+                    outcome: 2,
+                    kind: "unauthenticated",
+                    reason: text,
+                    status: 401,
+                };
             }
-            return __api_client_lost("the endpoint answered initialize with " + to_string(r.status) + " and no JSON-RPC message: " + text);
+            return __api_client_lost(
+                "the endpoint answered initialize with " + to_string(r.status)
+                    + " and no JSON-RPC message: " + text,
+            );
         }
         let v = std::json::find_string_field(result, "protocolVersion");
         if v != "2025-06-18" && v != "2025-03-26" && v != "2024-11-05" {
-            return __api_client_lost("the endpoint speaks MCP " + v + ", which this client does not (2025-06-18, 2025-03-26, 2024-11-05)");
+            return __api_client_lost(
+                "the endpoint speaks MCP " + v
+                    + ", which this client does not (2025-06-18, 2025-03-26, 2024-11-05)",
+            );
         }
         self.session = __http_client_header(r.headers, "Mcp-Session-Id");
         self.version = v;
         self.post(bearer, "", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
         return __StdApiClientRaw { outcome: 0 };
     }
-    fn call(member: String, wire: String, tool: String, digest: String, roles: String, payload: String) -> __StdApiClientRaw {
+    fn call(
+        member: String,
+        wire: String,
+        tool: String,
+        digest: String,
+        roles: String,
+        payload: String
+    ) -> __StdApiClientRaw {
         let bearer = self.bearer_for(roles);
         if len(self.version) == 0 {
             let opened = self.open(bearer);
@@ -242,10 +285,16 @@ locus __StdApiMcpClient {
             }
         }
         let args = if len(payload) > 0 { payload } else { "{}" };
-        let meta = if len(digest) > 0 { ",\"_meta\":{\"hale/digest\":" + __api_client_str(digest) + "}" } else { "" };
+        let meta = if len(digest) > 0 {
+            ",\"_meta\":{\"hale/digest\":" + __api_client_str(digest) + "}"
+        } else {
+            ""
+        };
         let id = self.next_id;
         self.next_id = id + 1;
-        let message = "{\"jsonrpc\":\"2.0\",\"id\":" + to_string(id) + ",\"method\":\"tools/call\",\"params\":{\"name\":" + __api_client_str(tool) + ",\"arguments\":" + args + meta + "}}";
+        let message = "{\"jsonrpc\":\"2.0\",\"id\":" + to_string(id)
+            + ",\"method\":\"tools/call\",\"params\":{\"name\":" + __api_client_str(tool)
+            + ",\"arguments\":" + args + meta + "}}";
         let r = self.post(bearer, digest, message);
         let text = std::str::from_bytes(r.body);
         if r.status == 0 {
@@ -254,14 +303,24 @@ locus __StdApiMcpClient {
         if r.status == 404 && len(self.session) > 0 {
             self.session = "";
             self.version = "";
-            return __api_client_lost("the endpoint ended the MCP session; the next call opens another");
+            return __api_client_lost(
+                "the endpoint ended the MCP session; the next call opens another",
+            );
         }
         let reply = __api_client_mcp_message(text);
         if len(reply) == 0 {
             if r.status == 401 {
-                return __StdApiClientRaw { outcome: 2, kind: "unauthenticated", reason: text, status: 401 };
+                return __StdApiClientRaw {
+                    outcome: 2,
+                    kind: "unauthenticated",
+                    reason: text,
+                    status: 401,
+                };
             }
-            return __api_client_lost("the endpoint answered " + to_string(r.status) + " with no JSON-RPC message: " + text);
+            return __api_client_lost(
+                "the endpoint answered " + to_string(r.status) + " with no JSON-RPC message: "
+                    + text,
+            );
         }
         return __api_client_mcp_outcome(reply);
     }
@@ -273,7 +332,12 @@ fn __api_client_lost(why: String) -> __StdApiClientRaw {
 
 /// The refusal a raw outcome carries.
 fn __api_client_refusal(raw: __StdApiClientRaw) -> __StdApiRefusal {
-    return __StdApiRefusal { kind: raw.kind, reason: raw.reason, requires: raw.requires, served: raw.served };
+    return __StdApiRefusal {
+        kind: raw.kind,
+        reason: raw.reason,
+        requires: raw.requires,
+        served: raw.served,
+    };
 }
 
 /// The failure a raw outcome of an imported row carries.
@@ -290,9 +354,19 @@ fn __api_client_auth(bearer: String) -> String {
     return if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
 }
 
-fn __api_client_send(method: String, url: String, headers: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn __api_client_send(
+    method: String,
+    url: String,
+    headers: String,
+    body: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(url) or raise;
-    let req = std::http::ClientRequest { method: method, url: u, headers: headers, body: std::bytes::from_string(body) };
+    let req = std::http::ClientRequest {
+        method: method,
+        url: u,
+        headers: headers,
+        body: std::bytes::from_string(body),
+    };
     return std::http::request(req) or raise;
 }
 
@@ -310,7 +384,10 @@ fn __api_client_roles(array: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first_span(array);
     while !it.done {
-        let role = std::json::find_string_field("{\"v\":" + array[it.cur_start..it.cur_end] + "}", "v");
+        let role = std::json::find_string_field(
+            "{\"v\":" + array[it.cur_start..it.cur_end] + "}",
+            "v",
+        );
         out = if len(out) == 0 { role } else { out + "," + role };
         it = std::json::array_next_span(it, array);
     }
@@ -335,9 +412,25 @@ fn __api_client_refused(refusal: String, status: Int) -> __StdApiClientRaw {
 
 // ---- HTTP, a Hale surface: POST <base>/call/<member> ----
 
-fn __api_client_hale_http(base: String, bearer: String, member: String, digest: String, payload: String) -> __StdApiClientRaw {
-    let headers = __api_client_auth(bearer) + "Content-Type: application/json\r\nAccept: application/json\r\nHale-Surface-Digest: " + digest;
-    let r = __api_client_send("POST", __api_client_join(base, "/call/" + member), headers, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+fn __api_client_hale_http(
+    base: String,
+    bearer: String,
+    member: String,
+    digest: String,
+    payload: String
+) -> __StdApiClientRaw {
+    let headers = __api_client_auth(bearer)
+        + "Content-Type: application/json\r\nAccept: application/json\r\nHale-Surface-Digest: "
+        + digest;
+    let r = __api_client_send(
+        "POST",
+        __api_client_join(base, "/call/" + member),
+        headers,
+        payload,
+    ) or std::http::ClientResponse {
+        status: 0,
+        body: std::bytes::from_string(err.kind + " " + err.detail),
+    };
     let text = std::str::from_bytes(r.body);
     if r.status == 0 {
         return __api_client_lost("the endpoint " + base + " cannot be reached: " + text);
@@ -355,7 +448,9 @@ fn __api_client_hale_http(base: String, bearer: String, member: String, digest: 
     }
     let refusal = std::json::find_field_raw(text, "refusal");
     if len(refusal) == 0 {
-        return __api_client_lost("the endpoint answered " + to_string(r.status) + " with no refusal: " + text);
+        return __api_client_lost(
+            "the endpoint answered " + to_string(r.status) + " with no refusal: " + text,
+        );
     }
     return __api_client_refused(refusal, r.status);
 }
@@ -423,7 +518,12 @@ fn __api_client_status_class(status: Int) -> String {
     return "";
 }
 
-fn __api_client_operation(base: String, bearer: String, wire: String, payload: String) -> __StdApiClientRaw {
+fn __api_client_operation(
+    base: String,
+    bearer: String,
+    wire: String,
+    payload: String
+) -> __StdApiClientRaw {
     let sp = std::str::index_of(wire, " ");
     if sp <= 0 {
         return __api_client_lost("the row names no HTTP operation: " + wire);
@@ -432,7 +532,15 @@ fn __api_client_operation(base: String, bearer: String, wire: String, payload: S
     let t = __api_client_target(method, wire[(sp + 1)..len(wire)], payload);
     let typed = if len(t.body) > 0 { "Content-Type: application/json\r\n" } else { "" };
     let headers = __api_client_auth(bearer) + typed + "Accept: application/json";
-    let r = __api_client_send(method, __api_client_join(base, t.path), headers, t.body) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let r = __api_client_send(
+        method,
+        __api_client_join(base, t.path),
+        headers,
+        t.body,
+    ) or std::http::ClientResponse {
+        status: 0,
+        body: std::bytes::from_string(err.kind + " " + err.detail),
+    };
     let text = std::str::from_bytes(r.body);
     if r.status == 0 {
         return __api_client_lost("the endpoint " + base + " cannot be reached: " + text);
@@ -476,7 +584,12 @@ fn __api_client_mcp_message(text: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if std::str::starts_with(line, "data:") {
             let data = std::str::trim(line[5..len(line)]);
-            if std::json::valid(data) && (len(std::json::find_field_raw(data, "result")) > 0 || len(std::json::find_field_raw(data, "error")) > 0) {
+            if std::json::valid(data)
+                && (
+                    len(std::json::find_field_raw(data, "result")) > 0
+                        || len(std::json::find_field_raw(data, "error")) > 0
+                )
+            {
                 return data;
             }
         }
@@ -537,7 +650,11 @@ fn __api_client_mcp_outcome(reply: String) -> __StdApiClientRaw {
         return __StdApiClientRaw {
             outcome: 2,
             kind: if len(kind) > 0 { kind } else { __api_client_mcp_kind(code) },
-            reason: if len(reason) > 0 { reason } else { std::json::find_string_field(error, "message") },
+            reason: if len(reason) > 0 {
+                reason
+            } else {
+                std::json::find_string_field(error, "message")
+            },
             requires: __api_client_roles(std::json::find_field_raw(data, "requires")),
             served: std::json::find_string_field(data, "served"),
         };
@@ -550,7 +667,11 @@ fn __api_client_mcp_outcome(reply: String) -> __StdApiClientRaw {
         // a tool's error is its text, as the tool wrote it
         let content = std::json::find_field_raw(result, "content");
         let it = std::json::array_first_span(content);
-        let text = if it.done { "" } else { std::json::find_string_field(content[it.cur_start..it.cur_end], "text") };
+        let text = if it.done {
+            ""
+        } else {
+            std::json::find_string_field(content[it.cur_start..it.cur_end], "text")
+        };
         return __StdApiClientRaw { outcome: 1, body: if len(text) > 0 { text } else { result } };
     }
     return __StdApiClientRaw { outcome: 0, body: __api_client_mcp_value(result) };

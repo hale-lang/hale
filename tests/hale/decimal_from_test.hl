@@ -15,23 +15,48 @@ fn main() {
     std::test::assert(std::decimal::from_int(3) * 0.5d == 1.5d, "arithmetic on the result");
 
     // from_float: the nearest Decimal, half away from zero at the ninth place.
-    std::test::assert((std::decimal::from_float(0.1) or 9.0d) == 0.1d, "0.1 is 0.1d, not its binary tail");
+    std::test::assert(
+        (std::decimal::from_float(0.1) or 9.0d) == 0.1d,
+        "0.1 is 0.1d, not its binary tail",
+    );
     std::test::assert((std::decimal::from_float(1.5) or 9.0d) == 1.5d, "an exact Float");
     std::test::assert((std::decimal::from_float(-2.25) or 9.0d) == -2.25d, "negative");
     // 1/1024 is 0.0009765625 exactly: a half at the tenth place.
-    std::test::assert((std::decimal::from_float(0.0009765625) or 9.0d) == 0.000976563d, "an exact half rounds away from zero");
-    std::test::assert((std::decimal::from_float(-0.0009765625) or 9.0d) == -0.000976563d, "on both sides");
+    std::test::assert(
+        (std::decimal::from_float(0.0009765625) or 9.0d) == 0.000976563d,
+        "an exact half rounds away from zero",
+    );
+    std::test::assert(
+        (std::decimal::from_float(-0.0009765625) or 9.0d) == -0.000976563d,
+        "on both sides",
+    );
     // 1.5e-9 is 1.4999999999999999900…e-9 as a Float: the exact value rounds.
-    std::test::assert((std::decimal::from_float(0.0000000015) or 9.0d) == 0.000000001d, "the Float's exact value, not its spelling");
-    std::test::assert((std::decimal::from_float(0.0000000004) or 9.0d) == 0.0d, "under half a unit is zero");
-    std::test::assert((std::decimal::from_float(12345678901234567890.0) or 9.0d) == 12345678901234567168.0d, "a large Float is its exact binary value");
-    std::test::assert((std::decimal::from_float(123.456) or 9.0d) == 123.456d, "no digit is lost to a multiplication");
+    std::test::assert(
+        (std::decimal::from_float(0.0000000015) or 9.0d) == 0.000000001d,
+        "the Float's exact value, not its spelling",
+    );
+    std::test::assert(
+        (std::decimal::from_float(0.0000000004) or 9.0d) == 0.0d,
+        "under half a unit is zero",
+    );
+    std::test::assert(
+        (std::decimal::from_float(12345678901234567890.0) or 9.0d) == 12345678901234567168.0d,
+        "a large Float is its exact binary value",
+    );
+    std::test::assert(
+        (std::decimal::from_float(123.456) or 9.0d) == 123.456d,
+        "no digit is lost to a multiplication",
+    );
     std::test::assert((std::decimal::from_float(3) or 9.0d) == 3.0d, "an Int argument widens");
 
     // from_float refuses what no Decimal holds, naming it.
     let mut kind = "";
     let mut input = "";
-    let nan = std::decimal::from_float(std::math::nan()) or { kind = err.kind; input = err.input; -1.0d };
+    let nan = std::decimal::from_float(std::math::nan()) or {
+        kind = err.kind;
+        input = err.input;
+            -1.0d
+    };
     std::test::assert(nan == -1.0d, "NaN substitutes");
     std::test::assert_eq_str(kind, "from_float", "NaN is a from_float ParseError");
     std::test::assert(len(input) > 0, "carrying the Float's text");
@@ -40,5 +65,8 @@ fn main() {
     let big = std::decimal::from_float(1.0e30) or - 1.0d;
     std::test::assert(big == -1.0d, "past Decimal's range is refused");
     let edge = std::decimal::from_float(1.0e29) or - 1.0d;
-    std::test::assert(edge == 99999999999999991433150857216.0d, "1e29 is in range, its exact binary value");
+    std::test::assert(
+        edge == 99999999999999991433150857216.0d,
+        "1e29 is in range, its exact binary value",
+    );
 }

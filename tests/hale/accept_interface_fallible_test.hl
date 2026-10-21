@@ -54,10 +54,22 @@ locus Owner {
 fn main() {
     let o = Owner { };
     // Strict: 3 + 100; Lenient: 7 + 7.
-    std::test::assert_eq_int(o.sum, 117, "each monomorph keeps the contract: Strict fails on \"\", Lenient never does");
+    std::test::assert_eq_int(
+        o.sum,
+        117,
+        "each monomorph keeps the contract: Strict fails on \"\", Lenient never does",
+    );
     // Strict: len("empty"); Lenient: 7.
-    std::test::assert_eq_int(o.handled, 12, "a handler arm, and the success path that never reaches it");
-    std::test::assert_eq_int(o.checked, 1, "a raise through the interface value: only Lenient checks");
+    std::test::assert_eq_int(
+        o.handled,
+        12,
+        "a handler arm, and the success path that never reaches it",
+    );
+    std::test::assert_eq_int(
+        o.checked,
+        1,
+        "a raise through the interface value: only Lenient checks",
+    );
     // Both are flows (released): Strict 1000, Lenient 7.
     std::test::assert_eq_int(o.released, 1007, "the release monomorphs keep it too");
 }

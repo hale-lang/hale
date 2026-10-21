@@ -27,7 +27,14 @@ locus Sup {
 
 // A default child spelled as an `if` — each branch is the field's.
 locus Pick {
-    params { got: Int = 0; b: Boom = if std::env::var("HALE_1074_UNSET") == "" { Boom { why: "a" } } else { Boom { why: "b" } }; }
+    params {
+        got: Int = 0;
+        b: Boom = if std::env::var("HALE_1074_UNSET") == "" {
+            Boom { why: "a" }
+        } else {
+            Boom { why: "b" }
+        };
+    }
     on_failure(c: Boom, err: ClosureViolation) { self.got = self.got + 1; }
 }
 
@@ -51,7 +58,11 @@ main locus App {
         let p = Pick { };
         std::test::assert_eq_int(p.got, 1, "an if-spelled default is the field's child too");
         let o = Outer { };
-        std::test::assert_eq_int(o.m.got, 1, "the Boom is Mid's default child, and Mid supervises it");
+        std::test::assert_eq_int(
+            o.m.got,
+            1,
+            "the Boom is Mid's default child, and Mid supervises it",
+        );
         std::test::assert_eq_int(o.got, 0, "not Outer's");
         std::test::assert_eq_int(self.got, 0, "and none of them reached the method's own locus");
     }

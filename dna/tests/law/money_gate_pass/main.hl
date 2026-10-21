@@ -30,7 +30,15 @@ main locus App {
     claims { adopt Money; }
     run() {
         let amount = self.quoter.quote("invoice");
-        let admitted = self.dna.reserve(dna::Spend { id: "pay-1", amount: amount, currency: "USD", counterparty: "acme", route: "bank" });
+        let admitted = self.dna.reserve(
+            dna::Spend {
+                id: "pay-1",
+                amount: amount,
+                currency: "USD",
+                counterparty: "acme",
+                route: "bank",
+            },
+        );
         if admitted.ok && len(self.dna.admits(admitted)) == 0 {
             let ok = self.processor.charge(amount, "acme");
         }

@@ -42,8 +42,16 @@ main locus App {
             std::time::sleep(10ms);
             waited = waited + 1;
         }
-        std::test::assert_eq_int(self.watcher.seen, 2, "each failure was published from the handler");
-        std::test::assert_eq_int(self.watcher.total, 3, "the handler read the failed child (1 + 2)");
+        std::test::assert_eq_int(
+            self.watcher.seen,
+            2,
+            "each failure was published from the handler",
+        );
+        std::test::assert_eq_int(
+            self.watcher.total,
+            3,
+            "the handler read the failed child (1 + 2)",
+        );
     }
 }
 

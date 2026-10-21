@@ -6,53 +6,187 @@ import "../../core" as dna;
 
 locus RetirementCases {
     params { }
-    fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "fixture " + kind); }
-    fn context(app: String) -> ops::GovernanceContext { return ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "operator" }; }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) {
+        std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "fixture " + kind);
+    }
+    fn context(app: String) -> ops::GovernanceContext {
+        return ops::GovernanceContext {
+            application_id: app,
+            principal_mode: "local",
+            principal_name: "operator",
+        };
+    }
     fn policy(app: String, flag: String) -> ops::TaskAuthorityPolicy {
         let common = ops::GovernanceCommandCodec { }; let codec = ops::TaskAuthorityPolicyCodec { };
-        return codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":" + common.quote(app) + ",\"owner\":\"fixed-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true" + flag + "}]}", app, "local");
+        return codec.decode(
+            "{\"format\":\"dna.task-authority/1\",\"application_id\":" + common.quote(app)
+                + ",\"owner\":\"fixed-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true"
+                + flag + "}]}",
+            app,
+            "local",
+        );
     }
     fn hand(j: dna::Journal, id: String, who: String) {
-        let common = ops::GovernanceCommandCodec { }; self.append(j, "task.born", id, "Preserve exact acceptance\r\nUnicode é 🧭");
-        self.append(j, "task.handed", id, "{\"assignee\":" + common.quote(who) + ",\"obligation\":\"approval\",\"acceptance\":\"retained acceptance\",\"evidence_required\":true,\"by\":\"leader\"}");
+        let common = ops::GovernanceCommandCodec { };
+        self.append(j, "task.born", id, "Preserve exact acceptance\r\nUnicode é 🧭");
+        self.append(
+            j,
+            "task.handed",
+            id,
+            "{\"assignee\":" + common.quote(who)
+                + ",\"obligation\":\"approval\",\"acceptance\":\"retained acceptance\",\"evidence_required\":true,\"by\":\"leader\"}",
+        );
     }
-    fn command(context: ops::GovernanceContext, plan: ops::RetirementPlan, key: String, to: String) -> ops::GovernanceCommand {
-        return ops::GovernanceCommand { request_id: key, application_id: context.application_id, operation: "dna.person.retire", target_kind: "dna.person", target_id: plan.person, subject_digest: plan.subject_digest, new_assignee: to };
+    fn command(
+        context: ops::GovernanceContext,
+        plan: ops::RetirementPlan,
+        key: String,
+        to: String
+    ) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: key,
+            application_id: context.application_id,
+            operation: "dna.person.retire",
+            target_kind: "dna.person",
+            target_id: plan.person,
+            subject_digest: plan.subject_digest,
+            new_assignee: to,
+        };
     }
     fn plan_case(mode: String) {
-        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); self.hand(j, "task / one é", "alice"); let service = ops::PersonRetirement { }; let before = service.plan_over(j, "alice", "policy", true);
+        let j = dna::MemJournal { };
+        self.append(j, "application.observed", "app", "{}");
+        self.hand(j, "task / one é", "alice");
+        let service = ops::PersonRetirement { };
+        let before = service.plan_over(j, "alice", "policy", true);
         std::test::assert(before.ok && before.transferred == 1, "complete visible plan");
         if mode == "hidden" { self.append(j, "receipt.withheld", "task / one é", "{}"); }
-        if mode == "hidden-terminal" { self.append(j, "task.done", "task / one é", "explicit terminal projection input"); self.append(j, "receipt.withheld", j.read(j.revision() - 1).digest, "{}"); }
+        if mode == "hidden-terminal" {
+            self.append(j, "task.done", "task / one é", "explicit terminal projection input");
+            self.append(j, "receipt.withheld", j.read(j.revision() - 1).digest, "{}");
+        }
         if mode == "reference" { self.append(j, "receipt.withheld", "retained acceptance", "{}"); }
-        if mode == "transfer" { self.append(j, "task.transfer_requested", "task / one é", "{\"owner\":\"x\",\"to\":\"y\",\"assignee\":\"alice\"}"); }
+        if mode == "transfer" {
+            self.append(
+                j,
+                "task.transfer_requested",
+                "task / one é",
+                "{\"owner\":\"x\",\"to\":\"y\",\"assignee\":\"alice\"}",
+            );
+        }
         if mode == "unsupported" { self.append(j, "task.future", "task / one é", "opaque"); }
-        if mode == "done" { self.append(j, "task.done", "task / one é", "native completion projection fixture"); }
+        if mode == "done" {
+            self.append(j, "task.done", "task / one é", "native completion projection fixture");
+        }
         if mode == "arrival" { self.hand(j, "second task", "alice"); }
         if mode == "other" { self.hand(j, "unrelated task", "bob"); }
-        if mode == "aba" { let codec = ops::PersonRetirementCodec { }; self.append(j, "task.reassigned", "task / one é", codec.move_body("alice", "bob", "operator")); self.append(j, "task.reassigned", "task / one é", codec.move_body("bob", "alice", "operator")); }
-        if mode == "limit" { let mut n = 1; while n < 33 { self.hand(j, "task " + to_string(n), "alice"); n = n + 1; } }
+        if mode == "aba" {
+            let codec = ops::PersonRetirementCodec { };
+            self.append(
+                j,
+                "task.reassigned",
+                "task / one é",
+                codec.move_body("alice", "bob", "operator"),
+            );
+            self.append(
+                j,
+                "task.reassigned",
+                "task / one é",
+                codec.move_body("bob", "alice", "operator"),
+            );
+        }
+        if mode == "limit" {
+            let mut n = 1;
+            while n < 33 { self.hand(j, "task " + to_string(n), "alice"); n = n + 1; }
+        }
         let after = service.plan_over(j, "alice", "policy", true);
-        if mode == "hidden" || mode == "hidden-terminal" || mode == "reference" || mode == "transfer" || mode == "unsupported" || mode == "limit" { std::test::assert(!after.ok && after.tasks == "[]", "incomplete/protected/unsupported plan refuses with no partial list " + mode); }
-        else if mode == "other" { std::test::assert(after.subject_digest == before.subject_digest, "unrelated responsibilities do not force a new plan"); }
-        else { std::test::assert(after.ok && after.subject_digest != before.subject_digest, "exact affected lifecycle changes plan " + mode); }
-        std::test::assert(service.plan_over(j, "alice", "different policy", true).subject_digest != before.subject_digest, "authority basis participates");
+        if mode == "hidden"
+            || mode == "hidden-terminal"
+            || mode == "reference"
+            || mode == "transfer"
+            || mode == "unsupported"
+            || mode == "limit"
+        {
+            std::test::assert(
+                !after.ok && after.tasks == "[]",
+                "incomplete/protected/unsupported plan refuses with no partial list " + mode,
+            );
+        }
+        else if mode == "other" {
+            std::test::assert(
+                after.subject_digest == before.subject_digest,
+                "unrelated responsibilities do not force a new plan",
+            );
+        }
+        else {
+            std::test::assert(
+                after.ok && after.subject_digest != before.subject_digest,
+                "exact affected lifecycle changes plan " + mode,
+            );
+        }
+        std::test::assert(
+            service.plan_over(
+                j,
+                "alice",
+                "different policy",
+                true,
+            ).subject_digest != before.subject_digest,
+            "authority basis participates",
+        );
         eprintln("plan " + mode + " passed");
     }
     fn policy_case() {
-        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); let context = self.context("app");
+        let j = dna::MemJournal { };
+        self.append(j, "application.observed", "app", "{}");
+        let context = self.context("app");
         let old = self.policy("app", ""); let no = ops::FixedTaskAuthority { policy: old };
-        std::test::assert(old.valid && !old.retirement_enabled && no.authorize(context, "dna.task.reassign", false, j).allowed && !no.authorize(context, "dna.person.retire", false, j).allowed, "old policy bytes remain valid, no implied retirement grant");
-        let revoked = self.policy("app", ",\"retire\":false"); let recovery = ops::FixedTaskAuthority { policy: revoked };
-        std::test::assert(revoked.valid && revoked.retirement_enabled && !recovery.authorize(context, "dna.person.retire", false, j).allowed && recovery.authorize(context, "dna.person.retire", true, j).allowed, "explicit false keeps recovery profile");
-        std::test::assert(!self.policy("app", ",\"retire\":\"true\"").valid && !self.policy("app", ",\"retire\":true,\"retire\":false").valid, "retirement grant strict type and duplicate fields");
-        let service = ops::PersonRetirement { }; let plan = service.plan_over(j, "alice", "policy", true); let c = self.command(context, plan, "key", ""); let codec = ops::PersonRetirementCodec { };
-        std::test::assert(codec.valid(context, c) && codec.canonical(context, codec.decode(context, codec.canonical(context, c))) == codec.canonical(context, c), "zero-held no-successor exact variant roundtrip");
+        std::test::assert(
+            old.valid
+                && !old.retirement_enabled
+                && no.authorize(context, "dna.task.reassign", false, j).allowed
+                && !no.authorize(context, "dna.person.retire", false, j).allowed,
+            "old policy bytes remain valid, no implied retirement grant",
+        );
+        let revoked = self.policy("app", ",\"retire\":false");
+        let recovery = ops::FixedTaskAuthority { policy: revoked };
+        std::test::assert(
+            revoked.valid
+                && revoked.retirement_enabled
+                && !recovery.authorize(context, "dna.person.retire", false, j).allowed
+                && recovery.authorize(context, "dna.person.retire", true, j).allowed,
+            "explicit false keeps recovery profile",
+        );
+        std::test::assert(
+            !self.policy("app", ",\"retire\":\"true\"").valid
+                && !self.policy("app", ",\"retire\":true,\"retire\":false").valid,
+            "retirement grant strict type and duplicate fields",
+        );
+        let service = ops::PersonRetirement { };
+        let plan = service.plan_over(j, "alice", "policy", true);
+        let c = self.command(context, plan, "key", "");
+        let codec = ops::PersonRetirementCodec { };
+        std::test::assert(
+            codec.valid(context, c)
+                && codec.canonical(
+                    context,
+                    codec.decode(context, codec.canonical(context, c)),
+                ) == codec.canonical(context, c),
+            "zero-held no-successor exact variant roundtrip",
+        );
         eprintln("policy and codec passed");
     }
 }
 fn main() {
     let cases = RetirementCases { }; cases.policy_case();
-    cases.plan_case("hidden"); cases.plan_case("hidden-terminal"); cases.plan_case("reference"); cases.plan_case("transfer"); cases.plan_case("unsupported"); cases.plan_case("done"); cases.plan_case("arrival"); cases.plan_case("other"); cases.plan_case("aba"); cases.plan_case("limit");
+    cases.plan_case("hidden");
+    cases.plan_case("hidden-terminal");
+    cases.plan_case("reference");
+    cases.plan_case("transfer");
+    cases.plan_case("unsupported");
+    cases.plan_case("done");
+    cases.plan_case("arrival");
+    cases.plan_case("other");
+    cases.plan_case("aba");
+    cases.plan_case("limit");
     eprintln("person retirement cases passed");
 }

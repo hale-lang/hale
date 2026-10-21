@@ -50,7 +50,13 @@ fn reading_token(s: String) -> Bool {
     let mut i = 0;
     while i < len(s) {
         let c = s[i..(i + 1)];
-        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == ":";
+        let ok = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_"
+            || c == "."
+            || c == ":";
         if !ok { return false; }
         i = i + 1;
     }
@@ -61,18 +67,42 @@ fn reading_token(s: String) -> Bool {
 // (`<org>.app.`): the application and the event from the subject, the id
 // from the body, which is one well-formed JSON object in UTF-8.
 fn reading_of(subject: String, prefix: String, body: String) -> Reading {
-    if len(prefix) == 0 || !std::str::starts_with(subject, prefix) { return Reading { why: "not under " + prefix }; }
+    if len(prefix) == 0 || !std::str::starts_with(subject, prefix) {
+        return Reading { why: "not under " + prefix };
+    }
     let rest = subject[len(prefix)..len(subject)];
     let dot = std::str::index_of(rest, ".");
-    if dot <= 0 || dot + 1 >= len(rest) { return Reading { why: "names no application and event" }; }
+    if dot <= 0 || dot + 1 >= len(rest) {
+        return Reading { why: "names no application and event" };
+    }
     let app = rest[0..dot];
     let event = rest[(dot + 1)..len(rest)];
-    if !reading_token(app) || !reading_token(event) { return Reading { why: "the application's or the event's name is not a token (letters, digits and -_.:, at most 128)" }; }
-    if len(body) > READING_MAX_BYTES { return Reading { app: app, event: event, why: "the body is over " + to_string(READING_MAX_BYTES) + " bytes" }; }
-    if std::str::cp_count(body) < 0 { return Reading { app: app, event: event, why: "the body is not UTF-8" }; }
-    if !std::json::valid_object(body) { return Reading { app: app, event: event, why: "the body is not a JSON object" }; }
+    if !reading_token(app) || !reading_token(event) {
+        return Reading {
+            why: "the application's or the event's name is not a token (letters, digits and -_.:, at most 128)",
+        };
+    }
+    if len(body) > READING_MAX_BYTES {
+        return Reading {
+            app: app,
+            event: event,
+            why: "the body is over " + to_string(READING_MAX_BYTES) + " bytes",
+        };
+    }
+    if std::str::cp_count(body) < 0 {
+        return Reading { app: app, event: event, why: "the body is not UTF-8" };
+    }
+    if !std::json::valid_object(body) {
+        return Reading { app: app, event: event, why: "the body is not a JSON object" };
+    }
     let id = std::json::string_field(body, "id");
-    if id.kind != "string" || !reading_token(id.text) { return Reading { app: app, event: event, why: "the body names no string `id` (letters, digits and -_.:, at most 128)" }; }
+    if id.kind != "string" || !reading_token(id.text) {
+        return Reading {
+            app: app,
+            event: event,
+            why: "the body names no string `id` (letters, digits and -_.:, at most 128)",
+        };
+    }
     return Reading { app: app, event: event, id: id.text, payload: body };
 }
 
@@ -108,7 +138,12 @@ fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory
     while tries < 50 {
         tries = tries + 1;
         let head = record_head(root);
-        if !head.ok { return Landing { outcome: "failed", why: "the record's head could not be read: " + head.why }; }
+        if !head.ok {
+            return Landing {
+                outcome: "failed",
+                why: "the record's head could not be read: " + head.why,
+            };
+        }
         // the projection refreshes the ledger: its revision is read after,
         // so it is the one the scan saw
         let p = open_projection(root, ".", "", memory);
@@ -148,7 +183,12 @@ fn concern_source(source: String, app: String) -> String {
             if seg == app { named = true; }
             seg = "";
         } else {
-            let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+            let ok = (c >= "a" && c <= "z")
+                || (c >= "A" && c <= "Z")
+                || (c >= "0" && c <= "9")
+                || c == "-"
+                || c == "_"
+                || c == ".";
             if !ok { return ""; }
             seg = seg + c;
         }
@@ -165,10 +205,23 @@ fn concern_source(source: String, app: String) -> String {
 // could not be written (it comes again: `retry`). One projection per
 // try, fifty at most.
 @bounded_by(tries)
-fn reading_concern(root: String, entity: String, r: Reading, author: String, memory: dna::Memory) -> Escalation {
+fn reading_concern(
+    root: String,
+    entity: String,
+    r: Reading,
+    author: String,
+    memory: dna::Memory
+) -> Escalation {
     let named = std::json::string_field(r.payload, "source");
     let source = concern_source(if named.kind == "string" { named.text } else { "" }, r.app);
-    if len(source) == 0 { return Escalation { why: "the concern " + entity + " names no source of its application `" + r.app + "` (a `/`-path of letters, digits and -_., one of its parts " + r.app + "); refused", refused: true }; }
+    if len(source) == 0 {
+        return Escalation {
+            why: "the concern " + entity + " names no source of its application `" + r.app
+                + "` (a `/`-path of letters, digits and -_., one of its parts " + r.app
+                + "); refused",
+            refused: true,
+        };
+    }
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("request", entity);
@@ -182,18 +235,35 @@ fn reading_concern(root: String, entity: String, r: Reading, author: String, mem
     while tries < 50 {
         tries = tries + 1;
         let head = record_head(root);
-        if !head.ok { return Escalation { why: "the record's head could not be read: " + head.why }; }
+        if !head.ok {
+            return Escalation { why: "the record's head could not be read: " + head.why };
+        }
         let p = open_projection(root, ".", "", memory);
         let at = ledger_revision(root, memory);
         let mut j = p.rows() - 1;
         while j >= 0 {
             let e = p.row(j);
-            if e.kind == "concern.requested" && dna::request_named(e.body) == entity { return Escalation { }; }
+            if e.kind == "concern.requested" && dna::request_named(e.body) == entity {
+                return Escalation { };
+            }
             j = j - 1;
         }
-        let why = append_as_at(root, head.id, at, "concern.requested", source, body, author, memory);
-        if len(why) == 0 { return Escalation { asked: "a concern from " + source + " (" + entity + ")" }; }
-        if why != "stale_revision" { return Escalation { why: "the record refused the concern from " + source + ": " + why }; }
+        let why = append_as_at(
+            root,
+            head.id,
+            at,
+            "concern.requested",
+            source,
+            body,
+            author,
+            memory,
+        );
+        if len(why) == 0 {
+            return Escalation { asked: "a concern from " + source + " (" + entity + ")" };
+        }
+        if why != "stale_revision" {
+            return Escalation { why: "the record refused the concern from " + source + ": " + why };
+        }
     }
     return Escalation { why: "the organism's memory kept moving under the concern from " + source };
 }

@@ -25,7 +25,13 @@
 // child's thread, not the owner's.
 
 locus Kid {
-    params { births: Int = 0; runs: Int = 0; ticks: Int = 0; fail_until: Int = 1; delay: Duration = 0ms; }
+    params {
+        births: Int = 0;
+        runs: Int = 0;
+        ticks: Int = 0;
+        fail_until: Int = 1;
+        delay: Duration = 0ms;
+    }
     closure fuse { captures: births; epoch inline; }
     birth() {
         self.births = self.births + 1;
@@ -85,25 +91,67 @@ main locus App {
     run() {
         let mut i = 0;
         let started_at_settle = self.late.births;
-        while (self.held.ticks == 0 || self.twice.ticks == 0 || self.fresh.ticks == 0 || self.late.ticks == 0 || self.never.births < 4) && i < 400 {
+        while (
+            self.held.ticks == 0
+                || self.twice.ticks == 0
+                || self.fresh.ticks == 0
+                || self.late.ticks == 0
+                || self.never.births < 4
+        )
+            && i < 400
+        {
             std::time::sleep(10ms);
             i = i + 1;
         }
-        std::test::assert_eq_int(self.held.births, 2, "a held birth failure re-ran birth() on the pinned thread");
-        std::test::assert_eq_int(self.twice.births, 3, "a re-birth that failed again was restarted again");
-        std::test::assert_eq_int(self.fresh_failures, 3, "restart_in_place re-ran the birth from its built params");
+        std::test::assert_eq_int(
+            self.held.births,
+            2,
+            "a held birth failure re-ran birth() on the pinned thread",
+        );
+        std::test::assert_eq_int(
+            self.twice.births,
+            3,
+            "a re-birth that failed again was restarted again",
+        );
+        std::test::assert_eq_int(
+            self.fresh_failures,
+            3,
+            "restart_in_place re-ran the birth from its built params",
+        );
         std::test::assert_eq_int(self.fresh.births, 1, "each time from births 0");
         let a = self.held.ticks + self.twice.ticks + self.fresh.ticks;
         std::time::sleep(100ms);
         let b = self.held.ticks + self.twice.ticks + self.fresh.ticks;
-        std::test::assert(b > a, "the restarted children's run() loops run on their own threads, beside this one");
+        std::test::assert(
+            b > a,
+            "the restarted children's run() loops run on their own threads, beside this one",
+        );
 
-        std::test::assert(started_at_settle < 2, "late's first birth had not failed yet when App's run() began");
-        std::test::assert_eq_int(self.late.births, 2, "a pinned birth failure delivered with the owner settled re-ran birth()");
-        std::test::assert_eq_int(self.never.births, 4, "a pinned child failing every birth: three restarts");
+        std::test::assert(
+            started_at_settle < 2,
+            "late's first birth had not failed yet when App's run() began",
+        );
+        std::test::assert_eq_int(
+            self.late.births,
+            2,
+            "a pinned birth failure delivered with the owner settled re-ran birth()",
+        );
+        std::test::assert_eq_int(
+            self.never.births,
+            4,
+            "a pinned child failing every birth: three restarts",
+        );
         std::time::sleep(50ms);
-        std::test::assert_eq_int(self.never.runs, 0, "and the failure after them quarantines: its run() never starts");
-        std::test::assert_eq_int(self.kid_failures, 1 + 2 + 1 + 4, "every Kid failure reached the handler");
+        std::test::assert_eq_int(
+            self.never.runs,
+            0,
+            "and the failure after them quarantines: its run() never starts",
+        );
+        std::test::assert_eq_int(
+            self.kid_failures,
+            1 + 2 + 1 + 4,
+            "every Kid failure reached the handler",
+        );
         std::process::exit(0);
     }
 }

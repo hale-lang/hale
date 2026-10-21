@@ -188,7 +188,10 @@ locus PqLedger {
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        let rows = self.run_q(
+            "SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t",
+            a,
+        );
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
         // scanned by offset: a tail re-sliced per row copies the rest of the
         // answer each time, and a record of thousands of rows held gigabytes
@@ -200,7 +203,10 @@ locus PqLedger {
             at = end + 1;
             if len(trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
-            if seq != self.rows.len() { self.error = "load: Ledger sequence is not contiguous"; return; }
+            if seq != self.rows.len() {
+                self.error = "load: Ledger sequence is not contiguous";
+                return;
+            }
             self.rows.push(Event {
                 seq: seq,
                 kind: std::json::find_string_field(line, "kind"),
@@ -228,22 +234,35 @@ locus PqLedger {
         if !self.opened { self.error = "refresh: Ledger is not open"; return false; }
         // Count alone misses a deletion paired with another append. Inspect
         // density and the authoritative tail in the same database statement.
-        let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows");
+        let n = self.run_one(
+            "SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM ledger_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM ledger_rows",
+        );
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
         let row = trim_nl(n.data);
         let count = std::str::parse_int(tab_field(row, 0)) or - 1;
         let first = std::str::parse_int(tab_field(row, 1)) or - 1;
         let last = std::str::parse_int(tab_field(row, 2)) or - 2;
         let head = tab_field(row, 3);
-        if count < 0 || first != 0 || last != count - 1 { self.error = "refresh: Ledger sequence is not contiguous"; return false; }
-        if count < self.rows.len() { self.error = "refresh: Ledger row count moved backwards"; return false; }
+        if count < 0 || first != 0 || last != count - 1 {
+            self.error = "refresh: Ledger sequence is not contiguous";
+            return false;
+        }
+        if count < self.rows.len() {
+            self.error = "refresh: Ledger row count moved backwards";
+            return false;
+        }
         if count == self.rows.len() {
-            if head != self.head() { self.error = "refresh: Ledger history changed at the same revision"; }
+            if head != self.head() {
+                self.error = "refresh: Ledger history changed at the same revision";
+            }
             return false;
         }
         self.load();
         if len(self.error) > 0 { return false; }
-        if self.rows.len() != count || self.head() != head { self.error = "refresh: Ledger changed during read or rows are incomplete"; return false; }
+        if self.rows.len() != count || self.head() != head {
+            self.error = "refresh: Ledger changed during read or rows are incomplete";
+            return false;
+        }
         return true;
     }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
@@ -266,16 +285,38 @@ locus PqLedger {
         a.add(self.lease);
         a.add(to_string(self.lease_token));
         a.add(self.request);
-        let r = self.run_q("SELECT ledger_append($1::bigint, $2, $3, $4, $5, $6, $7::bigint, $8)", a);
-        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let r = self.run_q(
+            "SELECT ledger_append($1::bigint, $2, $3, $4, $5, $6, $7::bigint, $8)",
+            a,
+        );
+        if !r.ok {
+            self.error = "append: " + r.err.kind + " " + r.err.detail;
+            return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        }
         let out = trim_nl(line_one(r.csv));
         let err = std::json::find_string_field(out, "error");
         self.load();
-        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
-        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        if len(err) == 0 {
+            return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 };
+        }
+        if err == "stale_revision" {
+            return AppendResult {
+                error: "stale_revision",
+                expected: expected,
+                actual: std::json::find_int_field(out, "actual"),
+            };
+        }
         // a claim conflict reads back as `claimed`, as it always has
-        self.error = if err == "claimed" { "claimed" } else { std::json::find_string_field(out, "why") };
-        return AppendResult { error: if err == "claimed" { "claimed" } else { "refused" }, expected: expected, actual: self.rows.len() };
+        self.error = if err == "claimed" {
+            "claimed"
+        } else {
+            std::json::find_string_field(out, "why")
+        };
+        return AppendResult {
+            error: if err == "claimed" { "claimed" } else { "refused" },
+            expected: expected,
+            actual: self.rows.len(),
+        };
     }
     // At the tail, once the in-process check against `expected` holds: the
     // insert function serializes appends, so a lost race is not a refusal.
@@ -284,17 +325,23 @@ locus PqLedger {
     @bounded_by(script)
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         return self.gate(-1, kind, entity, body);
     }
     // The Ledger takes a batch as its rows, one by one: a Ledger row is
     // its own fact, and nothing batches across it (the record batches
     // only when no row is the Ledger's).
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return append_rows(self, expected, rows);
+    }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let moved = self.refresh();
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         return self.gate(expected, kind, entity, body);
     }
 }
@@ -314,7 +361,14 @@ interface LeaseStore {
     fn last_error() -> String;
     // `known` false when no lease was ever put under the key.
     fn current(key: String) -> StoredLease;
-    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool;
+    fn put(
+        key: String,
+        holder: String,
+        token: Int,
+        expires: Int,
+        present: Bool,
+        expected: Int
+    ) -> Bool;
 }
 
 type StoredLease {
@@ -375,7 +429,10 @@ locus PqLeaseStore {
         // up (a locked row, a partition) can never outlast the lease the
         // body fence renews: it fails, and is tried again once, within the
         // fence's margin
-        let ns = self.conn.exec("SET search_path TO " + sch + ", public; SET statement_timeout = '4s'; SET lock_timeout = '4s'");
+        let ns = self.conn.exec(
+            "SET search_path TO " + sch
+                + ", public; SET statement_timeout = '4s'; SET lock_timeout = '4s'",
+        );
         if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
@@ -403,18 +460,38 @@ locus PqLeaseStore {
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
-        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t", a);
-        if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
+        let rows = self.run_q(
+            "SELECT row_to_json(t) FROM (SELECT key, holder, token, until AS expires, present FROM claims WHERE key = $1) t",
+            a,
+        );
+        if !rows.ok {
+            self.error = "current: " + rows.err.kind + " " + rows.err.detail;
+            return StoredLease { key: key };
+        }
         if rows.n == 0 { return StoredLease { key: key }; }
         let row = trim_nl(line_one(rows.csv));
-        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+        return StoredLease {
+            known: true,
+            key: key,
+            holder: std::json::find_string_field(row, "holder"),
+            token: std::json::find_int_field(row, "token"),
+            expires: std::json::find_int_field(row, "expires"),
+            present: std::json::find_bool_field(row, "present"),
+        };
     }
     // One statement: insert when nothing is there and 0 was expected,
     // else update where the stored token is the one expected.
     // `self.error` holds only the last failure, replaced whole (the old text is
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.error)
-    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
+    fn put(
+        key: String,
+        holder: String,
+        token: Int,
+        expires: Int,
+        present: Bool,
+        expected: Int
+    ) -> Bool {
         let a = db::Args { };
         a.add(key);
         a.add(holder);
@@ -422,10 +499,16 @@ locus PqLeaseStore {
         a.add(to_string(expires));
         a.add(if present { "true" } else { "false" });
         a.add(to_string(expected));
-        let r = self.run_q("INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        let r = self.run_q(
+            "INSERT INTO claims (key, holder, token, until, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM claims WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key",
+            a,
+        );
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         if r.n > 0 { return true; }
-        let u = self.run_q("UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        let u = self.run_q(
+            "UPDATE claims SET holder = $2, token = $3::bigint, until = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key",
+            a,
+        );
         if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
         return u.n > 0;
     }
@@ -444,11 +527,24 @@ locus PqLeaseStore {
         a.add(key);
         a.add(holder);
         a.add(to_string(ttl));
-        let r = self.run_q("WITH clock AS (SELECT extract(epoch FROM now())::bigint AS t) INSERT INTO claims AS c (key, holder, token, until, present) SELECT $1, $2, 1, clock.t + $3::bigint, true FROM clock ON CONFLICT (key) DO UPDATE SET token = CASE WHEN c.present AND c.holder = EXCLUDED.holder AND c.until > EXCLUDED.until - $3::bigint THEN c.token ELSE c.token + 1 END, holder = EXCLUDED.holder, until = EXCLUDED.until, present = true, at = now() WHERE NOT c.present OR c.until <= EXCLUDED.until - $3::bigint OR c.holder = EXCLUDED.holder RETURNING row_to_json((SELECT t FROM (SELECT c.key, c.holder, c.token, c.until AS expires, c.present) t))", a);
-        if !r.ok { self.error = "claim: " + r.err.kind + " " + r.err.detail; return StoredLease { key: key }; }
+        let r = self.run_q(
+            "WITH clock AS (SELECT extract(epoch FROM now())::bigint AS t) INSERT INTO claims AS c (key, holder, token, until, present) SELECT $1, $2, 1, clock.t + $3::bigint, true FROM clock ON CONFLICT (key) DO UPDATE SET token = CASE WHEN c.present AND c.holder = EXCLUDED.holder AND c.until > EXCLUDED.until - $3::bigint THEN c.token ELSE c.token + 1 END, holder = EXCLUDED.holder, until = EXCLUDED.until, present = true, at = now() WHERE NOT c.present OR c.until <= EXCLUDED.until - $3::bigint OR c.holder = EXCLUDED.holder RETURNING row_to_json((SELECT t FROM (SELECT c.key, c.holder, c.token, c.until AS expires, c.present) t))",
+            a,
+        );
+        if !r.ok {
+            self.error = "claim: " + r.err.kind + " " + r.err.detail;
+            return StoredLease { key: key };
+        }
         if r.n == 0 { return self.current(key); }
         let row = trim_nl(line_one(r.csv));
-        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+        return StoredLease {
+            known: true,
+            key: key,
+            holder: std::json::find_string_field(row, "holder"),
+            token: std::json::find_int_field(row, "token"),
+            expires: std::json::find_int_field(row, "expires"),
+            present: std::json::find_bool_field(row, "present"),
+        };
     }
     // Give `key` back if `holder` holds it: its token kept, so a late
     // renewal of the old claim lands nothing. True when it was theirs.
@@ -459,7 +555,10 @@ locus PqLeaseStore {
         let a = db::Args { };
         a.add(key);
         a.add(holder);
-        let r = self.run_q("UPDATE claims SET present = false, until = 0, at = now() WHERE key = $1 AND holder = $2 AND present RETURNING key", a);
+        let r = self.run_q(
+            "UPDATE claims SET present = false, until = 0, at = now() WHERE key = $1 AND holder = $2 AND present RETURNING key",
+            a,
+        );
         if !r.ok { self.error = "give back: " + r.err.kind + " " + r.err.detail; return false; }
         return r.n > 0;
     }

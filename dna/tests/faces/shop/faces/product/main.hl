@@ -7,8 +7,18 @@ const CLIENT: String = "// consumes: CatalogSurface";
 
 locus Page {
     fn handle(req: std::http::Request) -> std::http::Response {
-        if req.path == "/client.js" { return std::http::Response { status: 200, content_type: "text/javascript", body: CLIENT }; }
-        return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: PAGE };
+        if req.path == "/client.js" {
+            return std::http::Response {
+                status: 200,
+                content_type: "text/javascript",
+                body: CLIENT,
+            };
+        }
+        return std::http::Response {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: PAGE,
+        };
     }
 }
 

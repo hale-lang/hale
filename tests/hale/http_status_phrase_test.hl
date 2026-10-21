@@ -29,10 +29,26 @@ fn main() {
     std::test::assert_eq_str(status_line(fd, port, 201), "HTTP/1.1 201 Created", "201");
     std::test::assert_eq_str(status_line(fd, port, 204), "HTTP/1.1 204 No Content", "204");
     std::test::assert_eq_str(status_line(fd, port, 308), "HTTP/1.1 308 Permanent Redirect", "308");
-    std::test::assert_eq_str(status_line(fd, port, 413), "HTTP/1.1 413 Content Too Large", "413, RFC 9110's wording");
-    std::test::assert_eq_str(status_line(fd, port, 422), "HTTP/1.1 422 Unprocessable Content", "422, RFC 9110's wording");
-    std::test::assert_eq_str(status_line(fd, port, 429), "HTTP/1.1 429 Too Many Requests", "429, outside RFC 9110");
+    std::test::assert_eq_str(
+        status_line(fd, port, 413),
+        "HTTP/1.1 413 Content Too Large",
+        "413, RFC 9110's wording",
+    );
+    std::test::assert_eq_str(
+        status_line(fd, port, 422),
+        "HTTP/1.1 422 Unprocessable Content",
+        "422, RFC 9110's wording",
+    );
+    std::test::assert_eq_str(
+        status_line(fd, port, 429),
+        "HTTP/1.1 429 Too Many Requests",
+        "429, outside RFC 9110",
+    );
     std::test::assert_eq_str(status_line(fd, port, 503), "HTTP/1.1 503 Service Unavailable", "503");
-    std::test::assert_eq_str(status_line(fd, port, 599), "HTTP/1.1 599 Status", "an unassigned status");
+    std::test::assert_eq_str(
+        status_line(fd, port, 599),
+        "HTTP/1.1 599 Status",
+        "an unassigned status",
+    );
     std::io::tcp::close_fd(fd);
 }

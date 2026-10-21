@@ -13,8 +13,14 @@ main locus App {
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "hand", charter: "You are the architect.",
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" },
-                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" }
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier",
+                },
+                deep: dna::FakeModel {
+                    name: "deep",
+                    answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier",
+                }
             }
         };
     }
@@ -36,7 +42,11 @@ main locus App {
             let mut i = 0;
             while i < self.one.journal.revision() {
                 let e = self.one.journal.read(i);
-                if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { return e.entity; }
+                if e.kind == "workflow.admitted"
+                    && std::json::find_string_field(e.body, "request") == intent
+                {
+                    return e.entity;
+                }
                 i = i + 1;
             }
             std::time::sleep(20ms);
@@ -45,24 +55,60 @@ main locus App {
         return "";
     }
     run() {
-        let asked = self.one.ask(dna::Intent { id: "i1", outcome: "get the invoice paid", from: "riley" });
+        let asked = self.one.ask(
+            dna::Intent { id: "i1", outcome: "get the invoice paid", from: "riley" },
+        );
         std::test::assert_eq_str(asked, "planning", "the leader's word comes first");
         let t = self.admitted("i1");
-        std::test::assert(std::str::starts_with(t, "t"), "the ask was admitted once the leader answered: " + t);
-        std::test::assert_eq_str(self.one.ask_plan_of(t).kind + "|" + self.one.ask_plan_of(t).assignee, "person|noor", "planned by the leader, the word bound in the admission");
+        std::test::assert(
+            std::str::starts_with(t, "t"),
+            "the ask was admitted once the leader answered: " + t,
+        );
+        std::test::assert_eq_str(
+            self.one.ask_plan_of(t).kind + "|" + self.one.ask_plan_of(t).assignee,
+            "person|noor",
+            "planned by the leader, the word bound in the admission",
+        );
         let case = t + ".s0.p";
         let mut tries = 0;
-        while tries < 300 && self.rows("task.handed", case) == 0 { std::time::sleep(20ms); tries = tries + 1; }
-        std::test::assert_eq_int(self.rows("task.handed", case), 1, "and handed to a person as its case");
-        std::test::assert_eq_int(self.rows("task.done", case) + self.rows("workflow.settled", t), 0, "not settled by the organism: the person reports it done");
-        std::test::assert_eq_str(self.one.task_state(case), "handed", "it stays handed in the record");
+        while tries < 300 && self.rows("task.handed", case) == 0 {
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        std::test::assert_eq_int(
+            self.rows("task.handed", case),
+            1,
+            "and handed to a person as its case",
+        );
+        std::test::assert_eq_int(
+            self.rows("task.done", case) + self.rows("workflow.settled", t),
+            0,
+            "not settled by the organism: the person reports it done",
+        );
+        std::test::assert_eq_str(
+            self.one.task_state(case),
+            "handed",
+            "it stays handed in the record",
+        );
         // the person's report is the settlement (`hale dna task done` appends it in their name)
-        let r = self.one.journal.append(self.one.journal.revision(), "task.done", case, "by noor: paid");
+        let r = self.one.journal.append(
+            self.one.journal.revision(),
+            "task.done",
+            case,
+            "by noor: paid",
+        );
         std::test::assert_eq_str(self.one.task_state(case), "done", "done once the person says so");
         let n = self.one.redrive();
         tries = 0;
-        while tries < 300 && self.rows("workflow.settled", t) == 0 { std::time::sleep(20ms); tries = tries + 1; }
-        std::test::assert_eq_int(self.rows("workflow.settled", t), 1, "and the ask's workflow settles on it (card 17)");
+        while tries < 300 && self.rows("workflow.settled", t) == 0 {
+            std::time::sleep(20ms);
+            tries = tries + 1;
+        }
+        std::test::assert_eq_int(
+            self.rows("workflow.settled", t),
+            1,
+            "and the ask's workflow settles on it (card 17)",
+        );
     }
 }
 

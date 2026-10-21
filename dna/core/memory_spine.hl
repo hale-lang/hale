@@ -15,7 +15,9 @@ const HEAD_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_HEAD";
 
 // The role this process was given: the spine's when the body started it
 // with one, otherwise the head's. A process never holds both.
-fn own_dsn_env() -> String { if dsn_set(SPINE_DSN_ENV) { return SPINE_DSN_ENV; } return HEAD_DSN_ENV; }
+fn own_dsn_env() -> String {
+    if dsn_set(SPINE_DSN_ENV) { return SPINE_DSN_ENV; } return HEAD_DSN_ENV;
+}
 
 fn dsn_set(env_name: String) -> Bool {
     if std::str::starts_with(env_name, "postgres") { return true; }
@@ -48,7 +50,9 @@ fn kept_dsn_from(repo: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::starts_with(line, MEMORY_FROM_KEY + "=") { return line[(len(MEMORY_FROM_KEY) + 1)..len(line)]; }
+        if std::str::starts_with(line, MEMORY_FROM_KEY + "=") {
+            return line[(len(MEMORY_FROM_KEY) + 1)..len(line)];
+        }
     }
     return "";
 }
@@ -77,12 +81,20 @@ fn kept_dsn_refusal(repo: String) -> String {
     let path = repo + "/.hale/dna/memory.env";
     let mode = file_mode(path);
     if len(mode) == 0 { return ""; }
-    if !std::str::ends_with(mode, "00") { return path + " holds the head's DSN and is readable by others (mode " + mode + "): `chmod 600 " + path + "`, or remove it and run `hale habitat migrate " + repo + "`"; }
+    if !std::str::ends_with(mode, "00") {
+        return path + " holds the head's DSN and is readable by others (mode " + mode
+            + "): `chmod 600 " + path + "`, or remove it and run `hale habitat migrate " + repo
+            + "`";
+    }
     let from = kept_dsn_from(repo);
     if from == "owner" { return ""; }
     let here = memory_allocation_name(repo);
     if from == here && len(here) > 0 { return ""; }
-    return path + " holds a DSN derived from " + (if len(from) > 0 { from } else { "a database an older toolchain migrated" }) + ", not from this organism's memory in the local habitat (" + here + ", GH #1653): run `hale habitat migrate " + repo + "`, which brings it up and migrates it";
+    return path + " holds a DSN derived from "
+        + (if len(from) > 0 { from } else { "a database an older toolchain migrated" })
+        + ", not from this organism's memory in the local habitat (" + here
+        + ", GH #1653): run `hale habitat migrate " + repo
+        + "`, which brings it up and migrates it";
 }
 
 // The spine's DSN this clone reaches with what it keeps (GH #1590): the
@@ -203,7 +215,9 @@ fn toml_dotted(path: String) -> String {
 // A one-line string value: basic (`"…"`, without escapes) or literal (`'…'`).
 fn toml_string(raw: String) -> ManifestValue {
     let v = std::str::trim(raw);
-    if std::str::starts_with(v, "\"\"\"") || std::str::starts_with(v, "'''") { return ManifestValue { present: true, why: "a multi-line string" }; }
+    if std::str::starts_with(v, "\"\"\"") || std::str::starts_with(v, "'''") {
+        return ManifestValue { present: true, why: "a multi-line string" };
+    }
     if len(v) < 2 { return ManifestValue { present: true, why: "not a string" }; }
     let q = v[0..1];
     if q != "\"" && q != "'" { return ManifestValue { present: true, why: "not a string" }; }
@@ -211,8 +225,12 @@ fn toml_string(raw: String) -> ManifestValue {
     let close = std::str::index_of(body, q);
     if close < 0 { return ManifestValue { present: true, why: "an unterminated string" }; }
     let inner = body[0..close];
-    if q == "\"" && std::str::contains(inner, "\\") { return ManifestValue { present: true, why: "a string with escapes" }; }
-    if len(std::str::trim(body[(close + 1)..len(body)])) > 0 { return ManifestValue { present: true, why: "more than one value" }; }
+    if q == "\"" && std::str::contains(inner, "\\") {
+        return ManifestValue { present: true, why: "a string with escapes" };
+    }
+    if len(std::str::trim(body[(close + 1)..len(body)])) > 0 {
+        return ManifestValue { present: true, why: "more than one value" };
+    }
     return ManifestValue { present: true, value: inner };
 }
 
@@ -235,22 +253,38 @@ fn manifest_dna_value(root: String, key: String) -> ManifestValue {
             let close = toml_index_outside(line, "]");
             table = if close < 0 { "?" } else { toml_dotted(line[1..close]) };
             // a header this reader cannot decode might be `dna`
-            if std::str::contains(table, "?") { return ManifestValue { present: true, why: "a table header with escapes or unclosed" }; }
+            if std::str::contains(table, "?") {
+                return ManifestValue {
+                    present: true,
+                    why: "a table header with escapes or unclosed",
+                };
+            }
             continue;
         }
         let eq = toml_index_outside(line, "=");
         if eq < 0 { continue; }
         let k = toml_dotted(line[0..eq]);
         // a key this reader cannot decode, where it might be the pin
-        if std::str::contains(k, "?") && (len(table) == 0 || table == "dna" || std::str::starts_with(table, "dna.")) { return ManifestValue { present: true, why: "a quoted key with escapes" }; }
+        if std::str::contains(k, "?")
+            && (len(table) == 0 || table == "dna" || std::str::starts_with(table, "dna."))
+        {
+            return ManifestValue { present: true, why: "a quoted key with escapes" };
+        }
         let full = if len(table) == 0 { k } else { table + "." + k };
         let value = line[(eq + 1)..len(line)];
         if full == want { return toml_string(value); }
         if full == "dna" {
             let v = std::str::trim(value);
-            if !std::str::starts_with(v, "{") { return ManifestValue { present: true, why: "`dna` is not a table" }; }
+            if !std::str::starts_with(v, "{") {
+                return ManifestValue { present: true, why: "`dna` is not a table" };
+            }
             let end = toml_index_outside(v, "}");
-            if end < 0 { return ManifestValue { present: true, why: "an inline `dna` table that does not end on its line" }; }
+            if end < 0 {
+                return ManifestValue {
+                    present: true,
+                    why: "an inline `dna` table that does not end on its line",
+                };
+            }
             let mut items = v[1..end];
             while len(std::str::trim(items)) > 0 {
                 let comma = toml_index_outside(items, ",");
@@ -258,7 +292,9 @@ fn manifest_dna_value(root: String, key: String) -> ManifestValue {
                 items = if comma < 0 { "" } else { items[(comma + 1)..len(items)] };
                 let ieq = toml_index_outside(item, "=");
                 let ik = if ieq < 0 { "" } else { toml_dotted(item[0..ieq]) };
-                if std::str::contains(ik, "?") { return ManifestValue { present: true, why: "a quoted key with escapes" }; }
+                if std::str::contains(ik, "?") {
+                    return ManifestValue { present: true, why: "a quoted key with escapes" };
+                }
                 if ieq >= 0 && ik == key { return toml_string(item[(ieq + 1)..len(item)]); }
             }
         }
@@ -282,13 +318,28 @@ fn hex_text(s: String) -> Bool {
 // record this clone holds; the record's root commit when there is no pin.
 fn record_identity_at(repo: String) -> RecordIdentity {
     let pin = manifest_dna_value(repo, "record");
-    if len(pin.why) > 0 { return RecordIdentity { why: "hale.toml's [dna] record is present but not readable here (" + pin.why + "); write it as `record = \"<identity>\"`" }; }
+    if len(pin.why) > 0 {
+        return RecordIdentity {
+            why: "hale.toml's [dna] record is present but not readable here (" + pin.why
+                + "); write it as `record = \"<identity>\"`",
+        };
+    }
     let pinned = pin.value;
     // GH #1590: the record is memory's, and the pin is the only way a clone
     // names it; a genome with no pin names no record yet
     if !pin.present { return RecordIdentity { }; }
-    if hex_text(pinned) && len(pinned) == 40 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, the root commit of a record an earlier toolchain kept on git, and records are not carried forward: re-init a fresh record (remove the `[dna] record` line and run `hale habitat graft`)" }; }
-    if !hex_text(pinned) || len(pinned) != 64 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (64 lowercase hex digits)" }; }
+    if hex_text(pinned) && len(pinned) == 40 {
+        return RecordIdentity {
+            why: "hale.toml's [dna] record is `" + pinned
+                + "`, the root commit of a record an earlier toolchain kept on git, and records are not carried forward: re-init a fresh record (remove the `[dna] record` line and run `hale habitat graft`)",
+        };
+    }
+    if !hex_text(pinned) || len(pinned) != 64 {
+        return RecordIdentity {
+            why: "hale.toml's [dna] record is `" + pinned
+                + "`, which is not a record's identity (64 lowercase hex digits)",
+        };
+    }
     return RecordIdentity { id: pinned };
 }
 
@@ -327,7 +378,9 @@ locus MemoryLedger {
         self.dsn_env = memory_source(self.repo, self.dsn_env);
         if len(self.lease) == 0 && len(self.lease_env) > 0 && std::env::var_exists(self.lease_env) {
             self.lease = std::env::var(self.lease_env);
-            if len(self.token_env) > 0 && std::env::var_exists(self.token_env) { self.token = std::str::parse_int(std::env::var(self.token_env)) or 0; }
+            if len(self.token_env) > 0 && std::env::var_exists(self.token_env) {
+                self.token = std::str::parse_int(std::env::var(self.token_env)) or 0;
+            }
         }
     }
     fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)); }
@@ -344,17 +397,29 @@ locus MemoryLedger {
         self.leases.dsn_env = self.dsn_env;
         self.store.scope(scope);
         self.leases.scope(scope);
-        if !self.store.open() { self.failure = "the ledger is not open: " + self.store.last_error(); return false; }
-        if !self.leases.open() { self.failure = "the leases are not open: " + self.leases.last_error(); return false; }
+        if !self.store.open() {
+            self.failure = "the ledger is not open: " + self.store.last_error();
+            return false;
+        }
+        if !self.leases.open() {
+            self.failure = "the leases are not open: " + self.leases.last_error();
+            return false;
+        }
         self.opened = true;
         return true;
     }
     fn revision() -> Int { if !self.ensure_open() { return 0; } return self.store.revision(); }
     fn head() -> String { if !self.ensure_open() { return "genesis"; } return self.store.head(); }
     fn refresh() -> Bool { if !self.ensure_open() { return false; } return self.store.refresh(); }
-    fn read(i: Int) -> Event { if !self.ensure_open() { return Event { }; } return self.store.read(i); }
-    fn verify_chain() -> Bool { if !self.ensure_open() { return false; } return self.store.verify_chain(); }
-    fn author_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.author_of(i); }
+    fn read(i: Int) -> Event {
+        if !self.ensure_open() { return Event { }; } return self.store.read(i);
+    }
+    fn verify_chain() -> Bool {
+        if !self.ensure_open() { return false; } return self.store.verify_chain();
+    }
+    fn author_of(i: Int) -> String {
+        if !self.ensure_open() { return ""; } return self.store.author_of(i);
+    }
     // The lease this writer holds rides on every append; the store refuses
     // the row when it is not live at that token, and says why.
     fn gated(r: AppendResult) -> AppendResult {
@@ -362,15 +427,21 @@ locus MemoryLedger {
         return r;
     }
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         self.failure = "";
         self.store.lease = self.lease;
         self.store.lease_token = self.token;
         return self.gated(self.store.append(expected, kind, entity, body));
     }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return append_rows(self, expected, rows);
+    }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         self.failure = "";
         self.store.lease = self.lease;
         self.store.lease_token = self.token;
@@ -378,10 +449,23 @@ locus MemoryLedger {
     }
     // An append in `author`'s name: the row lands under it in one insert, so
     // no reader ever sees an admitted row without its author (GH #985).
-    fn append_as(expected: Int, kind: String, entity: String, body: String, author: String, exact: Bool) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+    fn append_as(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String,
+        author: String,
+        exact: Bool
+    ) -> AppendResult {
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         self.store.writer = if len(author) > 0 { author } else { "ledger" };
-        let r = if exact { self.append_exact(expected, kind, entity, body) } else { self.append(expected, kind, entity, body) };
+        let r = if exact {
+            self.append_exact(expected, kind, entity, body)
+        } else {
+            self.append(expected, kind, entity, body)
+        };
         self.store.writer = "ledger";
         return r;
     }
@@ -392,15 +476,33 @@ locus MemoryLedger {
     // reason (`last_error`) when it does not. One result per row: the
     // host's `append_lines` writes a row per line of the text it is handed.
     @bounded_by(text)
-    fn write(expected: Int, kind: String, entity: String, body: String, author: String, request: String) -> AppendResult {
-        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+    fn write(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String,
+        author: String,
+        request: String
+    ) -> AppendResult {
+        if !self.ensure_open() {
+            return AppendResult { error: "io", expected: expected, actual: 0 };
+        }
         let moved = self.store.refresh();
         self.store.request = request;
-        let r = self.append_as(if expected >= 0 { expected } else { self.store.revision() }, kind, entity, body, author, expected >= 0);
+        let r = self.append_as(
+            if expected >= 0 { expected } else { self.store.revision() },
+            kind,
+            entity,
+            body,
+            author,
+            expected >= 0,
+        );
         self.store.request = "";
         return r;
     }
-    fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
+    fn last_error() -> String {
+        return if len(self.failure) > 0 { self.failure } else { self.store.last_error() };
+    }
 }
 
 // ---- one process's memory ---------------------------------------------------
@@ -451,12 +553,18 @@ locus MemoryLeases {
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         self.dsn_env = memory_source(self.repo, self.dsn_env);
-        if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
+        if !self.ready() {
+            self.last_error = self.dsn_env + " is not set: no leases";
+            return false;
+        }
         let who = record_identity_at(self.repo);
         if len(who.why) > 0 { self.last_error = who.why; return false; }
         self.store.dsn_env = self.dsn_env;
         self.store.scope(who.id);
-        if !self.store.open() { self.last_error = "the leases are not open: " + self.store.last_error(); return false; }
+        if !self.store.open() {
+            self.last_error = "the leases are not open: " + self.store.last_error();
+            return false;
+        }
         self.opened = true;
         return true;
     }
@@ -469,7 +577,13 @@ locus MemoryLeases {
         let err = self.store.last_error();
         self.reachable = s.known || len(err) == 0;
         if !s.known { return Lease { key: key }; }
-        return Lease { key: key, holder: s.holder, token: s.token, expires: s.expires, present: s.present };
+        return Lease {
+            key: key,
+            holder: s.holder,
+            token: s.token,
+            expires: s.expires,
+            present: s.present,
+        };
     }
     // Land `l` under `key` only if the store's token is `expected` (0 for
     // none). False when another holder moved it first, or memory cannot be
@@ -479,20 +593,50 @@ locus MemoryLeases {
         let ok = self.store.put(key, l.holder, l.token, l.expires, l.present, expected);
         if ok { self.reachable = true; return true; }
         self.reachable = len(self.store.last_error()) == 0;
-        if self.reachable { self.races = self.races + 1; } else { self.last_error = self.store.last_error(); }
+        if self.reachable {
+            self.races = self.races + 1;
+        } else {
+            self.last_error = self.store.last_error();
+        }
         return false;
     }
     // ---- Coordination, as MemLeases and MemoryLeases have it
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.current(key);
-        if !self.reachable { return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false }; }
-        if cur.present && cur.expires > now && cur.holder != holder {
-            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        if !self.reachable {
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
         }
-        let l = Lease { key: key, holder: holder, token: cur.token + 1, expires: now + ttl, present: true };
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
+        }
+        let l = Lease {
+            key: key,
+            holder: holder,
+            token: cur.token + 1,
+            expires: now + ttl,
+            present: true,
+        };
         if !self.put(key, l, cur.token) {
             let again = self.current(key);
-            return Lease { key: key, holder: again.holder, token: 0, expires: again.expires, present: false };
+            return Lease {
+                key: key,
+                holder: again.holder,
+                token: 0,
+                expires: again.expires,
+                present: false,
+            };
         }
         return l;
     }
@@ -500,7 +644,11 @@ locus MemoryLeases {
         let cur = self.current(key);
         if !cur.present { return false; }
         if cur.token != token { return false; }
-        return self.put(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false }, cur.token);
+        return self.put(
+            key,
+            Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false },
+            cur.token,
+        );
     }
     fn holder_of(key: String) -> String {
         let cur = self.current(key);
@@ -522,12 +670,26 @@ locus MemoryLeases {
     // claim is granted; with memory that cannot be reached, nothing is
     // claimed (`reachable` false).
     fn claim(key: String, holder: String, ttl: Int) -> Lease {
-        if !self.ready() { return Lease { key: key, holder: holder, token: 0, expires: std::time::now() + ttl, present: true }; }
+        if !self.ready() {
+            return Lease {
+                key: key,
+                holder: holder,
+                token: 0,
+                expires: std::time::now() + ttl,
+                present: true,
+            };
+        }
         if !self.ensure_open() { self.reachable = false; return Lease { key: key }; }
         let s = self.store.claim(key, holder, ttl);
         self.reachable = s.known || len(self.store.last_error()) == 0;
         if !self.reachable { self.last_error = self.store.last_error(); }
-        return Lease { key: key, holder: s.holder, token: s.token, expires: s.expires, present: s.present };
+        return Lease {
+            key: key,
+            holder: s.holder,
+            token: s.token,
+            expires: s.expires,
+            present: s.present,
+        };
     }
     // Give a claim back on completion: true when `holder` held it.
     fn release_claim(key: String, holder: String) -> Bool {
@@ -572,7 +734,13 @@ fn last_knowledge_row(repo: String) -> Int {
     let mut i = j.revision() - 1;
     while i >= 0 {
         let e = j.read(i);
-        if e.kind == "knowledge.ratified" || e.kind == "knowledge.retired" || e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" { return e.seq; }
+        if e.kind == "knowledge.ratified"
+            || e.kind == "knowledge.retired"
+            || e.kind == "knowledge.binding.bound"
+            || e.kind == "knowledge.binding.unbound"
+        {
+            return e.seq;
+        }
         i = i - 1;
     }
     return -1;
@@ -621,7 +789,10 @@ locus MemoryKnowledge {
         self.store.dsn_env = self.dsn_env;
         if scope != self.store.record() { self.store.scope(scope); }
         if self.store.healthy() { return true; }
-        if !self.store.reopen() { self.last_error = "the store is not open: " + self.store.last_error(); return false; }
+        if !self.store.reopen() {
+            self.last_error = "the store is not open: " + self.store.last_error();
+            return false;
+        }
         return true;
     }
     // What the evidence names for a target: the package and the ids it
@@ -635,7 +806,12 @@ locus MemoryKnowledge {
     // order. The digest identifies what is handed over — the target and
     // the ideas — and nothing that varies between runs (GH #583 K4).
     fn package_for(target: String, query: String) -> ContextPackage {
-        if !self.ready() { return ContextPackage { target: target, error: "no memory (" + self.dsn_env + " is not set)" }; }
+        if !self.ready() {
+            return ContextPackage {
+                target: target,
+                error: "no memory (" + self.dsn_env + " is not set)",
+            };
+        }
         self.asked = self.asked + 1;
         self.last_error = "";
         if !self.ensure_open() { return ContextPackage { target: target, error: self.last_error }; }
@@ -648,14 +824,25 @@ locus MemoryKnowledge {
         // Only the rows that change a package are waited on.
         let want = last_knowledge_row(self.repo) + 1;
         let deadline = std::time::now() + PACKAGE_WAIT_SECS;
-        while self.store.watermark() < want && std::time::now() < deadline { std::time::sleep(200ms); }
+        while self.store.watermark() < want && std::time::now() < deadline {
+            std::time::sleep(200ms);
+        }
         let at = self.store.watermark();
-        if at < want { self.last_error = "memory's projection is at row " + to_string(at) + ", before the record's knowledge row " + to_string(want - 1) + "; the spine applies it on its tick"; return ContextPackage { target: target, error: self.last_error }; }
+        if at < want {
+            self.last_error = "memory's projection is at row " + to_string(at)
+                + ", before the record's knowledge row " + to_string(want - 1)
+                + "; the spine applies it on its tick";
+            return ContextPackage { target: target, error: self.last_error };
+        }
         self.store.forget_error();
         // the bound and the watermark it was read at, in one transaction
         // (GH #946 hardening): the package names the projection it was
         // drawn from, never one the spine's tick moved in between
-        let ranked = self.store.ranked_at(target, self.budget, if len(q) > 0 { embed_text(q) } else { "" });
+        let ranked = self.store.ranked_at(
+            target,
+            self.budget,
+            if len(q) > 0 { embed_text(q) } else { "" },
+        );
         if !ranked.ok || len(self.store.last_error()) > 0 {
             self.last_error = "the store cannot answer: " + self.store.last_error();
             return ContextPackage { target: target, error: self.last_error };
@@ -671,7 +858,10 @@ locus MemoryKnowledge {
             rest = rest[(sp + 1)..len(rest)];
             if len(id) == 0 { continue; }
             let s = self.store.idea(id);
-            std::str::builder_append(out, "- " + s.idea.kind + ": " + s.idea.text + " (" + s.idea.author + ")\n");
+            std::str::builder_append(
+                out,
+                "- " + s.idea.kind + ": " + s.idea.text + " (" + s.idea.author + ")\n",
+            );
             b.begin_object();
             b.string_field("id", id);
             b.string_field("name", s.idea.name);
@@ -697,10 +887,16 @@ locus MemoryKnowledge {
     // now or before; false, with `last_error`, when memory is not there
     // or would not take it.
     fn keep_hat(digest: String, head: String, watermark: Int, body: String) -> Bool {
-        if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return false; }
+        if !self.ready() {
+            self.last_error = "no memory (" + self.dsn_env + " is not set)";
+            return false;
+        }
         if !self.ensure_open() { return false; }
         self.store.forget_error();
-        if !self.store.keep_hat(digest, head, watermark, body) { self.last_error = "the hat was not kept: " + self.store.last_error(); return false; }
+        if !self.store.keep_hat(digest, head, watermark, body) {
+            self.last_error = "the hat was not kept: " + self.store.last_error();
+            return false;
+        }
         return true;
     }
     // Whether memory's projection has reached the record's last knowledge
@@ -727,11 +923,17 @@ locus MemoryKnowledge {
     // retired); the survey cannot prove the new text independent of it.
     @bounded_by(self.last_error)
     fn ratified_at(digest: String) -> Int {
-        if !self.ready() { self.last_error = "no memory (" + self.dsn_env + " is not set)"; return -1; }
+        if !self.ready() {
+            self.last_error = "no memory (" + self.dsn_env + " is not set)";
+            return -1;
+        }
         if !self.ensure_open() { return -1; }
         self.store.forget_error();
         let s = self.store.idea(digest);
-        if !s.present || !s.idea.accepted { self.last_error = "memory does not hold " + digest + " ratified yet"; return -1; }
+        if !s.present || !s.idea.accepted {
+            self.last_error = "memory does not hold " + digest + " ratified yet";
+            return -1;
+        }
         return s.ratified_seq;
     }
     // The graph's routing perspective (GH #1089): what a Review's route is
@@ -790,9 +992,14 @@ locus MemoryVault {
     fn over(repo: String) {
         self.repo = repo;
         let dsn = self.dsn_env;
-        self.j = RoutedJournal { record: RecordJournal { repo: repo, author: "vault" }, ledger: MemoryLedger { repo: repo, dsn_env: dsn } };
+        self.j = RoutedJournal {
+            record: RecordJournal { repo: repo, author: "vault" },
+            ledger: MemoryLedger { repo: repo, dsn_env: dsn },
+        };
     }
-    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)) && self.store.ready(); }
+    fn ready() -> Bool {
+        return dsn_set(memory_source(self.repo, self.dsn_env)) && self.store.ready();
+    }
     fn ensure_open() -> Bool {
         let moved = self.j.refresh();
         let scope = record_scope(self.repo);
@@ -817,7 +1024,13 @@ locus MemoryVault {
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if e.kind == "receipt.disclosed" && e.entity == digest && std::json::find_string_field(e.body, "recipient") == reader && std::json::find_string_field(e.body, "purpose") == purpose { return true; }
+            if e.kind == "receipt.disclosed"
+                && e.entity == digest
+                && std::json::find_string_field(e.body, "recipient") == reader
+                && std::json::find_string_field(e.body, "purpose") == purpose
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -828,7 +1041,10 @@ locus MemoryVault {
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if e.entity == digest && e.kind == "receipt.held" { out = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.held" {
+                out = std::json::find_string_field(e.body, "by") + ": "
+                    + std::json::find_string_field(e.body, "why");
+            }
             if e.entity == digest && e.kind == "receipt.hold_released" { out = ""; }
             i = i + 1;
         }
@@ -839,7 +1055,11 @@ locus MemoryVault {
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if e.entity == digest && e.kind == "receipt.redacted" { return "by " + std::json::find_string_field(e.body, "by") + " under " + std::json::find_string_field(e.body, "policy") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.redacted" {
+                return "by " + std::json::find_string_field(e.body, "by") + " under "
+                    + std::json::find_string_field(e.body, "policy") + ": "
+                    + std::json::find_string_field(e.body, "why");
+            }
             i = i + 1;
         }
         return "";
@@ -850,15 +1070,30 @@ locus MemoryVault {
     // they are gone (#636).
     fn keep(text: String, class: String, by: String) -> String {
         self.last_error = "";
-        if !protected_class(class) { self.last_error = "class: `" + class + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt"; return ""; }
+        if !protected_class(class) {
+            self.last_error = "class: `" + class
+                + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt";
+            return "";
+        }
         if len(text) == 0 { self.last_error = "text: nothing to keep"; return ""; }
-        if !dsn_set(self.dsn_env) { self.last_error = "no memory (" + self.dsn_env + " is not set) to keep protected evidence"; return ""; }
+        if !dsn_set(self.dsn_env) {
+            self.last_error = "no memory (" + self.dsn_env
+                + " is not set) to keep protected evidence";
+            return "";
+        }
         if !self.store.ready() { self.last_error = self.store.why_not(); return ""; }
         if !self.ensure_open() { return ""; }
         let digest = digest_of(text);
         let redaction = self.redaction_of(digest);
-        if len(redaction) > 0 { self.last_error = digest + " was redacted " + redaction + "; a redacted body is not kept again"; return ""; }
-        if !self.store.put(digest, class, text, std::time::now()) { self.last_error = "the protected store refused: " + self.store.last_error(); return ""; }
+        if len(redaction) > 0 {
+            self.last_error = digest + " was redacted " + redaction
+                + "; a redacted body is not kept again";
+            return "";
+        }
+        if !self.store.put(digest, class, text, std::time::now()) {
+            self.last_error = "the protected store refused: " + self.store.last_error();
+            return "";
+        }
         if !self.has_row("receipt.classified", digest) {
             let rb = std::json::Builder { };
             rb.begin_object();
@@ -867,7 +1102,12 @@ locus MemoryVault {
             rb.string_field("store", self.store.kind());
             rb.end_object();
             let x = self.j.append(self.j.revision(), "receipt.classified", digest, rb.result());
-            if !x.ok { self.last_error = "the body of " + digest + " is kept, but the record refused its classification (" + x.error + "); file it again"; return ""; }
+            if !x.ok {
+                self.last_error = "the body of " + digest
+                    + " is kept, but the record refused its classification (" + x.error
+                    + "); file it again";
+                return "";
+            }
         }
         return digest;
     }
@@ -876,14 +1116,24 @@ locus MemoryVault {
     // hold was read at: a redaction the record cannot hold erases nothing,
     // and one recorded before an interrupted erasure is completed.
     fn erase(digest: String, by: String, why: String, policy: String) -> String {
-        if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who (`by`), why and the policy"; }
+        if len(by) == 0 || len(why) == 0 || len(policy) == 0 {
+            return "a redaction names who (`by`), why and the policy";
+        }
         if !self.ensure_open() { return self.last_error; }
         let hold = self.hold_of(digest);
         if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
         let p = self.store.get(digest);
         let already = self.has_row("receipt.redacted", digest);
-        let step = protected_erase_step(p.present, if p.present { "" } else { self.store.last_error() }, already);
-        if std::str::starts_with(step, "unread: ") { return "the protected store cannot say whether it keeps " + digest + " (" + step[8..len(step)] + "); nothing was recorded or erased — redact again once it answers"; }
+        let step = protected_erase_step(
+            p.present,
+            if p.present { "" } else { self.store.last_error() },
+            already,
+        );
+        if std::str::starts_with(step, "unread: ") {
+            return "the protected store cannot say whether it keeps " + digest + " ("
+                + step[8..len(step)]
+                + "); nothing was recorded or erased — redact again once it answers";
+        }
         if step == "already" { return digest + " is already redacted"; }
         if !already {
             let rb = std::json::Builder { };
@@ -892,12 +1142,23 @@ locus MemoryVault {
             rb.string_field("why", why);
             rb.string_field("policy", policy);
             rb.string_field("class", if p.present { p.class } else { "" });
-            rb.string_field("store", if p.present { self.store.kind() } else { "none (the body was not kept here)" });
+            rb.string_field(
+                "store",
+                if p.present { self.store.kind() } else { "none (the body was not kept here)" },
+            );
             rb.end_object();
             let x = self.j.append_exact(self.j.revision(), "receipt.redacted", digest, rb.result());
-            if !x.ok { return "the redaction of " + digest + " could not be recorded (" + x.error + "); nothing was erased"; }
+            if !x.ok {
+                return "the redaction of " + digest + " could not be recorded (" + x.error
+                    + "); nothing was erased";
+            }
         }
-        if p.present && !self.store.erase(digest) { return "the redaction of " + digest + " is recorded, but the protected store could not erase it: " + self.store.last_error() + "; a read answers redacted already, and redacting again erases it"; }
+        if p.present && !self.store.erase(digest) {
+            return "the redaction of " + digest
+                + " is recorded, but the protected store could not erase it: "
+                + self.store.last_error()
+                + "; a read answers redacted already, and redacting again erases it";
+        }
         return "";
     }
     // Erase every body the record redacted and memory still holds (a head
@@ -929,16 +1190,31 @@ locus MemoryVault {
     // and a row either way — a read the record cannot hold is not answered,
     // and no byte of the body leaves.
     fn read(digest: String, reader: String, purpose: String) -> VaultRead {
-        if len(reader) == 0 || len(purpose) == 0 { return VaultRead { refused: "a read names a reader and a purpose" }; }
-        if !dsn_set(self.dsn_env) { return VaultRead { refused: "no memory (" + self.dsn_env + " is not set)" }; }
+        if len(reader) == 0 || len(purpose) == 0 {
+            return VaultRead { refused: "a read names a reader and a purpose" };
+        }
+        if !dsn_set(self.dsn_env) {
+            return VaultRead { refused: "no memory (" + self.dsn_env + " is not set)" };
+        }
         if !self.ensure_open() { return VaultRead { refused: self.last_error }; }
         let redaction = self.redaction_of(digest);
-        if len(redaction) > 0 { return VaultRead { refused: digest + " was redacted: " + redaction + "; the record keeps its digest, not its body" }; }
+        if len(redaction) > 0 {
+            return VaultRead {
+                refused: digest + " was redacted: " + redaction
+                    + "; the record keeps its digest, not its body",
+            };
+        }
         if !self.store.ready() { return VaultRead { refused: self.store.why_not() }; }
         let p = self.store.get(digest);
         if !p.present {
             let err = self.store.last_error();
-            return VaultRead { refused: if len(err) > 0 { "the protected store cannot read " + digest + ": " + err } else { "no protected body for " + digest } };
+            return VaultRead {
+                refused: if len(err) > 0 {
+                    "the protected store cannot read " + digest + ": " + err
+                } else {
+                    "no protected body for " + digest
+                },
+            };
         }
         let rb = std::json::Builder { };
         rb.begin_object();
@@ -948,10 +1224,19 @@ locus MemoryVault {
         rb.end_object();
         if !self.disclosed(digest, reader, purpose) {
             let x = self.j.append(self.j.revision(), "receipt.read_refused", digest, rb.result());
-            return VaultRead { refused: "not disclosed to " + reader + " for " + purpose + ": `hale dna receipt disclose " + digest + " --to " + reader + " --purpose " + purpose + "` authorizes it" };
+            return VaultRead {
+                refused: "not disclosed to " + reader + " for " + purpose
+                    + ": `hale dna receipt disclose " + digest + " --to " + reader + " --purpose "
+                    + purpose + "` authorizes it",
+            };
         }
         let x = self.j.append(self.j.revision(), "receipt.read", digest, rb.result());
-        if !x.ok { return VaultRead { refused: "the read of " + digest + " could not be recorded (" + x.error + "); nothing was disclosed" }; }
+        if !x.ok {
+            return VaultRead {
+                refused: "the read of " + digest + " could not be recorded (" + x.error
+                    + "); nothing was disclosed",
+            };
+        }
         return VaultRead { present: true, class: p.class, text: p.text };
     }
 }
@@ -1074,7 +1359,8 @@ fn allocation_compose_text(k: String) -> String {
         + "  senses-" + k + ":\n"
         + "    image: " + SENSES_IMAGE + "\n"
         + "    network_mode: bridge\n"
-        + "    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time=" + SENSES_RETENTION + "\"]\n"
+        + "    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time="
+        + SENSES_RETENTION + "\"]\n"
         + "    extra_hosts:\n"
         + "      - \"host.docker.internal:host-gateway\"\n"
         + "    volumes:\n"
@@ -1116,16 +1402,24 @@ fn allocation_compose(root: String) -> String {
     let made = run_tool("mkdir\n-p\n-m\n700\n" + dir);
     if made.code != 0 { return ""; }
     let compose = dir + "/compose.yaml";
-    if !std::io::fs::file_exists(compose) { std::io::fs::write_file(compose, allocation_compose_text(k)) or discard; }
-    if !std::io::fs::file_exists(dir + "/senses.yml") { std::io::fs::write_file(dir + "/senses.yml", allocation_senses_text()) or discard; }
+    if !std::io::fs::file_exists(compose) {
+        std::io::fs::write_file(compose, allocation_compose_text(k)) or discard;
+    }
+    if !std::io::fs::file_exists(dir + "/senses.yml") {
+        std::io::fs::write_file(dir + "/senses.yml", allocation_senses_text()) or discard;
+    }
     let ports = dir + "/ports.yaml";
     if !std::io::fs::file_exists(ports) {
         let text = "# The host ports these allocations publish on, chosen once (GH #1653).\n"
             + "services:\n"
-            + "  memory-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("memory-" + k, 17000)) + ":5432\"]\n"
-            + "  nerves-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("nerves-" + k, 18000)) + ":4222\"]\n"
-            + "  senses-" + k + ":\n    ports: [\"127.0.0.1:" + to_string(allocation_port("senses-" + k, 19000)) + ":9090\"]\n";
+            + "  memory-" + k + ":\n    ports: [\"127.0.0.1:"
+            + to_string(allocation_port("memory-" + k, 17000)) + ":5432\"]\n"
+            + "  nerves-" + k + ":\n    ports: [\"127.0.0.1:"
+            + to_string(allocation_port("nerves-" + k, 18000)) + ":4222\"]\n"
+            + "  senses-" + k + ":\n    ports: [\"127.0.0.1:"
+            + to_string(allocation_port("senses-" + k, 19000)) + ":9090\"]\n";
         std::io::fs::write_file(ports, text) or discard;
     }
-    return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project() + "\n--project-directory\n" + dir + "\n-f\n" + compose + "\n-f\n" + ports;
+    return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project()
+        + "\n--project-directory\n" + dir + "\n-f\n" + compose + "\n-f\n" + ports;
 }

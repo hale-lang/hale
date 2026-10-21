@@ -30,7 +30,7 @@ use http_rpc::{contract_dir, recording};
 /// that probes the codecs instead of running the desk.
 fn witness_program(probes: &str) -> String {
     let src = std::fs::read_to_string(contract_dir().join("program.hl")).expect("the contract program");
-    let grpc = src.replace("http::Rpc { bind: \"127.0.0.1:8080\", codec: json,", "grpc::Rpc { bind: \"127.0.0.1:8080\", codec: json,");
+    let grpc = src.replace("http::Rpc {\n                bind: \"127.0.0.1:8080\",\n                codec: json,", "grpc::Rpc {\n                bind: \"127.0.0.1:8080\",\n                codec: json,");
     assert_ne!(grpc, src, "the transport was swapped");
     let main = "fn main() { Desk { }; }";
     assert!(grpc.contains(main));

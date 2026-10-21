@@ -43,7 +43,14 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(PbMap, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            PbMap,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     // JSON in, protobuf through, JSON out: the same text.
@@ -53,7 +60,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Health(__api_pb_encode_Health(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Health(back), json, what);
@@ -65,7 +75,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Spare(__api_pb_encode_Spare(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert(back.has_extra == v.has_extra, what + ": the flag");
@@ -75,20 +88,32 @@ main locus Desk {
     // One entry of field 1: its key and the record's message.
     fn entry(key: String, name: String, status: String) -> Bytes {
         let check = std::bytes::concat(__api_pb_put_str(1, name), __api_pb_put_str(2, status));
-        return __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, key), __api_pb_put_msg(2, check)));
+        return __api_pb_put_msg(
+            1,
+            std::bytes::concat(__api_pb_put_str(1, key), __api_pb_put_msg(2, check)),
+        );
     }
 
     run() {
         self.round("{\"checks\":{},\"ok\":true}", "an empty map");
         self.round_spare("{}", "an absent optional map");
         self.round_spare("{\"extra\":{}}", "a present empty optional map");
-        self.round_spare("{\"extra\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}}}", "an optional map with an entry");
-        self.round("{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"},\"cache\":{\"status\":\"down\",\"detail\":\"evicted\"}},\"ok\":false}", "two entries, in order");
+        self.round_spare(
+            "{\"extra\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}}}",
+            "an optional map with an entry",
+        );
+        self.round(
+            "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"},\"cache\":{\"status\":\"down\",\"detail\":\"evicted\"}},\"ok\":false}",
+            "two entries, in order",
+        );
 
         // a key field with a presence flag: the map supplied the key, on
         // the JSON wire and in protobuf
         let board = __api_decode_Board("{\"keyed\":{\"db\":{\"status\":\"up\"}}}") or {
-            std::test::assert(false, "a map of records with an optional key: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "a map of records with an optional key: " + err.kind + " " + err.field,
+            );
             return;
         };
         for k in board.keyed {
@@ -96,7 +121,10 @@ main locus Desk {
             std::test::assert_eq_str(k.name, "db", "the JSON map's key");
         }
         let pb_board = __api_pb_decode_Board(__api_pb_encode_Board(board)) or {
-            std::test::assert(false, "the optional-key map through protobuf: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "the optional-key map through protobuf: " + err.kind + " " + err.field,
+            );
             return;
         };
         for k in pb_board.keyed {
@@ -108,28 +136,64 @@ main locus Desk {
         // entry's
         let first = std::bytes::concat(__api_pb_put_str(1, "db"), __api_pb_put_str(2, "up"));
         let second = __api_pb_put_str(3, "ok");
-        let merged = __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, "db"), std::bytes::concat(__api_pb_put_msg(2, first), __api_pb_put_msg(2, second))));
+        let merged = __api_pb_put_msg(
+            1,
+            std::bytes::concat(
+                __api_pb_put_str(1, "db"),
+                std::bytes::concat(__api_pb_put_msg(2, first), __api_pb_put_msg(2, second)),
+            ),
+        );
         let m = __api_pb_decode_Health(merged) or {
-            std::test::assert(false, "an entry whose value is sent twice: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "an entry whose value is sent twice: " + err.kind + " " + err.field,
+            );
             return;
         };
-        std::test::assert_eq_str(__api_encode_Health(m), "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"ok\"}},\"ok\":true}", "the value's occurrences merged");
-        let keyless = __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, "cache"), __api_pb_put_msg(2, __api_pb_put_str(2, "down"))));
+        std::test::assert_eq_str(
+            __api_encode_Health(m),
+            "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"ok\"}},\"ok\":true}",
+            "the value's occurrences merged",
+        );
+        let keyless = __api_pb_put_msg(
+            1,
+            std::bytes::concat(
+                __api_pb_put_str(1, "cache"),
+                __api_pb_put_msg(2, __api_pb_put_str(2, "down")),
+            ),
+        );
         let kl = __api_pb_decode_Health(keyless) or {
-            std::test::assert(false, "a value that leaves its key out: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "a value that leaves its key out: " + err.kind + " " + err.field,
+            );
             return;
         };
-        std::test::assert_eq_str(__api_encode_Health(kl), "{\"checks\":{\"cache\":{\"status\":\"down\",\"detail\":\"\"}},\"ok\":true}", "the entry's key");
+        std::test::assert_eq_str(
+            __api_encode_Health(kl),
+            "{\"checks\":{\"cache\":{\"status\":\"down\",\"detail\":\"\"}},\"ok\":true}",
+            "the entry's key",
+        );
 
         // the entry's key wins over the record's own
         let wins = __api_pb_decode_Health(self.entry("db", "other", "up")) or {
-            std::test::assert(false, "an entry whose record names another key: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                "an entry whose record names another key: " + err.kind + " " + err.field,
+            );
             return;
         };
-        std::test::assert_eq_str(__api_encode_Health(wins), "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}},\"ok\":true}", "the map's key wins");
+        std::test::assert_eq_str(
+            __api_encode_Health(wins),
+            "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}},\"ok\":true}",
+            "the map's key wins",
+        );
 
         // a key already read
-        let twice = std::bytes::concat(self.entry("db", "db", "up"), self.entry("db", "db", "down"));
+        let twice = std::bytes::concat(
+            self.entry("db", "db", "up"),
+            self.entry("db", "db", "down"),
+        );
         let dup = __api_pb_decode_Health(twice) or {
             std::test::assert_eq_str(err.kind, "duplicate_key", "a duplicate key: the kind");
             std::test::assert_eq_str(err.field, "checks", "a duplicate key: the field");

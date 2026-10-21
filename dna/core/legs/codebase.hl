@@ -15,7 +15,19 @@ fn codebase_branch(c: dna::Codebase, task: String) -> String {
     let mut i = 0;
     while i < len(task) {
         let ch = task[i..(i + 1)];
-        t = t + (if (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch == "-" || ch == "_" { ch } else { "-" });
+        t = t
+            + (
+                if (ch >= "a" && ch <= "z")
+                    || (ch >= "A" && ch <= "Z")
+                    || (ch >= "0" && ch <= "9")
+                    || ch == "-"
+                    || ch == "_"
+                {
+                    ch
+                } else {
+                    "-"
+                }
+            );
         i = i + 1;
     }
     return "leg/" + c.name + "/" + t;
@@ -27,16 +39,31 @@ fn hat_codebase(hat: String) -> dna::Codebase {
     if len(raw) == 0 || raw == "null" { return dna::Codebase { }; }
     let branch = std::json::find_string_field(raw, "branch");
     return dna::Codebase {
-        present: true, name: std::json::find_string_field(raw, "name"), repo: std::json::find_string_field(raw, "repo"),
-        build: std::json::find_string_field(raw, "build"), test: std::json::find_string_field(raw, "test"),
-        branch: if len(branch) > 0 { branch } else { "main" }, by: std::json::find_string_field(raw, "by"),
+        present: true,
+        name: std::json::find_string_field(raw, "name"),
+        repo: std::json::find_string_field(raw, "repo"),
+        build: std::json::find_string_field(raw, "build"),
+        test: std::json::find_string_field(raw, "test"),
+        branch: if len(branch) > 0 {
+            branch
+        } else {
+            "main"
+        }, by: std::json::find_string_field(raw, "by"),
         toolchain: dna::toolchain_of(std::json::find_string_field(raw, "toolchain")),
-        knowledge: if len(std::json::find_string_field(raw, "knowledge")) > 0 { std::json::find_string_field(raw, "knowledge") } else { "docs/integrations/" }
+        knowledge: if len(std::json::find_string_field(raw, "knowledge")) > 0 {
+            std::json::find_string_field(raw, "knowledge")
+        } else {
+            "docs/integrations/"
+        }
     };
 }
 
 locus CodebaseWork {
-    params { codebase: dna::Codebase = dna::Codebase { }; hands: Hands = Hands { }; branch: String = ""; }
+    params {
+        codebase: dna::Codebase = dna::Codebase { };
+        hands: Hands = Hands { };
+        branch: String = "";
+    }
     // The worktree: a clone of the codebase's repository at its default
     // branch, on the leg's own branch for `task`. The path.
     fn open(task: String) -> HandResult {
@@ -74,8 +101,15 @@ locus CodebaseWork {
     }
     fn run_in(worktree: String, cmd: String) -> HandResult {
         if len(cmd) == 0 { return HandResult { ok: true }; }
-        let r = dna::run_tool("sh\n-c\ncd \"$1\" && eval \"$2\" 2>&1\nsh\n" + worktree + "\n" + cmd);
-        if r.code != 0 { return HandResult { error: "`" + cmd + "` exited " + to_string(r.code) + (if len(r.stdout) > 0 { ": " + dna::trim_nl(r.stdout) } else { "" }) }; }
+        let r = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && eval \"$2\" 2>&1\nsh\n" + worktree + "\n" + cmd,
+        );
+        if r.code != 0 {
+            return HandResult {
+                error: "`" + cmd + "` exited " + to_string(r.code)
+                    + (if len(r.stdout) > 0 { ": " + dna::trim_nl(r.stdout) } else { "" }),
+            };
+        }
         return HandResult { ok: true, output: dna::trim_nl(r.stdout) };
     }
     // The change committed, its branch pushed to the codebase's repository,
@@ -89,6 +123,10 @@ locus CodebaseWork {
         if !pushed.ok { return pushed; }
         // the review names the commit the leg left the branch at, so what the
         // team changes before it merges is a diff from there
-        return self.hands.forge.open_review(worktree, title, dna::with_leg_commit(body, done.output));
+        return self.hands.forge.open_review(
+            worktree,
+            title,
+            dna::with_leg_commit(body, done.output),
+        );
     }
 }

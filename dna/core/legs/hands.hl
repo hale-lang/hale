@@ -16,7 +16,11 @@ type HandResult {
 }
 
 fn hand_result(r: dna::RunResult, output: String) -> HandResult {
-    if r.code != 0 { return HandResult { error: dna::trim_nl(if len(r.stderr) > 0 { r.stderr } else { r.stdout }) }; }
+    if r.code != 0 {
+        return HandResult {
+            error: dna::trim_nl(if len(r.stderr) > 0 { r.stderr } else { r.stdout }),
+        };
+    }
     return HandResult { ok: true, output: output };
 }
 
@@ -69,18 +73,30 @@ interface HeartHand { fn ask(path: String, body: String) -> HandResult; }
 // under the same holder and token, counted per renewal so each is its
 // own act.
 locus HeadLease {
-    params { api: String = ""; attempt: String = ""; holder: String = ""; token: Int = 0; renewals: Int = 0; }
+    params {
+        api: String = "";
+        attempt: String = "";
+        holder: String = "";
+        token: Int = 0;
+        renewals: Int = 0;
+    }
     fn renew(ttl: Int) -> HandResult {
         if len(self.attempt) == 0 { return HandResult { error: "no lease is held" }; }
         self.renewals = self.renewals + 1;
         let head = Head { api: self.api };
         if !head.attach() { return HandResult { error: head.error }; }
-        let request = "work-renew:" + self.attempt + ":" + to_string(self.token) + ":" + to_string(ttl) + ":" + to_string(self.renewals);
+        let request = "work-renew:" + self.attempt + ":" + to_string(self.token) + ":"
+            + to_string(ttl) + ":" + to_string(self.renewals);
         let reply = head.renew(request, self.attempt, self.holder, self.token, ttl);
         if !reply.ok { return HandResult { error: reply.error }; }
         let receipt = std::json::find_field_raw(reply.body, "data");
-        let state = std::json::find_string_field(std::json::find_field_raw(receipt, "attempt"), "state");
-        if state == "refused" { return HandResult { error: std::json::find_string_field(receipt, "reason") }; }
+        let state = std::json::find_string_field(
+            std::json::find_field_raw(receipt, "attempt"),
+            "state",
+        );
+        if state == "refused" {
+            return HandResult { error: std::json::find_string_field(receipt, "reason") };
+        }
         return HandResult { ok: true, output: state };
     }
     // The spend the attempt may make (GH #1131): asked of the spine under
@@ -89,26 +105,54 @@ locus HeadLease {
     // allowance in micro-dollars (-1 when nothing bounds it). Refused, or
     // no answer in time: why, and the performer makes no call.
     fn allowance(wait: Int) -> HandResult {
-        if len(self.attempt) == 0 { return HandResult { error: "no lease is held, so no spend can be asked for" }; }
+        if len(self.attempt) == 0 {
+            return HandResult { error: "no lease is held, so no spend can be asked for" };
+        }
         let head = Head { api: self.api };
         if !head.attach() { return HandResult { error: head.error }; }
-        if len(head.allowance_member) == 0 { return HandResult { error: "the head lists no `Commands::ask_allowance`: its toolchain predates the budget gate (GH #1131)" }; }
+        if len(head.allowance_member) == 0 {
+            return HandResult {
+                error: "the head lists no `Commands::ask_allowance`: its toolchain predates the budget gate (GH #1131)",
+            };
+        }
         let request = "work-allowance:" + self.attempt + ":" + to_string(self.token);
         let asked = head.allowance(request, self.attempt, self.holder, self.token);
         if !asked.ok { return HandResult { error: asked.error }; }
         let deadline = std::time::now() + wait;
         let mut reply = asked;
-        let mut outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt");
-        while std::json::find_string_field(outcome, "state") == "requested" && std::time::now() < deadline {
+        let mut outcome = std::json::find_field_raw(
+            std::json::find_field_raw(reply.body, "data"),
+            "attempt",
+        );
+        while std::json::find_string_field(outcome, "state") == "requested"
+            && std::time::now() < deadline
+        {
             std::time::sleep(500ms);
             reply = head.lookup(request);
             // a record read while it moved is read again on the next turn
-            if !reply.ok && !std::str::starts_with(reply.error, "snapshot_changed") { return HandResult { error: reply.error }; }
-            if reply.ok { outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"); }
+            if !reply.ok && !std::str::starts_with(reply.error, "snapshot_changed") {
+                return HandResult { error: reply.error };
+            }
+            if reply.ok {
+                outcome = std::json::find_field_raw(
+                    std::json::find_field_raw(reply.body, "data"),
+                    "attempt",
+                );
+            }
         }
         let state = std::json::find_string_field(outcome, "state");
-        if state == "granted" { return HandResult { ok: true, output: to_string(std::json::find_int_field(outcome, "allowance_micros")) }; }
-        if state == "requested" { return HandResult { error: "the spine did not answer the ask for attempt " + self.attempt + "'s spend within " + to_string(wait) + "s" }; }
+        if state == "granted" {
+            return HandResult {
+                ok: true,
+                output: to_string(std::json::find_int_field(outcome, "allowance_micros")),
+            };
+        }
+        if state == "requested" {
+            return HandResult {
+                error: "the spine did not answer the ask for attempt " + self.attempt
+                    + "'s spend within " + to_string(wait) + "s",
+            };
+        }
         return HandResult { error: std::json::find_string_field(outcome, "reason") };
     }
 }
@@ -127,7 +171,10 @@ locus ScratchGit {
         // detached auto-gc, which writes into the directory while `clean`
         // removes it and leaves it behind; nothing in a scratch worktree
         // is kept long enough to need packing
-        let cloned = dna::run_tool("git\nclone\n--quiet\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + repo + "\n" + dir);
+        let cloned = dna::run_tool(
+            "git\nclone\n--quiet\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + repo
+                + "\n" + dir,
+        );
         if cloned.code != 0 { return hand_result(cloned, ""); }
         if len(base) == 0 || base == "HEAD" { return HandResult { ok: true, output: dir }; }
         let out = dna::run_tool("git\n-C\n" + dir + "\ncheckout\n--quiet\n--detach\n" + base);
@@ -143,7 +190,9 @@ locus ScratchGit {
     fn clean() {
         let mut rest = self.roots;
         while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n"); let dir = rest[0..nl]; rest = rest[(nl + 1)..len(rest)];
+            let nl = std::str::index_of(rest, "\n");
+            let dir = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
             if len(dir) > 0 { dna::scratch_done(dir); }
         }
         self.roots = "";
@@ -151,14 +200,20 @@ locus ScratchGit {
     fn commit(worktree: String, message: String) -> HandResult {
         let staged = dna::run_tool("git\n-C\n" + worktree + "\nadd\n-A");
         if staged.code != 0 { return hand_result(staged, ""); }
-        let out = dna::run_tool("git\n-C\n" + worktree + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n" + message);
+        let out = dna::run_tool(
+            "git\n-C\n" + worktree
+                + "\n-c\nuser.name=legs\n-c\nuser.email=legs@hale-dna\ncommit\n--quiet\n--allow-empty\n-m\n"
+                + message,
+        );
         if out.code != 0 { return hand_result(out, ""); }
         let sha = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD");
         return hand_result(sha, dna::trim_nl(sha.stdout));
     }
     fn patch(worktree: String) -> HandResult {
         let out = dna::run_tool("git\n-C\n" + worktree + "\nformat-patch\n-1\n--stdout\nHEAD");
-        if out.code == 0 && len(out.stdout) == 0 { return HandResult { error: "the worktree's last commit has no patch" }; }
+        if out.code == 0 && len(out.stdout) == 0 {
+            return HandResult { error: "the worktree's last commit has no patch" };
+        }
         return hand_result(out, out.stdout);
     }
     fn branch(worktree: String, name: String) -> HandResult {
@@ -180,17 +235,34 @@ locus GhForge {
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         self.opened = self.opened + 1;
         if len(self.repo) > 0 {
-            let at = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --repo \"$2\" --base \"$3\" --head \"$(git rev-parse --abbrev-ref HEAD)\" --title \"$4\" --body \"$5\"\nsh\n" + worktree + "\n" + self.repo + "\n" + self.base + "\n" + title + "\n" + body);
+            let at = dna::run_tool(
+                "sh\n-c\ncd \"$1\" && gh pr create --repo \"$2\" --base \"$3\" --head \"$(git rev-parse --abbrev-ref HEAD)\" --title \"$4\" --body \"$5\"\nsh\n"
+                    + worktree + "\n" + self.repo + "\n" + self.base + "\n" + title + "\n" + body,
+            );
             return hand_result(at, dna::trim_nl(at.stdout));
         }
-        let out = dna::run_tool("sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n" + title + "\n" + body);
+        let out = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && gh pr create --title \"$2\" --body \"$3\"\nsh\n" + worktree + "\n"
+                + title + "\n" + body,
+        );
         return hand_result(out, dna::trim_nl(out.stdout));
     }
     fn verdict(review: String) -> HandResult {
-        let out = dna::run_tool("gh\npr\nview\n" + review + "\n--json\nreviewDecision\n--jq\n.reviewDecision");
+        let out = dna::run_tool(
+            "gh\npr\nview\n" + review + "\n--json\nreviewDecision\n--jq\n.reviewDecision",
+        );
         if out.code != 0 { return hand_result(out, ""); }
         let decision = dna::trim_nl(out.stdout);
-        return HandResult { ok: true, output: if decision == "APPROVED" { "approve" } else if decision == "CHANGES_REQUESTED" { "revise" } else { "pending" } };
+        return HandResult {
+            ok: true,
+            output: if decision == "APPROVED" {
+                "approve"
+            } else if decision == "CHANGES_REQUESTED" {
+                "revise"
+            } else {
+                "pending"
+            },
+        };
     }
 }
 
@@ -204,14 +276,22 @@ locus ForgeBridge {
         let br = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\n--abbrev-ref\nHEAD");
         if br.code != 0 { return hand_result(br, ""); }
         let origin = dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin");
-        let r = self.forge.open_review(dna::trim_nl(br.stdout), title, "repository: " + dna::trim_nl(origin.stdout) + "\n\n" + body);
+        let r = self.forge.open_review(
+            dna::trim_nl(br.stdout),
+            title,
+            "repository: " + dna::trim_nl(origin.stdout) + "\n\n" + body,
+        );
         if !r.present { return HandResult { error: r.why }; }
         return HandResult { ok: true, output: r.ref };
     }
     fn verdict(review: String) -> HandResult {
         let lines = self.forge.verdicts(review);
-        if std::str::contains(lines, "\tapprove\t") { return HandResult { ok: true, output: "approve" }; }
-        if std::str::contains(lines, "\trevise\t") { return HandResult { ok: true, output: "revise" }; }
+        if std::str::contains(lines, "\tapprove\t") {
+            return HandResult { ok: true, output: "approve" };
+        }
+        if std::str::contains(lines, "\trevise\t") {
+            return HandResult { ok: true, output: "revise" };
+        }
         return HandResult { ok: true, output: "pending" };
     }
 }
@@ -219,10 +299,27 @@ locus ForgeBridge {
 // The toolchain: this binary's own `hale` (HALE_BIN) on a path.
 locus Toolchain {
     params { hale: String = ""; }
-    fn bin() -> String { return if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" }; }
-    fn check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ncheck\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
-    fn test(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\ntest\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
-    fn fmt_check(path: String) -> HandResult { let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path); return hand_result(r, dna::trim_nl(r.stdout)); }
+    fn bin() -> String {
+        return if len(self.hale) > 0 {
+            self.hale
+        } else if std::env::var_exists("HALE_BIN") {
+            std::env::var("HALE_BIN")
+        } else {
+            "hale"
+        };
+    }
+    fn check(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\ncheck\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
+    fn test(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\ntest\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
+    fn fmt_check(path: String) -> HandResult {
+        let r = dna::run_tool(self.bin() + "\nfmt\n--check\n" + path);
+        return hand_result(r, dna::trim_nl(r.stdout));
+    }
 }
 
 // A package pattern a Go tool may be handed: `./...`, `./pkg/x`, `example.com/m/p`.
@@ -232,7 +329,16 @@ fn go_pattern_ok(p: String) -> Bool {
     let mut i = 0;
     while i < len(p) {
         let c = p[i..(i + 1)];
-        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "." || c == "/" || c == "_" || c == "-" || c == "~" || c == "@" || c == "+";
+        let ok = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "."
+            || c == "/"
+            || c == "_"
+            || c == "-"
+            || c == "~"
+            || c == "@"
+            || c == "+";
         if !ok { return false; }
         i = i + 1;
     }
@@ -243,12 +349,20 @@ fn go_pattern_ok(p: String) -> Bool {
 // with no `go` says so plainly.
 locus GoToolchain {
     fn available() -> HandResult {
-        let r = dna::run_tool("sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh");
-        if r.code != 0 { return HandResult { error: "the Go toolchain is not installed here: `go` and `gofmt` are not on PATH, so this codebase's go hands cannot run" }; }
+        let r = dna::run_tool(
+            "sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh",
+        );
+        if r.code != 0 {
+            return HandResult {
+                error: "the Go toolchain is not installed here: `go` and `gofmt` are not on PATH, so this codebase's go hands cannot run",
+            };
+        }
         return HandResult { ok: true };
     }
     fn in_tree(worktree: String, argv: String) -> dna::RunResult {
-        return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\" 2>&1\nsh\n" + worktree + "\n" + argv);
+        return dna::run_tool(
+            "sh\n-c\ncd \"$1\" && shift && exec \"$@\" 2>&1\nsh\n" + worktree + "\n" + argv,
+        );
     }
     fn vet(worktree: String) -> HandResult {
         let up = self.available();
@@ -261,7 +375,9 @@ locus GoToolchain {
         let up = self.available();
         if !up.ok { return up; }
         let target = if len(pkg) == 0 { "./..." } else { pkg };
-        if !go_pattern_ok(target) { return HandResult { error: "`" + target + "` is not a package pattern" }; }
+        if !go_pattern_ok(target) {
+            return HandResult { error: "`" + target + "` is not a package pattern" };
+        }
         let r = self.in_tree(worktree, "go\ntest\n" + target);
         if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
         return HandResult { ok: true, output: clipped(dna::trim_nl(r.stdout)) };
@@ -273,18 +389,28 @@ locus GoToolchain {
         let r = self.in_tree(worktree, "gofmt\n-l\n.");
         if r.code != 0 { return HandResult { error: clipped(dna::trim_nl(r.stdout)) }; }
         let listed = dna::trim_nl(r.stdout);
-        if len(listed) > 0 { return HandResult { error: "not gofmt-formatted:\n" + clipped(listed) }; }
+        if len(listed) > 0 {
+            return HandResult { error: "not gofmt-formatted:\n" + clipped(listed) };
+        }
         return HandResult { ok: true, output: "" };
     }
 }
 
 // Deploy is the body's until #987 hands it over: refused, naming it.
 locus NoDeploy {
-    fn express(revision: String) -> HandResult { return HandResult { error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)" }; }
+    fn express(revision: String) -> HandResult {
+        return HandResult {
+            error: "deploy is not a leg's hand yet: the body expresses a revision (GH #987 hands deploy to legs)",
+        };
+    }
 }
 // The heart's API is not a hand until #987: refused, naming it.
 locus NoHeart {
-    fn ask(path: String, body: String) -> HandResult { return HandResult { error: "the heart's API is not a leg's hand yet (GH #987 hands the heart to legs)" }; }
+    fn ask(path: String, body: String) -> HandResult {
+        return HandResult {
+            error: "the heart's API is not a leg's hand yet (GH #987 hands the heart to legs)",
+        };
+    }
 }
 
 // The set a performer is handed.

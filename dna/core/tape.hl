@@ -41,7 +41,10 @@ fn tree_digest(dir: String) -> String {
         if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
         if len(rel) == 0 { continue; }
         let content = std::io::fs::read_file(dir + "/" + rel) or "";
-        std::str::builder_append(acc, rel + " " + hex(std::crypto::sha256(std::bytes::from_string(content))) + "\n");
+        std::str::builder_append(
+            acc,
+            rel + " " + hex(std::crypto::sha256(std::bytes::from_string(content))) + "\n",
+        );
     }
     let all = std::str::builder_finish(acc);
     return hex(std::crypto::sha256(std::bytes::from_string(all)))[0..16];
@@ -99,8 +102,12 @@ locus RecordedModel {
     }
     bus { publish ModelCalled; }
     birth() {
-        if len(self.dir_env) > 0 && std::env::var_exists(self.dir_env) { self.dir = std::env::var(self.dir_env); }
-        if len(self.mode_env) > 0 && std::env::var_exists(self.mode_env) { self.mode = std::env::var(self.mode_env); }
+        if len(self.dir_env) > 0 && std::env::var_exists(self.dir_env) {
+            self.dir = std::env::var(self.dir_env);
+        }
+        if len(self.mode_env) > 0 && std::env::var_exists(self.mode_env) {
+            self.mode = std::env::var(self.mode_env);
+        }
     }
     fn identity() -> String { return self.inner.identity(); }
     fn adapter() -> String { return "recorded"; }
@@ -126,13 +133,16 @@ locus RecordedModel {
     fn works_in_place() -> Bool { return self.inner.works_in_place(); }
     // The model a request asks for: the one its mapping resolved, else the
     // inner backend's own; two requests for different models are two calls.
-    fn asked_model(req: ModelRequest) -> String { return if len(req.model) > 0 { req.model } else { self.inner.model_name() }; }
+    fn asked_model(req: ModelRequest) -> String {
+        return if len(req.model) > 0 { req.model } else { self.inner.model_name() };
+    }
     // The request's identity, one field per line, in key order.
     fn fields(req: ModelRequest) -> String {
         return "role=" + req.role
             + "\nbackend=" + self.inner.identity()
             + "\nmodel=" + self.asked_model(req)
-            + "\nprompt_digest=" + (if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) })
+            + "\nprompt_digest="
+            + (if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) })
             + "\ncontext_digest=" + digest_of(req.context)
             + "\ndata_class=" + req.data_class
             + "\ngrant=" + normalize_grant(req.tool_grant)
@@ -241,7 +251,8 @@ locus RecordedModel {
             if e.tree != mine.tree { diff = diff + " tree"; }
             if e.tools != mine.tools { diff = diff + " tools"; }
             if e.turns != mine.turns { diff = diff + " turns"; }
-            return "nearest " + e.key[0..12] + " differs in:" + (if len(diff) == 0 { " nothing (the same request)" } else { diff });
+            return "nearest " + e.key[0..12] + " differs in:"
+                + (if len(diff) == 0 { " nothing (the same request)" } else { diff });
         }
         return "no entry shares this prompt digest";
     }
@@ -249,7 +260,11 @@ locus RecordedModel {
     fn identity_of(req: ModelRequest, key: String) -> TapeEntry {
         return TapeEntry {
             key: key, role: req.role, backend: self.inner.identity(), model: self.asked_model(req),
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), data_class: req.data_class,
             grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace),
             tools: if len(req.tools) > 0 { digest_of(req.tools) } else { "" },
@@ -279,12 +294,23 @@ locus RecordedModel {
     // Forward to the inner (its evidence is the call's), then write the
     // answer and, for a workspace, the patch of what changed in it.
     fn record(req: ModelRequest, key: String) -> ModelResult {
-        if !self.ensure_dir() { return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false }; }
+        if !self.ensure_dir() {
+            return ModelResult {
+                ok: false,
+                backend: self.inner.identity(),
+                model: self.inner.model_name(),
+                refused: self.last_miss,
+                made: false,
+            };
+        }
         let mut snap = "";
         if len(req.workspace) > 0 {
             let t = run_tool("mktemp\n-d\n/tmp/hale-dna-tape.XXXXXX");
             snap = trim_nl(t.stdout);
-            let cp = run_tool("sh\n-c\nmkdir -p \"$0/a\" && cp -r \"$1/.\" \"$0/a\"\n" + snap + "\n" + req.workspace);
+            let cp = run_tool(
+                "sh\n-c\nmkdir -p \"$0/a\" && cp -r \"$1/.\" \"$0/a\"\n" + snap + "\n"
+                    + req.workspace,
+            );
         }
         let r = self.inner.complete(req);
         let mut e = self.identity_of(req, key);
@@ -295,21 +321,38 @@ locus RecordedModel {
         e.tokens = r.tokens;
         e.cost_micros = r.cost_micros;
         if len(snap) > 0 {
-            let cp = run_tool("sh\n-c\nmkdir -p \"$0/b\" && cp -r \"$1/.\" \"$0/b\"\n" + snap + "\n" + req.workspace);
-            let d = run_tool("sh\n-c\ncd \"$0\" && diff -ruN -x vendor -x .hale -x .git a b\n" + snap);
+            let cp = run_tool(
+                "sh\n-c\nmkdir -p \"$0/b\" && cp -r \"$1/.\" \"$0/b\"\n" + snap + "\n"
+                    + req.workspace,
+            );
+            let d = run_tool(
+                "sh\n-c\ncd \"$0\" && diff -ruN -x vendor -x .hale -x .git a b\n" + snap,
+            );
             if d.code == 1 && len(d.stdout) > 0 {
                 // a patch that did not land must not be claimed by an
                 // entry: a replay would find the entry and no patch
                 if !self.put(self.patch_path(key), d.stdout) {
                     let rmf = run_tool("rm\n-rf\n" + snap);
-                    return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
+                    return ModelResult {
+                        ok: false,
+                        backend: self.inner.identity(),
+                        model: self.inner.model_name(),
+                        refused: self.last_miss,
+                        made: false,
+                    };
                 }
                 e.patched = true;
             }
             let rm = run_tool("rm\n-rf\n" + snap);
         }
         if !self.write_entry(e) {
-            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.inner.identity(),
+                model: self.inner.model_name(),
+                refused: self.last_miss,
+                made: false,
+            };
         }
         self.recorded = self.recorded + 1;
         return r;
@@ -321,7 +364,11 @@ locus RecordedModel {
             attempt_id: req.attempt_id, adapter: "recorded", backend: self.inner.identity(),
             endpoint: "tape://" + self.name, requested_model: self.asked_model(req),
             params: "tape=" + key[0..12] + " mode=replay",
-            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            prompt_digest: if len(req.prompt_digest) > 0 {
+                req.prompt_digest
+            } else {
+                digest_of(req.prompt)
+            },
             context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
@@ -329,22 +376,45 @@ locus RecordedModel {
         if !e.present {
             self.misses = self.misses + 1;
             let mine = self.identity_of(req, key);
-            self.last_miss = "tape miss " + key[0..12] + " (role " + mine.role + ", backend " + mine.backend + ", model " + mine.model
-                + ", data class " + mine.data_class + ", grant `" + mine.grant + "`" + (if len(mine.tree) > 0 { ", tree " + mine.tree } else { "" }) + "): "
-                + (if self.last_occurrence > 0 { "occurrence " + to_string(self.last_occurrence) + " of an identical request was never recorded (the tape holds fewer)" } else { self.nearest(mine.prompt_digest, mine) });
+            self.last_miss = "tape miss " + key[0..12] + " (role " + mine.role + ", backend "
+                + mine.backend + ", model " + mine.model
+                + ", data class " + mine.data_class + ", grant `" + mine.grant + "`"
+                + (if len(mine.tree) > 0 { ", tree " + mine.tree } else { "" }) + "): "
+                + (
+                    if self.last_occurrence > 0 {
+                        "occurrence " + to_string(self.last_occurrence)
+                            + " of an identical request was never recorded (the tape holds fewer)"
+                    } else {
+                        self.nearest(mine.prompt_digest, mine)
+                    }
+                );
             ev.refused = self.last_miss;
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss, made: false };
+            return ModelResult {
+                ok: false,
+                backend: self.inner.identity(),
+                model: self.inner.model_name(),
+                refused: self.last_miss,
+                made: false,
+            };
         }
         self.hits = self.hits + 1;
         if e.patched && len(req.workspace) > 0 {
-            let p = run_tool("patch\n-p1\n-s\n-N\n-E\n-d\n" + req.workspace + "\n-i\n" + self.patch_path(key));
+            let p = run_tool(
+                "patch\n-p1\n-s\n-N\n-E\n-d\n" + req.workspace + "\n-i\n" + self.patch_path(key),
+            );
             if p.code != 0 {
-                ev.refused = "tape patch " + key[0..12] + " did not apply: " + trim_nl(p.stderr + p.stdout);
+                ev.refused = "tape patch " + key[0..12] + " did not apply: "
+                    + trim_nl(p.stderr + p.stdout);
                 self.last = ev;
                 ModelCalled <- ev;
-                return ModelResult { ok: false, backend: e.backend, model: e.model, refused: ev.refused };
+                return ModelResult {
+                    ok: false,
+                    backend: e.backend,
+                    model: e.model,
+                    refused: ev.refused,
+                };
             }
         }
         ev.ok = e.ok;
@@ -355,7 +425,16 @@ locus RecordedModel {
         ev.response_digest = digest_of(e.output);
         self.last = ev;
         ModelCalled <- ev;
-        return ModelResult { ok: e.ok, backend: e.backend, model: e.model, output: e.output, tool_calls: e.tool_calls, tokens: e.tokens, cost_micros: e.cost_micros, refused: e.refused };
+        return ModelResult {
+            ok: e.ok,
+            backend: e.backend,
+            model: e.model,
+            output: e.output,
+            tool_calls: e.tool_calls,
+            tokens: e.tokens,
+            cost_micros: e.cost_micros,
+            refused: e.refused,
+        };
     }
 }
 

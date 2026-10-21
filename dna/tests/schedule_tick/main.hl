@@ -42,7 +42,9 @@ locus ReloadingJournal {
         while self.rows.len() > 0 { let gone = self.rows.pop() or dna::Event { }; }
         std::io::fs::write_file(self.root + "/refreshing", "yes") or discard;
         let deadline = std::time::now() + 5;
-        while !std::io::fs::file_exists(self.root + "/queued") && std::time::now() < deadline { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(self.root + "/queued") && std::time::now() < deadline {
+            std::time::sleep(1ms);
+        }
         self.timed_out = !std::io::fs::file_exists(self.root + "/queued");
         // Even if the marker arrived before the loop tested it, expose a
         // drain point while the cached view is still incomplete. The queued
@@ -60,13 +62,31 @@ locus ReloadingJournal {
         // cached view. A handler entering halfway through refresh gets the
         // wrong sequence even though its durable write succeeded.
         let event = self.authority.read(written.revision - 1);
-        self.rows.push(dna::Event { seq: self.rows.len(), kind: event.kind, entity: event.entity, body: event.body, prev: event.prev, digest: event.digest });
+        self.rows.push(
+            dna::Event {
+                seq: self.rows.len(),
+                kind: event.kind,
+                entity: event.entity,
+                body: event.body,
+                prev: event.prev,
+                digest: event.digest,
+            },
+        );
         self.append_calls = self.append_calls + 1;
         self.last_append_revision = self.rows.len();
         return dna::AppendResult { ok: true, revision: self.rows.len() };
     }
-    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        return dna::append_rows(self, expected, rows);
+    }
+    fn append_exact(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String
+    ) -> dna::AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
 }
 
 locus ClaimObserver {
@@ -97,7 +117,9 @@ locus Publisher {
     bus { publish "dna.test.schedule.claim" of type Claim; }
     run() {
         let deadline = std::time::now() + 10;
-        while !std::io::fs::file_exists(self.root + "/refreshing") && std::time::now() < deadline { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(self.root + "/refreshing") && std::time::now() < deadline {
+            std::time::sleep(1ms);
+        }
         if std::io::fs::file_exists(self.root + "/refreshing") {
             "dna.test.schedule.claim" <- Claim { key: "worktree.open:cadence" };
             "dna.test.schedule.claim" <- Claim { key: "worktree.open:cadence" };
@@ -121,10 +143,19 @@ fn check(root: String) {
     // The routed journal is written inline: a let-bound RoutedJournal handed
     // to `journal:` is reclaimed twice under the 0.21.0 ownership pass
     // (crash at `__reclaim_MemJournal` from this frame; GH #921 follow-up).
-    let owner = dna::Dna { journal: dna::RoutedJournal { record: dna::MemJournal { }, ledger: record }, org_id: "tick-owner", planned: true };
+    let owner = dna::Dna {
+        journal: dna::RoutedJournal { record: dna::MemJournal { }, ledger: record },
+        org_id: "tick-owner",
+        planned: true,
+    };
     let observer = observer_over(owner.journal, record);
     let other = dna::Dna { journal: other_record, org_id: "tick-bystander", planned: true };
-    let moved = record.authority.append(record.authority.revision(), "external", "external", "a second writer advanced the Record");
+    let moved = record.authority.append(
+        record.authority.revision(),
+        "external",
+        "external",
+        "a second writer advanced the Record",
+    );
     record.armed = true;
     owner.request_tick(100);
     yield;
@@ -133,23 +164,63 @@ fn check(root: String) {
     // both messages before it creates the completion marker.
     let removed = dna::run_tool("rm\n-rf\n" + root);
     std::test::assert_eq_int(removed.code, 0, "cadence fixture removed its owned scratch");
-    std::test::assert(moved.ok && !record.timed_out, "the publisher met the bounded refresh window");
+    std::test::assert(
+        moved.ok && !record.timed_out,
+        "the publisher met the bounded refresh window",
+    );
     std::test::assert_eq_int(record.refreshes, 1, "the addressed organization refreshed once");
-    std::test::assert_eq_int(other_record.refreshes, 0, "the tick did not refresh another organization");
-    std::test::assert(other.last_refresh == 0 && owner.last_refresh > 0, "the tick is routed by organization id");
+    std::test::assert_eq_int(
+        other_record.refreshes,
+        0,
+        "the tick did not refresh another organization",
+    );
+    std::test::assert(
+        other.last_refresh == 0 && owner.last_refresh > 0,
+        "the tick is routed by organization id",
+    );
     std::test::assert_eq_int(observer.calls, 2, "both queued claim deliveries were handled");
-    std::test::assert(!observer.entered_during_load, "queued claims cannot enter during the tick's partial journal refresh");
-    std::test::assert(observer.first_fresh && !observer.second_fresh, "the first claimant dispatches, its retry does not");
-    std::test::assert_eq_int(observer.first_revision, 3, "the claimant sees the completed refreshed view");
+    std::test::assert(
+        !observer.entered_during_load,
+        "queued claims cannot enter during the tick's partial journal refresh",
+    );
+    std::test::assert(
+        observer.first_fresh && !observer.second_fresh,
+        "the first claimant dispatches, its retry does not",
+    );
+    std::test::assert_eq_int(
+        observer.first_revision,
+        3,
+        "the claimant sees the completed refreshed view",
+    );
     std::test::assert_eq_int(record.append_calls, 1, "the retry writes no second request");
-    std::test::assert_eq_int(record.last_append_revision, 4, "the append reports its own coherent revision");
-    std::test::assert_eq_int(record.authority.revision(), 4, "one durable claim follows the three original rows");
-    std::test::assert_eq_int(owner.journal.revision(), 4, "the merged view includes the same four rows");
+    std::test::assert_eq_int(
+        record.last_append_revision,
+        4,
+        "the append reports its own coherent revision",
+    );
+    std::test::assert_eq_int(
+        record.authority.revision(),
+        4,
+        "one durable claim follows the three original rows",
+    );
+    std::test::assert_eq_int(
+        owner.journal.revision(),
+        4,
+        "the merged view includes the same four rows",
+    );
     let mut i = 0;
     while i < 4 {
         std::test::assert_eq_int(owner.journal.read(i).seq, i, "merged sequence is coherent");
-        std::test::assert_eq_str(owner.journal.read(i).digest, record.authority.read(i).digest, "merged row names the exact authoritative event");
+        std::test::assert_eq_str(
+            owner.journal.read(i).digest,
+            record.authority.read(i).digest,
+            "merged row names the exact authoritative event",
+        );
         i = i + 1;
     }
-    std::test::assert_eq_str(owner.journal.read(3).kind, "effect.requested", "the final row is the one effect request");
+    std::test::assert_eq_str(
+        owner.journal.read(3).kind,
+        "effect.requested",
+        "the final row is the one effect request",
+    );
 }

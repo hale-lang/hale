@@ -78,7 +78,9 @@ locus Desk {
     params { orders: MemOrders = MemOrders { }; misses: Int = 0; }
 
     fn place(id: OrderId, customer: Int, total: Int) -> Bool {
-        let o = self.orders.create(Order { id: id, customer: customer, total: total }) or Order { id: 0, customer: 0, total: 0 };
+        let o = self.orders.create(
+            Order { id: id, customer: customer, total: total },
+        ) or Order { id: 0, customer: 0, total: 0 };
         return o.id != 0;
     }
     fn amount(id: OrderId) -> Int {
@@ -101,7 +103,10 @@ fn main() {
     std::test::assert_eq_int(d.amount(1), 30, "get");
     std::test::assert_eq_int(d.amount(3), -1, "a missing key fails");
     std::test::assert_eq_int(d.spent(7), 42, "an extra read method");
-    let o = d.orders.put(1, Order { id: 1, customer: 7, total: 50 }) or Order { id: 0, customer: 0, total: 0 };
+    let o = d.orders.put(
+        1,
+        Order { id: 1, customer: 7, total: 50 },
+    ) or Order { id: 0, customer: 0, total: 0 };
     std::test::assert_eq_int(o.total, 50, "put returns the row");
     std::test::assert_eq_int(d.spent(7), 62, "put replaced");
     std::test::assert(d.cancel(2), "remove");

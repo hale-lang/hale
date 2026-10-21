@@ -24,7 +24,9 @@ interface WorkflowCatalogProvider {
 locus NoWorkflowCatalog {
     params { }
     fn supported() -> Bool { return false; }
-    fn snapshot() -> DefinitionSnapshot { return DefinitionSnapshot { error: "the application does not supply a workflow catalog" }; }
+    fn snapshot() -> DefinitionSnapshot {
+        return DefinitionSnapshot { error: "the application does not supply a workflow catalog" };
+    }
 }
 locus DeclaredWorkflowCatalog {
     // Compose with an application-owned, fully constructed catalog. The host
@@ -38,7 +40,14 @@ locus DeclaredWorkflowCatalog {
     fn supported() -> Bool { return true; }
     fn snapshot() -> DefinitionSnapshot {
         let document = self.catalog.encode();
-        return DefinitionSnapshot { supported: true, available: true, document: document, digest: dna::digest_of(document), limits: self.limits, provenance: self.provenance };
+        return DefinitionSnapshot {
+            supported: true,
+            available: true,
+            document: document,
+            digest: dna::digest_of(document),
+            limits: self.limits,
+            provenance: self.provenance,
+        };
     }
 }
 
@@ -61,27 +70,48 @@ locus ProjectWorkflowCatalog {
     fn snapshot() -> DefinitionSnapshot {
         let src = std::io::fs::read_file(self.root + "/dna/org/workflows.hl") or "";
         let own = std::io::fs::read_file(self.root + "/dna/org/own_workflows.hl") or "";
-        let vendored = std::io::fs::read_file(self.root + "/vendor/dna/workflow_definition.hl") or "";
-        let key = dna::digest_of("workflows.hl\n" + src + "\nown\n" + own + "\nvendor\n" + vendored);
+        let vendored = std::io::fs::read_file(
+            self.root + "/vendor/dna/workflow_definition.hl",
+        ) or "";
+        let key = dna::digest_of(
+            "workflows.hl\n" + src + "\nown\n" + own + "\nvendor\n" + vendored,
+        );
         if key != self.key {
             self.key = key;
             self.error = "";
             if len(src) == 0 {
                 self.document = dna::baseline_definitions().encode();
             } else {
-                let hale = if len(self.hale) > 0 { self.hale } else if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+                let hale = if len(self.hale) > 0 {
+                    self.hale
+                } else if std::env::var_exists("HALE_BIN") {
+                    std::env::var("HALE_BIN")
+                } else {
+                    "hale"
+                };
                 let r = dna::run_tool(hale + "\ndna\ndefinitions\n--json\n" + self.root);
                 // the failure is kept under the key it was read at, like a
                 // document: a catalog that does not build is read again
                 // when a file it is read from changes, not on every request
                 if r.code != 0 {
-                    self.error = "the organization's catalog (dna/org/workflows.hl) could not be read: " + dna::trim_nl(r.stderr + r.stdout);
+                    self.error = "the organization's catalog (dna/org/workflows.hl) could not be read: "
+                        + dna::trim_nl(r.stderr + r.stdout);
                     self.document = "";
                 } else { self.document = dna::trim_nl(r.stdout); }
             }
         }
         if len(self.error) > 0 { return DefinitionSnapshot { supported: true, error: self.error }; }
-        return DefinitionSnapshot { supported: true, available: true, document: self.document, digest: dna::digest_of(self.document), limits: dna::AdmissionLimits { }, provenance: DefinitionProvenance { source_revision: key, source_path: "dna/org/workflows.hl" } };
+        return DefinitionSnapshot {
+            supported: true,
+            available: true,
+            document: self.document,
+            digest: dna::digest_of(self.document),
+            limits: dna::AdmissionLimits { },
+            provenance: DefinitionProvenance {
+                source_revision: key,
+                source_path: "dna/org/workflows.hl",
+            },
+        };
     }
 }
 
@@ -124,8 +154,12 @@ locus DefinitionCodec {
         let syntax = OrganizationJson { };
         return syntax.decode(raw);
     }
-    fn text(raw: String) -> Bool { return len(raw) >= 2 && raw[0..1] == "\"" && raw[(len(raw) - 1)..len(raw)] == "\""; }
-    fn array(raw: String) -> Bool { return len(raw) >= 2 && raw[0..1] == "[" && raw[(len(raw) - 1)..len(raw)] == "]"; }
+    fn text(raw: String) -> Bool {
+        return len(raw) >= 2 && raw[0..1] == "\"" && raw[(len(raw) - 1)..len(raw)] == "\"";
+    }
+    fn array(raw: String) -> Bool {
+        return len(raw) >= 2 && raw[0..1] == "[" && raw[(len(raw) - 1)..len(raw)] == "]";
+    }
     fn integer(raw: String) -> Bool {
         if len(raw) == 0 || len(raw) > 20 { return false; }
         let value = std::str::parse_int(raw) or 0;
@@ -141,7 +175,9 @@ locus DefinitionCodec {
         if !std::str::starts_with(raw, "{") { return false; }
         let mut it = std::json::object_first(raw);
         while !it.done {
-            if !self.field_allowed(std::json::obj_key_string(it, raw), texts + " " + integers) { return false; }
+            if !self.field_allowed(std::json::obj_key_string(it, raw), texts + " " + integers) {
+                return false;
+            }
             it = std::json::object_next(it, raw);
         }
         let mut i = 0;
@@ -151,32 +187,53 @@ locus DefinitionCodec {
         }
         i = 0;
         while i < dna::word_count(integers) {
-            if !self.integer(std::json::find_field_raw(raw, dna::nth_word(integers, i))) { return false; }
+            if !self.integer(std::json::find_field_raw(raw, dna::nth_word(integers, i))) {
+                return false;
+            }
             i = i + 1;
         }
         return true;
     }
     fn shape(document: String, bounds: DefinitionReadBounds) -> String {
         let syntax = OrganizationJson { };
-        if !syntax.valid(document) { return "catalog is not strict JSON (literal keys, no duplicate keys or NUL escapes, depth at most 64)"; }
-        if !std::str::starts_with(std::str::trim(document), "{") { return "catalog must be an object"; }
+        if !syntax.valid(document) {
+            return "catalog is not strict JSON (literal keys, no duplicate keys or NUL escapes, depth at most 64)";
+        }
+        if !std::str::starts_with(std::str::trim(document), "{") {
+            return "catalog must be an object";
+        }
         let mut f = std::json::object_first(document);
         while !f.done {
-            if !self.field_allowed(std::json::obj_key_string(f, document), "format workflows members") { return "catalog has an unsupported field"; }
+            if !self.field_allowed(
+                std::json::obj_key_string(f, document),
+                "format workflows members",
+            ) {
+                return "catalog has an unsupported field";
+            }
             f = std::json::object_next(f, document);
         }
         let format = std::json::find_field_raw(document, "format");
-        if !self.text(format) || self.decoded(format) != "dna.workflow-definitions/3" { return "unsupported catalog format"; }
+        if !self.text(format) || self.decoded(format) != "dna.workflow-definitions/3" {
+            return "unsupported catalog format";
+        }
         let workflows = std::json::find_field_raw(document, "workflows");
         let members = std::json::find_field_raw(document, "members");
-        if !self.array(workflows) || !self.array(members) { return "catalog requires workflows and members arrays"; }
+        if !self.array(workflows) || !self.array(members) {
+            return "catalog requires workflows and members arrays";
+        }
         let mut it = std::json::array_first(workflows);
         let mut count = 0;
         while !it.done {
             count = count + 1;
             if count > bounds.max_definitions { return "reader budget: too many definitions"; }
-            if !self.fields(it.element, "id title stores concurrency takes", "revision steps") { return "workflow fields must match the native definition schema and Int64 range"; }
-            if len(self.decoded(std::json::find_field_raw(it.element, "id"))) > bounds.max_identifier_bytes { return "reader budget: definition identifier is too long"; }
+            if !self.fields(it.element, "id title stores concurrency takes", "revision steps") {
+                return "workflow fields must match the native definition schema and Int64 range";
+            }
+            if len(
+                self.decoded(std::json::find_field_raw(it.element, "id")),
+            ) > bounds.max_identifier_bytes {
+                return "reader budget: definition identifier is too long";
+            }
             it = std::json::array_next(it);
         }
         it = std::json::array_first(members);
@@ -184,8 +241,25 @@ locus DefinitionCodec {
         while !it.done {
             count = count + 1;
             if count > bounds.max_members { return "reader budget: too many members"; }
-            if !self.fields(it.element, "workflow key kind objective context_digest knowledge_bindings output_contract data_class requires target child", "revision step cost_ceiling attempts child_revision") { return "member fields must match the native definition schema and Int64 range"; }
-            if len(self.decoded(std::json::find_field_raw(it.element, "workflow"))) > bounds.max_identifier_bytes || len(self.decoded(std::json::find_field_raw(it.element, "child"))) > bounds.max_identifier_bytes || len(self.decoded(std::json::find_field_raw(it.element, "key"))) > bounds.max_identifier_bytes { return "reader budget: member identifier or key is too long"; }
+            if !self.fields(
+                it.element,
+                "workflow key kind objective context_digest knowledge_bindings output_contract data_class requires target child",
+                "revision step cost_ceiling attempts child_revision",
+            ) {
+                return "member fields must match the native definition schema and Int64 range";
+            }
+            if len(
+                self.decoded(std::json::find_field_raw(it.element, "workflow")),
+            ) > bounds.max_identifier_bytes
+                || len(
+                    self.decoded(std::json::find_field_raw(it.element, "child")),
+                ) > bounds.max_identifier_bytes
+                || len(
+                    self.decoded(std::json::find_field_raw(it.element, "key")),
+                ) > bounds.max_identifier_bytes
+            {
+                return "reader budget: member identifier or key is too long";
+            }
             it = std::json::array_next(it);
         }
         return "";
@@ -206,21 +280,39 @@ locus DefinitionCodec {
             let id = self.decoded(std::json::find_field_raw(e, "id"));
             let revision = std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0;
             let name = dna::definition_name(id, revision);
-            if !dna::definition_id_ok(id) { return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + id + "`"; }
-            if catalog.has(id, revision) || std::str::contains(incoming, "\n" + name + "\n") { return "workflow " + name + " is already defined"; }
+            if !dna::definition_id_ok(id) {
+                return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + id + "`";
+            }
+            if catalog.has(id, revision) || std::str::contains(incoming, "\n" + name + "\n") {
+                return "workflow " + name + " is already defined";
+            }
             incoming = incoming + name + "\n"; it = std::json::array_next(it);
         }
         it = std::json::array_first(workflows);
         while !it.done {
             let e = it.element;
             let stores = self.decoded(std::json::find_field_raw(e, "stores"));
-            if dna::step_words(stores) != (std::str::parse_int(std::json::find_field_raw(e, "steps")) or 0) { return "a workflow names one store per step"; }
+            if dna::step_words(stores) != (
+                std::str::parse_int(std::json::find_field_raw(e, "steps")) or 0
+            ) {
+                return "a workflow names one store per step";
+            }
             let did = self.decoded(std::json::find_field_raw(e, "id"));
             let drev = std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0;
-            let gap = catalog.define(did, drev, stores, self.decoded(std::json::find_field_raw(e, "title")));
+            let gap = catalog.define(
+                did,
+                drev,
+                stores,
+                self.decoded(std::json::find_field_raw(e, "title")),
+            );
             if gap != "" { return gap; }
             // GH #1143: how it occurs when a schedule points at it
-            let occurs = catalog.occurs(did, drev, self.decoded(std::json::find_field_raw(e, "concurrency")), self.decoded(std::json::find_field_raw(e, "takes")));
+            let occurs = catalog.occurs(
+                did,
+                drev,
+                self.decoded(std::json::find_field_raw(e, "concurrency")),
+                self.decoded(std::json::find_field_raw(e, "takes")),
+            );
             if occurs != "" { return occurs; }
             it = std::json::array_next(it);
         }
@@ -228,12 +320,28 @@ locus DefinitionCodec {
         while !it.done {
             let e = it.element;
             catalog.members.push(dna::MemberDef {
-                workflow: self.decoded(std::json::find_field_raw(e, "workflow")), revision: std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0,
-                step: std::str::parse_int(std::json::find_field_raw(e, "step")) or 0, key: self.decoded(std::json::find_field_raw(e, "key")), kind: self.decoded(std::json::find_field_raw(e, "kind")),
-                objective: self.decoded(std::json::find_field_raw(e, "objective")), context_digest: self.decoded(std::json::find_field_raw(e, "context_digest")), knowledge_bindings: self.decoded(std::json::find_field_raw(e, "knowledge_bindings")),
-                output_contract: self.decoded(std::json::find_field_raw(e, "output_contract")), data_class: self.decoded(std::json::find_field_raw(e, "data_class")), requires: self.decoded(std::json::find_field_raw(e, "requires")), target: self.decoded(std::json::find_field_raw(e, "target")),
-                cost_ceiling: std::str::parse_int(std::json::find_field_raw(e, "cost_ceiling")) or 0, attempts: std::str::parse_int(std::json::find_field_raw(e, "attempts")) or 0,
-                child: self.decoded(std::json::find_field_raw(e, "child")), child_revision: std::str::parse_int(std::json::find_field_raw(e, "child_revision")) or 0
+                workflow: self.decoded(std::json::find_field_raw(e, "workflow")),
+                revision: std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0,
+                step: std::str::parse_int(std::json::find_field_raw(e, "step")) or 0,
+                key: self.decoded(std::json::find_field_raw(e, "key")),
+                kind: self.decoded(std::json::find_field_raw(e, "kind")),
+                objective: self.decoded(std::json::find_field_raw(e, "objective")),
+                context_digest: self.decoded(std::json::find_field_raw(e, "context_digest")),
+                knowledge_bindings: self.decoded(
+                    std::json::find_field_raw(e, "knowledge_bindings"),
+                ),
+                output_contract: self.decoded(std::json::find_field_raw(e, "output_contract")),
+                data_class: self.decoded(std::json::find_field_raw(e, "data_class")),
+                requires: self.decoded(std::json::find_field_raw(e, "requires")),
+                target: self.decoded(std::json::find_field_raw(e, "target")),
+                cost_ceiling: std::str::parse_int(
+                    std::json::find_field_raw(e, "cost_ceiling"),
+                ) or 0,
+                attempts: std::str::parse_int(std::json::find_field_raw(e, "attempts")) or 0,
+                child: self.decoded(std::json::find_field_raw(e, "child")),
+                child_revision: std::str::parse_int(
+                    std::json::find_field_raw(e, "child_revision"),
+                ) or 0
             });
             it = std::json::array_next(it);
         }
@@ -262,7 +370,10 @@ locus DefinitionCodec {
             let key = if i == 0 { "workflows" } else { "members" };
             b.begin_array_field(key);
             let mut it = std::json::array_first(std::json::find_field_raw(document, key));
-            while !it.done { b.value(self.normalized_row(it.element)); it = std::json::array_next(it); }
+            while !it.done {
+                b.value(self.normalized_row(it.element));
+                it = std::json::array_next(it);
+            }
             b.end_array();
             i = i + 1;
         }
@@ -297,24 +408,89 @@ locus Definitions {
         if !s.supported { return self.refuse("unsupported", "definitions_unsupported", s.error); }
         if !s.available { return self.refuse("unavailable", "definitions_unavailable", s.error); }
         let p = s.provenance;
-        if len(p.source_revision) == 0 || len(p.source_path) == 0 { return self.refuse("unavailable", "definition_source_unavailable", "the host has not identified the loaded catalog's source revision and module"); }
+        if len(p.source_revision) == 0 || len(p.source_path) == 0 {
+            return self.refuse(
+                "unavailable",
+                "definition_source_unavailable",
+                "the host has not identified the loaded catalog's source revision and module",
+            );
+        }
         let cap = self.bounds;
-        if cap.max_document_bytes < 1 || cap.max_definitions < 1 || cap.max_members < 1 || cap.max_identifier_bytes < 1 || cap.max_validation_works < 1 || cap.max_validation_depth < 1 || cap.max_validation_steps < 1 || cap.max_validation_members < 1 { return self.refuse("unavailable", "definition_read_limit", "reader budgets must be positive"); }
-        if len(s.document) > cap.max_document_bytes { return self.refuse("unavailable", "definition_read_limit", "reader budget: catalog document is too large"); }
-        if len(s.digest) == 0 || s.digest != dna::digest_of(s.document) { return self.refuse("invalid", "definition_digest_mismatch", "the captured catalog does not match its digest"); }
+        if cap.max_document_bytes < 1
+            || cap.max_definitions < 1
+            || cap.max_members < 1
+            || cap.max_identifier_bytes < 1
+            || cap.max_validation_works < 1
+            || cap.max_validation_depth < 1
+            || cap.max_validation_steps < 1
+            || cap.max_validation_members < 1
+        {
+            return self.refuse(
+                "unavailable",
+                "definition_read_limit",
+                "reader budgets must be positive",
+            );
+        }
+        if len(s.document) > cap.max_document_bytes {
+            return self.refuse(
+                "unavailable",
+                "definition_read_limit",
+                "reader budget: catalog document is too large",
+            );
+        }
+        if len(s.digest) == 0 || s.digest != dna::digest_of(s.document) {
+            return self.refuse(
+                "invalid",
+                "definition_digest_mismatch",
+                "the captured catalog does not match its digest",
+            );
+        }
         let codec = DefinitionCodec { };
         let shape = codec.shape(s.document, cap);
-        if len(shape) > 0 { return self.refuse(if std::str::starts_with(shape, "reader budget:") { "unavailable" } else { "invalid" }, if std::str::starts_with(shape, "reader budget:") { "definition_read_limit" } else { "definition_document_invalid" }, shape); }
+        if len(shape) > 0 {
+            return self.refuse(
+                if std::str::starts_with(shape, "reader budget:") {
+                    "unavailable"
+                } else {
+                    "invalid"
+                },
+                if std::str::starts_with(shape, "reader budget:") {
+                    "definition_read_limit"
+                } else {
+                    "definition_document_invalid"
+                },
+                shape,
+            );
+        }
         let limits = s.limits;
         let gap = dna::limits_gap(limits);
         if len(gap) > 0 { return self.refuse("invalid", "definition_limits_invalid", gap); }
-        if limits.max_works == 9223372036854775807 || limits.max_works > cap.max_validation_works || limits.max_depth > cap.max_validation_depth || limits.max_steps > cap.max_validation_steps || limits.max_members > cap.max_validation_members { return self.refuse("unavailable", "definition_read_limit", "the declared admission policy exceeds this reader's validation budget; the catalog has not been declared invalid"); }
+        if limits.max_works == 9223372036854775807
+            || limits.max_works > cap.max_validation_works
+            || limits.max_depth > cap.max_validation_depth
+            || limits.max_steps > cap.max_validation_steps
+            || limits.max_members > cap.max_validation_members
+        {
+            return self.refuse(
+                "unavailable",
+                "definition_read_limit",
+                "the declared admission policy exceeds this reader's validation budget; the catalog has not been declared invalid",
+            );
+        }
         let decoded = codec.decode_exact(self.catalog, s.document);
-        if len(decoded) > 0 { return self.refuse("invalid", "definition_document_invalid", decoded); }
+        if len(decoded) > 0 {
+            return self.refuse("invalid", "definition_document_invalid", decoded);
+        }
         let mut i = 0;
         while i < self.catalog.member_count() {
             let member = self.catalog.member_at(i);
-            if !self.catalog.has(member.workflow, member.revision) { return self.refuse("invalid", "definition_invalid", "member `" + member.key + "` names an absent parent definition"); }
+            if !self.catalog.has(member.workflow, member.revision) {
+                return self.refuse(
+                    "invalid",
+                    "definition_invalid",
+                    "member `" + member.key + "` names an absent parent definition",
+                );
+            }
             i = i + 1;
         }
         i = 0;
@@ -323,21 +499,52 @@ locus Definitions {
             // Use the native semantic preflight and its memo across roots.
             // Never expand: shared leaf bodies must not be copied once per
             // hypothetical execution just to inspect a catalog.
-            let result = self.catalog.preflight(definition.id, definition.revision, "|", "", limits);
+            let result = self.catalog.preflight(
+                definition.id,
+                definition.revision,
+                "|",
+                "",
+                limits,
+            );
             if result < 0 { return self.refuse("invalid", "definition_invalid", self.catalog.gap); }
             let stat = self.catalog.stats.get(result) or dna::DefStat { };
-            if stat.works > limits.max_works { return self.refuse("invalid", "definition_invalid", "workflow " + dna::definition_name(definition.id, definition.revision) + " expands to more than max_works " + to_string(limits.max_works) + " Works"); }
-            if stat.height > limits.max_depth { return self.refuse("invalid", "definition_invalid", "workflow " + dna::definition_name(definition.id, definition.revision) + " nests " + to_string(stat.height) + " levels; max_depth is " + to_string(limits.max_depth)); }
+            if stat.works > limits.max_works {
+                return self.refuse(
+                    "invalid",
+                    "definition_invalid",
+                    "workflow " + dna::definition_name(definition.id, definition.revision)
+                        + " expands to more than max_works " + to_string(limits.max_works)
+                        + " Works",
+                );
+            }
+            if stat.height > limits.max_depth {
+                return self.refuse(
+                    "invalid",
+                    "definition_invalid",
+                    "workflow " + dna::definition_name(definition.id, definition.revision)
+                        + " nests " + to_string(stat.height) + " levels; max_depth is "
+                        + to_string(limits.max_depth),
+                );
+            }
             i = i + 1;
         }
         self.state = "available"; self.problem = ""; self.problem_code = "";
         return true;
     }
-    fn count() -> Int { return if self.state == "available" { self.catalog.workflow_count() } else { 0 }; }
+    fn count() -> Int {
+        return if self.state == "available" { self.catalog.workflow_count() } else { 0 };
+    }
     fn at(index: Int) -> DefinitionRow {
         if index < 0 || index >= self.count() { return DefinitionRow { }; }
         let d = self.catalog.workflow_at(index);
-        return DefinitionRow { id: dna::definition_name(d.id, d.revision), definition_id: d.id, revision: d.revision, title: d.title, steps: d.steps, stores: d.stores };
+        return DefinitionRow {
+            id: dna::definition_name(d.id, d.revision),
+            definition_id: d.id,
+            revision: d.revision,
+            title: d.title,
+            steps: d.steps,
+            stores: d.stores,
+        };
     }
     fn definition_of(id: String) -> DefinitionRow {
         let mut i = 0;
@@ -351,7 +558,9 @@ locus Definitions {
         let mut i = 0;
         while i < self.catalog.member_count() {
             let m = self.catalog.member_at(i);
-            if m.workflow == row.definition_id && m.revision == row.revision && m.step == step { count = count + 1; }
+            if m.workflow == row.definition_id && m.revision == row.revision && m.step == step {
+                count = count + 1;
+            }
             i = i + 1;
         }
         return count;
@@ -378,15 +587,28 @@ locus Definitions {
         let mut i = 0;
         while i < self.catalog.member_count() {
             let m = self.catalog.member_at(i);
-            if m.kind == "child" && m.child == row.definition_id && m.child_revision == row.revision {
-                if found == index { return DefinitionDependent { id: dna::definition_name(m.workflow, m.revision), definition_id: m.workflow, revision: m.revision, step: m.step, key: m.key }; }
+            if m.kind == "child"
+                && m.child == row.definition_id
+                && m.child_revision == row.revision
+            {
+                if found == index {
+                    return DefinitionDependent {
+                        id: dna::definition_name(m.workflow, m.revision),
+                        definition_id: m.workflow,
+                        revision: m.revision,
+                        step: m.step,
+                        key: m.key,
+                    };
+                }
                 found = found + 1;
             }
             i = i + 1;
         }
         return DefinitionDependent { };
     }
-    fn snapshot() -> String { return if self.state == "available" { dna::digest_of(self.basis_json()) } else { "" }; }
+    fn snapshot() -> String {
+        return if self.state == "available" { dna::digest_of(self.basis_json()) } else { "" };
+    }
     fn basis_json() -> String {
         if self.state != "available" { return "null"; }
         let b = std::json::Builder { };
@@ -411,15 +633,21 @@ locus Definitions {
         b.begin_object(); b.string_field("key", m.key); b.string_field("kind", m.kind);
         if m.kind == "leaf" {
             b.begin_object_field("leaf");
-            b.string_field("objective", m.objective); b.string_field("context_digest", m.context_digest);
-            b.string_field("knowledge_bindings", m.knowledge_bindings); b.string_field("output_contract", m.output_contract);
-            b.string_field("data_class", m.data_class); b.string_field("requires", m.requires); b.string_field("target", m.target);
-            b.string_field("cost_ceiling", to_string(m.cost_ceiling)); b.string_field("attempts", to_string(m.attempts));
+            b.string_field("objective", m.objective);
+            b.string_field("context_digest", m.context_digest);
+            b.string_field("knowledge_bindings", m.knowledge_bindings);
+            b.string_field("output_contract", m.output_contract);
+            b.string_field("data_class", m.data_class);
+            b.string_field("requires", m.requires);
+            b.string_field("target", m.target);
+            b.string_field("cost_ceiling", to_string(m.cost_ceiling));
+            b.string_field("attempts", to_string(m.attempts));
             b.end_object(); b.field("child", "null");
         } else {
             b.field("leaf", "null"); b.begin_object_field("child");
             b.string_field("id", dna::definition_name(m.child, m.child_revision));
-            b.string_field("definition_id", m.child); b.string_field("revision", to_string(m.child_revision));
+            b.string_field("definition_id", m.child);
+            b.string_field("revision", to_string(m.child_revision));
             b.end_object();
         }
         b.end_object(); return b.result();
@@ -428,23 +656,36 @@ locus Definitions {
         let d = self.definition_of(row.id);
         if len(d.id) == 0 { return "null"; }
         let b = std::json::Builder { };
-        b.begin_object(); b.string_field("id", d.id); b.string_field("definition_id", d.definition_id);
+        b.begin_object();
+        b.string_field("id", d.id);
+        b.string_field("definition_id", d.definition_id);
         b.string_field("revision", to_string(d.revision)); b.string_field("title", d.title);
         b.begin_array_field("steps");
         let mut step = 0;
         while step < d.steps {
-            b.begin_object(); b.string_field("index", to_string(step)); b.string_field("store", dna::step_word(d.stores, step)); b.begin_array_field("members");
+            b.begin_object();
+            b.string_field("index", to_string(step));
+            b.string_field("store", dna::step_word(d.stores, step));
+            b.begin_array_field("members");
             let members = self.member_count(d.id, step);
             let mut i = 0;
-            while i < members { b.value(self.member_json(self.member_at(d.id, step, i))); i = i + 1; }
+            while i < members {
+                b.value(self.member_json(self.member_at(d.id, step, i)));
+                i = i + 1;
+            }
             b.end_array(); b.end_object(); step = step + 1;
         }
         b.end_array(); b.begin_array_field("dependents");
         let mut i = 0;
         let mut dep = self.dependent_at(d.id, i);
         while len(dep.id) > 0 {
-            b.begin_object(); b.string_field("id", dep.id); b.string_field("definition_id", dep.definition_id);
-            b.string_field("revision", to_string(dep.revision)); b.string_field("step", to_string(dep.step)); b.string_field("key", dep.key); b.end_object();
+            b.begin_object();
+            b.string_field("id", dep.id);
+            b.string_field("definition_id", dep.definition_id);
+            b.string_field("revision", to_string(dep.revision));
+            b.string_field("step", to_string(dep.step));
+            b.string_field("key", dep.key);
+            b.end_object();
             i = i + 1; dep = self.dependent_at(d.id, i);
         }
         b.end_array(); b.end_object(); return b.result();

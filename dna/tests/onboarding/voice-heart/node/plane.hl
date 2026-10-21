@@ -32,7 +32,14 @@ fn joined_of(answer: String, local: String) -> Joined {
 
 /// What registration answered. `user` and `password` are the nodes'
 /// account on the habitat's broker when voice is grafted, "" otherwise.
-type Joined { nats_url: String = ""; subject: String = ""; user: String = ""; password: String = ""; assignment: String = ""; local: String = ""; }
+type Joined {
+    nats_url: String = "";
+    subject: String = "";
+    user: String = "";
+    password: String = "";
+    assignment: String = "";
+    local: String = "";
+}
 
 topic PlaneJoined { payload: Joined; }
 
@@ -153,15 +160,24 @@ locus Plane {
     @unbounded
     fn register() {
         let local = read_local(self.data);
-        let body = "{\"protocol\": 2, \"version\": " + q(NODE_VERSION) + ", \"capabilities\": " + self.capabilities + ", \"local\": " + local + "}";
+        let body = "{\"protocol\": 2, \"version\": " + q(NODE_VERSION) + ", \"capabilities\": "
+            + self.capabilities + ", \"local\": " + local + "}";
         let resp = self.call("POST", "/node/v1/register", body);
         if resp.status == 0 { return; }
         if resp.status == 401 || resp.status == 403 {
-            PlaneReport <- PlaneState { state: "refused", detail: "the coordinator refused this node's enrollment token (" + to_string(resp.status) + ")" };
+            PlaneReport <- PlaneState {
+                state: "refused",
+                detail: "the coordinator refused this node's enrollment token ("
+                    + to_string(resp.status) + ")",
+            };
             return;
         }
         if resp.status != 200 {
-            PlaneReport <- PlaneState { state: "connecting", detail: "registration answered " + to_string(resp.status) + ": " + std::str::from_bytes(resp.body) };
+            PlaneReport <- PlaneState {
+                state: "connecting",
+                detail: "registration answered " + to_string(resp.status) + ": "
+                    + std::str::from_bytes(resp.body),
+            };
             return;
         }
         let answer = std::str::from_bytes(resp.body);
@@ -179,12 +195,19 @@ locus Plane {
         let resp = self.call("GET", "/node/v1/assignment", "");
         if resp.status == 401 || resp.status == 403 { self.registered = false; }
         if resp.status != 200 { return; }
-        AssignmentRead <- AssignmentText { assignment: std::str::trim(std::str::from_bytes(resp.body)) };
+        AssignmentRead <- AssignmentText {
+            assignment: std::str::trim(std::str::from_bytes(resp.body)),
+        };
     }
 
     /// `POST /node/v1/seats`: the seats as applied.
     fn report_seats() {
-        let resp = self.call("POST", "/node/v1/seats", "{\"assignment_version\": " + to_string(self.applied) + ", \"seats\": " + self.states + "}");
+        let resp = self.call(
+            "POST",
+            "/node/v1/seats",
+            "{\"assignment_version\": " + to_string(self.applied) + ", \"seats\": " + self.states
+                + "}",
+        );
         if resp.status == 401 || resp.status == 403 { self.registered = false; }
     }
 
@@ -205,9 +228,20 @@ locus Plane {
     /// token is registered with again.
     fn heartbeat() {
         self.next_beat = std::time::monotonic_ns() + self.interval_ms * 1000000;
-        let version = if self.applied >= 0 { ", \"assignment_version\": " + to_string(self.applied) } else { "" };
-        let resp = self.call("POST", "/node/v1/heartbeat", "{\"in_flight\": " + to_string(self.in_flight) + ", \"seats\": " + self.states + version + "}");
-        if resp.status == 401 || resp.status == 403 || resp.status == 400 { self.registered = false; }
+        let version = if self.applied >= 0 {
+            ", \"assignment_version\": " + to_string(self.applied)
+        } else {
+            ""
+        };
+        let resp = self.call(
+            "POST",
+            "/node/v1/heartbeat",
+            "{\"in_flight\": " + to_string(self.in_flight) + ", \"seats\": " + self.states + version
+                + "}",
+        );
+        if resp.status == 401 || resp.status == 403 || resp.status == 400 {
+            self.registered = false;
+        }
     }
 
     /// One node-plane call; a status of 0 when the api cannot be reached.
@@ -221,14 +255,33 @@ locus Plane {
         // consumed by the request it is written into (spec/semantics.md,
         // "@sealed")
         if len(self.token) > 0 {
-            return std::http::request(std::http::ClientRequest { method: method, url: url, headers: "Authorization: Bearer " + self.token + "\r\nContent-Type: application/json", body: std::bytes::from_string(body) }) or self.unreachable(err);
+            return std::http::request(
+                std::http::ClientRequest {
+                    method: method,
+                    url: url,
+                    headers: "Authorization: Bearer " + self.token
+                        + "\r\nContent-Type: application/json",
+                    body: std::bytes::from_string(body),
+                },
+            ) or self.unreachable(err);
         }
-        return std::http::request(std::http::ClientRequest { method: method, url: url, headers: "Authorization: Bearer " + self.credential.reveal_text() + "\r\nContent-Type: application/json", body: std::bytes::from_string(body) }) or self.unreachable(err);
+        return std::http::request(
+            std::http::ClientRequest {
+                method: method,
+                url: url,
+                headers: "Authorization: Bearer " + self.credential.reveal_text()
+                    + "\r\nContent-Type: application/json",
+                body: std::bytes::from_string(body),
+            },
+        ) or self.unreachable(err);
     }
 
     /// The api could not be reached: say so and hand back a zero status.
     fn unreachable(e: std::http::HttpError) -> std::http::ClientResponse {
-        PlaneReport <- PlaneState { state: "", detail: "api unreachable at " + self.api + " (" + e.kind + ")" };
+        PlaneReport <- PlaneState {
+            state: "",
+            detail: "api unreachable at " + self.api + " (" + e.kind + ")",
+        };
         return std::http::ClientResponse { status: 0, body: b"" };
     }
 }

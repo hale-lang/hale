@@ -6,58 +6,219 @@ import "../../core" as dna;
 
 locus TaskCases {
     params { }
-    fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind); }
-    fn context(app: String) -> ops::GovernanceContext { return ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "operator" }; }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) {
+        std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind);
+    }
+    fn context(app: String) -> ops::GovernanceContext {
+        return ops::GovernanceContext {
+            application_id: app,
+            principal_mode: "local",
+            principal_name: "operator",
+        };
+    }
     fn policy(app: String) -> ops::TaskAuthorityPolicy {
         let codec = ops::TaskAuthorityPolicyCodec { }; let wire = ops::GovernanceCommandCodec { };
-        return codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":" + wire.quote(app) + ",\"owner\":\"explicit-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true}]}", app, "local");
+        return codec.decode(
+            "{\"format\":\"dna.task-authority/1\",\"application_id\":" + wire.quote(app)
+                + ",\"owner\":\"explicit-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true}]}",
+            app,
+            "local",
+        );
     }
-    fn command(context: ops::GovernanceContext, subject: ops::TaskRow, key: String, to: String) -> ops::GovernanceCommand {
-        return ops::GovernanceCommand { request_id: key, operation: "dna.task.reassign", application_id: context.application_id, target_kind: "dna.task", target_id: subject.id,
-            subject_digest: subject.assignment_digest, expected_assignee: subject.assignee, new_assignee: to };
+    fn command(
+        context: ops::GovernanceContext,
+        subject: ops::TaskRow,
+        key: String,
+        to: String
+    ) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: key,
+            operation: "dna.task.reassign",
+            application_id: context.application_id,
+            target_kind: "dna.task",
+            target_id: subject.id,
+            subject_digest: subject.assignment_digest,
+            expected_assignee: subject.assignee,
+            new_assignee: to };
     }
-    fn row(j: dna::Journal, id: String) -> ops::TaskRow { let visible = ops::Queries { j: j, routed: true }; let view = ops::TaskProjection { j: j, visibility: visible, routed: true }; std::test::assert(view.load(), "complete projection " + view.code); return view.task_of(id); }
-    fn hand(j: dna::Journal) { self.append(j, "task.born", "opaque task / é", "Keep exact\r\né 🧭 evidence"); self.append(j, "task.handed", "opaque task / é", "{\"assignee\":\"alice\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}"); }
+    fn row(j: dna::Journal, id: String) -> ops::TaskRow {
+        let visible = ops::Queries { j: j, routed: true };
+        let view = ops::TaskProjection { j: j, visibility: visible, routed: true };
+        std::test::assert(view.load(), "complete projection " + view.code);
+        return view.task_of(id);
+    }
+    fn hand(j: dna::Journal) {
+        self.append(j, "task.born", "opaque task / é", "Keep exact\r\né 🧭 evidence");
+        self.append(
+            j,
+            "task.handed",
+            "opaque task / é",
+            "{\"assignee\":\"alice\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}",
+        );
+    }
     fn read_case(mode: String) {
-        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); self.hand(j); let before = self.row(j, "opaque task / é");
-        if mode == "waiting" { self.append(j, "decision.reported", before.id, "{\"accepted\":false,\"why\":\"Exact\\u0001waiting\\r\\n\"}"); }
+        let j = dna::MemJournal { };
+        self.append(j, "application.observed", "app", "{}");
+        self.hand(j);
+        let before = self.row(j, "opaque task / é");
+        if mode == "waiting" {
+            self.append(
+                j,
+                "decision.reported",
+                before.id,
+                "{\"accepted\":false,\"why\":\"Exact\\u0001waiting\\r\\n\"}",
+            );
+        }
         if mode == "done" { self.append(j, "task.done", before.id, "complete"); }
-        if mode == "repeated" { self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"leader\"}"); }
-        if mode == "bad-from" { self.append(j, "task.reassigned", before.id, "{\"from\":\"wrong\",\"to\":\"bob\",\"by\":\"operator\"}"); }
+        if mode == "repeated" {
+            self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"leader\"}");
+        }
+        if mode == "bad-from" {
+            self.append(
+                j,
+                "task.reassigned",
+                before.id,
+                "{\"from\":\"wrong\",\"to\":\"bob\",\"by\":\"operator\"}",
+            );
+        }
         if mode == "hidden" { self.append(j, "receipt.withheld", j.read(2).digest, "{}"); }
         if mode == "reference" { self.append(j, "receipt.withheld", "opaque acceptance", "{}"); }
         if mode == "unsupported" { self.append(j, "task.future", before.id, "unknown"); }
         if mode == "transfer" {
-            self.append(j, "task.transfer_requested", before.id, "{\"owner\":\"a\",\"to\":\"b\",\"assignee\":\"bob\"}");
-            self.append(j, "task.transfer_accepted", before.id, "{\"owner\":\"b\",\"from\":\"a\",\"by\":\"receiver\",\"assignee\":\"bob\",\"note\":\"\"}");
-            self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"b\",\"transferred_from\":\"a\"}");
+            self.append(
+                j,
+                "task.transfer_requested",
+                before.id,
+                "{\"owner\":\"a\",\"to\":\"b\",\"assignee\":\"bob\"}",
+            );
+            self.append(
+                j,
+                "task.transfer_accepted",
+                before.id,
+                "{\"owner\":\"b\",\"from\":\"a\",\"by\":\"receiver\",\"assignee\":\"bob\",\"note\":\"\"}",
+            );
+            self.append(
+                j,
+                "task.handed",
+                before.id,
+                "{\"assignee\":\"bob\",\"by\":\"b\",\"transferred_from\":\"a\"}",
+            );
         }
-        let q = ops::Queries { j: j, routed: true }; let view = ops::TaskProjection { j: j, visibility: q, routed: true }; let okay = view.load();
-        if mode == "bad-from" || mode == "unsupported" { std::test::assert(!okay, "invalid/unknown history unavailable"); return; }
+        let q = ops::Queries { j: j, routed: true };
+        let view = ops::TaskProjection { j: j, visibility: q, routed: true };
+        let okay = view.load();
+        if mode == "bad-from" || mode == "unsupported" {
+            std::test::assert(!okay, "invalid/unknown history unavailable");
+            return;
+        }
         std::test::assert(okay, "read complete " + mode);
-        if mode == "hidden" || mode == "reference" { std::test::assert(view.count() == 0 && view.task_of(before.id).id == "" && view.history_count(before.id) == 0, "hidden supporting evidence suppresses entire row"); return; }
-        let after = view.task_of(before.id); std::test::assert(after.id == before.id, "past handoff remains inspectable");
-        if mode != "baseline" { std::test::assert(after.assignment_digest != before.assignment_digest, "all lifecycle evidence changes exact digest"); }
-        if mode == "done" { std::test::assert(after.state == "done" && !after.reassignment_supported, "terminal retained without reassignment"); }
+        if mode == "hidden" || mode == "reference" {
+            std::test::assert(
+                view.count() == 0
+                    && view.task_of(before.id).id == ""
+                    && view.history_count(before.id) == 0,
+                "hidden supporting evidence suppresses entire row",
+            );
+            return;
+        }
+        let after = view.task_of(before.id);
+        std::test::assert(after.id == before.id, "past handoff remains inspectable");
+        if mode != "baseline" {
+            std::test::assert(
+                after.assignment_digest != before.assignment_digest,
+                "all lifecycle evidence changes exact digest",
+            );
+        }
+        if mode == "done" {
+            std::test::assert(
+                after.state == "done" && !after.reassignment_supported,
+                "terminal retained without reassignment",
+            );
+        }
         else { std::test::assert(after.state == "handed", "handed retained"); }
-        if mode == "transfer" { std::test::assert(!after.reassignment_supported, "transfer history never claims fixed-group reassignment"); }
-        if mode == "waiting" { std::test::assert(after.waiting != "" && after.reassignment_supported, "rejected report leaves handed responsibility"); }
-        let last = view.history_at(after.id, view.history_count(after.id) - 1); std::test::assert(last.to == after.assignee, "history ends at recorded assignee");
+        if mode == "transfer" {
+            std::test::assert(
+                !after.reassignment_supported,
+                "transfer history never claims fixed-group reassignment",
+            );
+        }
+        if mode == "waiting" {
+            std::test::assert(
+                after.waiting != "" && after.reassignment_supported,
+                "rejected report leaves handed responsibility",
+            );
+        }
+        let last = view.history_at(after.id, view.history_count(after.id) - 1);
+        std::test::assert(last.to == after.assignee, "history ends at recorded assignee");
     }
     fn codecs() {
-        let context = self.context("app"); let c = self.command(context, ops::TaskRow { id: "task", assignee: "alice", assignment_digest: dna::digest_of("basis") }, "key", "bob");
-        let codec = ops::TaskCommandCodec { }; let common = ops::GovernanceCommandCodec { }; let canonical = codec.canonical(context, c);
-        std::test::assert(codec.valid(context, c) && codec.canonical(context, codec.decode(context, canonical)) == canonical, "closed exact Task variant roundtrip");
-        let old = ops::GovernanceCommand { request_id: "key", operation: "dna.practice.propose", application_id: "app", target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because", new_assignee: "bob" };
+        let context = self.context("app");
+        let c = self.command(
+            context,
+            ops::TaskRow {
+                id: "task",
+                assignee: "alice",
+                assignment_digest: dna::digest_of("basis"),
+            },
+            "key",
+            "bob",
+        );
+        let codec = ops::TaskCommandCodec { };
+        let common = ops::GovernanceCommandCodec { };
+        let canonical = codec.canonical(context, c);
+        std::test::assert(
+            codec.valid(context, c)
+                && codec.canonical(context, codec.decode(context, canonical)) == canonical,
+            "closed exact Task variant roundtrip",
+        );
+        let old = ops::GovernanceCommand {
+            request_id: "key",
+            operation: "dna.practice.propose",
+            application_id: "app",
+            target_kind: "dna.practice",
+            target_id: "subject",
+            subject_digest: "subject",
+            text: "text",
+            rationale: "because",
+            new_assignee: "bob",
+        };
         std::test::assert(!common.valid(context, old), "old variant rejects stray Task fields");
-        let policy = self.policy("app"); let pc = ops::TaskAuthorityPolicyCodec { }; std::test::assert(!pc.decode(policy.document, "app", "signed").valid, "new profile has local trust boundary");
-        let q = dna::MemJournal { }; self.append(q, "application.observed", "app", "{}"); self.append(q, "receipt.withheld", "bob", "{}");
-        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q, true) && authority.recipients(context, q, true) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
-        let nobody = ops::GovernanceContext { application_id: "app", principal_mode: "local", principal_name: "alice" }; std::test::assert(!authority.authorize(nobody, "dna.task.reassign", false, q).allowed, "membership is not authority");
+        let policy = self.policy("app");
+        let pc = ops::TaskAuthorityPolicyCodec { };
+        std::test::assert(
+            !pc.decode(policy.document, "app", "signed").valid,
+            "new profile has local trust boundary",
+        );
+        let q = dna::MemJournal { };
+        self.append(q, "application.observed", "app", "{}");
+        self.append(q, "receipt.withheld", "bob", "{}");
+        let authority = ops::FixedTaskAuthority { policy: policy };
+        std::test::assert(
+            !authority.eligible(context, "bob", q, true)
+                && authority.recipients(context, q, true) == "[\"alice\",\"charlie\"]",
+            "protected member hidden from eligibility/list",
+        );
+        let nobody = ops::GovernanceContext {
+            application_id: "app",
+            principal_mode: "local",
+            principal_name: "alice",
+        };
+        std::test::assert(
+            !authority.authorize(nobody, "dna.task.reassign", false, q).allowed,
+            "membership is not authority",
+        );
     }
 }
 fn main() {
     let cases = TaskCases { }; cases.codecs();
-    cases.read_case("baseline"); cases.read_case("waiting"); cases.read_case("done"); cases.read_case("repeated"); cases.read_case("bad-from"); cases.read_case("hidden"); cases.read_case("reference"); cases.read_case("unsupported"); cases.read_case("transfer");
+    cases.read_case("baseline");
+    cases.read_case("waiting");
+    cases.read_case("done");
+    cases.read_case("repeated");
+    cases.read_case("bad-from");
+    cases.read_case("hidden");
+    cases.read_case("reference");
+    cases.read_case("unsupported");
+    cases.read_case("transfer");
     eprintln("task administration cases passed");
 }

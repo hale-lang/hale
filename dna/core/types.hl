@@ -224,8 +224,16 @@ fn intersect_grants(child: Grant, ceiling: Grant) -> Grant {
     return Grant {
         child: child.child,
         classes: words_in_both(child.classes, ceiling.classes),
-        max_magnitude: if child.max_magnitude < ceiling.max_magnitude { child.max_magnitude } else { ceiling.max_magnitude },
-        review: if review_rank(child.review) >= review_rank(ceiling.review) { child.review } else { ceiling.review },
+        max_magnitude: if child.max_magnitude < ceiling.max_magnitude {
+            child.max_magnitude
+        } else {
+            ceiling.max_magnitude
+        },
+        review: if review_rank(child.review) >= review_rank(ceiling.review) {
+            child.review
+        } else {
+            ceiling.review
+        },
         may_expand_self: false,
         // GH #605: resources contain the same way — the currencies both
         // grant at the smaller ceilings, the parties and routes both
@@ -254,7 +262,10 @@ fn funder_account(f: String) -> String {
 fn grant_within(child: Grant, ceiling: Grant) -> Bool {
     if len(ceiling.child) == 0 { return true; }
     let i = intersect_grants(child, ceiling);
-    return i.classes == child.classes && i.max_magnitude == child.max_magnitude && i.review == child.review && len(resource_gap(child, ceiling)) == 0;
+    return i.classes == child.classes
+        && i.max_magnitude == child.max_magnitude
+        && i.review == child.review
+        && len(resource_gap(child, ceiling)) == 0;
 }
 
 // GH #606: the classes whose bodies are protected — kept by the
@@ -318,7 +329,9 @@ fn amounts_in_both(child: String, ceiling: String) -> String {
         let cur = nth_word(child, i);
         let mine = nth_word(child, i + 1);
         let above = amount_of(ceiling, cur);
-        if len(above) > 0 { out = out + cur + " " + (if dec(mine) < dec(above) { mine } else { above }) + " "; }
+        if len(above) > 0 {
+            out = out + cur + " " + (if dec(mine) < dec(above) { mine } else { above }) + " ";
+        }
         i = i + 2;
     }
     return if len(out) > 0 { out[0..(len(out) - 1)] } else { "" };
@@ -335,7 +348,15 @@ fn window_limits(child: Grant, ceiling: Grant) -> String {
         let cur = nth_word(both, i);
         let x = amount_of(child.window_amounts, cur);
         let y = amount_of(ceiling.window_amounts, cur);
-        let pick = if len(x) == 0 { y } else if len(y) == 0 { x } else if dec(x) < dec(y) { x } else { y };
+        let pick = if len(x) == 0 {
+            y
+        } else if len(y) == 0 {
+            x
+        } else if dec(x) < dec(y) {
+            x
+        } else {
+            y
+        };
         if len(pick) > 0 { out = out + cur + " " + pick + " "; }
         i = i + 2;
     }
@@ -360,7 +381,8 @@ fn resource_gap(child: Grant, ceiling: Grant) -> String {
     let mut window_named = false;
     // GH #668: money comes from the ceiling's funder or none other
     if len(ceiling.funder) > 0 && len(child.funder) > 0 && child.funder != ceiling.funder {
-        out = out + ", funder " + child.funder + " not granted above (the ceiling pays from " + ceiling.funder + ")";
+        out = out + ", funder " + child.funder + " not granted above (the ceiling pays from "
+            + ceiling.funder + ")";
     }
     let n = word_count(child.amounts);
     let mut i = 0;
@@ -377,9 +399,11 @@ fn resource_gap(child: Grant, ceiling: Grant) -> String {
         if len(above_w) > 0 {
             let mine_w = amount_of(child.window_amounts, cur);
             if len(mine_w) == 0 {
-                out = out + ", " + cur + " unlimited per " + child.window + " under " + above_w + " per " + ceiling.window;
+                out = out + ", " + cur + " unlimited per " + child.window + " under " + above_w
+                    + " per " + ceiling.window;
             } else if dec(mine_w) > dec(above_w) {
-                out = out + ", " + cur + " " + mine_w + " per " + child.window + " under " + above_w;
+                out = out + ", " + cur + " " + mine_w + " per " + child.window + " under "
+                    + above_w;
             }
             if child.window != ceiling.window && !window_named {
                 out = out + ", window " + child.window + " under " + ceiling.window;
@@ -393,7 +417,9 @@ fn resource_gap(child: Grant, ceiling: Grant) -> String {
     let rt = words_not_in(child.routes, ceiling.routes);
     if len(rt) > 0 { out = out + ", routes `" + rt + "` not granted above"; }
     if ceiling.expires > 0 && (child.expires == 0 || child.expires > ceiling.expires) {
-        out = out + ", expires " + (if child.expires == 0 { "never" } else { to_string(child.expires) }) + " after " + to_string(ceiling.expires);
+        out = out + ", expires "
+            + (if child.expires == 0 { "never" } else { to_string(child.expires) }) + " after "
+            + to_string(ceiling.expires);
     }
     return out;
 }
@@ -422,14 +448,25 @@ type Admission {
 // Whether a grant permits a spend, predicate by predicate: "" when it
 // does, else `<field>: <why>`.
 fn permits(g: Grant, s: Spend, now: Int) -> String {
-    if g.expires > 0 && now >= g.expires { return "expires: the grant expired at " + std::time::iso8601(std::time::time_from_unix(g.expires)); }
+    if g.expires > 0 && now >= g.expires {
+        return "expires: the grant expired at "
+            + std::time::iso8601(std::time::time_from_unix(g.expires));
+    }
     if len(s.id) == 0 { return "operation: a spend needs a durable id"; }
     let limit = amount_of(g.amounts, s.currency);
-    if len(limit) == 0 { return "currency: " + (if len(s.currency) == 0 { "none named" } else { s.currency + " is not granted" }); }
+    if len(limit) == 0 {
+        return "currency: "
+            + (if len(s.currency) == 0 { "none named" } else { s.currency + " is not granted" });
+    }
     let v = std::str::parse_decimal(s.amount) or - 1.0d;
     if v <= 0.0d { return "amount: `" + s.amount + "` is not a positive decimal"; }
-    if v > dec(limit) { return "amount: " + s.amount + " " + s.currency + " exceeds the per-operation ceiling of " + limit; }
-    if !word_in(s.counterparty, g.counterparties) { return "counterparty: `" + s.counterparty + "` is not granted"; }
+    if v > dec(limit) {
+        return "amount: " + s.amount + " " + s.currency + " exceeds the per-operation ceiling of "
+            + limit;
+    }
+    if !word_in(s.counterparty, g.counterparties) {
+        return "counterparty: `" + s.counterparty + "` is not granted";
+    }
     if !word_in(s.route, g.routes) { return "route: `" + s.route + "` is not granted"; }
     return "";
 }

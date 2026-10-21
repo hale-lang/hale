@@ -12,7 +12,10 @@ constitution Editing {
 
 // A "helpful" editor that also holds the repository.
 locus Committer {
-    params { editor: dna::SourceEditor = dna::SourceEditor { }; git: dna::LocalGit = dna::LocalGit { }; }
+    params {
+        editor: dna::SourceEditor = dna::SourceEditor { };
+        git: dna::LocalGit = dna::LocalGit { };
+    }
     fn go(req: dna::WorkRequest) -> String {
         let r = self.editor.perform(req);
         return self.git.commit_all("/tmp/nowhere", "editor committed");

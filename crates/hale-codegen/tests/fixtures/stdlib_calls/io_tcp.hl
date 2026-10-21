@@ -30,5 +30,12 @@ fn main() {
     let on_pool = std::io::tcp::__on_pool();
     let named = std::io::tcp::__name_listener("calls", -1);
     let stopped = std::io::tcp::__stop_listener("calls") + std::io::tcp::__local_port(-1);
-    println(got, len(raw), sent + status + shut + closed + waited + within, kind, detail, parks + on_pool + named + stopped);
+    println(
+        got,
+        len(raw),
+        sent + status + shut + closed + waited + within,
+        kind,
+        detail,
+        parks + on_pool + named + stopped,
+    );
 }

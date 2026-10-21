@@ -21,7 +21,16 @@ locus Table {
 
 type Inner { a: Int; }
 type Status = enum { Up, Down, Gone };
-type Shape = enum { Empty, Circle(Float), Tag(String), Rect(Int, Int), Boxed(Inner), At(Time), Mood(Status), Cost(Money) };
+type Shape = enum {
+    Empty,
+    Circle(Float),
+    Tag(String),
+    Rect(Int, Int),
+    Boxed(Inner),
+    At(Time),
+    Mood(Status),
+    Cost(Money)
+};
 type Problem = enum { NotFound(String), Conflict };
 
 type Req { s: Status; shape: Shape; many: bounded[Status; 3]; }
@@ -94,7 +103,14 @@ locus Conn {
 main locus App {
     params {
         echo: Echo = Echo { };
-        sock: api::Exposure = api::serve(Public, unix::Rpc { path: api_sock(), roles: Table { } }, as: "sock", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+        sock: api::Exposure = api::serve(
+            Public,
+            unix::Rpc { path: api_sock(), roles: Table { } },
+            as: "sock",
+            receivers: { Echo: self.echo },
+            bound: 8,
+            on_full: refuse
+        );
         conn: Conn = Conn { };
     }
     placement { echo: cooperative(pool = work) where async_io; }
@@ -105,7 +121,10 @@ main locus App {
 
     fn refused(member: String, payload: String, reason: String, what: String) {
         let got = self.conn.call(member, payload);
-        std::test::assert(std::str::contains(got, "\"kind\":\"malformed\"") && std::str::contains(got, reason), what + ": " + got);
+        std::test::assert(
+            std::str::contains(got, "\"kind\":\"malformed\"") && std::str::contains(got, reason),
+            what + ": " + got,
+        );
     }
 
     run() {
@@ -113,7 +132,10 @@ main locus App {
 
         // ---- a field, and a list of a payload-free enum ----
         std::test::assert_eq_str(
-            self.conn.value("Echo::on", "{\"s\":\"Down\",\"shape\":{\"Rect\":[2,3]},\"many\":[\"Up\",\"Gone\"]}"),
+            self.conn.value(
+                "Echo::on",
+                "{\"s\":\"Down\",\"shape\":{\"Rect\":[2,3]},\"many\":[\"Up\",\"Gone\"]}",
+            ),
             "{\"s\":\"Down\",\"shape\":{\"Rect\":[2,3]},\"n\":2}",
             "an enum field and a list of one");
 
@@ -126,42 +148,140 @@ main locus App {
         self.shape_round("{\"At\":\"2026-10-17T03:04:05Z\"}", "an instant value");
         self.shape_round("{\"Mood\":\"Gone\"}", "a payload-free enum value");
         self.shape_round("{\"Cost\":125}", "a quantity value, by its count");
-        std::test::assert_eq_str(self.conn.value("Echo::status", "\"Up\""), "\"Up\"", "a payload-free enum row");
-        std::test::assert_eq_str(self.conn.value("Echo::whole", " { \"Rect\" : [ 4 , 5 ] } "), "{\"Rect\":[4,5]}", "whitespace around and within");
+        std::test::assert_eq_str(
+            self.conn.value("Echo::status", "\"Up\""),
+            "\"Up\"",
+            "a payload-free enum row",
+        );
+        std::test::assert_eq_str(
+            self.conn.value("Echo::whole", " { \"Rect\" : [ 4 , 5 ] } "),
+            "{\"Rect\":[4,5]}",
+            "whitespace around and within",
+        );
 
         // ---- optional enums ----
-        std::test::assert_eq_str(self.conn.value("Echo::maybe", "{}"), "{}", "absent optional enums");
-        std::test::assert_eq_str(self.conn.value("Echo::maybe", "{\"s\":null,\"shape\":null}"), "{}", "null optional enums");
+        std::test::assert_eq_str(
+            self.conn.value("Echo::maybe", "{}"),
+            "{}",
+            "absent optional enums",
+        );
+        std::test::assert_eq_str(
+            self.conn.value("Echo::maybe", "{\"s\":null,\"shape\":null}"),
+            "{}",
+            "null optional enums",
+        );
         std::test::assert_eq_str(
             self.conn.value("Echo::maybe", "{\"s\":\"Gone\",\"shape\":{\"Rect\":[1,2]}}"),
             "{\"s\":\"Gone\",\"shape\":{\"Rect\":[1,2]}}",
             "present optional enums");
 
         // ---- strict ----
-        self.refused("Echo::on", "{\"s\":\"Sideways\",\"shape\":\"Empty\"}", "wrong_type: s", "an unknown variant");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":\"Circle\"}", "wrong_type: shape", "a payload variant as a bare name");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":{\"Empty\":true}}", "wrong_type: shape", "a payload-free variant as an object");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":{\"Rect\":[1]}}", "wrong_type: shape", "too few values");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":{\"Rect\":[1,2,3]}}", "wrong_type: shape", "too many values");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":{\"Circle\":\"x\"}}", "wrong_type: shape", "a value of the wrong kind");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":{\"Circle\":1,\"Tag\":\"y\"}}", "wrong_type: shape", "two variants");
-        self.refused("Echo::on", "{\"s\":3,\"shape\":\"Empty\"}", "wrong_type: s", "a number for an enum");
-        self.refused("Echo::on", "{\"s\":\"Up\",\"shape\":\"Empty\",\"many\":[\"Up\",\"Nope\"]}", "wrong_type: many", "an unknown variant in a list");
-        self.refused("Echo::on", "{\"shape\":\"Empty\"}", "missing_field: s", "an enum field is required");
-        self.refused("Echo::whole", "\"Square\"", "wrong_type: payload", "an unknown variant as the whole request");
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Sideways\",\"shape\":\"Empty\"}",
+            "wrong_type: s",
+            "an unknown variant",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":\"Circle\"}",
+            "wrong_type: shape",
+            "a payload variant as a bare name",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":{\"Empty\":true}}",
+            "wrong_type: shape",
+            "a payload-free variant as an object",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":{\"Rect\":[1]}}",
+            "wrong_type: shape",
+            "too few values",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":{\"Rect\":[1,2,3]}}",
+            "wrong_type: shape",
+            "too many values",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":{\"Circle\":\"x\"}}",
+            "wrong_type: shape",
+            "a value of the wrong kind",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":{\"Circle\":1,\"Tag\":\"y\"}}",
+            "wrong_type: shape",
+            "two variants",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":3,\"shape\":\"Empty\"}",
+            "wrong_type: s",
+            "a number for an enum",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"s\":\"Up\",\"shape\":\"Empty\",\"many\":[\"Up\",\"Nope\"]}",
+            "wrong_type: many",
+            "an unknown variant in a list",
+        );
+        self.refused(
+            "Echo::on",
+            "{\"shape\":\"Empty\"}",
+            "missing_field: s",
+            "an enum field is required",
+        );
+        self.refused(
+            "Echo::whole",
+            "\"Square\"",
+            "wrong_type: payload",
+            "an unknown variant as the whole request",
+        );
 
         // ---- an enum error type ----
         let conflict = self.conn.call("Echo::find", "0");
-        std::test::assert(std::str::contains(conflict, "\"Conflict\""), "a payload-free error variant: " + conflict);
+        std::test::assert(
+            std::str::contains(conflict, "\"Conflict\""),
+            "a payload-free error variant: " + conflict,
+        );
         let missing = self.conn.call("Echo::find", "-4");
-        std::test::assert(std::str::contains(missing, "{\"NotFound\":\"no -4\"}"), "an error variant with a value: " + missing);
-        std::test::assert(std::str::contains(self.conn.call("Echo::find", "9"), "\"value\":9"), "the result");
+        std::test::assert(
+            std::str::contains(missing, "{\"NotFound\":\"no -4\"}"),
+            "an error variant with a value: " + missing,
+        );
+        std::test::assert(
+            std::str::contains(self.conn.call("Echo::find", "9"), "\"value\":9"),
+            "the result",
+        );
 
         // ---- the description ----
         let doc = self.conn.ask("{\"describe\":true}");
-        std::test::assert(std::str::contains(doc, "{\"type\":\"string\",\"enum\":[\"Up\",\"Down\",\"Gone\"],\"x-hale-type\":\"Status\"}"), "a payload-free enum's schema: " + doc);
-        std::test::assert(std::str::contains(doc, "{\"oneOf\":[{\"type\":\"string\",\"enum\":[\"Empty\"]},{\"type\":\"object\",\"properties\":{\"Circle\":{\"type\":\"number\"}},\"required\":[\"Circle\"],\"additionalProperties\":false}"), "an enum with payloads: " + doc);
-        std::test::assert(std::str::contains(doc, "\"Rect\":{\"type\":\"array\",\"prefixItems\":[{\"type\":\"integer\"},{\"type\":\"integer\"}],\"minItems\":2,\"maxItems\":2}"), "a variant of several values: " + doc);
+        std::test::assert(
+            std::str::contains(
+                doc,
+                "{\"type\":\"string\",\"enum\":[\"Up\",\"Down\",\"Gone\"],\"x-hale-type\":\"Status\"}",
+            ),
+            "a payload-free enum's schema: " + doc,
+        );
+        std::test::assert(
+            std::str::contains(
+                doc,
+                "{\"oneOf\":[{\"type\":\"string\",\"enum\":[\"Empty\"]},{\"type\":\"object\",\"properties\":{\"Circle\":{\"type\":\"number\"}},\"required\":[\"Circle\"],\"additionalProperties\":false}",
+            ),
+            "an enum with payloads: " + doc,
+        );
+        std::test::assert(
+            std::str::contains(
+                doc,
+                "\"Rect\":{\"type\":\"array\",\"prefixItems\":[{\"type\":\"integer\"},{\"type\":\"integer\"}],\"minItems\":2,\"maxItems\":2}",
+            ),
+            "a variant of several values: " + doc,
+        );
 
         self.sock.stop();
         std::io::fs::unlink(api_sock()) or discard;

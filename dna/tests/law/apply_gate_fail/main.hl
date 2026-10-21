@@ -12,7 +12,12 @@ import "../../../core" as dna;
 
 group organism = { App };
 group dna_gate = { dna::Dna };
-group performers = { dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group performers = {
+    dna::AgentPerformer,
+    dna::HumanWorkGateway,
+    dna::ServicePerformer,
+    dna::ScriptedPerformer
+};
 group credentials = { dna::CredentialSource };
 
 constitution DnaCore {

@@ -46,7 +46,11 @@ fn app_source(sock: String, port: Int) -> String {
         + "}\n"
         + "api Public { rpc Head::on_claim; rpc Head::read_seen; }\n"
         + "main locus App {\n"
-        + "    params { head: Head = Head { }; tally: Tally = Tally { }; tokens: Tokens = Tokens { }; sock: api::Exposure = api::serve(Public, unix::Rpc { path: \"" + sock + "\" }, as: \"sock\", receivers: { Head: self.head }, bound: 8, on_full: refuse); web: api::Exposure = api::serve(Public, http::Rpc { bind: \"127.0.0.1:" + to_string(port) + "\", codec: json, principals: self.tokens }, as: \"web\", receivers: { Head: self.head }, bound: 8, on_full: refuse); }\n"
+        + "    params { head: Head = Head { }; tally: Tally = Tally { }; tokens: Tokens = Tokens { }; sock: api::Exposure = api::serve(Public, unix::Rpc { path: \""
+        + sock
+        + "\" }, as: \"sock\", receivers: { Head: self.head }, bound: 8, on_full: refuse); web: api::Exposure = api::serve(Public, http::Rpc { bind: \"127.0.0.1:"
+        + to_string(port)
+        + "\", codec: json, principals: self.tokens }, as: \"web\", receivers: { Head: self.head }, bound: 8, on_full: refuse); }\n"
         + "    placement { head: cooperative(pool = work) where async_io; }\n"
         + "    bus { publish Claims; }\n"
         + "    run() {\n"
@@ -157,9 +161,17 @@ fn main() {
         request_id: 42,
         via: "test",
     };
-    std::test::assert_eq_str(describe_ctx(by_hand), "unix|test|42", "a hand-built context is a value");
+    std::test::assert_eq_str(
+        describe_ctx(by_hand),
+        "unix|test|42",
+        "a hand-built context is a value",
+    );
     let local = std::api::local_context();
-    std::test::assert_eq_str(describe_ctx(local), "local|local|0", "the local context names the local principal");
+    std::test::assert_eq_str(
+        describe_ctx(local),
+        "local|local|0",
+        "the local context names the local principal",
+    );
 
     let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
     let me = std::str::trim(run_tool("id\n-u").stdout);
@@ -185,38 +197,99 @@ fn main() {
     // Through the socket: the peer's credentials (uid, gid, pid), the
     // transport, the request id.
     let my_gid = std::str::trim(run_tool("id\n-g").stdout);
-    let r1 = api.ask("{\"call\":\"Head::on_claim\",\"payload\":{\"task\":2,\"who\":\"outside\"},\"id\":\"c-1\"}");
+    let r1 = api.ask(
+        "{\"call\":\"Head::on_claim\",\"payload\":{\"task\":2,\"who\":\"outside\"},\"id\":\"c-1\"}",
+    );
     std::test::assert(std::str::contains(r1, "\"ok\":true"), "the call answered: " + r1);
     let note = std::json::find_field_raw(std::json::find_field_raw(r1, "value"), "note");
     let expect_head = "\"unix|uid:" + me + "|" + me + "|" + my_gid + "|";
-    std::test::assert(std::str::starts_with(note, expect_head), "the handler saw uid and gid: " + note);
+    std::test::assert(
+        std::str::starts_with(note, expect_head),
+        "the handler saw uid and gid: " + note,
+    );
     let my_pid = to_string(std::process::pid());
-    std::test::assert(std::str::contains(note, "|" + my_pid + "|unix|1|outside\""), "the handler saw the caller's pid, the transport and the request id: " + note);
-    std::test::assert(std::str::contains(r1, "\"caller\":{\"mode\":\"unix\",\"name\":\"uid:" + me + "\",\"uid\":" + me + ","), "the answer carries the principal: " + r1);
+    std::test::assert(
+        std::str::contains(note, "|" + my_pid + "|unix|1|outside\""),
+        "the handler saw the caller's pid, the transport and the request id: " + note,
+    );
+    std::test::assert(
+        std::str::contains(
+            r1,
+            "\"caller\":{\"mode\":\"unix\",\"name\":\"uid:" + me + "\",\"uid\":" + me + ",",
+        ),
+        "the answer carries the principal: " + r1,
+    );
 
     // No line sets how it arrived (GH #1135): a `via` in a line is not a
     // mark, and the call is the socket peer's, through the socket.
-    let r1b = api.ask("{\"call\":\"Head::on_claim\",\"payload\":{\"task\":3,\"who\":\"claimed\"},\"id\":\"c-11\",\"via\":\"http-session\"}");
-    std::test::assert(std::str::contains(r1b, "\"ok\":true") && std::str::contains(r1b, "|unix|") && std::str::contains(r1b, "\"caller\":{\"mode\":\"unix\"") && !std::str::contains(r1b, "http-session"), "a via in a line is no mark: " + r1b);
+    let r1b = api.ask(
+        "{\"call\":\"Head::on_claim\",\"payload\":{\"task\":3,\"who\":\"claimed\"},\"id\":\"c-11\",\"via\":\"http-session\"}",
+    );
+    std::test::assert(
+        std::str::contains(r1b, "\"ok\":true")
+            && std::str::contains(r1b, "|unix|")
+            && std::str::contains(r1b, "\"caller\":{\"mode\":\"unix\"")
+            && !std::str::contains(r1b, "http-session"),
+        "a via in a line is no mark: " + r1b,
+    );
 
     // The HTTP transport: a POSTed payload under a bearer the program's
     // source names; the principal is the source's, arrived over `http`.
     // (An HTTP answer is the response alone: it carries neither the caller
     // nor a request id.)
-    let h1 = run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-alice\n--data\n{\"task\":6,\"who\":\"http\"}\n" + base + "/call/Head::on_claim");
-    std::test::assert(std::str::ends_with(std::str::trim(h1.stdout), "200") && std::str::contains(h1.stdout, "bearer|alice|-1|-1|-1|http|"), "a bearer the source names is its principal, over http: " + h1.stdout);
-    let h2 = run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n--data\n{\"task\":7,\"who\":\"nobody\"}\n" + base + "/call/Head::on_claim");
-    std::test::assert(std::str::ends_with(std::str::trim(h2.stdout), "401") && std::str::contains(h2.stdout, "\"kind\":\"unauthenticated\""), "no bearer is refused: " + h2.stdout);
-    let h3 = run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-mallory\n--data\n{\"task\":8,\"who\":\"mallory\"}\n" + base + "/call/Head::on_claim");
-    std::test::assert(std::str::ends_with(std::str::trim(h3.stdout), "401") && std::str::contains(h3.stdout, "\"kind\":\"unauthenticated\"") && std::str::contains(h3.stdout, "no such token"), "a bearer the source names nobody is refused, in the source's words: " + h3.stdout);
-    let h4 = run_tool("curl\n-s\n-w\n\\n%{http_code}\n-H\nAuthorization: Bearer t-alice\n" + base + "/");
-    std::test::assert(std::str::ends_with(std::str::trim(h4.stdout), "400") && std::str::contains(h4.stdout, "\"kind\":\"malformed\""), "a GET of the root is not the wire: " + h4.stdout);
-    let h5 = run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-alice\n--data\n{}\n" + base + "/call/Head::Nope");
-    std::test::assert(std::str::ends_with(std::str::trim(h5.stdout), "400") && std::str::contains(h5.stdout, "unknown_member"), "a member the surface lacks is malformed: " + h5.stdout);
+    let h1 = run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-alice\n--data\n{\"task\":6,\"who\":\"http\"}\n"
+            + base + "/call/Head::on_claim",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(h1.stdout), "200")
+            && std::str::contains(h1.stdout, "bearer|alice|-1|-1|-1|http|"),
+        "a bearer the source names is its principal, over http: " + h1.stdout,
+    );
+    let h2 = run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n--data\n{\"task\":7,\"who\":\"nobody\"}\n" + base
+            + "/call/Head::on_claim",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(h2.stdout), "401")
+            && std::str::contains(h2.stdout, "\"kind\":\"unauthenticated\""),
+        "no bearer is refused: " + h2.stdout,
+    );
+    let h3 = run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-mallory\n--data\n{\"task\":8,\"who\":\"mallory\"}\n"
+            + base + "/call/Head::on_claim",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(h3.stdout), "401")
+            && std::str::contains(h3.stdout, "\"kind\":\"unauthenticated\"")
+            && std::str::contains(h3.stdout, "no such token"),
+        "a bearer the source names nobody is refused, in the source's words: " + h3.stdout,
+    );
+    let h4 = run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-H\nAuthorization: Bearer t-alice\n" + base + "/",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(h4.stdout), "400")
+            && std::str::contains(h4.stdout, "\"kind\":\"malformed\""),
+        "a GET of the root is not the wire: " + h4.stdout,
+    );
+    let h5 = run_tool(
+        "curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nAuthorization: Bearer t-alice\n--data\n{}\n"
+            + base + "/call/Head::Nope",
+    );
+    std::test::assert(
+        std::str::ends_with(std::str::trim(h5.stdout), "400")
+            && std::str::contains(h5.stdout, "unknown_member"),
+        "a member the surface lacks is malformed: " + h5.stdout,
+    );
 
     // A refusal carries the caller too.
     let r2 = api.ask("{\"call\":\"Head::Nope\",\"payload\":{},\"id\":\"c-2\"}");
-    std::test::assert(std::str::contains(r2, "\"kind\":\"malformed\"") && std::str::contains(r2, "\"caller\":{\"mode\":\"unix\""), "a refusal names the caller: " + r2);
+    std::test::assert(
+        std::str::contains(r2, "\"kind\":\"malformed\"")
+            && std::str::contains(r2, "\"caller\":{\"mode\":\"unix\""),
+        "a refusal names the caller: " + r2,
+    );
 
     // The two-parameter handler counted every call and the in-process
     // message, and the in-process one carried the local principal and
@@ -224,16 +297,32 @@ fn main() {
     // (the program's own forward lands by its run()'s first second)
     let mut r3 = api.ask("{\"call\":\"Head::read_seen\",\"payload\":{},\"id\":\"c-3\"}");
     let mut waited = 0;
-    while !std::str::contains(r3, "\"count\":4") && waited < 40 { std::time::sleep(100ms); r3 = api.ask("{\"call\":\"Head::read_seen\",\"payload\":{},\"id\":\"c-" + to_string(30 + waited) + "\"}"); waited = waited + 1; }
-    std::test::assert(std::str::contains(r3, "\"count\":4"), "every message reached the context handler: " + r3);
-    std::test::assert(std::str::contains(r3, "\"last_local\":\"local|local|-1|-1|-1|local|0|inside\""), "the in-process message carried the local context: " + r3);
+    while !std::str::contains(r3, "\"count\":4") && waited < 40 {
+        std::time::sleep(100ms);
+        r3 = api.ask(
+            "{\"call\":\"Head::read_seen\",\"payload\":{},\"id\":\"c-" + to_string(30 + waited)
+                + "\"}",
+        );
+        waited = waited + 1;
+    }
+    std::test::assert(
+        std::str::contains(r3, "\"count\":4"),
+        "every message reached the context handler: " + r3,
+    );
+    std::test::assert(
+        std::str::contains(r3, "\"last_local\":\"local|local|-1|-1|-1|local|0|inside\""),
+        "the in-process message carried the local context: " + r3,
+    );
 
     p.stop();
     std::io::fs::unlink(sock) or discard;
     // A call through a surface is a call of its row's handler, not a publish
     // on the topic (the structural binding published it): the other
     // subscriber hears the in-process message alone.
-    std::test::assert(std::str::contains(p.out, "tally 1") && !std::str::contains(p.out, "tally 2"), "a call is not a publish; the other subscriber heard the in-process message only: " + p.out);
+    std::test::assert(
+        std::str::contains(p.out, "tally 1") && !std::str::contains(p.out, "tally 2"),
+        "a call is not a publish; the other subscriber heard the in-process message only: " + p.out,
+    );
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;
 
@@ -242,10 +331,17 @@ fn main() {
     let solo = std::io::fs::mktemp("/tmp/hale-1108-solo-", ".hl") or "";
     std::io::fs::write_file(solo, solo_source()) or discard;
     let checked = run_tool(hale + "\ncheck\n" + solo);
-    std::test::assert_eq_int(checked.code, 0, "hale check accepts a context handler: " + checked.stderr);
+    std::test::assert_eq_int(
+        checked.code,
+        0,
+        "hale check accepts a context handler: " + checked.stderr,
+    );
     let ran = run_tool(hale + "\nrun\n" + solo);
     std::test::assert_eq_int(ran.code, 0, "hale run accepts a context handler: " + ran.stderr);
-    std::test::assert(std::str::contains(ran.stdout, "solo local|local|3"), "the handler got the local context under hale run: " + ran.stdout);
+    std::test::assert(
+        std::str::contains(ran.stdout, "solo local|local|3"),
+        "the handler got the local context under hale run: " + ran.stdout,
+    );
     std::io::fs::unlink(solo) or discard;
 
     // The zero-code `hale run --api` is gone (R4): refused, saying what to
@@ -253,7 +349,10 @@ fn main() {
     let src2 = std::io::fs::mktemp("/tmp/hale-1108b-", ".hl") or "";
     std::io::fs::write_file(src2, solo_source()) or discard;
     let zero = run_tool(hale + "\nrun\n--api\n/tmp/hale-ctx-" + tag + "-b.sock\n" + src2);
-    std::test::assert(zero.code != 0 && std::str::contains(zero.stderr, "`--api <path>` is retired"), "hale run --api is refused: " + zero.stderr);
+    std::test::assert(
+        zero.code != 0 && std::str::contains(zero.stderr, "`--api <path>` is retired"),
+        "hale run --api is refused: " + zero.stderr,
+    );
     std::io::fs::unlink(src2) or discard;
 
     // The port a serve site names is held by someone else: the program
@@ -261,7 +360,10 @@ fn main() {
     // a bearer to whoever holds the port — and says which port it is.
     let mut held_port = 30000 + (std::process::pid() * 13 + 7) % 17000;
     let mut holder = std::io::tcp::__listen_socket("127.0.0.1", held_port);
-    while holder < 0 { held_port = held_port + 1; holder = std::io::tcp::__listen_socket("127.0.0.1", held_port); }
+    while holder < 0 {
+        held_port = held_port + 1;
+        holder = std::io::tcp::__listen_socket("127.0.0.1", held_port);
+    }
     let sock3 = "/tmp/hale-ctx-" + tag + "-c.sock";
     let src3 = std::io::fs::mktemp("/tmp/hale-1108c-", ".hl") or "";
     std::io::fs::write_file(src3, app_source(sock3, held_port)) or discard;
@@ -269,8 +371,14 @@ fn main() {
     std::test::assert_eq_int(built3.code, 0, "the app builds: " + built3.stderr);
     let refused = run_tool("timeout\n20\n" + src3[0..(len(src3) - 3)]);
     std::io::tcp::__close_fd(holder);
-    std::test::assert(refused.code != 0 && refused.code != 124, "a held transport port stops the program at start: exit " + to_string(refused.code));
-    std::test::assert(std::str::contains(refused.stderr, "could not listen on 127.0.0.1:" + to_string(held_port)), "and it names the port: " + refused.stderr);
+    std::test::assert(
+        refused.code != 0 && refused.code != 124,
+        "a held transport port stops the program at start: exit " + to_string(refused.code),
+    );
+    std::test::assert(
+        std::str::contains(refused.stderr, "could not listen on 127.0.0.1:" + to_string(held_port)),
+        "and it names the port: " + refused.stderr,
+    );
     std::io::fs::unlink(sock3) or discard;
     std::io::fs::unlink(src3) or discard;
     std::io::fs::unlink(src3[0..(len(src3) - 3)]) or discard;

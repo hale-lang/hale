@@ -41,7 +41,11 @@ fn main() {
     let resp = r.dispatch(req);
 
     std::test::assert_eq_int(resp.status, 201, "handler status survives the onion");
-    std::test::assert_eq_str(resp.body, "hi:/greet+after", "before->handle->after ran in onion order");
+    std::test::assert_eq_str(
+        resp.body,
+        "hi:/greet+after",
+        "before->handle->after ran in onion order",
+    );
 
     // A miss routes to the default 404 — the not-found path is part
     // of the same dispatch surface.

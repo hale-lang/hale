@@ -129,12 +129,20 @@ fn main() {
     let o = Outer { };
     let inner_sq = o.go();
     std::test::assert_eq_int(inner_sq, 9, "the concrete inner owner keeps its Sq");
-    std::test::assert_eq_int(o.total, 26, "the Rect bubbled past Inner (10) and Outer's own Sq (16)");
+    std::test::assert_eq_int(
+        o.total,
+        26,
+        "the Rect bubbled past Inner (10) and Outer's own Sq (16)",
+    );
     std::test::assert_eq_int(o.count, 2, "Outer accepted two children");
     std::test::assert_eq_int(o.kids(), 2, "Outer tracks both, one per type");
 
     let so = SizeOwner { };
     let names = so.go();
     std::test::assert_eq_str(names, "x;", "NameOwner, the nearer acceptor of Both, owns it");
-    std::test::assert_eq_int(so.sum, 109, "OnlySized bubbles to SizeOwner (9), and its own Both (100)");
+    std::test::assert_eq_int(
+        so.sum,
+        109,
+        "OnlySized bubbles to SizeOwner (9), and its own Both (100)",
+    );
 }

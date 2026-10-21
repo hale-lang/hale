@@ -41,7 +41,8 @@ main locus App {
         let until = std::time::monotonic_ns() + 500000000;
         let mut waiting = true;
         while waiting {
-            waiting = !std::io::fs::file_exists(gate("replaced")) && std::time::monotonic_ns() < until;
+            waiting = !std::io::fs::file_exists(gate("replaced"))
+                && std::time::monotonic_ns() < until;
         }
         if pthread_self() == self.mine {
             println("ev handler-on-owner");
@@ -57,12 +58,15 @@ main locus App {
         let until = std::time::monotonic_ns() + 500000000;
         let mut waiting = true;
         while waiting {
-            waiting = !std::io::fs::file_exists(gate("delivering")) && std::time::monotonic_ns() < until;
+            waiting = !std::io::fs::file_exists(gate("delivering"))
+                && std::time::monotonic_ns() < until;
         }
         self.k = Kid { tag: 1 };
         std::io::fs::write_file(gate("replaced"), "go") or discard;
         let deadline = std::time::monotonic_ns() + 8000000000;
-        while !std::io::fs::file_exists(gate("handled")) && std::time::monotonic_ns() < deadline { std::time::sleep(1ms); }
+        while !std::io::fs::file_exists(gate("handled")) && std::time::monotonic_ns() < deadline {
+            std::time::sleep(1ms);
+        }
         println("ev replaced");
     }
     dissolve() {

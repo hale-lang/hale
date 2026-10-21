@@ -70,7 +70,12 @@ locus NatsPublisher {
             return;
         }
         let ack = js_publish(c, self.subject_prefix + subject, bytes) or PubAck { seq: -1 };
-        if ack.seq < 0 { log.warn_kv("publisher: the stream did not take a message", "subject=" + self.subject_prefix + subject + " error=" + c.last_error); }
+        if ack.seq < 0 {
+            log.warn_kv(
+                "publisher: the stream did not take a message",
+                "subject=" + self.subject_prefix + subject + " error=" + c.last_error,
+            );
+        }
         c.close();
     }
 }
@@ -168,7 +173,11 @@ locus NatsConn {
     // publishes, and the one that sets `untyped` subscribes beside it.
     // A pulled message only this no-op hears is never acknowledged, so
     // it is not lost: it comes again.
-    bus { subscribe NatsOutbound as on_out; publish NatsInbound; subscribe NatsInbound as on_untyped; }
+    bus {
+        subscribe NatsOutbound as on_out;
+        publish NatsInbound;
+        subscribe NatsInbound as on_untyped;
+    }
 
     closure delivery { captures: sent, acked, last_error; epoch inline; }
 
@@ -222,8 +231,16 @@ locus NatsConn {
         while self.written_to < n {
             let i = self.written_to;
             if (self.acks.get(i) or 1) == 0 {
-                let reply = if self.jetstream { self.inbox + ".ack." + to_string(self.base_id + i) } else { "" };
-                self.client.pub_msg(self.subject_prefix + self.pending.subject_at(i), reply, self.pending.data_at(i)) or discard;
+                let reply = if self.jetstream {
+                    self.inbox + ".ack." + to_string(self.base_id + i)
+                } else {
+                    ""
+                };
+                self.client.pub_msg(
+                    self.subject_prefix + self.pending.subject_at(i),
+                    reply,
+                    self.pending.data_at(i),
+                ) or discard;
                 if !self.client.connected { return; }
                 self.sent = self.sent + 1;
             }
@@ -281,10 +298,18 @@ locus NatsConn {
     fn on_pub_ack(f: NatsFrame) {
         // `<inbox>.ack.<id>`
         let at = len(self.inbox) + 5;
-        let id = if len(f.subject) > at { std::str::parse_int(f.subject[at..len(f.subject)]) or 0 } else { 0 };
+        let id = if len(f.subject) > at {
+            std::str::parse_int(f.subject[at..len(f.subject)]) or 0
+        } else {
+            0
+        };
         // a 503 status: no stream takes the subject
         let status = if f.op == "HMSG" { header_status(f.headers) } else { "" };
-        let refused = if len(status) > 0 { "no stream takes it (" + status + ")" } else { js_error_of(std::str::from_bytes(f.data)) };
+        let refused = if len(status) > 0 {
+            "no stream takes it (" + status + ")"
+        } else {
+            js_error_of(std::str::from_bytes(f.data))
+        };
         if len(refused) > 0 {
             // left unacknowledged: written again after a reconnect, and
             // the audit fires if it never lands
@@ -298,7 +323,11 @@ locus NatsConn {
 
     fn pull() {
         let body = "{\"batch\":" + to_string(self.pull_batch) + ",\"expires\":1000000000}";
-        self.client.pub_msg("$JS.API.CONSUMER.MSG.NEXT." + self.stream + "." + self.consumer.durable, self.inbox + ".pull", std::bytes::from_string(body)) or discard;
+        self.client.pub_msg(
+            "$JS.API.CONSUMER.MSG.NEXT." + self.stream + "." + self.consumer.durable,
+            self.inbox + ".pull",
+            std::bytes::from_string(body),
+        ) or discard;
         self.pull_open = true;
         self.pull_left = self.pull_batch;
         self.pull_deadline_ns = std::time::monotonic_ns() + 1500000000;
@@ -319,7 +348,10 @@ locus NatsConn {
                 }
                 // 404 no messages / 408 expired / 409 limits: the durable
                 // answered, pull again; 100 is an idle heartbeat
-                if !std::str::starts_with(status, "100") { self.pull_open = false; self.pull_refused = 0; }
+                if !std::str::starts_with(status, "100") {
+                    self.pull_open = false;
+                    self.pull_refused = 0;
+                }
                 return;
             }
         }
@@ -329,7 +361,9 @@ locus NatsConn {
             NatsInbound <- Inbound { subject: f.subject, data: f.data, reply: f.reply };
         } else {
             std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
-            if len(f.reply) > 0 { self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard; }
+            if len(f.reply) > 0 {
+                self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard;
+            }
         }
         self.pull_left = self.pull_left - 1;
         if self.pull_left <= 0 { self.pull_open = false; }
@@ -337,7 +371,9 @@ locus NatsConn {
 
     fn on_untyped(m: Inbound) { }
 
-    fn is_untyped(subject: String) -> Bool { return len(self.untyped) > 0 && std::str::starts_with(subject, self.untyped); }
+    fn is_untyped(subject: String) -> Bool {
+        return len(self.untyped) > 0 && std::str::starts_with(subject, self.untyped);
+    }
 
     // A subject as the program's topics know it: without the prefix.
     fn local_subject(s: String) -> String {
@@ -384,7 +420,9 @@ locus NatsConn {
             let comma = std::str::index_of(rest, ",");
             let one = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
             rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
-            if len(one) > 0 { let sid = self.client.sub_to(self.subject_prefix + one, self.queue) or 0; }
+            if len(one) > 0 {
+                let sid = self.client.sub_to(self.subject_prefix + one, self.queue) or 0;
+            }
         }
         self.client.set_read_timeout(10ms);
         self.barrier = -1;
@@ -401,7 +439,9 @@ locus NatsConn {
         // the cause, not `last_error`: an earlier audit's verdict fed back
         // in would grow the field by a verdict per audit
         let why = if len(self.cause) > 0 { self.cause } else { "no acknowledgement" };
-        self.last_error = "message " + to_string(self.base_id + self.head) + " on " + self.pending.subject_at(self.head) + " unacknowledged after " + to_string(self.ack_window_ms) + " ms: " + why;
+        self.last_error = "message " + to_string(self.base_id + self.head) + " on "
+            + self.pending.subject_at(self.head) + " unacknowledged after "
+            + to_string(self.ack_window_ms) + " ms: " + why;
         violate delivery;
     }
 
@@ -413,7 +453,9 @@ locus NatsConn {
                 self.backoff_ms = 0;
             } else {
                 self.backoff_ms = if self.backoff_ms == 0 { 50 } else { self.backoff_ms * 2 };
-                if self.backoff_ms > self.reconnect_max_ms { self.backoff_ms = self.reconnect_max_ms; }
+                if self.backoff_ms > self.reconnect_max_ms {
+                    self.backoff_ms = self.reconnect_max_ms;
+                }
                 self.retry_at_ns = now + self.backoff_ms * 1000000;
                 return;
             }

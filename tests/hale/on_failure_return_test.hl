@@ -42,8 +42,16 @@ main locus App {
         self.w.go();
         self.w.go();
         std::test::assert_eq_int(self.handled, 4, "every failure reached the handler");
-        std::test::assert_eq_int(self.past_guard, 7, "only the third and fourth failures passed the guard (3 + 4)");
-        std::test::assert_eq_int(self.left_loop, 7, "both left the loop by its return, never past it (3 + 4)");
+        std::test::assert_eq_int(
+            self.past_guard,
+            7,
+            "only the third and fourth failures passed the guard (3 + 4)",
+        );
+        std::test::assert_eq_int(
+            self.left_loop,
+            7,
+            "both left the loop by its return, never past it (3 + 4)",
+        );
     }
 }
 

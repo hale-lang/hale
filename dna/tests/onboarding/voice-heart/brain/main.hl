@@ -65,7 +65,13 @@ main locus Brain {
     }
 
     run() {
-        log_info("the store, and the route table's version on NATS", fields2(std::log::kv("store", self.conn.host + ":" + to_string(self.conn.port)), std::log::kv("nats", if len(self.nats) > 0 { self.nats } else { "none" })));
+        log_info(
+            "the store, and the route table's version on NATS",
+            fields2(
+                std::log::kv("store", self.conn.host + ":" + to_string(self.conn.port)),
+                std::log::kv("nats", if len(self.nats) > 0 { self.nats } else { "none" }),
+            ),
+        );
         while true {
             self.tick();
             std::time::sleep(self.interval);
@@ -85,7 +91,10 @@ main locus Brain {
             let v = self.conn.query_one("SHOW server_version_num");
             let num = std::str::parse_int(std::str::trim(v.data)) or 0;
             if v.ok && num < 140000 {
-                log_error("Postgres 14 or newer is required: idle_session_timeout frees a stopped brain's lock", std::log::kv("server_version_num", std::str::trim(v.data)));
+                log_error(
+                    "Postgres 14 or newer is required: idle_session_timeout frees a stopped brain's lock",
+                    std::log::kv("server_version_num", std::str::trim(v.data)),
+                );
                 std::process::exit(1);
             }
             let mut i = 0;
@@ -117,7 +126,9 @@ main locus Brain {
             self.drop("the connection, reclaiming");
             return;
         }
-        if reclaimed > 0 { log_info("reclaimed dead api instances", std::log::kv("count", to_string(reclaimed))); }
+        if reclaimed > 0 {
+            log_info("reclaimed dead api instances", std::log::kv("count", to_string(reclaimed)));
+        }
         let version = self.written();
         if version < 0 { return; }
         // the notifier tells NATS; the tick never waits on it
@@ -142,7 +153,11 @@ main locus Brain {
     /// Say trouble, or its end, once each time it changes.
     fn trouble_is(what: String) {
         if what == self.trouble { return; }
-        if len(what) > 0 { log_warn(what, ""); } else { log_info("the route table is written again", ""); }
+        if len(what) > 0 {
+            log_warn(what, "");
+        } else {
+            log_info("the route table is written again", "");
+        }
         self.trouble = what;
     }
 
@@ -177,18 +192,24 @@ type Written { version: Int = -1; step: String = ""; kind: String = ""; detail: 
 /// route table"); rolled back when a step fails.
 fn write_table(conn: pq::PgConn) -> Written {
     let begun = conn.begin();
-    if !begun.ok { return Written { step: "begin", kind: begun.err.kind, detail: begun.err.detail }; }
+    if !begun.ok {
+        return Written { step: "begin", kind: begun.err.kind, detail: begun.err.detail };
+    }
     let live = conn.exec(LIVENESS);
     if !live.ok { return rolled_back(conn, "node liveness", live.err.kind, live.err.detail); }
     let none = db::Args { };
     let rows = conn.query_params(SEAT_READ, none);
     if !rows.ok { return rolled_back(conn, "the fleet's read", rows.err.kind, rows.err.detail); }
     let models = conn.query_params(MODEL_READ, none);
-    if !models.ok { return rolled_back(conn, "the catalog's read", models.err.kind, models.err.detail); }
+    if !models.ok {
+        return rolled_back(conn, "the catalog's read", models.err.kind, models.err.detail);
+    }
     let a = db::Args { };
     a.add(route_table(judged(rows.csv), models.csv));
     let saved = conn.query_params(TABLE_WRITE, a);
-    if !saved.ok { return rolled_back(conn, "the route table's write", saved.err.kind, saved.err.detail); }
+    if !saved.ok {
+        return rolled_back(conn, "the route table's write", saved.err.kind, saved.err.detail);
+    }
     let done = conn.commit();
     if !done.ok { return rolled_back(conn, "the commit", done.err.kind, done.err.detail); }
     return Written { version: std::str::parse_int(std::str::trim(saved.csv)) or - 1 };
@@ -225,7 +246,9 @@ fn judged(csv: String) -> Ranked {
         let nl = st::line_end(lines, start);
         let line = std::str::trim(std::str::slice(lines, start, nl));
         start = nl + 1;
-        if len(line) > 0 { push(seats.items, judge(line, Float(std::rand::next_int(1000)) / 1000.0)) or discard; }
+        if len(line) > 0 {
+            push(seats.items, judge(line, Float(std::rand::next_int(1000)) / 1000.0)) or discard;
+        }
     }
     return seats;
 }
@@ -279,7 +302,10 @@ fn reclaim_one(conn: pq::PgConn, instance: String) -> Int {
         if !r.ok {
             conn.rollback();
             if r.err.kind == "io" { return -1; }
-            log_warn("reclaiming an instance failed; left for the next tick", fields2(std::log::kv("instance", instance), std::log::kv("detail", r.err.detail)));
+            log_warn(
+                "reclaiming an instance failed; left for the next tick",
+                fields2(std::log::kv("instance", instance), std::log::kv("detail", r.err.detail)),
+            );
             return 0;
         }
         if i == 0 && r.rows_affected == 0 {
@@ -321,7 +347,11 @@ fn reclaim_step(i: Int) -> String {
 fn main() {
     // the one sink: every logger's lines are written here (log.hl)
     let sink = logfmt::RecordSink { };
-    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") { std::env::var("VOICE_DATABASE_URL") } else { "" };
+    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") {
+        std::env::var("VOICE_DATABASE_URL")
+    } else {
+        ""
+    };
     let mut nats = "nats://127.0.0.1:4222";
     let mut i = 1;
     while i + 1 < std::env::args_count() {
@@ -337,9 +367,17 @@ fn main() {
     // grafted, the habitat's database when none is given (store/pg_store.hl)
     let given = database;
     database = st::database_or_habitat(database);
-    if len(given) == 0 && len(database) > 0 { log_info("grafted: the store's database is the one the habitat provisioned", std::log::kv("from", st::HABITAT_DATABASE_ENV)); }
+    if len(given) == 0 && len(database) > 0 {
+        log_info(
+            "grafted: the store's database is the one the habitat provisioned",
+            std::log::kv("from", st::HABITAT_DATABASE_ENV),
+        );
+    }
     if len(database) == 0 {
-        log_error("usage: brain --database postgres://user:password@host:port/database [--nats URL] (or, grafted, the habitat's HALE_DNA_DATABASE_DSN)", "");
+        log_error(
+            "usage: brain --database postgres://user:password@host:port/database [--nats URL] (or, grafted, the habitat's HALE_DNA_DATABASE_DSN)",
+            "",
+        );
         std::process::exit(2);
     }
     let d = st::parse_dsn(database);
@@ -347,7 +385,12 @@ fn main() {
         log_error(d.problem, "");
         std::process::exit(2);
     }
-    if len(d.password) > 0 { log_warn("the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)", ""); }
+    if len(d.password) > 0 {
+        log_warn(
+            "the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)",
+            "",
+        );
+    }
     // grafted, voice's own NATS is the habitat's broker (lib/broker)
     let b = broker::broker_or(nats);
     if len(b.problem) > 0 {
@@ -357,10 +400,20 @@ fn main() {
     if b.grafted {
         let own = std::secret::Credential { vault: b.vault };
         if !own.ready() {
-            log_error("the vault holds no password for this heart's broker account", std::log::kv("entry", b.vault));
+            log_error(
+                "the vault holds no password for this heart's broker account",
+                std::log::kv("entry", b.vault),
+            );
             std::process::exit(2);
         }
-        log_info("grafted: voice's own NATS is the habitat's broker", fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")));
+        log_info(
+            "grafted: voice's own NATS is the habitat's broker",
+            fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")),
+        );
     }
-    Brain { database: database, nats: b.url, notifier: Notifier { url: b.url, user: b.user, vault: b.vault, subjects: b.root } };
+    Brain {
+        database: database,
+        nats: b.url,
+        notifier: Notifier { url: b.url, user: b.user, vault: b.vault, subjects: b.root },
+    };
 }

@@ -24,7 +24,11 @@ locus PracticeRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.entity == request_id && (e.kind == "practice.proposed" || e.kind == "practice.refused") { return true; }
+            if e.entity == request_id
+                && (e.kind == "practice.proposed" || e.kind == "practice.refused")
+            {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -32,7 +36,14 @@ locus PracticeRecord {
     // A practice request's own rows: refused for want of a name and a text,
     // started once the body received it, proposed with the knowledge's
     // digest. Whether each is in the record.
-    fn refused(r: PracticeRequest) -> Bool { return append_once(self.journal, "practice.refused", r.request_id, "a practice has a name and a text"); }
+    fn refused(r: PracticeRequest) -> Bool {
+        return append_once(
+            self.journal,
+            "practice.refused",
+            r.request_id,
+            "a practice has a name and a text",
+        );
+    }
     fn started(r: PracticeRequest) -> Bool {
         let started = std::json::Builder { };
         started.begin_object();
@@ -59,10 +70,14 @@ locus PracticeRecord {
     }
     // Whether this incarnation has ratified `review_id` through
     // practice-ratify, and so never asks it again.
-    fn ratified(review_id: String) -> Bool { return std::str::contains(self.ratified_through, "\n" + review_id + "\n"); }
+    fn ratified(review_id: String) -> Bool {
+        return std::str::contains(self.ratified_through, "\n" + review_id + "\n");
+    }
     // One line per Review ratified this incarnation, as the journal holds them.
     @bounded_by(self.journal)
-    fn ratified_now(review_id: String) { self.ratified_through = self.ratified_through + review_id + "\n"; }
+    fn ratified_now(review_id: String) {
+        self.ratified_through = self.ratified_through + review_id + "\n";
+    }
     // ---- practice-ratify ----
     // The execution a knowledge proposal is ratified under, "" when none.
     fn ratification_of(digest: String) -> String {
@@ -70,17 +85,42 @@ locus PracticeRecord {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" && std::json::find_string_field(std::json::find_string_field(e.body, "inputs"), "digest") == digest { return e.entity; }
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(e.body, "definition") == "practice-ratify"
+                && std::json::find_string_field(
+                    std::json::find_string_field(e.body, "inputs"),
+                    "digest",
+                ) == digest
+            {
+                return e.entity;
+            }
             i = i + 1;
         }
         return "";
     }
     // practice-ratify's `hat` step for a family (the library): done once
     // memory's projection holds the family's last idea, ratified.
-    fn family_hat(task: String, digest: String, last: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
+    fn family_hat(
+        task: String,
+        digest: String,
+        last: String,
+        knowledge: MemoryKnowledge,
+        memory_ready: Bool
+    ) -> StepVerdict {
         let read = first_row(self.journal, "practice.read", digest);
-        if len(read.kind) > 0 { return step_done(digest, "memory read the family at row " + to_string(std::json::find_int_field(read.body, "head"))); }
-        if !knowledge.ready() { return step_failed("no memory is named (" + knowledge.dsn_env + " is not set): the library is memory's to read"); }
+        if len(read.kind) > 0 {
+            return step_done(
+                digest,
+                "memory read the family at row "
+                    + to_string(std::json::find_int_field(read.body, "head")),
+            );
+        }
+        if !knowledge.ready() {
+            return step_failed(
+                "no memory is named (" + knowledge.dsn_env
+                    + " is not set): the library is memory's to read",
+            );
+        }
         if len(last) == 0 { return step_failed("the family names no idea"); }
         let at = knowledge.ratified_at(last);
         if at < 0 { return step_waits(); }
@@ -93,30 +133,51 @@ locus PracticeRecord {
         b.string_field("task", task);
         b.end_object();
         if !append_once(self.journal, "practice.read", digest, b.result()) { return step_waits(); }
-        return step_done(digest, "memory read the family at row " + to_string(self.journal.revision()));
+        return step_done(
+            digest,
+            "memory read the family at row " + to_string(self.journal.revision()),
+        );
     }
     // practice-ratify's `hat` step for the proposal at `digest`: what the
     // hat reads once memory's projection holds the idea and its binding —
     // the package for the target at memory's head, and whether it carries
     // the proposal, the row it was fenced to. `memory_ready`: memory's
     // projection had caught up when last asked.
-    fn hat(task: String, digest: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
+    fn hat(
+        task: String,
+        digest: String,
+        knowledge: MemoryKnowledge,
+        memory_ready: Bool
+    ) -> StepVerdict {
         // what the hat reads once memory's projection holds the idea and its
         // binding: the package for the target at memory's head, and whether
         // it carries the proposal — the row it was fenced to
         let read = first_row(self.journal, "practice.read", digest);
-        if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
+        if len(read.kind) > 0 {
+            return step_done(
+                std::json::find_string_field(read.body, "hat"),
+                "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head")),
+            );
+        }
         // no memory named: the hat is memory's to read, and nothing will
         // come to wait for — the chain ends saying so. Memory named but
         // behind, or unreachable a moment: the step waits for it.
-        if !knowledge.ready() { return step_failed("no memory is named (" + knowledge.dsn_env + " is not set): the hat is memory's to read"); }
+        if !knowledge.ready() {
+            return step_failed(
+                "no memory is named (" + knowledge.dsn_env
+                    + " is not set): the hat is memory's to read",
+            );
+        }
         let at = knowledge.ratified_at(digest);
         if at < 0 { return step_waits(); }
         // never block the organization's handler on memory's projection:
         // behind the record's knowledge, the step waits and is performed
         // again at the tick
         if !memory_ready { return step_waits(); }
-        let target = std::json::find_string_field(first_row(self.journal, "knowledge.proposed", digest).body, "target");
+        let target = std::json::find_string_field(
+            first_row(self.journal, "knowledge.proposed", digest).body,
+            "target",
+        );
         let pkg = knowledge.package_for(target, "");
         if len(pkg.error) > 0 { return step_waits(); }
         let b = std::json::Builder { };
@@ -130,7 +191,10 @@ locus PracticeRecord {
         b.string_field("task", task);
         b.end_object();
         if !append_once(self.journal, "practice.read", digest, b.result()) { return step_waits(); }
-        return step_done(pkg.digest, "the hat for " + target + " at row " + to_string(pkg.revision));
+        return step_done(
+            pkg.digest,
+            "the hat for " + target + " at row " + to_string(pkg.revision),
+        );
     }
 }
 
@@ -168,7 +232,9 @@ fn practice_args(digest: String, name: String, args: String) -> String {
     b.end_object();
     let own = b.result();
     let rest = std::str::trim(args);
-    if !std::str::starts_with(rest, "{") || std::str::trim(rest[1..len(rest)]) == "}" { return own; }
+    if !std::str::starts_with(rest, "{") || std::str::trim(rest[1..len(rest)]) == "}" {
+        return own;
+    }
     return own[0..(len(own) - 1)] + ", " + rest[1..len(rest)];
 }
 
@@ -198,7 +264,10 @@ fn practice_schedule(digest: String, doc: String) -> Schedule {
     if len(step) == 0 && len(every) == 0 { return Schedule { }; }
     let target = std::json::find_string_field(doc, "target");
     return Schedule {
-        id: name, every_ms: every_ms_of(every), definition: step, args: practice_args(digest, name, "{}"),
+        id: name,
+        every_ms: every_ms_of(every),
+        definition: step,
+        args: practice_args(digest, name, "{}"),
         convener: if std::str::starts_with(target, "position:") { target } else { "" }
     };
 }
@@ -207,8 +276,20 @@ fn practice_schedule(digest: String, doc: String) -> Schedule {
 // `30s`, `15m`, `1h`, `1d`); 0 when it is none.
 fn every_ms_of(text: String) -> Int {
     let t = std::str::trim(text);
-    let unit = if std::str::ends_with(t, "ms") { "ms" } else if len(t) > 0 { t[(len(t) - 1)..len(t)] } else { "" };
-    let digits = if unit == "ms" { t[0..(len(t) - 2)] } else if len(unit) > 0 { t[0..(len(t) - 1)] } else { "" };
+    let unit = if std::str::ends_with(t, "ms") {
+        "ms"
+    } else if len(t) > 0 {
+        t[(len(t) - 1)..len(t)]
+    } else {
+        ""
+    };
+    let digits = if unit == "ms" {
+        t[0..(len(t) - 2)]
+    } else if len(unit) > 0 {
+        t[0..(len(t) - 1)]
+    } else {
+        ""
+    };
     let n = std::str::parse_int(digits) or 0;
     if n <= 0 { return 0; }
     if unit == "ms" { return n; }

@@ -9,7 +9,11 @@ import "./api_codec_import_lib" as lib;
 
 fn main() {
     let i = lib::make(3);
-    std::test::assert_eq_str(lib::Item::api_encode(i), "{\"id\":3,\"name\":\"x\"}", "encoded through the alias");
+    std::test::assert_eq_str(
+        lib::Item::api_encode(i),
+        "{\"id\":3,\"name\":\"x\"}",
+        "encoded through the alias",
+    );
     std::test::assert_eq_str(lib::show(i), "{\"id\":3,\"name\":\"x\"}", "the library's own call");
     let back = lib::Item::api_decode("{\"id\":4,\"name\":\"y\"}") or {
         std::test::assert(false, "decoded through the alias: " + err.kind + " " + err.field);

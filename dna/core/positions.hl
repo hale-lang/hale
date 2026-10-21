@@ -28,14 +28,28 @@ locus PositionRecord {
     // refused, or its receipt or a row is pending.
     fn asked(r: HoldRequest) -> String {
         if len(r.request_id) == 0 { return ""; }
-        if len(first_row(self.journal, "hold.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "hold.refused", r.request_id).kind) > 0 { return ""; }
+        if len(first_row(self.journal, "hold.proposed", r.request_id).kind) > 0
+            || len(first_row(self.journal, "hold.refused", r.request_id).kind) > 0
+        {
+            return "";
+        }
         // GH #1123: a position, or an organization a person joins
         let name = hold_name(r);
-        let nested = std::str::starts_with(r.position, "organization:") && std::str::starts_with(r.holder, "organization:");
-        if len(name) == 0 || len(r.holder) == 0 || len(r.by) == 0 || std::str::contains(r.holder, "|") || std::str::contains(name, "|") || nested {
+        let nested = std::str::starts_with(r.position, "organization:")
+            && std::str::starts_with(r.holder, "organization:");
+        if len(name) == 0
+            || len(r.holder) == 0
+            || len(r.by) == 0
+            || std::str::contains(r.holder, "|")
+            || std::str::contains(name, "|")
+            || nested
+        {
             let rb = std::json::Builder { };
             rb.begin_object();
-            rb.string_field("why", "a hold names a position (`position:<name>`) or an organization (`organization:<name>`), a holder with no `|` — a person, or an organization holding a position — and who asks");
+            rb.string_field(
+                "why",
+                "a hold names a position (`position:<name>`) or an organization (`organization:<name>`), a holder with no `|` — a person, or an organization holding a position — and who asks",
+            );
             rb.end_object();
             let x = append_once(self.journal, "hold.refused", r.request_id, rb.result());
             return "";
@@ -44,11 +58,22 @@ locus PositionRecord {
         edge.begin_object();
         edge.string_field("kind", "holds");
         edge.begin_array_field("members");
-        edge.begin_object(); edge.string_field("role", "position"); edge.string_field("node", r.position); edge.end_object();
-        edge.begin_object(); edge.string_field("role", "holder"); edge.string_field("node", r.holder); edge.end_object();
+        edge.begin_object();
+        edge.string_field("role", "position");
+        edge.string_field("node", r.position);
+        edge.end_object();
+        edge.begin_object();
+        edge.string_field("role", "holder");
+        edge.string_field("node", r.holder);
+        edge.end_object();
         edge.end_array();
         edge.end_object();
-        let question = if std::str::starts_with(r.position, "organization:") { "ratify " + r.holder + " joining the organization `" + name + "`, as " + r.by + " proposes" } else { "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes" };
+        let question = if std::str::starts_with(r.position, "organization:") {
+            "ratify " + r.holder + " joining the organization `" + name + "`, as " + r.by
+                + " proposes"
+        } else {
+            "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes"
+        };
         let d = std::json::Builder { };
         d.begin_object();
         d.string_field("author", r.by);
@@ -97,7 +122,9 @@ locus PositionRecord {
         q.string_field("group", "holds");
         q.string_field("name", name + " held by " + r.holder);
         q.end_object();
-        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) {
+            return "";
+        }
         return digest;
     }
     // The hold's own row once its Review is born.
@@ -122,16 +149,35 @@ locus PositionRecord {
     // already states, no mandate, no proposer), or a receipt or row pending.
     fn open_asked(r: PositionOpenRequest) -> String {
         if len(r.request_id) == 0 { return ""; }
-        if len(first_row(self.journal, "position.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "position.refused", r.request_id).kind) > 0 { return ""; }
-        let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else { "" };
+        if len(first_row(self.journal, "position.proposed", r.request_id).kind) > 0
+            || len(first_row(self.journal, "position.refused", r.request_id).kind) > 0
+        {
+            return "";
+        }
+        let name = if std::str::starts_with(r.position, "position:") {
+            r.position[9..len(r.position)]
+        } else {
+            ""
+        };
         let mut why = "";
-        if len(name) == 0 || std::str::contains(name, "|") || std::str::contains(name, " ") { why = "a position is named `position:<name>`, with no space or `|`"; }
-        else if len(std::str::trim(r.mandate)) == 0 { why = "a position is opened with its mandate: what it decides, may not do, cites and escalates"; }
+        if len(name) == 0 || std::str::contains(name, "|") || std::str::contains(name, " ") {
+            why = "a position is named `position:<name>`, with no space or `|`";
+        }
+        else if len(std::str::trim(r.mandate)) == 0 {
+            why = "a position is opened with its mandate: what it decides, may not do, cites and escalates";
+        }
         else if len(r.by) == 0 { why = "a position is opened by someone: the Review's author"; }
-        else if record_graph_has(record_graph(self.journal, self.receipts).nodes, r.position) { why = "`" + r.position + "` is a position the graph already states"; }
+        else if record_graph_has(record_graph(self.journal, self.receipts).nodes, r.position) {
+            why = "`" + r.position + "` is a position the graph already states";
+        }
         // the part it unfolds from is a node the graph states: an edge to
         // anything else is no edge (memory refuses to project it)
-        else if len(r.under) > 0 && !record_graph_has(record_graph(self.journal, self.receipts).nodes, r.under) { why = "`--under " + r.under + "` names no node the graph states (`seed:<name>`, a position, a work part)"; }
+        else if len(r.under) > 0
+            && !record_graph_has(record_graph(self.journal, self.receipts).nodes, r.under)
+        {
+            why = "`--under " + r.under
+                + "` names no node the graph states (`seed:<name>`, a position, a work part)";
+        }
         if len(why) > 0 {
             let rb = std::json::Builder { };
             rb.begin_object();
@@ -150,7 +196,8 @@ locus PositionRecord {
         node.end_array();
         node.end_object();
         node.end_object();
-        let question = "ratify opening the position `" + name + "`, with its mandate, as " + r.by + " proposes";
+        let question = "ratify opening the position `" + name + "`, with its mandate, as " + r.by
+            + " proposes";
         let g = std::json::Builder { };
         g.begin_object();
         g.string_field("author", r.by);
@@ -169,8 +216,14 @@ locus PositionRecord {
             e.begin_object();
             e.string_field("kind", "unfold");
             e.begin_array_field("members");
-            e.begin_object(); e.string_field("role", "parent"); e.string_field("node", r.under); e.end_object();
-            e.begin_object(); e.string_field("role", "child"); e.string_field("node", r.position); e.end_object();
+            e.begin_object();
+            e.string_field("role", "parent");
+            e.string_field("node", r.under);
+            e.end_object();
+            e.begin_object();
+            e.string_field("role", "child");
+            e.string_field("node", r.position);
+            e.end_object();
             e.end_array();
             e.end_object();
             g.begin_object();
@@ -195,7 +248,8 @@ locus PositionRecord {
         let graph_digest = self.kept(g.result());
         let mandate_digest = self.kept(m.result());
         if len(graph_digest) == 0 || len(mandate_digest) == 0 { return ""; }
-        let ideas = "position/" + name + " " + graph_digest + "\nmandate/" + name + " " + mandate_digest + "\n";
+        let ideas = "position/" + name + " " + graph_digest + "\nmandate/" + name + " "
+            + mandate_digest + "\n";
         let f = std::json::Builder { };
         f.begin_object();
         f.string_field("author", r.by);
@@ -208,7 +262,9 @@ locus PositionRecord {
         let family = self.kept(f.result());
         if len(family) == 0 { return ""; }
         if !self.member(graph_digest, "graph", r.by, r.position, "position/" + name) { return ""; }
-        if !self.member(mandate_digest, "mandate", r.by, r.position, "mandate/" + name) { return ""; }
+        if !self.member(mandate_digest, "mandate", r.by, r.position, "mandate/" + name) {
+            return "";
+        }
         let review_id = knowledge_review_id(family);
         let q = std::json::Builder { };
         q.begin_object();
@@ -224,7 +280,9 @@ locus PositionRecord {
         q.int_field("count", 2);
         q.string_field("ideas", ideas);
         q.end_object();
-        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) {
+            return "";
+        }
         return family;
     }
     // A receipt kept, read back: its digest, "" while it is not.
@@ -264,6 +322,12 @@ locus PositionRecord {
 // The name of what a hold is for: the position's, or the organization's
 // a person joins. The callers say who holds it.
 fn hold_name(r: HoldRequest) -> String {
-    let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else if std::str::starts_with(r.position, "organization:") { r.position[13..len(r.position)] } else { "" };
+    let name = if std::str::starts_with(r.position, "position:") {
+        r.position[9..len(r.position)]
+    } else if std::str::starts_with(r.position, "organization:") {
+        r.position[13..len(r.position)]
+    } else {
+        ""
+    };
     return name;
 }

@@ -23,7 +23,10 @@ locus Wrap {
 
 locus Router {
     params { quick: Backend = Inner { }; deep: Backend = Inner { }; }
-    fn who() -> String { return self.quick.name() + "/" + self.deep.name() + " " + to_string(self.quick.cap() + self.deep.cap()); }
+    fn who() -> String {
+        return self.quick.name() + "/" + self.deep.name() + " "
+            + to_string(self.quick.cap() + self.deep.cap());
+    }
 }
 
 fn make(label: String) -> Wrap {
@@ -40,7 +43,10 @@ locus Holder { params { r: Router = make_router(); } }
 fn churn(n: Int) -> String {
     let mut s = "";
     let mut i = 0;
-    while i < n { s = s + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" + to_string(i); i = i + 1; }
+    while i < n {
+        s = s + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" + to_string(i);
+        i = i + 1;
+    }
     return s;
 }
 
@@ -50,12 +56,20 @@ main locus App {
         let mut i = 0;
         while i < 100 {
             let j = churn(400);
-            std::test::assert_eq_str(self.h.r.who(), "q:from-q/d:from-d 6", "the backends survive the factory frames, under churn");
+            std::test::assert_eq_str(
+                self.h.r.who(),
+                "q:from-q/d:from-d 6",
+                "the backends survive the factory frames, under churn",
+            );
             i = i + 1;
         }
         // the same shape as a param default of a literal, not a factory
         let direct = Router { quick: make("x"), deep: make("y") };
-        std::test::assert_eq_str(direct.who(), "x:from-x/y:from-y 6", "a literal in a body owns its factory fields too");
+        std::test::assert_eq_str(
+            direct.who(),
+            "x:from-x/y:from-y 6",
+            "a literal in a body owns its factory fields too",
+        );
     }
 }
 

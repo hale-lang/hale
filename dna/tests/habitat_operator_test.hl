@@ -21,7 +21,11 @@ fn toolchain() -> String {
 
 // `argv` in `dir`, with the environment's owner servers as they are.
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
 }
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
@@ -36,33 +40,90 @@ fn logged(log: String, text: String, secs: Int) -> Bool {
 }
 
 fn main() {
-    if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { eprintln("habitat_operator_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER are not both set)"); return; }
-    if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("habitat_operator_test: not exercised (outside `hale test`, the habitat would be the developer's)"); return; }
+    if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER")
+        || !std::env::var_exists("HALE_DNA_NATS_URL_OWNER")
+    {
+        eprintln(
+            "habitat_operator_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER are not both set)",
+        );
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_operator_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
     let scratch = dna::scratch_root("habitat-operator");
     dna::reap_on_exit(scratch);
     let genome = dna::local_habitat_dir() + "/genome";
 
     // `own` backends with the operator's servers named: refused before anything
     let refused = in_dir(scratch, toolchain() + "\nhabitat\nup\n--foreground");
-    std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "birth it with `--backends operator` to adopt them"), "an `own` habitat refuses the operator's servers: " + refused.stderr);
+    std::test::assert(
+        refused.code != 0
+            && std::str::contains(
+                refused.stderr,
+                "birth it with `--backends operator` to adopt them",
+            ),
+        "an `own` habitat refuses the operator's servers: " + refused.stderr,
+    );
     std::test::assert(!std::io::fs::file_exists(genome + "/hale.toml"), "and births nothing");
 
     let log = scratch + "/up.log";
-    let started = in_dir(scratch, "sh\n-c\nnohup timeout --foreground 900 \"$1\" habitat up --foreground --backends operator >\"$2\" 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + log);
-    std::test::assert(len(dna::trim_nl(started.stdout)) > 0 && logged(log, "body    the habitat's body runs in this process", 600), "the habitat is born on the operator's backends: " + text_of(log));
-    let project = dna::run_tool("docker\nps\n-a\n-q\n--filter\nlabel=com.docker.compose.project=" + dna::local_habitat_project());
-    std::test::assert(project.code != 0 || len(dna::trim_nl(project.stdout)) == 0, "no service of its project started: " + project.stdout);
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 900 \"$1\" habitat up --foreground --backends operator >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 600),
+        "the habitat is born on the operator's backends: " + text_of(log),
+    );
+    let project = dna::run_tool(
+        "docker\nps\n-a\n-q\n--filter\nlabel=com.docker.compose.project="
+            + dna::local_habitat_project(),
+    );
+    std::test::assert(
+        project.code != 0 || len(dna::trim_nl(project.stdout)) == 0,
+        "no service of its project started: " + project.stdout,
+    );
     let key = dna::allocation_key(genome);
     let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
-    std::test::assert(std::str::contains(status, "memory  memory-" + key + " on the operator's server") && std::str::contains(status, "allocations, as the habitat's record:"), "its allocations are rows naming the operator's server: " + status);
+    std::test::assert(
+        std::str::contains(status, "memory  memory-" + key + " on the operator's server")
+            && std::str::contains(status, "allocations, as the habitat's record:"),
+        "its allocations are rows naming the operator's server: " + status,
+    );
     let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
-    std::test::assert(std::str::contains(rows, "\"kind\": \"habitat.profile\"") && std::str::contains(rows, "\\\"backends\\\":\\\"operator\\\"") && !std::str::contains(rows, std::env::var("HALE_DNA_MEMORY_DSN_OWNER")), "its profile is a row of its record, naming no DSN: " + rows);
+    std::test::assert(
+        std::str::contains(rows, "\"kind\": \"habitat.profile\"")
+            && std::str::contains(rows, "\\\"backends\\\":\\\"operator\\\"")
+            && !std::str::contains(rows, std::env::var("HALE_DNA_MEMORY_DSN_OWNER")),
+        "its profile is a row of its record, naming no DSN: " + rows,
+    );
 
     // the choice is the habitat's at birth
     let other = in_dir(scratch, toolchain() + "\nhabitat\nup\n--backends\nown");
-    std::test::assert(other.code != 0 && std::str::contains(other.stderr, "the habitat was born on `operator` backends"), "backends are chosen at birth: " + other.stderr);
-    let unnamed = in_dir(scratch, "sh\n-c\nunset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER && exec \"$1\" habitat up\nsh\n" + toolchain());
-    std::test::assert(unnamed.code != 0 && std::str::contains(unnamed.stderr, "name them in HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER"), "an operator habitat with no servers named refuses: " + unnamed.stderr);
+    std::test::assert(
+        other.code != 0
+            && std::str::contains(other.stderr, "the habitat was born on `operator` backends"),
+        "backends are chosen at birth: " + other.stderr,
+    );
+    let unnamed = in_dir(
+        scratch,
+        "sh\n-c\nunset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER && exec \"$1\" habitat up\nsh\n"
+            + toolchain(),
+    );
+    std::test::assert(
+        unnamed.code != 0
+            && std::str::contains(
+                unnamed.stderr,
+                "name them in HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER",
+            ),
+        "an operator habitat with no servers named refuses: " + unnamed.stderr,
+    );
 
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
     std::test::assert_eq_int(down.code, 0, "down: " + down.stderr);

@@ -15,7 +15,12 @@ import "../../../core" as dna;
 
 group organism = { App };
 group dna_gate = { dna::Dna };
-group performers = { dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group performers = {
+    dna::AgentPerformer,
+    dna::HumanWorkGateway,
+    dna::ServicePerformer,
+    dna::ScriptedPerformer
+};
 group credentials = { dna::CredentialSource };
 
 constitution DnaCore {
@@ -40,7 +45,12 @@ main locus App {
     }
     claims { adopt DnaCore; }
     run() {
-        let d = self.dna.stage("refactor", "sha256:c1", dna::Magnitude { loci: 1 }, dna::Evidence { tests_pass: true });
+        let d = self.dna.stage(
+            "refactor",
+            "sha256:c1",
+            dna::Magnitude { loci: 1 },
+            dna::Evidence { tests_pass: true },
+        );
     }
 }
 fn main() { App { }; }

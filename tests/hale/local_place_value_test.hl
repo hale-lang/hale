@@ -37,12 +37,19 @@ locus App {
         cells: [Item; 2] = [Item { }, Item { }];
     }
     run {
-        self.r = Rec { names: [heap("n"), heap("m")], cells: [Item { k: 1 }, Item { k: 2 }], shape: Shape::One(Item { k: 3 }) };
+        self.r = Rec {
+            names: [heap("n"), heap("m")],
+            cells: [Item { k: 1 }, Item { k: 2 }],
+            shape: Shape::One(Item { k: 3 }),
+        };
 
         // From a field.
         let got = write_locals(self.r);
         std::test::assert(got == 72, "the locals hold their writes");
-        std::test::assert(self.r.names[0] == "N!", "an array local's write never reaches the field");
+        std::test::assert(
+            self.r.names[0] == "N!",
+            "an array local's write never reaches the field",
+        );
         std::test::assert(self.r.cells[1].k == 2, "an element's write never reaches the field");
         std::test::assert(self.r.cells[0].k == 1, "a for element's write never reaches the field");
         std::test::assert(shape_k(self.r.shape) == 3, "a payload's write never reaches the field");
@@ -61,7 +68,10 @@ locus App {
         v[0].k = 11;
         v[1].s = heap("s");
         self.cells = v;
-        std::test::assert(self.cells[0].k == 11 && self.cells[1].s == "S!", "a get-modify-store writes the field");
+        std::test::assert(
+            self.cells[0].k == 11 && self.cells[1].s == "S!",
+            "a get-modify-store writes the field",
+        );
     }
 }
 

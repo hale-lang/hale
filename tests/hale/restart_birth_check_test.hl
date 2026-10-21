@@ -42,33 +42,79 @@ main locus App {
         restart(c) for 3;
     }
     run() {
-        std::test::assert_eq_int(self.held.births, 3, "a re-birth that failed its check was restarted again");
-        std::test::assert_eq_int(self.held.runs, 1, "and run() started after the birth that passed");
-        std::test::assert_eq_int(self.held_never.births, 4, "`for 3` admits three restarts, each checked");
-        std::test::assert_eq_int(self.held_never.runs, 0, "and the failed check after them quarantines: no run()");
+        std::test::assert_eq_int(
+            self.held.births,
+            3,
+            "a re-birth that failed its check was restarted again",
+        );
+        std::test::assert_eq_int(
+            self.held.runs,
+            1,
+            "and run() started after the birth that passed",
+        );
+        std::test::assert_eq_int(
+            self.held_never.births,
+            4,
+            "`for 3` admits three restarts, each checked",
+        );
+        std::test::assert_eq_int(
+            self.held_never.runs,
+            0,
+            "and the failed check after them quarantines: no run()",
+        );
 
         let late = Checked { fail_until: 2 };
-        std::test::assert_eq_int(late.births, 3, "in place: the re-birth's check failed and was restarted");
+        std::test::assert_eq_int(
+            late.births,
+            3,
+            "in place: the re-birth's check failed and was restarted",
+        );
         std::test::assert_eq_int(late.runs, 1, "then run()");
         let late_never = Checked { fail_until: 9 };
         std::test::assert_eq_int(late_never.births, 4, "in place: three checked restarts");
         std::test::assert_eq_int(late_never.runs, 0, "then quarantined");
 
         let mut i = 0;
-        while (self.pooled.runs == 0 || self.pinned.runs == 0 || self.failures < 2 + 4 + 2 + 4 + 2 + 4 + 2 + 4) && i < 400 {
+        while (
+            self.pooled.runs == 0
+                || self.pinned.runs == 0
+                || self.failures < 2 + 4 + 2 + 4 + 2 + 4 + 2 + 4
+        )
+            && i < 400
+        {
             std::time::sleep(10ms);
             i = i + 1;
         }
         std::time::sleep(50ms);
-        std::test::assert_eq_int(self.pooled.births, 3, "a pool child's re-birth that failed its check was restarted again");
+        std::test::assert_eq_int(
+            self.pooled.births,
+            3,
+            "a pool child's re-birth that failed its check was restarted again",
+        );
         std::test::assert_eq_int(self.pooled.runs, 1, "and ran once on its pool");
-        std::test::assert_eq_int(self.pooled_never.births, 4, "a pool child: three checked restarts");
+        std::test::assert_eq_int(
+            self.pooled_never.births,
+            4,
+            "a pool child: three checked restarts",
+        );
         std::test::assert_eq_int(self.pooled_never.runs, 0, "then quarantined");
-        std::test::assert_eq_int(self.pinned.births, 3, "a pinned child's re-birth that failed its check was restarted again");
+        std::test::assert_eq_int(
+            self.pinned.births,
+            3,
+            "a pinned child's re-birth that failed its check was restarted again",
+        );
         std::test::assert_eq_int(self.pinned.runs, 1, "and ran once on its thread");
-        std::test::assert_eq_int(self.pinned_never.births, 4, "a pinned child: three checked restarts");
+        std::test::assert_eq_int(
+            self.pinned_never.births,
+            4,
+            "a pinned child: three checked restarts",
+        );
         std::test::assert_eq_int(self.pinned_never.runs, 0, "then quarantined");
-        std::test::assert_eq_int(self.failures, 2 + 4 + 2 + 4 + 2 + 4 + 2 + 4, "every failed check reached the handler");
+        std::test::assert_eq_int(
+            self.failures,
+            2 + 4 + 2 + 4 + 2 + 4 + 2 + 4,
+            "every failed check reached the handler",
+        );
     }
 }
 

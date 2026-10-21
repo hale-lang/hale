@@ -38,8 +38,10 @@ fn json_str(s: String) -> String {
 locus UsageJson {
     fn encode(u: Usage) -> Bytes fallible(CodecError) {
         let id = if len(u.id) > 0 { "\"id\":" + json_str(u.id) + "," } else { "" };
-        return std::bytes::from_string("{" + id + "\"project\":" + json_str(u.project) + ",\"model\":" + json_str(u.model)
-                + ",\"input_tokens\":" + to_string(u.input_tokens) + ",\"output_tokens\":" + to_string(u.output_tokens) + ",\"micros\":" + to_string(u.micros) + "}");
+        return std::bytes::from_string(
+            "{" + id + "\"project\":" + json_str(u.project) + ",\"model\":" + json_str(u.model)
+                + ",\"input_tokens\":" + to_string(u.input_tokens) + ",\"output_tokens\":"
+                + to_string(u.output_tokens) + ",\"micros\":" + to_string(u.micros) + "}");
     }
     fn decode(b: Bytes) -> Usage fallible(CodecError) {
         let t = std::str::from_bytes(b);
@@ -66,7 +68,14 @@ main locus Heart {
         eprintln("heart: the stream did not take the event: ", c.last_error);
     }
     run() {
-        UsageRecorded <- Usage { id: self.id, project: "demo", model: "small", input_tokens: 12, output_tokens: 34, micros: 56 };
+        UsageRecorded <- Usage {
+            id: self.id,
+            project: "demo",
+            model: "small",
+            input_tokens: 12,
+            output_tokens: 34,
+            micros: 56,
+        };
         let mut i = 0;
         while self.nerves.acked == 0 && i < 1000 {
             std::time::sleep(10ms);
@@ -83,12 +92,33 @@ main locus Heart {
 }
 
 fn main() {
-    if std::env::args_count() < 4 { eprintln("usage: heart <nats url> <subject prefix> <id>"); return; }
+    if std::env::args_count() < 4 {
+        eprintln("usage: heart <nats url> <subject prefix> <id>");
+        return;
+    }
     let id = if std::env::arg(3) == "-" { "" } else { std::env::arg(3) };
     // the application's own account: its user, and its password the
     // vault's entry, as its node names them (HALE_DNA_NATS_USER_APP,
     // HALE_DNA_NATS_VAULT_APP), presented on CONNECT alone (GH #989)
-    let user = if std::env::var_exists("HALE_DNA_NATS_USER_APP") { std::env::var("HALE_DNA_NATS_USER_APP") } else { "" };
-    let vault = if std::env::var_exists("HALE_DNA_NATS_VAULT_APP") { std::env::var("HALE_DNA_NATS_VAULT_APP") } else { "" };
-    Heart { id: id, nerves: nats::NatsConn { url: std::env::arg(1), user: user, credential: std::secret::Credential { vault: vault }, name: "heart", subject_prefix: std::env::arg(2), jetstream: true } };
+    let user = if std::env::var_exists("HALE_DNA_NATS_USER_APP") {
+        std::env::var("HALE_DNA_NATS_USER_APP")
+    } else {
+        ""
+    };
+    let vault = if std::env::var_exists("HALE_DNA_NATS_VAULT_APP") {
+        std::env::var("HALE_DNA_NATS_VAULT_APP")
+    } else {
+        ""
+    };
+    Heart {
+        id: id,
+        nerves: nats::NatsConn {
+            url: std::env::arg(1),
+            user: user,
+            credential: std::secret::Credential { vault: vault },
+            name: "heart",
+            subject_prefix: std::env::arg(2),
+            jetstream: true,
+        },
+    };
 }

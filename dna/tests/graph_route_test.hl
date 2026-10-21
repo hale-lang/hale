@@ -17,7 +17,11 @@ import "../core" as dna;
 import "../operations" as ops;
 
 fn source() -> String {
-    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
@@ -40,23 +44,44 @@ fn field_of(raw: String, field: String) -> String {
 locus App {
     params { repo: String = ""; head: String = ""; owner: String = ""; identity: String = ""; }
     fn dna(args: String) -> dna::RunResult {
-        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+        return dna::run_tool_timeout(
+            900,
+            "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+                + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args,
+        );
     }
     // `init` keeps the owner's DSN: the record is born in memory (GH #1590),
     // and the fixture's memory is the owner's, never compose's
     fn init() -> dna::RunResult {
-        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.owner + "\n" + dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach"));
+        return dna::run_tool_timeout(
+            900,
+            "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+                + self.repo + "\n" + self.owner + "\n"
+                + dna::in_habitat(toolchain() + "\nhabitat\ngraft\n.\n--attach"),
+        );
     }
     // Ratify every proposal `author` made, as the review path writes it.
     fn ratify(author: String) {
-        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let j = dna::RecordJournal { repo: self.repo };
         let mut rows = "";
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "author") == author { rows = rows + e.entity + "\t" + std::json::find_string_field(e.body, "review_id") + "\t" + std::json::find_string_field(e.body, "kind") + "\t" + std::json::find_string_field(e.body, "target") + "\n"; }
-            if e.kind == "knowledge.ratified" { rows = std::str::replace(rows, e.entity + "\t", "done\t"); }
+            if e.kind == "knowledge.proposed"
+                && std::json::find_string_field(e.body, "author") == author
+            {
+                rows = rows + e.entity + "\t" + std::json::find_string_field(e.body, "review_id")
+                    + "\t" + std::json::find_string_field(e.body, "kind") + "\t"
+                    + std::json::find_string_field(e.body, "target") + "\n";
+            }
+            if e.kind == "knowledge.ratified" {
+                rows = std::str::replace(rows, e.entity + "\t", "done\t");
+            }
             i = i + 1;
         }
         while len(rows) > 0 {
@@ -79,7 +104,10 @@ locus App {
             b.string_field("target", tail[(t3 + 1)..len(tail)]);
             b.string_field("class", "initiative");
             b.end_object();
-            std::test::assert(j.append(j.revision(), "knowledge.ratified", line[0..t1], b.result()).ok, "ratified " + line[0..t1]);
+            std::test::assert(
+                j.append(j.revision(), "knowledge.ratified", line[0..t1], b.result()).ok,
+                "ratified " + line[0..t1],
+            );
         }
     }
     fn project() {
@@ -88,19 +116,42 @@ locus App {
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.identity };
         std::test::assert(store.open(), "memory opens: " + store.last_error());
         // the record's own authors: a holder is a person the record knows
-        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let j = dna::RecordJournal { repo: self.repo };
-        let r = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: self.repo }, j.revision(), "", "local", j);
+        let r = ops::apply_record_to(
+            store,
+            j,
+            dna::MemoryReceipts { repo: self.repo },
+            j.revision(),
+            "",
+            "local",
+            j,
+        );
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         store.close();
     }
     run() {
-        self.owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-        if len(self.owner) == 0 { eprintln("graph_route_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+        self.owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
+        if len(self.owner) == 0 {
+            eprintln("graph_route_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+            return;
+        }
         let scratch = dna::scratch_root("graph-route");
         self.repo = scratch + "/voice";
         let made = dna::voice_repo(source(), self.repo, "t", true);
-        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+        std::test::assert_eq_int(
+            made.code,
+            0,
+            "the fixture, a repository of its own: " + made.stderr,
+        );
         let init = self.init();
         std::test::assert_eq_int(init.code, 0, "hale habitat graft: " + init.stdout + init.stderr);
 
@@ -110,22 +161,70 @@ locus App {
         // (a hold is asked of a running organization, `hale dna fill`, which
         // graph_holds_test drives; here the ratified hold is its graph row)
         self.ratify("hale habitat graft");
-        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let receipts = dna::MemoryReceipts { repo: self.repo };
-        let law = "sha256:" + receipts.store("{\"kind\": \"practice\", \"text\": \"a change to a contract is a new migration, never an edit\", \"author\": \"board\", \"target\": \"contract:spec/store.md\", \"provenance\": \"proposed\", \"law\": true}");
-        let advice = "sha256:" + receipts.store("{\"kind\": \"practice\", \"text\": \"prefer an additive change to the caller API\", \"author\": \"board\", \"target\": \"contract:spec/openapi.yaml\", \"provenance\": \"proposed\", \"law\": false}");
+        let law = "sha256:"
+            + receipts.store(
+                "{\"kind\": \"practice\", \"text\": \"a change to a contract is a new migration, never an edit\", \"author\": \"board\", \"target\": \"contract:spec/store.md\", \"provenance\": \"proposed\", \"law\": true}",
+            );
+        let advice = "sha256:"
+            + receipts.store(
+                "{\"kind\": \"practice\", \"text\": \"prefer an additive change to the caller API\", \"author\": \"board\", \"target\": \"contract:spec/openapi.yaml\", \"provenance\": \"proposed\", \"law\": false}",
+            );
         let j = dna::RecordJournal { repo: self.repo };
         // grace is a person the record knows: a row in her name
         let as_grace = dna::RecordJournal { repo: self.repo, author: "grace" };
-        std::test::assert(as_grace.append(as_grace.revision(), "note.kept", "n-grace", "grace was here").ok, "a row in grace's name: " + as_grace.last_error());
+        std::test::assert(
+            as_grace.append(as_grace.revision(), "note.kept", "n-grace", "grace was here").ok,
+            "a row in grace's name: " + as_grace.last_error(),
+        );
         let hold = ops::GraphEdge { kind: "holds" };
         hold.member("position", "position:api/reviewer");
         hold.member("holder", "grace");
-        std::test::assert(j.append(j.revision(), "graph.edge", hold.id(), hold.body()).ok, "grace holds api/reviewer");
-        std::test::assert(j.append(j.revision(), "knowledge.proposed", advice, "{\"class\": \"initiative\", \"target\": \"contract:spec/openapi.yaml\"}").ok, "a practice proposed for openapi.yaml");
-        std::test::assert(j.append(j.revision(), "knowledge.ratified", advice, "{\"class\": \"initiative\", \"target\": \"contract:spec/openapi.yaml\", \"decided_by\": \"ada\"}").ok, "and ratified as advice");
-        std::test::assert(j.append(j.revision(), "knowledge.proposed", law, "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\"}").ok, "a practice proposed for store.md");
-        std::test::assert(j.append(j.revision(), "knowledge.ratified", law, "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\", \"decided_by\": \"ada\"}").ok, "and ratified: store.md is law");
+        std::test::assert(
+            j.append(j.revision(), "graph.edge", hold.id(), hold.body()).ok,
+            "grace holds api/reviewer",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "knowledge.proposed",
+                advice,
+                "{\"class\": \"initiative\", \"target\": \"contract:spec/openapi.yaml\"}",
+            ).ok,
+            "a practice proposed for openapi.yaml",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "knowledge.ratified",
+                advice,
+                "{\"class\": \"initiative\", \"target\": \"contract:spec/openapi.yaml\", \"decided_by\": \"ada\"}",
+            ).ok,
+            "and ratified as advice",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "knowledge.proposed",
+                law,
+                "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\"}",
+            ).ok,
+            "a practice proposed for store.md",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "knowledge.ratified",
+                law,
+                "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\", \"decided_by\": \"ada\"}",
+            ).ok,
+            "and ratified: store.md is law",
+        );
         self.identity = dna::MemoryRecord { repo: self.repo }.identity();
         // the record's roles into the vault first, as its bootstrap does (GH #989)
         let provisioned = dna::provision_record_roles(self.identity, "");
@@ -138,48 +237,135 @@ locus App {
         // consumer's, against the gates guarding it
         let api = self.dna("route\n--json\nspec/openapi.yaml");
         std::test::assert_eq_int(api.code, 0, "route openapi.yaml: " + api.stderr);
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(api.stdout, "signers"), "position"), "position:api/reviewer\nposition:node/reviewer\nposition:ui/reviewer\n", "api's reviewer signs it, node's and ui's consume it, and advice bound to it is no law the board signs: " + api.stdout);
-        std::test::assert_eq_str(dna::show_strings(std::json::find_field_raw(api.stdout, "evidence")), "gate:ci/api\ngate:ci/contracts\n", "judged against ci/api and ci/contracts: " + api.stdout);
-        std::test::assert(!std::str::contains(api.stdout, "no position reviews it"), "every consumer has a reviewer: " + api.stdout);
-        std::test::assert(std::str::contains(api.stdout, "[grace] signs openapi.yaml"), "a signer with who holds it: " + api.stdout);
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(api.stdout, "signers"), "position"),
+            "position:api/reviewer\nposition:node/reviewer\nposition:ui/reviewer\n",
+            "api's reviewer signs it, node's and ui's consume it, and advice bound to it is no law the board signs: "
+                + api.stdout,
+        );
+        std::test::assert_eq_str(
+            dna::show_strings(std::json::find_field_raw(api.stdout, "evidence")),
+            "gate:ci/api\ngate:ci/contracts\n",
+            "judged against ci/api and ci/contracts: " + api.stdout,
+        );
+        std::test::assert(
+            !std::str::contains(api.stdout, "no position reviews it"),
+            "every consumer has a reviewer: " + api.stdout,
+        );
+        std::test::assert(
+            std::str::contains(api.stdout, "[grace] signs openapi.yaml"),
+            "a signer with who holds it: " + api.stdout,
+        );
 
         // ---- a change under api/: api's reviewer alone, against ci/api
         let code = self.dna("route\n--json\napi/endpoints.hl");
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(code.stdout, "signers"), "position"), "position:api/reviewer\n", "api's reviewer alone: " + code.stdout);
-        std::test::assert_eq_str(dna::show_strings(std::json::find_field_raw(code.stdout, "evidence")), "gate:ci/api\n", "against ci/api: " + code.stdout);
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(code.stdout, "signers"), "position"),
+            "position:api/reviewer\n",
+            "api's reviewer alone: " + code.stdout,
+        );
+        std::test::assert_eq_str(
+            dna::show_strings(std::json::find_field_raw(code.stdout, "evidence")),
+            "gate:ci/api\n",
+            "against ci/api: " + code.stdout,
+        );
 
         // ---- a contract that is law: the board signs too
         let store = self.dna("route\n--json\nspec/store.md");
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(store.stdout, "signers"), "position"), "position:postgres/reviewer\nposition:api/reviewer\nposition:brain/reviewer\nposition:board\n", "store.md's reviewer, its consumers' and the board: " + store.stdout);
-        std::test::assert(std::str::contains(store.stdout, "store.md is law"), "the board because it is law: " + store.stdout);
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(store.stdout, "signers"), "position"),
+            "position:postgres/reviewer\nposition:api/reviewer\nposition:brain/reviewer\nposition:board\n",
+            "store.md's reviewer, its consumers' and the board: " + store.stdout,
+        );
+        std::test::assert(
+            std::str::contains(store.stdout, "store.md is law"),
+            "the board because it is law: " + store.stdout,
+        );
 
         // ---- a path the graph does not hold: the fallback
         let none = self.dna("route\n--json\nDockerfile");
-        std::test::assert(std::str::contains(none.stdout, "\"signers\": []") && std::str::contains(none.stdout, "\"path\": \"Dockerfile\"") && std::str::contains(none.stdout, "\"fallback_to\": \"the Review's own authority"), "left to the fallback, which is named: " + none.stdout);
+        std::test::assert(
+            std::str::contains(none.stdout, "\"signers\": []")
+                && std::str::contains(none.stdout, "\"path\": \"Dockerfile\"")
+                && std::str::contains(none.stdout, "\"fallback_to\": \"the Review's own authority"),
+            "left to the fallback, which is named: " + none.stdout,
+        );
         let none_text = self.dna("route\nDockerfile");
-        std::test::assert(std::str::contains(none_text.stdout, "against\n  no gate guards it\n") && std::str::contains(none_text.stdout, "left to the fallback, the Review's own authority (the task routers of GH #697 when they exist)\n"), "said in words: " + none_text.stdout);
+        std::test::assert(
+            std::str::contains(none_text.stdout, "against\n  no gate guards it\n")
+                && std::str::contains(
+                    none_text.stdout,
+                    "left to the fallback, the Review's own authority (the task routers of GH #697 when they exist)\n",
+                ),
+            "said in words: " + none_text.stdout,
+        );
 
         // ---- a deployment's file: its operator signs, against its gate
         let compose = self.dna("route\n--json\ncompose.yaml");
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(compose.stdout, "signers"), "position"), "position:compose/operator\n", "compose's operator signs compose.yaml: " + compose.stdout);
-        std::test::assert(std::str::contains(dna::show_strings(std::json::find_field_raw(compose.stdout, "evidence")), "gate:ci/image\n") && std::str::contains(compose.stdout, "operates compose"), "against ci/image, which gates compose: " + compose.stdout);
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(compose.stdout, "signers"), "position"),
+            "position:compose/operator\n",
+            "compose's operator signs compose.yaml: " + compose.stdout,
+        );
+        std::test::assert(
+            std::str::contains(
+                dna::show_strings(std::json::find_field_raw(compose.stdout, "evidence")),
+                "gate:ci/image\n",
+            )
+                && std::str::contains(compose.stdout, "operates compose"),
+            "against ci/image, which gates compose: " + compose.stdout,
+        );
 
         // ---- from a subdirectory: a path is the repository's
-        let sub = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1/api\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\nroute\n--json\nendpoints.hl\n../spec/store.md");
-        std::test::assert(std::str::contains(sub.stdout, "position:api/reviewer") && std::str::contains(sub.stdout, "position:board"), "endpoints.hl from api/ is api/endpoints.hl, and ../spec/store.md is spec/store.md: " + sub.stdout + sub.stderr);
+        let sub = dna::run_tool_timeout(
+            900,
+            "sh\n-c\ncd \"$1/api\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n"
+                + self.repo + "\n" + self.head + "\n" + toolchain()
+                + "\ndna\nroute\n--json\nendpoints.hl\n../spec/store.md",
+        );
+        std::test::assert(
+            std::str::contains(sub.stdout, "position:api/reviewer")
+                && std::str::contains(sub.stdout, "position:board"),
+            "endpoints.hl from api/ is api/endpoints.hl, and ../spec/store.md is spec/store.md: "
+                + sub.stdout + sub.stderr,
+        );
 
         // ---- --diff: the paths a commit touches
-        let changed = dna::run_tool("sh\n-c\ncd \"$1\" && echo '// changed' >> api/main.hl && echo change >> node/main.hl && git commit -qam change\nsh\n" + self.repo);
-        std::test::assert_eq_int(changed.code, 0, "a commit touching api and node: " + changed.stderr);
+        let changed = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && echo '// changed' >> api/main.hl && echo change >> node/main.hl && git commit -qam change\nsh\n"
+                + self.repo,
+        );
+        std::test::assert_eq_int(
+            changed.code,
+            0,
+            "a commit touching api and node: " + changed.stderr,
+        );
         let diff = self.dna("route\n--diff\nHEAD~1..HEAD");
         std::test::assert_eq_int(diff.code, 0, "route --diff: " + diff.stderr);
-        std::test::assert(std::str::starts_with(diff.stdout, "signed by\n  api/reviewer") && std::str::contains(diff.stdout, "\n  node/reviewer") && std::str::contains(diff.stdout, "against\n  ci/api") && std::str::contains(diff.stdout, "\n  ci/node"), "both processes' reviewers, against both gates: " + diff.stdout);
+        std::test::assert(
+            std::str::starts_with(diff.stdout, "signed by\n  api/reviewer")
+                && std::str::contains(diff.stdout, "\n  node/reviewer")
+                && std::str::contains(diff.stdout, "against\n  ci/api")
+                && std::str::contains(diff.stdout, "\n  ci/node"),
+            "both processes' reviewers, against both gates: " + diff.stdout,
+        );
 
         // ---- a renamed contract: its old path still reaches its signers
-        let moved = dna::run_tool("sh\n-c\ncd \"$1\" && git mv spec/openapi.yaml openapi.yaml && git commit -qm move\nsh\n" + self.repo);
-        std::test::assert_eq_int(moved.code, 0, "a commit moving openapi.yaml out of spec/: " + moved.stderr);
+        let moved = dna::run_tool(
+            "sh\n-c\ncd \"$1\" && git mv spec/openapi.yaml openapi.yaml && git commit -qm move\nsh\n"
+                + self.repo,
+        );
+        std::test::assert_eq_int(
+            moved.code,
+            0,
+            "a commit moving openapi.yaml out of spec/: " + moved.stderr,
+        );
         let rename = self.dna("route\n--json\n--diff\nHEAD~1..HEAD");
-        std::test::assert(std::str::contains(rename.stdout, "position:api/reviewer") && std::str::contains(rename.stdout, "position:node/reviewer"), "the moved contract keeps its signers: " + rename.stdout);
+        std::test::assert(
+            std::str::contains(rename.stdout, "position:api/reviewer")
+                && std::str::contains(rename.stdout, "position:node/reviewer"),
+            "the moved contract keeps its signers: " + rename.stdout,
+        );
 
         // ---- a reviews row naming a dev: the edge is the authority, so the
         // dev signs, for the document and for what it consumes; a part no
@@ -188,23 +374,48 @@ locus App {
         let dev = ops::GraphEdge { kind: "reviews" };
         dev.member("position", "position:api/dev");
         dev.member("subject", "document:DIRECTION.md");
-        std::test::assert(jr.append(jr.revision(), "graph.edge", dev.id(), dev.body()).ok, "api/dev reviews DIRECTION.md, by hand");
+        std::test::assert(
+            jr.append(jr.revision(), "graph.edge", dev.id(), dev.body()).ok,
+            "api/dev reviews DIRECTION.md, by hand",
+        );
         // (a contract's meets is one row: the latest says who meets there)
         let uses = ops::GraphEdge { kind: "meets" };
         uses.member("contract", "contract:spec/node.yaml");
         uses.member("server", "process:node");
         uses.member("consumer", "seed:spec/validate");
         uses.member("consumer", "document:DIRECTION.md");
-        std::test::assert(jr.append(jr.revision(), "graph.edge", uses.id(), uses.body()).ok, "spec/validate and DIRECTION.md consume node.yaml, by hand");
+        std::test::assert(
+            jr.append(jr.revision(), "graph.edge", uses.id(), uses.body()).ok,
+            "spec/validate and DIRECTION.md consume node.yaml, by hand",
+        );
         self.project();
         let direction = self.dna("route\n--json\nDIRECTION.md");
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(direction.stdout, "signers"), "position"), "position:api/dev\n", "the dev the edge names signs: " + direction.stdout);
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(direction.stdout, "signers"), "position"),
+            "position:api/dev\n",
+            "the dev the edge names signs: " + direction.stdout,
+        );
         let node_api = self.dna("route\n--json\nspec/node.yaml");
-        std::test::assert(std::str::contains(node_api.stdout, "\"node\": \"seed:spec/validate\"") && std::str::contains(node_api.stdout, "consumes node.yaml; no position reviews it"), "spec/validate consumes it and nothing under it reviews node.yaml: said, not dropped: " + node_api.stdout);
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(node_api.stdout, "signers"), "position"), "position:node/reviewer\nposition:api/dev\n", "node's reviewer, and whoever reviews the document consuming it: " + node_api.stdout);
+        std::test::assert(
+            std::str::contains(node_api.stdout, "\"node\": \"seed:spec/validate\"")
+                && std::str::contains(
+                    node_api.stdout,
+                    "consumes node.yaml; no position reviews it",
+                ),
+            "spec/validate consumes it and nothing under it reviews node.yaml: said, not dropped: "
+                + node_api.stdout,
+        );
+        std::test::assert_eq_str(
+            field_of(std::json::find_field_raw(node_api.stdout, "signers"), "position"),
+            "position:node/reviewer\nposition:api/dev\n",
+            "node's reviewer, and whoever reviews the document consuming it: " + node_api.stdout,
+        );
 
         // ---- the derived holes give a dev no reviews edge
-        std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "no derived edge routes to a dev");
+        std::test::assert(
+            !std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"),
+            "no derived edge routes to a dev",
+        );
 
         // ---- what a Review of a change requires (GH #1089): every position
         // the route names, each with who holds it, and the gates; a route
@@ -214,16 +425,46 @@ locus App {
         let q = dna::Pq { conn: dna::pq_conn(spine), record_id: self.identity };
         std::test::assert(q.open(), "memory opens: " + q.last_error());
         let data = q.graph_perspective("routing");
-        let law_now = dna::route_law(dna::route_bound(data), dna::MemoryReceipts { repo: self.repo });
-        let need = dna::route_requirement(data, dna::graph_route(data, "spec/openapi.yaml\n", law_now));
-        std::test::assert_eq_str(need.signers, "position:api/reviewer=grace position:node/reviewer= position:ui/reviewer=", "api's reviewer, held by grace, and node's and ui's, held by nobody and required all the same: " + need.signers);
-        std::test::assert_eq_str(need.gates, "gate:ci/api gate:ci/contracts", "against ci/api and ci/contracts: " + need.gates);
-        let unheld = dna::route_requirement(data, dna::graph_route(data, "node/main.hl\n", law_now));
-        std::test::assert_eq_str(unheld.signers + unheld.gates, "", "a route whose positions nobody holds is the fallback");
-        std::test::assert_eq_str(dna::board_requirement(data).signers, "", "nobody holds the board: practice-ratify falls back");
+        let law_now = dna::route_law(
+            dna::route_bound(data),
+            dna::MemoryReceipts { repo: self.repo },
+        );
+        let need = dna::route_requirement(
+            data,
+            dna::graph_route(data, "spec/openapi.yaml\n", law_now),
+        );
+        std::test::assert_eq_str(
+            need.signers,
+            "position:api/reviewer=grace position:node/reviewer= position:ui/reviewer=",
+            "api's reviewer, held by grace, and node's and ui's, held by nobody and required all the same: "
+                + need.signers,
+        );
+        std::test::assert_eq_str(
+            need.gates,
+            "gate:ci/api gate:ci/contracts",
+            "against ci/api and ci/contracts: " + need.gates,
+        );
+        let unheld = dna::route_requirement(
+            data,
+            dna::graph_route(data, "node/main.hl\n", law_now),
+        );
+        std::test::assert_eq_str(
+            unheld.signers + unheld.gates,
+            "",
+            "a route whose positions nobody holds is the fallback",
+        );
+        std::test::assert_eq_str(
+            dna::board_requirement(data).signers,
+            "",
+            "nobody holds the board: practice-ratify falls back",
+        );
         q.close();
 
-        std::test::assert_eq_str(dna::unmigrate(self.owner, self.identity), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(self.owner, self.identity),
+            "",
+            "this run's schema and roles dropped",
+        );
         dna::scratch_done(scratch);
     }
 }

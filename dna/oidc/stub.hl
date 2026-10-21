@@ -88,20 +88,38 @@ fn form_field(body: String, name: String) -> String {
         let amp = std::str::index_of(rest, "&");
         let part = rest[0..amp];
         rest = rest[(amp + 1)..len(rest)];
-        if std::str::starts_with(part, name + "=") { return decode(part[(len(name) + 1)..len(part)]); }
+        if std::str::starts_with(part, name + "=") {
+            return decode(part[(len(name) + 1)..len(part)]);
+        }
     }
     return "";
 }
 
-fn b64(text: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(text)); }
+fn b64(text: String) -> String {
+    return std::text::base64::url_encode(std::bytes::from_string(text));
+}
 
 // An ID token for `subject`, ES256 under the stub's published test key.
-fn stub_id_token(issuer: String, client: String, subject: String, nonce: String, ttl: Int) -> String {
+fn stub_id_token(
+    issuer: String,
+    client: String,
+    subject: String,
+    nonce: String,
+    ttl: Int
+) -> String {
     return signed_id_token(STUB_KEY, STUB_KID, issuer, client, subject, nonce, ttl);
 }
 
 // An ID token for `subject`, ES256 under `key` (a PEM private key).
-fn signed_id_token(key: String, kid: String, issuer: String, client: String, subject: String, nonce: String, ttl: Int) -> String {
+fn signed_id_token(
+    key: String,
+    kid: String,
+    issuer: String,
+    client: String,
+    subject: String,
+    nonce: String,
+    ttl: Int
+) -> String {
     let claims = std::json::Builder { };
     claims.begin_object();
     claims.string_field("iss", issuer);
@@ -111,8 +129,12 @@ fn signed_id_token(key: String, kid: String, issuer: String, client: String, sub
     claims.int_field("iat", std::time::now());
     claims.int_field("exp", std::time::now() + ttl);
     claims.end_object();
-    let signed = b64("{\"alg\":\"ES256\",\"kid\":\"" + kid + "\",\"typ\":\"JWT\"}") + "." + b64(claims.result());
-    let sig = std::crypto::ecdsa_p256_sign(std::bytes::from_string(key), std::bytes::from_string(signed)) or b"";
+    let signed = b64("{\"alg\":\"ES256\",\"kid\":\"" + kid + "\",\"typ\":\"JWT\"}") + "."
+        + b64(claims.result());
+    let sig = std::crypto::ecdsa_p256_sign(
+        std::bytes::from_string(key),
+        std::bytes::from_string(signed),
+    ) or b"";
     return signed + "." + std::text::base64::url_encode(sig);
 }
 
@@ -138,7 +160,13 @@ locus StubIssuer {
         exchanges: Int = 0;
         refused_secrets: Int = 0;
     }
-    fn json(b: std::json::Builder) -> std::http::Response { return std::http::Response { status: 200, content_type: "application/json", body: b.result() }; }
+    fn json(b: std::json::Builder) -> std::http::Response {
+        return std::http::Response {
+            status: 200,
+            content_type: "application/json",
+            body: b.result(),
+        };
+    }
     fn token_answer(token: String) -> std::http::Response {
         let b = std::json::Builder { };
         b.begin_object();
@@ -161,7 +189,12 @@ locus StubIssuer {
             return self.json(b);
         }
         if std::http::is_route(ctx, "GET", "/jwks") {
-            return std::http::Response { status: 200, content_type: "application/json", body: "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"use\":\"sig\",\"alg\":\"ES256\",\"kid\":\"" + self.kid + "\",\"x\":\"" + self.x + "\",\"y\":\"" + self.y + "\"}]}" };
+            return std::http::Response {
+                status: 200,
+                content_type: "application/json",
+                body: "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"use\":\"sig\",\"alg\":\"ES256\",\"kid\":\""
+                    + self.kid + "\",\"x\":\"" + self.x + "\",\"y\":\"" + self.y + "\"}]}",
+            };
         }
         if std::http::is_route(ctx, "GET", "/test/exchanges") {
             b.begin_object();
@@ -175,29 +208,85 @@ locus StubIssuer {
             let hint = printable(std::http::query_param(ctx.params, "login_hint"));
             let state = std::http::query_param(ctx.params, "state");
             if len(redirect) == 0 || len(nonce) == 0 || len(state) == 0 {
-                return std::http::Response { status: 400, body: "incomplete authorization request" };
+                return std::http::Response {
+                    status: 400,
+                    body: "incomplete authorization request",
+                };
             }
             // a code goes back to a head on this machine only
-            if !std::str::starts_with(redirect, "http://127.0.0.1:") && !std::str::starts_with(redirect, "http://localhost:") {
-                return std::http::Response { status: 400, body: "redirect_uri: a head on this machine only" };
+            if !std::str::starts_with(redirect, "http://127.0.0.1:")
+                && !std::str::starts_with(redirect, "http://localhost:")
+            {
+                return std::http::Response {
+                    status: 400,
+                    body: "redirect_uri: a head on this machine only",
+                };
             }
             let code = "code-" + to_string(self.codes.len() + 1);
-            self.codes.push(IssuedCode { code: code, nonce: nonce, subject: if len(hint) > 0 { hint } else if len(self.subject) > 0 { self.subject } else { STUB_SUBJECT } });
-            return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + redirect + "?code=" + code + "&state=" + state, body: "" };
+            self.codes.push(
+                IssuedCode {
+                    code: code,
+                    nonce: nonce,
+                    subject: if len(hint) > 0 {
+                        hint
+                    } else if len(self.subject) > 0 {
+                        self.subject
+                    } else {
+                        STUB_SUBJECT
+                    },
+                },
+            );
+            return std::http::Response {
+                status: 302,
+                content_type: "text/plain",
+                headers: "Location: " + redirect + "?code=" + code + "&state=" + state,
+                body: "",
+            };
         }
         if std::http::is_route(ctx, "POST", "/token") {
-            if form_field(req.body, "grant_type") == "client_credentials" { return self.service_token(form_field(req.body, "client_id"), form_field(req.body, "client_secret")); }
+            if form_field(req.body, "grant_type") == "client_credentials" {
+                return self.service_token(
+                    form_field(req.body, "client_id"),
+                    form_field(req.body, "client_secret"),
+                );
+            }
             let presented = form_field(req.body, "client_secret");
-            let secret_ok = if len(self.secret_vault) > 0 { std::secret::Credential { vault: self.secret_vault }.matches(std::bytes::from_string(presented)) } else { len(self.secret) > 0 && presented == self.secret };
+            let secret_ok = if len(self.secret_vault) > 0 {
+                std::secret::Credential { vault: self.secret_vault }.matches(
+                    std::bytes::from_string(presented),
+                )
+            } else {
+                len(self.secret) > 0 && presented == self.secret
+            };
             if !secret_ok || form_field(req.body, "client_id") != self.client {
                 self.refused_secrets = self.refused_secrets + 1;
-                return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
+                return std::http::Response {
+                    status: 401,
+                    content_type: "application/json",
+                    body: "{\"error\":\"invalid_client\"}",
+                };
             }
             // a caller that is not a browser: an ID token for the subject it names
             if form_field(req.body, "grant_type") == "urn:hale:dna:stub" {
                 let subject = form_field(req.body, "sub");
-                if len(subject) == 0 { return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_request\"}" }; }
-                return self.token_answer(signed_id_token(self.key, self.kid, self.base, self.client, subject, "", self.ttl));
+                if len(subject) == 0 {
+                    return std::http::Response {
+                        status: 400,
+                        content_type: "application/json",
+                        body: "{\"error\":\"invalid_request\"}",
+                    };
+                }
+                return self.token_answer(
+                    signed_id_token(
+                        self.key,
+                        self.kid,
+                        self.base,
+                        self.client,
+                        subject,
+                        "",
+                        self.ttl,
+                    ),
+                );
             }
             let code = form_field(req.body, "code");
             let mut i = 0;
@@ -206,11 +295,25 @@ locus StubIssuer {
                 if issued.code == code && len(code) > 0 {
                     self.codes.set(i, IssuedCode { }) or discard;
                     self.exchanges = self.exchanges + 1;
-                    return self.token_answer(signed_id_token(self.key, self.kid, self.base, self.client, issued.subject, issued.nonce, self.ttl));
+                    return self.token_answer(
+                        signed_id_token(
+                            self.key,
+                            self.kid,
+                            self.base,
+                            self.client,
+                            issued.subject,
+                            issued.nonce,
+                            self.ttl,
+                        ),
+                    );
                 }
                 i = i + 1;
             }
-            return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_grant\"}" };
+            return std::http::Response {
+                status: 400,
+                content_type: "application/json",
+                body: "{\"error\":\"invalid_grant\"}",
+            };
         }
         return std::http::Response { status: 404, body: "not found" };
     }
@@ -221,14 +324,26 @@ locus StubIssuer {
     // the same way.
     fn service_token(id: String, secret: String) -> std::http::Response {
         let entry = "oidc-service-" + id;
-        let known = len(id) > 0 && std::secret::vault_name_is_safe(entry) && std::str::contains(" " + self.services + " ", " " + id + " ");
-        if !known || len(secret) == 0 || !std::secret::Credential { vault: entry }.matches(std::bytes::from_string(secret)) {
+        let known = len(id) > 0
+            && std::secret::vault_name_is_safe(entry)
+            && std::str::contains(" " + self.services + " ", " " + id + " ");
+        if !known
+            || len(secret) == 0
+            || !std::secret::Credential { vault: entry }.matches(std::bytes::from_string(secret))
+        {
             self.refused_secrets = self.refused_secrets + 1;
-            return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
+            return std::http::Response {
+                status: 401,
+                content_type: "application/json",
+                body: "{\"error\":\"invalid_client\"}",
+            };
         }
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("access_token", signed_id_token(self.key, self.kid, self.base, self.client, id, "", self.service_ttl));
+        b.string_field(
+            "access_token",
+            signed_id_token(self.key, self.kid, self.base, self.client, id, "", self.service_ttl),
+        );
         b.string_field("token_type", "Bearer");
         b.int_field("expires_in", self.service_ttl);
         b.end_object();

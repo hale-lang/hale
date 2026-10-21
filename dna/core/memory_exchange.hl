@@ -32,7 +32,10 @@ locus MemoryExchange {
     @bounded_by(self.error)
     fn open() -> Bool {
         if self.opened { return true; }
-        if !self.ready() { self.error = self.dsn_env + " is not set: no memory to keep the inbox in"; return false; }
+        if !self.ready() {
+            self.error = self.dsn_env + " is not set: no memory to keep the inbox in";
+            return false;
+        }
         let scope = record_scope(self.repo);
         if len(scope) == 0 { self.error = "the record has no identity yet"; return false; }
         let dialled = dial_from_env(self.conn, memory_source(self.repo, self.dsn_env));
@@ -41,7 +44,10 @@ locus MemoryExchange {
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
         let sch = schema_for(scope);
         let ns = self.conn.exec("SET search_path TO " + sch + ", public");
-        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        if !ns.ok {
+            self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail;
+            return false;
+        }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
         self.opened = true;
@@ -61,7 +67,10 @@ locus MemoryExchange {
         a.add(r.entity);
         a.add(r.line);
         a.add(to_string(seq));
-        let x = self.conn.exec_params("SELECT exchange_keep($1, $2, $3, $4, $5, $6, $7::bigint)", a);
+        let x = self.conn.exec_params(
+            "SELECT exchange_keep($1, $2, $3, $4, $5, $6, $7::bigint)",
+            a,
+        );
         if !x.ok { self.error = "keep: " + x.err.kind + " " + x.err.detail; return false; }
         return true;
     }
@@ -71,7 +80,9 @@ locus MemoryExchange {
     @bounded_by(self.error)
     fn lines() -> String {
         if !self.open() { return ""; }
-        let rows = self.conn.query_all("SELECT line FROM exchange_rows ORDER BY stream_seq, sender, id, signer");
+        let rows = self.conn.query_all(
+            "SELECT line FROM exchange_rows ORDER BY stream_seq, sender, id, signer",
+        );
         if !rows.ok { self.error = "read: " + rows.err.kind + " " + rows.err.detail; return ""; }
         return rows.csv;
     }

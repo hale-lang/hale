@@ -34,14 +34,30 @@ locus ClaimedOnce {
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if (kind == "task.born" || kind == "workflow.admitted") && entity == "acme:t1" && self.refused == 0 {
+        if (kind == "task.born" || kind == "workflow.admitted")
+            && entity == "acme:t1"
+            && self.refused == 0
+        {
             self.refused = 1;
-            return dna::AppendResult { error: "claimed", expected: expected, actual: self.inner.revision() };
+            return dna::AppendResult {
+                error: "claimed",
+                expected: expected,
+                actual: self.inner.revision(),
+            };
         }
         return self.inner.append(expected, kind, entity, body);
     }
-    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        return dna::append_rows(self, expected, rows);
+    }
+    fn append_exact(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String
+    ) -> dna::AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
     fn read(i: Int) -> dna::Event { return self.inner.read(i); }
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
@@ -59,7 +75,15 @@ main locus App {
                 selection: dna::HumanFirstSelection { }
             },
             review_policy: dna::PostReviewRefactors { },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 8,
+                    review: "post",
+                },
+            },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { graph: SHARED, me: "acme", me_env: "" },
             org_id: "acme"
@@ -71,7 +95,15 @@ main locus App {
                 selection: dna::HumanFirstSelection { }
             },
             review_policy: dna::PostReviewRefactors { },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 8,
+                    review: "post",
+                },
+            },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { graph: SHARED, me_env: "" },
             org_id: "nobody"
@@ -84,7 +116,15 @@ main locus App {
                 selection: dna::HumanFirstSelection { }
             },
             review_policy: dna::PostReviewRefactors { },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 8,
+                    review: "post",
+                },
+            },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { graph: ACME_ONLY, me: "acme", me_env: "" },
             org_id: "contended"
@@ -96,13 +136,26 @@ main locus App {
                 selection: dna::HumanFirstSelection { }
             },
             review_policy: dna::PostReviewRefactors { },
-            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "refactor",
+                    max_magnitude: 8,
+                    review: "post",
+                },
+            },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { graph: SHARED, me: "north", me_env: "" },
             org_id: "north"
         };
         // a proposal's Review whose Board acme holds: its members sign
-        boarded: dna::Review = dna::Review { review_id: "k1", subject_digest: "d1", required_authority: "board", author: "editor" };
+        boarded: dna::Review = dna::Review {
+            review_id: "k1",
+            subject_digest: "d1",
+            required_authority: "board",
+            author: "editor",
+        };
     }
     fn until(j: dna::Journal, kind: String, entity: String) {
         let mut tries = 0;
@@ -132,86 +185,318 @@ main locus App {
         std::test::assert(!self.alone.shared(), "no map: one owner");
         std::test::assert_eq_str(self.map.owner_of(""), "acme", "the organization itself is `org`");
         std::test::assert_eq_str(self.map.owner_of("org/collections"), "north", "a named position");
-        std::test::assert_eq_str(self.map.owner_of("org/collections/late"), "north", "an unnamed position takes its nearest named ancestor's owner");
+        std::test::assert_eq_str(
+            self.map.owner_of("org/collections/late"),
+            "north",
+            "an unnamed position takes its nearest named ancestor's owner",
+        );
         std::test::assert_eq_str(self.map.owner_of("org/books"), "acme", "…up to the organization");
-        std::test::assert_eq_str(self.map.owner_of("app/x"), "", "a position under no named ancestor is unowned");
-        std::test::assert_eq_str(self.map.members_of("acme"), "alice carol", "members, commas or blanks");
+        std::test::assert_eq_str(
+            self.map.owner_of("app/x"),
+            "",
+            "a position under no named ancestor is unowned",
+        );
+        std::test::assert_eq_str(
+            self.map.members_of("acme"),
+            "alice carol",
+            "members, commas or blanks",
+        );
         std::test::assert_eq_str(self.map.owner_of_person("bob"), "north", "a person's owner");
         std::test::assert_eq_str(self.map.owners(), "acme north", "every organization once");
-        std::test::assert(self.map.admits("org/books") && !self.map.admits("org/collections") && !self.map.admits("app/x"), "acme admits its own positions only");
-        std::test::assert(self.alone.admits("org/anything"), "with no organization holding anything, everything is its own");
-        std::test::assert(self.early.shared() && !self.early.admits("org/books"), "a body that names its organization admits nothing before memory says what it holds");
-        std::test::assert_eq_str(self.map.why_not("org/collections"), "`org/collections` is owned by north, not acme", "the refusal names the owner");
-        std::test::assert(std::str::contains(self.map.why_not("app/x"), "has no owner"), "…or that there is none: " + self.map.why_not("app/x"));
-        std::test::assert_eq_str(dna::approver_owner("position:board=alice,carol position:org/collections=bob", "carol"), "position:board", "the position a signer holds, from a route's signers");
-        std::test::assert_eq_str(dna::approver_owner("position:board=alice,carol position:org/collections=bob", "eve"), "", "…or none");
+        std::test::assert(
+            self.map.admits("org/books")
+                && !self.map.admits("org/collections")
+                && !self.map.admits("app/x"),
+            "acme admits its own positions only",
+        );
+        std::test::assert(
+            self.alone.admits("org/anything"),
+            "with no organization holding anything, everything is its own",
+        );
+        std::test::assert(
+            self.early.shared() && !self.early.admits("org/books"),
+            "a body that names its organization admits nothing before memory says what it holds",
+        );
+        std::test::assert_eq_str(
+            self.map.why_not("org/collections"),
+            "`org/collections` is owned by north, not acme",
+            "the refusal names the owner",
+        );
+        std::test::assert(
+            std::str::contains(self.map.why_not("app/x"), "has no owner"),
+            "…or that there is none: " + self.map.why_not("app/x"),
+        );
+        std::test::assert_eq_str(
+            dna::approver_owner("position:board=alice,carol position:org/collections=bob", "carol"),
+            "position:board",
+            "the position a signer holds, from a route's signers",
+        );
+        std::test::assert_eq_str(
+            dna::approver_owner("position:board=alice,carol position:org/collections=bob", "eve"),
+            "",
+            "…or none",
+        );
         // ---- ids and claims carry their owner
         std::test::assert_eq_str(dna::own_prefix("acme"), "acme:", "a prefix");
         std::test::assert_eq_str(dna::own_prefix(""), "", "none for the one owner");
-        std::test::assert_eq_int(dna::id_number("acme:t3", "t"), 3, "the number of a namespaced id");
+        std::test::assert_eq_int(
+            dna::id_number("acme:t3", "t"),
+            3,
+            "the number of a namespaced id",
+        );
         std::test::assert_eq_int(dna::id_number("t7", "t"), 7, "…and of a bare one");
         std::test::assert_eq_int(dna::id_number("acme:m2", "t"), -1, "another family is not");
         std::test::assert_eq_str(dna::id_owner("acme:t3"), "acme", "the owner of an id");
-        std::test::assert(dna::owned_by("acme", "acme:t3") && !dna::owned_by("acme", "north:t3") && dna::owned_by("", "t3"), "ownership of an id");
-        std::test::assert_eq_str(dna::effect_key("acme", "apply", "c0ffee"), "acme:apply:c0ffee", "a claim's key");
-        std::test::assert_eq_str(dna::effect_key("", "apply", "c0ffee"), "apply:c0ffee", "…unprefixed for the one owner");
-        std::test::assert(dna::effect_family("acme:apply:c0ffee") == "apply" && dna::effect_family("apply:c0ffee") == "apply" && dna::effect_family("rollback:acme:m2:base1") == "rollback", "a key's family, prefixed or not");
-        std::test::assert(dna::effect_subject("acme:apply:c0ffee") == "c0ffee" && dna::effect_subject("apply:c0ffee") == "c0ffee" && dna::effect_subject("rollback:acme:m2:base1") == "acme:m2:base1", "…and its subject");
+        std::test::assert(
+            dna::owned_by("acme", "acme:t3")
+                && !dna::owned_by("acme", "north:t3")
+                && dna::owned_by("", "t3"),
+            "ownership of an id",
+        );
+        std::test::assert_eq_str(
+            dna::effect_key("acme", "apply", "c0ffee"),
+            "acme:apply:c0ffee",
+            "a claim's key",
+        );
+        std::test::assert_eq_str(
+            dna::effect_key("", "apply", "c0ffee"),
+            "apply:c0ffee",
+            "…unprefixed for the one owner",
+        );
+        std::test::assert(
+            dna::effect_family("acme:apply:c0ffee") == "apply"
+                && dna::effect_family("apply:c0ffee") == "apply"
+                && dna::effect_family("rollback:acme:m2:base1") == "rollback",
+            "a key's family, prefixed or not",
+        );
+        std::test::assert(
+            dna::effect_subject("acme:apply:c0ffee") == "c0ffee"
+                && dna::effect_subject("apply:c0ffee") == "c0ffee"
+                && dna::effect_subject("rollback:acme:m2:base1") == "acme:m2:base1",
+            "…and its subject",
+        );
         // ---- admission
-        let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" });
-        std::test::assert_eq_str(mine, "acme:t1", "an intent for acme's position is admitted by acme's body, under acme's id: " + mine);
+        let mine = self.acme.ask(
+            dna::Intent {
+                id: "i1",
+                outcome: "chase the late invoice",
+                from: "alice",
+                to: "org/books",
+            },
+        );
+        std::test::assert_eq_str(
+            mine,
+            "acme:t1",
+            "an intent for acme's position is admitted by acme's body, under acme's id: " + mine,
+        );
         // GH #682: the same intent offered again (the host's relay of the row a
         // head also published, or a re-delivery) is admitted once
         let rows_before = self.acme.journal.revision();
-        std::test::assert_eq_str(self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }), "acme:t1", "offered again by id: the Task born for it answers");
-        std::test::assert_eq_int(self.acme.journal.revision(), rows_before, "and nothing more is journaled");
-        let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" });
-        std::test::assert_eq_str(theirs, "refused: not this organization's to admit — `org/collections` is owned by north, not acme", "an intent for north's position is refused by name");
-        std::test::assert(std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"), "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"));
-        let unnamed = self.nobody.ask(dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" });
-        std::test::assert(std::str::contains(unnamed, "this body names no owner"), "a body that names no organization admits nothing over a shared record: " + unnamed);
+        std::test::assert_eq_str(
+            self.acme.ask(
+                dna::Intent {
+                    id: "i1",
+                    outcome: "chase the late invoice",
+                    from: "alice",
+                    to: "org/books",
+                },
+            ),
+            "acme:t1",
+            "offered again by id: the Task born for it answers",
+        );
+        std::test::assert_eq_int(
+            self.acme.journal.revision(),
+            rows_before,
+            "and nothing more is journaled",
+        );
+        let theirs = self.acme.ask(
+            dna::Intent {
+                id: "i2",
+                outcome: "call the collections agency",
+                from: "alice",
+                to: "org/collections",
+            },
+        );
+        std::test::assert_eq_str(
+            theirs,
+            "refused: not this organization's to admit — `org/collections` is owned by north, not acme",
+            "an intent for north's position is refused by name",
+        );
+        std::test::assert(
+            std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"),
+            "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"),
+        );
+        let unnamed = self.nobody.ask(
+            dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" },
+        );
+        std::test::assert(
+            std::str::contains(unnamed, "this body names no owner"),
+            "a body that names no organization admits nothing over a shared record: " + unnamed,
+        );
         // ---- a taken claim: the loser mints the next id
-        let again = self.contended.ask(dna::Intent { id: "i9", outcome: "file the return", from: "alice", to: "" });
-        std::test::assert_eq_str(again, "acme:t2", "the first id was claimed elsewhere; the birth lands under the next: " + again);
-        std::test::assert_eq_str(self.last(self.contended.journal, "intent.refused"), "", "…and nothing was refused");
-        std::test::assert(std::str::contains(self.last(self.contended.journal, "workflow.admitted"), "\"request\": \"i9\"") && std::str::contains(self.last(self.contended.journal, "workflow.admitted"), "file the return"), "the birth is the admission under the re-minted id (card 18)");
+        let again = self.contended.ask(
+            dna::Intent { id: "i9", outcome: "file the return", from: "alice", to: "" },
+        );
+        std::test::assert_eq_str(
+            again,
+            "acme:t2",
+            "the first id was claimed elsewhere; the birth lands under the next: " + again,
+        );
+        std::test::assert_eq_str(
+            self.last(self.contended.journal, "intent.refused"),
+            "",
+            "…and nothing was refused",
+        );
+        std::test::assert(
+            std::str::contains(
+                self.last(self.contended.journal, "workflow.admitted"),
+                "\"request\": \"i9\"",
+            )
+                && std::str::contains(
+                    self.last(self.contended.journal, "workflow.admitted"),
+                    "file the return",
+                ),
+            "the birth is the admission under the re-minted id (card 18)",
+        );
         // ---- the count restores from this owner's births alone
-        self.acme.journal.append(self.acme.journal.revision(), "task.born", "north:t9", "i: theirs");
-        self.acme.journal.append(self.acme.journal.revision(), "task.born", "acme:t5", "i: ours, from before");
+        self.acme.journal.append(
+            self.acme.journal.revision(),
+            "task.born",
+            "north:t9",
+            "i: theirs",
+        );
+        self.acme.journal.append(
+            self.acme.journal.revision(),
+            "task.born",
+            "acme:t5",
+            "i: ours, from before",
+        );
         self.acme.rehydrate();
-        std::test::assert_eq_str(self.acme.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
+        std::test::assert_eq_str(
+            self.acme.next_id(),
+            "acme:t6",
+            "after a restart the next id follows acme's own highest, not north's",
+        );
         // ---- a job for north's member is offered, not handed
         // card 18: a person's job enters as an ask the leader called one; the
         // case the engine's human leaf becomes is handed — or offered
-        let t7 = self.acme.admit_ask(dna::Intent { id: "i7", outcome: "chase the agency", from: "riley" }, dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader", parsed: true }, true);
+        let t7 = self.acme.admit_ask(
+            dna::Intent { id: "i7", outcome: "chase the agency", from: "riley" },
+            dna::Plan {
+                kind: "person",
+                assignee: "bob",
+                narrative: "bob calls them",
+                by: "leader",
+                parsed: true,
+            },
+            true,
+        );
         std::test::assert_eq_str(t7, "acme:t7", "admitted: " + t7);
         let c7 = t7 + ".s0.p";
         self.until(self.acme.journal, "task.transfer_requested", c7);
         let offered = self.last(self.acme.journal, "task.transfer_requested");
-        std::test::assert(std::str::contains(offered, "\"owner\": \"acme\"") && std::str::contains(offered, "\"to\": \"north\"") && std::str::contains(offered, "\"assignee\": \"bob\""), "the job for north's member is offered to north: " + offered);
-        std::test::assert(!std::str::contains(self.last(self.acme.journal, "task.handed"), c7), "…and not handed by acme");
-        let t8 = self.acme.admit_ask(dna::Intent { id: "i8", outcome: "close the books", from: "riley" }, dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader", parsed: true }, true);
+        std::test::assert(
+            std::str::contains(offered, "\"owner\": \"acme\"")
+                && std::str::contains(offered, "\"to\": \"north\"")
+                && std::str::contains(offered, "\"assignee\": \"bob\""),
+            "the job for north's member is offered to north: " + offered,
+        );
+        std::test::assert(
+            !std::str::contains(self.last(self.acme.journal, "task.handed"), c7),
+            "…and not handed by acme",
+        );
+        let t8 = self.acme.admit_ask(
+            dna::Intent { id: "i8", outcome: "close the books", from: "riley" },
+            dna::Plan {
+                kind: "person",
+                assignee: "alice",
+                narrative: "alice closes them",
+                by: "leader",
+                parsed: true,
+            },
+            true,
+        );
         let c8 = t8 + ".s0.p";
         self.until(self.acme.journal, "task.handed", c8);
-        std::test::assert(std::str::contains(self.last(self.acme.journal, "task.handed"), "\"assignee\": \"alice\""), "a job for acme's own member is handed as ever");
+        std::test::assert(
+            std::str::contains(
+                self.last(self.acme.journal, "task.handed"),
+                "\"assignee\": \"alice\"",
+            ),
+            "a job for acme's own member is handed as ever",
+        );
         // north's controller hands it only once one of its members accepted
-        self.north.journal.append(self.north.journal.revision(), "task.transfer_requested", c7, offered);
-        std::test::assert_eq_int(self.north.admit_transfers(), 0, "nothing to hand before an acceptance");
-        self.north.journal.append(self.north.journal.revision(), "task.transfer_accepted", c7, "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}");
+        self.north.journal.append(
+            self.north.journal.revision(),
+            "task.transfer_requested",
+            c7,
+            offered,
+        );
+        std::test::assert_eq_int(
+            self.north.admit_transfers(),
+            0,
+            "nothing to hand before an acceptance",
+        );
+        self.north.journal.append(
+            self.north.journal.revision(),
+            "task.transfer_accepted",
+            c7,
+            "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}",
+        );
         std::test::assert_eq_int(self.north.admit_transfers(), 1, "accepted: handed once");
         let handed = self.last(self.north.journal, "task.handed");
-        std::test::assert(std::str::contains(handed, "\"assignee\": \"bob\"") && std::str::contains(handed, "\"by\": \"north\"") && std::str::contains(handed, "\"transferred_from\": \"acme\"") && std::str::contains(handed, "\"accepted_by\": \"bob\""), "north hands it to bob in its own name, saying where it came from: " + handed);
+        std::test::assert(
+            std::str::contains(handed, "\"assignee\": \"bob\"")
+                && std::str::contains(handed, "\"by\": \"north\"")
+                && std::str::contains(handed, "\"transferred_from\": \"acme\"")
+                && std::str::contains(handed, "\"accepted_by\": \"bob\""),
+            "north hands it to bob in its own name, saying where it came from: " + handed,
+        );
         std::test::assert_eq_int(self.north.admit_transfers(), 0, "…and not again");
         // ---- a position an organization holds is signed by its members
         let routing = "{\"nodes\": [], \"unfold\": [], \"reviews\": [], \"meets\": [], \"gates\": [], \"holds\": [[\"position:board\", \"organization:acme\"], [\"organization:acme\", \"alice\"], [\"organization:acme\", \"carol\"]]}";
-        std::test::assert_eq_str(dna::route_held_by(routing, "position:board"), "alice,carol", "the Board acme holds is held by acme's members");
+        std::test::assert_eq_str(
+            dna::route_held_by(routing, "position:board"),
+            "alice,carol",
+            "the Board acme holds is held by acme's members",
+        );
         let need = dna::board_requirement(routing);
-        std::test::assert_eq_str(need.signers, "position:board=alice,carol", "a proposal's Review requires the Board, signed by any of acme's members");
+        std::test::assert_eq_str(
+            need.signers,
+            "position:board=alice,carol",
+            "a proposal's Review requires the Board, signed by any of acme's members",
+        );
         self.boarded.signers = need.signers;
-        self.boarded.on_verdict(dna::Verdict { review_id: "k1", subject_digest: "d1", verdict: "approve", reviewer: "bob", authority: "board" });
-        std::test::assert(!self.boarded.settled && std::str::contains(self.boarded.last_refusal, "holds no position this Review requires (position:board)"), "north's member is refused, whatever authority he claims: " + self.boarded.last_refusal);
-        self.boarded.on_verdict(dna::Verdict { review_id: "k1", subject_digest: "d1", verdict: "approve", reviewer: "carol", authority: "board" });
-        std::test::assert(self.boarded.settled && self.boarded.outcome == "approve", "carol, acme's, signs for the Board: settled");
+        self.boarded.on_verdict(
+            dna::Verdict {
+                review_id: "k1",
+                subject_digest: "d1",
+                verdict: "approve",
+                reviewer: "bob",
+                authority: "board",
+            },
+        );
+        std::test::assert(
+            !self.boarded.settled
+                && std::str::contains(
+                    self.boarded.last_refusal,
+                    "holds no position this Review requires (position:board)",
+                ),
+            "north's member is refused, whatever authority he claims: " + self.boarded.last_refusal,
+        );
+        self.boarded.on_verdict(
+            dna::Verdict {
+                review_id: "k1",
+                subject_digest: "d1",
+                verdict: "approve",
+                reviewer: "carol",
+                authority: "board",
+            },
+        );
+        std::test::assert(
+            self.boarded.settled && self.boarded.outcome == "approve",
+            "carol, acme's, signs for the Board: settled",
+        );
     }
 }
 fn main() { App { }; }

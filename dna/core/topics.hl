@@ -6,7 +6,15 @@
 // the Board and the outside (#521 "domain facts and topic families").
 
 // Human/external intent entering the organism through the Board.
-type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; kind: String = ""; position: String = ""; codebase: String = ""; }
+type IntentOffer {
+    intent_id: String = "";
+    outcome: String = "";
+    from: String = "";
+    to: String = "";
+    kind: String = "";
+    position: String = "";
+    codebase: String = "";
+}
 topic IntentOffered { payload: IntentOffer; subject: "dna.intent.offered"; }
 
 // GH #646 card 05: one transition of a workflow execution, proposed by the
@@ -23,7 +31,11 @@ type TransitionProposal {
     entity: String = "";
     body: String = ""; // the encoded fact (workflow_events.hl)
 }
-topic TransitionProposed { payload: TransitionProposal; subject: "dna.transition.proposed"; keyed_by scope; }
+topic TransitionProposed {
+    payload: TransitionProposal;
+    subject: "dna.transition.proposed";
+    keyed_by scope;
+}
 
 type TransitionAnswer {
     scope: String = "";
@@ -40,7 +52,11 @@ type TransitionAnswer {
     // under — card 12b — the transition may be proposed again once it does)
     basis: String = "";
 }
-topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.answered"; keyed_by key; }
+topic TransitionAnswered {
+    payload: TransitionAnswer;
+    subject: "dna.transition.answered";
+    keyed_by key;
+}
 
 // GH #646 workflow card 09: what the residents and the runtime say to
 // each other. A Work asks the runtime to run an admitted attempt, by id
@@ -49,7 +65,11 @@ topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.a
 // came later — keyed by the Work; a Work that settled tells its Step,
 // keyed by the Step; a Step that settled tells its owner.
 type AttemptRequest { scope: String = ""; attempt_id: String = ""; work_id: String = ""; }
-topic AttemptRequested { payload: AttemptRequest; subject: "dna.attempt.requested"; keyed_by scope; }
+topic AttemptRequested {
+    payload: AttemptRequest;
+    subject: "dna.attempt.requested";
+    keyed_by scope;
+}
 type AttemptReply {
     work_id: String = "";
     attempt_id: String = "";
@@ -62,26 +82,51 @@ type AttemptReply {
     why: String = "";
 }
 topic AttemptReplied { payload: AttemptReply; subject: "dna.attempt.replied"; keyed_by work_id; }
-type MemberSettlement { step_id: String = ""; key: String = ""; work_id: String = ""; disposition: String = ""; }
+type MemberSettlement {
+    step_id: String = "";
+    key: String = "";
+    work_id: String = "";
+    disposition: String = "";
+}
 topic MemberSettled { payload: MemberSettlement; subject: "dna.member.settled"; keyed_by step_id; }
 // A leaf that was never admitted and can no longer be — its first
 // admission refused by the state under a Step that has durably settled
 // — retires: no attempt, no claim, no effect to await. Not a
 // settlement (a member has answered only once its settlement is in the
 // record); its Step stops waiting for it.
-type MemberRetirement { step_id: String = ""; key: String = ""; work_id: String = ""; why: String = ""; }
+type MemberRetirement {
+    step_id: String = "";
+    key: String = "";
+    work_id: String = "";
+    why: String = "";
+}
 topic MemberRetired { payload: MemberRetirement; subject: "dna.member.retired"; keyed_by step_id; }
-type StepSettlement { step_id: String = ""; task_id: String = ""; disposition: String = ""; failed_member: String = ""; why: String = ""; }
+type StepSettlement {
+    step_id: String = "";
+    task_id: String = "";
+    disposition: String = "";
+    failed_member: String = "";
+    why: String = "";
+}
 topic StepSettled { payload: StepSettlement; subject: "dna.step.settled"; keyed_by step_id; }
 // GH #646 workflow card 10: a step that ended tells its workflow, by
 // task, once it has drained — every admitted member settled or retired
 // — so the workflow advances only behind a committed completion; a
 // cancellation is asked of a workflow by task; a workflow that settled
 // says so, by task, so its active step fences what it dispatched.
-type StepDrain { task_id: String = ""; step_id: String = ""; step_index: Int = 0; disposition: String = ""; }
+type StepDrain {
+    task_id: String = "";
+    step_id: String = "";
+    step_index: Int = 0;
+    disposition: String = "";
+}
 topic StepDrained { payload: StepDrain; subject: "dna.step.drained"; keyed_by task_id; }
 type WorkflowCancel { task_id: String = ""; reason: String = ""; }
-topic WorkflowCancelRequested { payload: WorkflowCancel; subject: "dna.workflow.cancel"; keyed_by task_id; }
+topic WorkflowCancelRequested {
+    payload: WorkflowCancel;
+    subject: "dna.workflow.cancel";
+    keyed_by task_id;
+}
 // A step fenced by its workflow's cancellation tells the Works it
 // dispatched — whatever the step's own outcome was: a step that had
 // failed and was draining keeps its failure — so an attempt still out
@@ -89,14 +134,30 @@ topic WorkflowCancelRequested { payload: WorkflowCancel; subject: "dna.workflow.
 type StepFence { step_id: String = ""; task_id: String = ""; reason: String = ""; }
 topic StepFenced { payload: StepFence; subject: "dna.step.fenced"; keyed_by step_id; }
 type WorkflowSettlement { task_id: String = ""; disposition: String = ""; reason: String = ""; }
-topic WorkflowSettled { payload: WorkflowSettlement; subject: "dna.workflow.settled"; keyed_by task_id; }
+topic WorkflowSettled {
+    payload: WorkflowSettlement;
+    subject: "dna.workflow.settled";
+    keyed_by task_id;
+}
 // GH #646 workflow card 11: child workflows. A step asks its Task for
 // a child member's execution, by the parent task; the Task, which holds
 // the bound recipe, cuts the subtree and asks the executions owner to
 // admit and run it, by scope; a child that settled tells the step that
 // spawned it, by that step; a workflow that left tells its Task.
-type ChildRequest { parent_task: String = ""; step_id: String = ""; step_index: Int = 0; key: String = ""; child_task: String = ""; definition: String = ""; revision: Int = 0; }
-topic ChildRequested { payload: ChildRequest; subject: "dna.child.requested"; keyed_by parent_task; }
+type ChildRequest {
+    parent_task: String = "";
+    step_id: String = "";
+    step_index: Int = 0;
+    key: String = "";
+    child_task: String = "";
+    definition: String = "";
+    revision: Int = 0;
+}
+topic ChildRequested {
+    payload: ChildRequest;
+    subject: "dna.child.requested";
+    keyed_by parent_task;
+}
 type ChildAdmission {
     scope: String = "";
     task_id: String = "";
@@ -139,7 +200,12 @@ topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; ke
 // or says why the execution cannot be resumed: never admitted, admitted
 // with a row the projection refused, or a child of another Task. The
 // owner holds the question outstanding and consumes the answer once.
-type AdmissionAsk { scope: String = ""; ask_id: String = ""; task_id: String = ""; kinds: String = ""; }
+type AdmissionAsk {
+    scope: String = "";
+    ask_id: String = "";
+    task_id: String = "";
+    kinds: String = "";
+}
 topic AdmissionAsked { payload: AdmissionAsk; subject: "dna.admission.asked"; keyed_by scope; }
 type AdmissionAnswer {
     scope: String = "";
@@ -154,7 +220,11 @@ type AdmissionAnswer {
     limits: AdmissionLimits = AdmissionLimits { };
     why: String = "";
 }
-topic AdmissionAnswered { payload: AdmissionAnswer; subject: "dna.admission.answered"; keyed_by scope; }
+topic AdmissionAnswered {
+    payload: AdmissionAnswer;
+    subject: "dna.admission.answered";
+    keyed_by scope;
+}
 // A Work asks the record what it holds about it before it proposes
 // anything (card 13): its current attempt, if one is admitted — that
 // attempt's number, id and performer kind are the record's, never the
@@ -176,11 +246,24 @@ type WorkState {
     attempt_disposition: String = "";
     disposition: String = "";
 }
-topic WorkStateAnswered { payload: WorkState; subject: "dna.work.state.answered"; keyed_by work_id; }
+topic WorkStateAnswered {
+    payload: WorkState;
+    subject: "dna.work.state.answered";
+    keyed_by work_id;
+}
 // An execution the owner would not run: what it was asked for and why.
 type ExecutionRefusal { scope: String = ""; task_id: String = ""; why: String = ""; }
-topic ExecutionRefused { payload: ExecutionRefusal; subject: "dna.execution.refused"; keyed_by scope; }
-type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
+topic ExecutionRefused {
+    payload: ExecutionRefusal;
+    subject: "dna.execution.refused";
+    keyed_by scope;
+}
+type ChildSettlement {
+    step_id: String = "";
+    key: String = "";
+    task_id: String = "";
+    disposition: String = "";
+}
 topic ChildSettled { payload: ChildSettlement; subject: "dna.child.settled"; keyed_by step_id; }
 // A child that left — its workflow drained and reclaimed — tells the
 // step that spawned it, by that step: the step's drain waits for this,
@@ -195,7 +278,11 @@ topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed
 // projection: an execution the record has settled is over, whatever is
 // in memory.
 type ExecutionStateAsk { scope: String = ""; task_id: String = ""; }
-topic ExecutionStateAsked { payload: ExecutionStateAsk; subject: "dna.execution.state.asked"; keyed_by scope; }
+topic ExecutionStateAsked {
+    payload: ExecutionStateAsk;
+    subject: "dna.execution.state.asked";
+    keyed_by scope;
+}
 type ExecutionState {
     task_id: String = "";
     admitted: Bool = false;
@@ -205,7 +292,11 @@ type ExecutionState {
     current_step: Int = 0; // the first step the record has not completed
     cancelled_above: String = ""; // the durable fence over the execution's ancestry (card 18, review: a restored child reads it from the record, not from a fence published before it existed)
 }
-topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
+topic ExecutionStateAnswered {
+    payload: ExecutionState;
+    subject: "dna.execution.state.answered";
+    keyed_by task_id;
+}
 // The record is writable again: a resident holding a transition the
 // record refused proposes it again. Published by whoever knows — the
 // host after a reconnect, a fixture — keyed by the committer's scope.
@@ -393,7 +484,10 @@ type KnowledgeNodeRequest {
     because: String = "";
     candidate_digest: String = "";
 }
-topic KnowledgeNodeRequested { payload: KnowledgeNodeRequest; subject: "dna.knowledge.node.requested"; }
+topic KnowledgeNodeRequested {
+    payload: KnowledgeNodeRequest;
+    subject: "dna.knowledge.node.requested";
+}
 
 // One reviewed change to an existing item's exact locus binding. The scoped
 // command and captured grant are distinct from the authoring locus.
@@ -404,7 +498,10 @@ type KnowledgeBindingRequest {
     author: String = ""; target: String = ""; by: String = ""; because: String = "";
     binding_basis: String = ""; candidate_digest: String = "";
 }
-topic KnowledgeBindingRequested { payload: KnowledgeBindingRequest; subject: "dna.knowledge.binding.requested"; }
+topic KnowledgeBindingRequested {
+    payload: KnowledgeBindingRequest;
+    subject: "dna.knowledge.binding.requested";
+}
 
 // One exact directed relationship change under an independently settled Review.
 type KnowledgeEdgeRequest {
@@ -423,12 +520,18 @@ type KnowledgeEdgeRequest {
     edge_basis: String = "";
     candidate_digest: String = "";
 }
-topic KnowledgeEdgeRequested { payload: KnowledgeEdgeRequest; subject: "dna.knowledge.edge.requested"; }
+topic KnowledgeEdgeRequested {
+    payload: KnowledgeEdgeRequest;
+    subject: "dna.knowledge.edge.requested";
+}
 
 // The durable Organization source request is re-read by exact identity. Large
 // prepared source and retained dependency metadata never travel in argv.
 type OrganizationSourceTrigger { request_id: String = ""; }
-topic OrganizationSourceRequested { payload: OrganizationSourceTrigger; subject: "dna.organization.source.requested"; }
+topic OrganizationSourceRequested {
+    payload: OrganizationSourceTrigger;
+    subject: "dna.organization.source.requested";
+}
 
 // Review requests and verdicts cross the Board (a human answers).
 type ReviewRequest {
@@ -550,7 +653,11 @@ type OrgReview {
 type TickRequest { org: String = "org"; now: Int = 0; }
 topic TickRequested { payload: TickRequest; subject: "dna.tick.requested"; keyed_by org; }
 
-topic OptimizeRequested { payload: OptimizeRequest; subject: "dna.optimize.requested"; keyed_by org; }
+topic OptimizeRequested {
+    payload: OptimizeRequest;
+    subject: "dna.optimize.requested";
+    keyed_by org;
+}
 topic OrgReviewed { payload: OrgReview; subject: "dna.org.reviewed"; keyed_by org; }
 topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }
 
@@ -614,12 +721,21 @@ topic ExpressionObserved { payload: Observation; subject: "dna.expression.observ
 // and answers pending; the assembly performs — or, for a Work whose
 // contract is the review's outcome, waits — and reports the outcome
 // for this exact attempt.
-type EditAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+type EditAsk {
+    scope: String = "";
+    attempt_id: String = "";
+    performer: String = "";
+    request: WorkRequest = WorkRequest { };
+}
 topic EditRequested { payload: EditAsk; subject: "dna.edit.requested"; keyed_by scope; }
 // The outcome of one attempt, reported for it by the adapter that did
 // the work — into the generic lifecycle: the runtime settles that
 // attempt, and only it, and the Work answers its step as any Work does.
-type AttemptReport { scope: String = ""; attempt_id: String = ""; result: WorkResult = WorkResult { }; }
+type AttemptReport {
+    scope: String = "";
+    attempt_id: String = "";
+    result: WorkResult = WorkResult { };
+}
 topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported"; keyed_by scope; }
 
 // ---- GH #995: a step the organization performs itself -------------------
@@ -630,7 +746,12 @@ topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported";
 // and reports the outcome for this exact attempt, now or when what the
 // step waits on (a verdict, the leader's word, memory's projection)
 // arrives.
-type StepAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+type StepAsk {
+    scope: String = "";
+    attempt_id: String = "";
+    performer: String = "";
+    request: WorkRequest = WorkRequest { };
+}
 topic StepRequested { payload: StepAsk; subject: "dna.step.requested"; keyed_by scope; }
 
 // ---- card 16: a human Work's case ---------------------------------------
@@ -639,7 +760,12 @@ topic StepRequested { payload: StepAsk; subject: "dna.step.requested"; keyed_by 
 // it and answers pending; the assembly admits the Work's case — its own
 // handed Task, `<task>.s<i>.<key>` — and leaves the attempt pending until
 // the person reports the case done.
-type CaseAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+type CaseAsk {
+    scope: String = "";
+    attempt_id: String = "";
+    performer: String = "";
+    request: WorkRequest = WorkRequest { };
+}
 topic CaseRequested { payload: CaseAsk; subject: "dna.case.requested"; keyed_by scope; }
 
 // ---- GH #946 slice 3: a leg's outcome for the attempt it claimed --------

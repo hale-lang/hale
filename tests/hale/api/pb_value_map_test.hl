@@ -39,7 +39,14 @@ main locus Desk {
         probe: Probe = Probe { };
         bearer: Tokens = Tokens { };
         // Served only so the compiler writes the codecs; nothing calls it.
-        h: api::Exposure = api::serve(PbValueMap, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h: api::Exposure = api::serve(
+            PbValueMap,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
     }
 
     // JSON in, protobuf through, JSON out: the same text.
@@ -49,7 +56,10 @@ main locus Desk {
             return;
         };
         let back = __api_pb_decode_Health(__api_pb_encode_Health(v)) or {
-            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
             return;
         };
         std::test::assert_eq_str(__api_encode_Health(back), json, what);
@@ -86,9 +96,16 @@ main locus Desk {
         );
 
         // a key already read
-        let entry = __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, "db"), __api_pb_put_str(2, "ok")));
+        let entry = __api_pb_put_msg(
+            1,
+            std::bytes::concat(__api_pb_put_str(1, "db"), __api_pb_put_str(2, "ok")),
+        );
         let dup = __api_pb_decode_Health(std::bytes::concat(entry, entry)) or {
-            std::test::assert_eq_str(err.kind + ": " + err.field, "duplicate_key: checks", "a duplicate key");
+            std::test::assert_eq_str(
+                err.kind + ": " + err.field,
+                "duplicate_key: checks",
+                "a duplicate key",
+            );
             return;
         };
         std::test::assert(false, "a duplicate key decoded " + __api_encode_Health(dup));

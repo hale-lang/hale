@@ -18,7 +18,11 @@ type ApplicationState {
     // Optional evidence association, never command authority.
     runtime_pid: String = ""; runtime_process_key: String = "";
 }
-type StateResult { ok: Bool = false; code: String = "provider_unavailable"; state: ApplicationState = ApplicationState { }; }
+type StateResult {
+    ok: Bool = false;
+    code: String = "provider_unavailable";
+    state: ApplicationState = ApplicationState { };
+}
 type Command {
     valid: Bool = false;
     request_id: String = ""; operation: String = ""; operation_version: String = "";

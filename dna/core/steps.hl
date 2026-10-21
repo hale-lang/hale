@@ -28,7 +28,9 @@ locus StepRecord {
     // The step at `i` reported: it leaves the queue.
     fn done(i: Int) { self.waiting_steps.set(i, StepAsk { }) or discard; }
     // A walk found `left` still waiting: none left, the queue empties.
-    fn walked(left: Int) { if left == 0 && self.waiting_steps.len() > 0 { self.waiting_steps = StepAsks { }; } }
+    fn walked(left: Int) {
+        if left == 0 && self.waiting_steps.len() > 0 { self.waiting_steps = StepAsks { }; }
+    }
 }
 
 // GH #995: the catalog steps the organization performs, waiting on what

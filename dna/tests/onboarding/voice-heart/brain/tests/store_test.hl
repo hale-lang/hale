@@ -10,7 +10,14 @@ import "../../lib/pond/db" as db;
 
 fn connect(url: String) -> pq::PgConn {
     let d = st::parse_dsn(url);
-    return pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, database: d.database, sslmode: d.sslmode };
+    return pq::PgConn {
+        host: d.host,
+        port: d.port,
+        user: d.user,
+        password: d.password,
+        database: d.database,
+        sslmode: d.sslmode,
+    };
 }
 
 fn run(c: pq::PgConn, sql: String) {
@@ -29,7 +36,10 @@ fn main() {
     let c = connect(url);
     std::test::assert(c.open().ok, "the test database answers");
     run(c, "SET TIME ZONE 'UTC'");
-    run(c, "TRUNCATE route_table, usage, request, budget_state, limit_state, api_instance, change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE");
+    run(
+        c,
+        "TRUNCATE route_table, usage, request, budget_state, limit_state, api_instance, change, quota_window, seat_state, node_state, seat, node, \"limit\", budget, api_key, project, account, catalog_model RESTART IDENTITY CASCADE",
+    );
 
     // the one brain
     let other = connect(url);
@@ -37,7 +47,11 @@ fn main() {
     std::test::assert_eq_str(one(c, brain::BRAIN_LOCK), "t", "the first brain takes the lock");
     std::test::assert_eq_str(one(other, brain::BRAIN_LOCK), "f", "a second stands by");
     c.close();
-    std::test::assert_eq_str(one(other, brain::BRAIN_LOCK), "t", "and takes over when the first one's connection goes");
+    std::test::assert_eq_str(
+        one(other, brain::BRAIN_LOCK),
+        "t",
+        "and takes over when the first one's connection goes",
+    );
     other.close();
     let c2 = connect(url);
     c2.open();
@@ -47,85 +61,235 @@ fn main() {
     run(c2, "INSERT INTO catalog_model (id, kind) VALUES ('echo-1', 'local'), ('idle-1', 'local')");
     run(c2, "INSERT INTO account (id, name, billing) VALUES ('static', 'Static', 'none')");
     run(c2, "INSERT INTO project (id, name, owners) VALUES ('work', 'Work', '{}')");
-    run(c2, "INSERT INTO api_key (id, project, name, prefix, secret_digest) VALUES ('k_1', 'work', 'ci', 'vk-0000', '\\x00')");
-    run(c2, "INSERT INTO node (id, name, token_digest, assignment_version) VALUES ('laptop', 'Laptop', '\\x00', 2)");
-    run(c2, "INSERT INTO seat (node, id, engine, account, serves, concurrency, config) VALUES ('laptop', 'static', 'static', 'static', '[{\"model\": \"echo-1\", \"as\": null}]', 4, '{\"text\": \"hi\"}')");
-    run(c2, "INSERT INTO node_state (node, version, capabilities, local, registered_at, last_heartbeat_at, applied_version) VALUES ('laptop', '0.1.0', '{\"max_in_flight\": 4, \"engines\": []}', '{\"paused\": false, \"paused_seats\": []}', now(), now(), 2)");
-    run(c2, "INSERT INTO seat_state (node, seat, status, in_flight, reported_at) VALUES ('laptop', 'static', 'up', 0, now())");
+    run(
+        c2,
+        "INSERT INTO api_key (id, project, name, prefix, secret_digest) VALUES ('k_1', 'work', 'ci', 'vk-0000', '\\x00')",
+    );
+    run(
+        c2,
+        "INSERT INTO node (id, name, token_digest, assignment_version) VALUES ('laptop', 'Laptop', '\\x00', 2)",
+    );
+    run(
+        c2,
+        "INSERT INTO seat (node, id, engine, account, serves, concurrency, config) VALUES ('laptop', 'static', 'static', 'static', '[{\"model\": \"echo-1\", \"as\": null}]', 4, '{\"text\": \"hi\"}')",
+    );
+    run(
+        c2,
+        "INSERT INTO node_state (node, version, capabilities, local, registered_at, last_heartbeat_at, applied_version) VALUES ('laptop', '0.1.0', '{\"max_in_flight\": 4, \"engines\": []}', '{\"paused\": false, \"paused_seats\": []}', now(), now(), 2)",
+    );
+    run(
+        c2,
+        "INSERT INTO seat_state (node, seat, status, in_flight, reported_at) VALUES ('laptop', 'static', 'up', 0, now())",
+    );
 
     // two api instances, one dead with a request in flight
-    run(c2, "INSERT INTO api_instance (id, last_heartbeat_at) VALUES ('api-dead', now() - interval '1 minute'), ('api-live', now())");
-    run(c2, "INSERT INTO \"limit\" (scope, project, window_seconds, requests, concurrent) VALUES ('project', 'work', 60, 10, 2)");
-    run(c2, "INSERT INTO limit_state (limit_id, window_start, requests, input_tokens, output_tokens, concurrent) VALUES (1, date_bin(make_interval(secs => 60), now(), 'epoch'), 1, 5, 100, 1)");
-    run(c2, "INSERT INTO budget (project, allowance_micros, period, period_anchor) VALUES ('work', 1000, 'month', date_trunc('month', now()))");
-    run(c2, "INSERT INTO budget_state (project, period_start, reserved_micros) VALUES ('work', date_trunc('month', now()), 40)");
-    run(c2, "INSERT INTO request (id, instance, project, key, requested_model, endpoint, data_class, reserved_input, reserved_output, reserved_micros, price, limits, period_start, metadata) VALUES ('resp_1', 'api-dead', 'work', 'k_1', 'echo-1', 'responses', 'internal', 5, 100, 40, '{\"currency\": \"USD\"}', '{1}', date_trunc('month', now()), '{\"k\": \"v\"}')");
+    run(
+        c2,
+        "INSERT INTO api_instance (id, last_heartbeat_at) VALUES ('api-dead', now() - interval '1 minute'), ('api-live', now())",
+    );
+    run(
+        c2,
+        "INSERT INTO \"limit\" (scope, project, window_seconds, requests, concurrent) VALUES ('project', 'work', 60, 10, 2)",
+    );
+    run(
+        c2,
+        "INSERT INTO limit_state (limit_id, window_start, requests, input_tokens, output_tokens, concurrent) VALUES (1, date_bin(make_interval(secs => 60), now(), 'epoch'), 1, 5, 100, 1)",
+    );
+    run(
+        c2,
+        "INSERT INTO budget (project, allowance_micros, period, period_anchor) VALUES ('work', 1000, 'month', date_trunc('month', now()))",
+    );
+    run(
+        c2,
+        "INSERT INTO budget_state (project, period_start, reserved_micros) VALUES ('work', date_trunc('month', now()), 40)",
+    );
+    run(
+        c2,
+        "INSERT INTO request (id, instance, project, key, requested_model, endpoint, data_class, reserved_input, reserved_output, reserved_micros, price, limits, period_start, metadata) VALUES ('resp_1', 'api-dead', 'work', 'k_1', 'echo-1', 'responses', 'internal', 5, 100, 40, '{\"currency\": \"USD\"}', '{1}', date_trunc('month', now()), '{\"k\": \"v\"}')",
+    );
 
     std::test::assert_eq_int(brain::reclaim(c2), 1, "the dead instance is reclaimed");
-    std::test::assert_eq_str(one(c2, "SELECT status FROM request WHERE id = 'resp_1'"), "abandoned", "its request abandoned");
-    std::test::assert_eq_str(one(c2, "SELECT status || ' ' || (record->>'endpoint') || ' ' || (record->'metadata'->>'k') FROM usage WHERE id = 'resp_1'"), "abandoned responses v", "and recorded in the ledger");
-    std::test::assert_eq_str(one(c2, "SELECT concurrent || ' ' || input_tokens || ' ' || output_tokens || ' ' || requests FROM limit_state"), "0 0 0 1", "its reservation released; its request still counted");
-    std::test::assert_eq_str(one(c2, "SELECT reserved_micros FROM budget_state"), "0", "and its budget");
-    std::test::assert_eq_str(one(c2, "SELECT string_agg(id, ',' ORDER BY id) FROM api_instance"), "api-dead,api-live", "an instance a request still names stays");
-    std::test::assert_eq_str(one(c2, "SELECT (reclaimed_at IS NOT NULL)::text FROM api_instance WHERE id = 'api-dead'"), "true", "marked reclaimed");
+    std::test::assert_eq_str(
+        one(c2, "SELECT status FROM request WHERE id = 'resp_1'"),
+        "abandoned",
+        "its request abandoned",
+    );
+    std::test::assert_eq_str(
+        one(
+            c2,
+            "SELECT status || ' ' || (record->>'endpoint') || ' ' || (record->'metadata'->>'k') FROM usage WHERE id = 'resp_1'",
+        ),
+        "abandoned responses v",
+        "and recorded in the ledger",
+    );
+    std::test::assert_eq_str(
+        one(
+            c2,
+            "SELECT concurrent || ' ' || input_tokens || ' ' || output_tokens || ' ' || requests FROM limit_state",
+        ),
+        "0 0 0 1",
+        "its reservation released; its request still counted",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT reserved_micros FROM budget_state"),
+        "0",
+        "and its budget",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT string_agg(id, ',' ORDER BY id) FROM api_instance"),
+        "api-dead,api-live",
+        "an instance a request still names stays",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT (reclaimed_at IS NOT NULL)::text FROM api_instance WHERE id = 'api-dead'"),
+        "true",
+        "marked reclaimed",
+    );
     std::test::assert_eq_int(brain::reclaim(c2), 0, "and is not reclaimed again");
 
     // an instance that beats again between the read and its reclaim keeps
     // what it holds
     run(c2, "INSERT INTO api_instance (id, last_heartbeat_at) VALUES ('api-slow', now())");
-    run(c2, "INSERT INTO request (id, instance, project, key, requested_model, endpoint, data_class, reserved_input, reserved_output, reserved_micros, price, limits, period_start, metadata) VALUES ('resp_2', 'api-slow', 'work', 'k_1', 'echo-1', 'responses', 'internal', 1, 1, 1, '{\"currency\": \"USD\"}', '{}', date_trunc('month', now()), '{}')");
-    std::test::assert_eq_int(brain::reclaim_one(c2, "api-slow"), 0, "an instance alive by the time its reclaim runs is not reclaimed");
-    std::test::assert_eq_str(one(c2, "SELECT status FROM request WHERE id = 'resp_2'"), "in_flight", "its request stays in flight");
-    std::test::assert_eq_str(one(c2, "SELECT (reclaimed_at IS NULL)::text FROM api_instance WHERE id = 'api-slow'"), "true", "and it is not marked");
+    run(
+        c2,
+        "INSERT INTO request (id, instance, project, key, requested_model, endpoint, data_class, reserved_input, reserved_output, reserved_micros, price, limits, period_start, metadata) VALUES ('resp_2', 'api-slow', 'work', 'k_1', 'echo-1', 'responses', 'internal', 1, 1, 1, '{\"currency\": \"USD\"}', '{}', date_trunc('month', now()), '{}')",
+    );
+    std::test::assert_eq_int(
+        brain::reclaim_one(c2, "api-slow"),
+        0,
+        "an instance alive by the time its reclaim runs is not reclaimed",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT status FROM request WHERE id = 'resp_2'"),
+        "in_flight",
+        "its request stays in flight",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT (reclaimed_at IS NULL)::text FROM api_instance WHERE id = 'api-slow'"),
+        "true",
+        "and it is not marked",
+    );
 
     // a reclaim that fails is left for the next tick, and the tick goes on
-    run(c2, "UPDATE api_instance SET last_heartbeat_at = now() - interval '1 minute' WHERE id = 'api-slow'");
-    run(c2, "CREATE FUNCTION refuse_usage() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused for the test'; END $$");
-    run(c2, "CREATE TRIGGER refuse_usage BEFORE INSERT ON usage FOR EACH ROW EXECUTE FUNCTION refuse_usage()");
-    std::test::assert_eq_int(brain::reclaim(c2), 0, "a reclaim whose statement fails reclaims nothing");
-    std::test::assert_eq_str(one(c2, "SELECT status FROM request WHERE id = 'resp_2'"), "in_flight", "and is rolled back");
+    run(
+        c2,
+        "UPDATE api_instance SET last_heartbeat_at = now() - interval '1 minute' WHERE id = 'api-slow'",
+    );
+    run(
+        c2,
+        "CREATE FUNCTION refuse_usage() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused for the test'; END $$",
+    );
+    run(
+        c2,
+        "CREATE TRIGGER refuse_usage BEFORE INSERT ON usage FOR EACH ROW EXECUTE FUNCTION refuse_usage()",
+    );
+    std::test::assert_eq_int(
+        brain::reclaim(c2),
+        0,
+        "a reclaim whose statement fails reclaims nothing",
+    );
+    std::test::assert_eq_str(
+        one(c2, "SELECT status FROM request WHERE id = 'resp_2'"),
+        "in_flight",
+        "and is rolled back",
+    );
     let after_failure = brain::write_table(c2);
-    std::test::assert(after_failure.version > 0, "the route table is still written: " + after_failure.detail);
+    std::test::assert(
+        after_failure.version > 0,
+        "the route table is still written: " + after_failure.detail,
+    );
     run(c2, "DROP TRIGGER refuse_usage ON usage");
     run(c2, "DROP FUNCTION refuse_usage()");
     std::test::assert_eq_int(brain::reclaim(c2), 1, "and the next tick reclaims it");
-    run(c2, "INSERT INTO api_instance (id, last_heartbeat_at) VALUES ('api-gone', now() - interval '1 minute')");
+    run(
+        c2,
+        "INSERT INTO api_instance (id, last_heartbeat_at) VALUES ('api-gone', now() - interval '1 minute')",
+    );
     std::test::assert_eq_int(brain::reclaim(c2), 1, "a dead instance that held nothing");
-    std::test::assert_eq_str(one(c2, "SELECT count(*) FROM api_instance WHERE id = 'api-gone'"), "0", "goes");
+    std::test::assert_eq_str(
+        one(c2, "SELECT count(*) FROM api_instance WHERE id = 'api-gone'"),
+        "0",
+        "goes",
+    );
 
     // liveness and the route table
     run(c2, brain::LIVENESS);
-    std::test::assert_eq_str(one(c2, "SELECT status FROM node WHERE id = 'laptop'"), "up", "a node heartbeating is up");
+    std::test::assert_eq_str(
+        one(c2, "SELECT status FROM node WHERE id = 'laptop'"),
+        "up",
+        "a node heartbeating is up",
+    );
     let w = brain::write_table(c2);
     let table = one(c2, "SELECT body::text FROM route_table");
-    std::test::assert(std::str::contains(table, "\"seat\": \"laptop/static\""), "its seat routes: " + table);
+    std::test::assert(
+        std::str::contains(table, "\"seat\": \"laptop/static\""),
+        "its seat routes: " + table,
+    );
     std::test::assert(std::str::contains(table, "\"free\": 4"), "with its free slots");
     let store = st::PgStore { url: url };
     let read = store.route_table() or "";
-    std::test::assert_eq_int(std::json::find_int_field(read, "version"), w.version, "the api reads the table with its version");
-    std::test::assert(std::str::ends_with(std::json::find_string_field(read, "at"), "Z") && std::str::contains(read, "laptop/static"), "its time and its routes");
+    std::test::assert_eq_int(
+        std::json::find_int_field(read, "version"),
+        w.version,
+        "the api reads the table with its version",
+    );
+    std::test::assert(
+        std::str::ends_with(std::json::find_string_field(read, "at"), "Z")
+            && std::str::contains(read, "laptop/static"),
+        "its time and its routes",
+    );
     // the version goes on past the stored one, whatever the clock says
     run(c2, "UPDATE route_table SET version = 9000000000000");
-    std::test::assert_eq_int(brain::write_table(c2).version, 9000000000001, "a version is never below the one before it");
+    std::test::assert_eq_int(
+        brain::write_table(c2).version,
+        9000000000001,
+        "a version is never below the one before it",
+    );
     // a use just under 100%, written back as the api writes a quota report,
     // leaves the account headroom: its seat still routes
-    let near = api::read_window("{\"name\": \"five_hour\", \"used_percent\": 99.999995, \"observed_at\": \"2026-10-17T00:00:00Z\", \"resets_at\": \"2099-01-01T00:00:00Z\"}") or api::QuotaWindow { name: "", used_percent: 0.0, observed_at: `1970-01-01T00:00:00Z` };
+    let near = api::read_window(
+        "{\"name\": \"five_hour\", \"used_percent\": 99.999995, \"observed_at\": \"2026-10-17T00:00:00Z\", \"resets_at\": \"2099-01-01T00:00:00Z\"}",
+    ) or api::QuotaWindow { name: "", used_percent: 0.0, observed_at: `1970-01-01T00:00:00Z` };
     let mut report = api::QuotaWindows { };
     push(report.items, near) or discard;
-    store.put_windows("static", api::windows_json(report.items)) or std::test::assert(false, "the windows are written");
-    std::test::assert_eq_str(one(c2, "SELECT used_percent::text FROM quota_window WHERE account = 'static'"), "99.999995", "the use as reported");
+    store.put_windows(
+        "static",
+        api::windows_json(report.items),
+    ) or std::test::assert(false, "the windows are written");
+    std::test::assert_eq_str(
+        one(c2, "SELECT used_percent::text FROM quota_window WHERE account = 'static'"),
+        "99.999995",
+        "the use as reported",
+    );
     brain::write_table(c2);
-    std::test::assert(std::str::contains(one(c2, "SELECT body::text FROM route_table"), "laptop/static"), "a seat whose account is at 99.999995% still routes");
+    std::test::assert(
+        std::str::contains(one(c2, "SELECT body::text FROM route_table"), "laptop/static"),
+        "a seat whose account is at 99.999995% still routes",
+    );
     run(c2, "DELETE FROM quota_window WHERE account = 'static'");
-    run(c2, "INSERT INTO quota_window (account, name, used_percent, resets_at, observed_at) VALUES ('static', 'five_hour', 100, now() + interval '1 hour', now())");
+    run(
+        c2,
+        "INSERT INTO quota_window (account, name, used_percent, resets_at, observed_at) VALUES ('static', 'five_hour', 100, now() + interval '1 hour', now())",
+    );
     brain::write_table(c2);
     let full = one(c2, "SELECT body::text FROM route_table");
-    std::test::assert(!std::str::contains(full, "laptop/static"), "an exhausted account's seat does not route");
+    std::test::assert(
+        !std::str::contains(full, "laptop/static"),
+        "an exhausted account's seat does not route",
+    );
     let echo = std::json::array_first(std::json::find_field_raw(full, "models")).element;
     let gone = std::json::array_first(std::json::find_field_raw(echo, "exhausted")).element;
-    std::test::assert(std::json::find_string_field(gone, "account") == "static" && len(std::json::find_string_field(gone, "until")) > 0, "the account is listed exhausted, with its reset: " + full);
+    std::test::assert(
+        std::json::find_string_field(gone, "account") == "static"
+            && len(std::json::find_string_field(gone, "until")) > 0,
+        "the account is listed exhausted, with its reset: " + full,
+    );
     run(c2, "UPDATE node_state SET last_heartbeat_at = now() - interval '1 minute'");
     run(c2, brain::LIVENESS);
-    std::test::assert_eq_str(one(c2, "SELECT status FROM node WHERE id = 'laptop'"), "down", "a silent node is down");
+    std::test::assert_eq_str(
+        one(c2, "SELECT status FROM node WHERE id = 'laptop'"),
+        "down",
+        "a silent node is down",
+    );
     c2.close();
 }

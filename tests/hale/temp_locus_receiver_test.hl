@@ -57,7 +57,12 @@ locus Sheller {
         rows: Rows = Rows { };
     }
     birth() {
-        let out = std::process::run("printf\nabc") or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+        let out = std::process::run("printf\nabc") or std::process::ProcessOutput {
+            code: -1,
+            signal: 0,
+            stdout: "",
+            stderr: "",
+        };
         self.rows.push(Row { v: len(out.stdout) });
     }
     fn count() -> Int {
@@ -115,21 +120,37 @@ fn main() {
     let bound_a = Queries { j: Churner { } };
     let want_a = bound_a.total();
     std::test::assert_eq_int(want_a, 8, "the bound control counts 4 twice");
-    std::test::assert_eq_int(Queries { j: Churner { } }.total(), want_a, "a temporary receiver with an interface child answers the same");
+    std::test::assert_eq_int(
+        Queries { j: Churner { } }.total(),
+        want_a,
+        "a temporary receiver with an interface child answers the same",
+    );
 
     // 2. interface-typed child whose birth shells out (crashed before)
     let bound_b = Queries { j: Sheller { } };
     let want_b = bound_b.total();
     std::test::assert(want_b > 0, "the bound control survives a subprocess birth");
-    std::test::assert_eq_int(Queries { j: Sheller { } }.total(), want_b, "a temporary receiver survives a subprocess in its child's birth");
+    std::test::assert_eq_int(
+        Queries { j: Sheller { } }.total(),
+        want_b,
+        "a temporary receiver survives a subprocess in its child's birth",
+    );
 
     // 3. concrete child whose birth shells out (crashed before)
     let bound_c = Concrete { j: Sheller { } };
     let want_c = bound_c.total();
-    std::test::assert_eq_int(Concrete { j: Sheller { } }.total(), want_c, "an interface is not what made it crash");
+    std::test::assert_eq_int(
+        Concrete { j: Sheller { } }.total(),
+        want_c,
+        "an interface is not what made it crash",
+    );
 
     // 4. no child — the shape that already worked
-    std::test::assert_eq_int(Lonely { n: 21 }.double(), 42, "a childless temporary receiver still works");
+    std::test::assert_eq_int(
+        Lonely { n: 21 }.double(),
+        42,
+        "a childless temporary receiver still works",
+    );
 
     // 5. statement position, void method
     Queries { j: Churner { } }.announce();
@@ -137,7 +158,11 @@ fn main() {
     // 6. a temporary receiver inside another literal's field, and as a
     //    call argument — the owner is decided per literal, not per
     //    statement.
-    std::test::assert_eq_int(Lonely { n: Queries { j: Churner { } }.total() }.double(), 16, "a temporary receiver nested in another literal");
+    std::test::assert_eq_int(
+        Lonely { n: Queries { j: Churner { } }.total() }.double(),
+        16,
+        "a temporary receiver nested in another literal",
+    );
 
     // 7. the same shape twice in one fn: each literal owns its own
     //    instance, and both are torn down once.

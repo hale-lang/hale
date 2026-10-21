@@ -49,7 +49,9 @@ fn left_of(x: Exchange) -> Duration {
 /// of the whole exchange starting now.
 fn exchange_open(target: String, within: Duration) -> Exchange {
     let u = std::http::parse_url(target) or no_url(err);
-    if len(u.host) == 0 || (u.scheme != "http" && u.scheme != "https") { return Exchange { why: "not an http or https URL: " + target }; }
+    if len(u.host) == 0 || (u.scheme != "http" && u.scheme != "https") {
+        return Exchange { why: "not an http or https URL: " + target };
+    }
     let tls = u.scheme == "https";
     let deadline = std::time::monotonic_ns() + within / 1ns;
     let mut why = "";
@@ -64,7 +66,11 @@ fn exchange_open(target: String, within: Duration) -> Exchange {
                 -1
         }
     };
-    if h < 0 { return Exchange { why: "no connection to " + u.host + ":" + to_string(u.port) + " (" + why + ")" }; }
+    if h < 0 {
+        return Exchange {
+            why: "no connection to " + u.host + ":" + to_string(u.port) + " (" + why + ")",
+        };
+    }
     return Exchange { handle: h, tls: tls, url: u, deadline_ns: deadline };
 }
 
@@ -75,19 +81,29 @@ fn exchange_close(x: Exchange) {
 
 /// The request's line and headers up to its `Content-Length`.
 fn request_head(x: Exchange, method: String, headers: String) -> String {
-    return method + " " + (if len(x.url.path) > 0 { x.url.path } else { "/" }) + " HTTP/1.1\r\nHost: " + x.url.host + ":" + to_string(x.url.port) + "\r\nConnection: close\r\nAccept: application/json\r\n" + (if len(headers) > 0 { headers + "\r\n" } else { "" });
+    return method + " " + (if len(x.url.path) > 0 { x.url.path } else { "/" })
+        + " HTTP/1.1\r\nHost: " + x.url.host + ":" + to_string(x.url.port)
+        + "\r\nConnection: close\r\nAccept: application/json\r\n"
+        + (if len(headers) > 0 { headers + "\r\n" } else { "" });
 }
 
 /// A write that cannot wait past the deadline.
 fn bound_writes(x: Exchange) {
-    if x.tls { std::io::tls::set_send_timeout(x.handle, left_of(x)) or discard; } else { std::io::tcp::set_send_timeout(x.handle, left_of(x)) or discard; }
+    if x.tls {
+        std::io::tls::set_send_timeout(x.handle, left_of(x)) or discard;
+    } else {
+        std::io::tcp::set_send_timeout(x.handle, left_of(x)) or discard;
+    }
 }
 
 /// Send `method` with `headers` (CRLF-joined, no trailing CRLF) and
 /// `body`; false when the write failed.
 fn exchange_send(x: Exchange, method: String, headers: String, body: String) -> Bool {
     bound_writes(x);
-    let wire = std::bytes::from_string(request_head(x, method, headers) + "Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body);
+    let wire = std::bytes::from_string(
+        request_head(x, method, headers) + "Content-Length: " + to_string(len(body)) + "\r\n\r\n"
+            + body,
+    );
     if x.tls { return std::io::tls::send_bytes(x.handle, wire) >= 0; }
     std::io::tcp::send_fd(x.handle, wire) or { return false; };
     return true;
@@ -96,10 +112,32 @@ fn exchange_send(x: Exchange, method: String, headers: String, body: String) -> 
 /// `exchange_send` of a form whose last value is a secret: `form` ends
 /// with that value's `name=`, and the secret goes on the wire as it is,
 /// consumed by the write (spec/semantics.md, "@sealed").
-fn exchange_send_secret(x: Exchange, method: String, headers: String, form: String, @secret secret: String) -> Bool {
+fn exchange_send_secret(
+    x: Exchange,
+    method: String,
+    headers: String,
+    form: String,
+    @secret secret: String
+) -> Bool {
     bound_writes(x);
-    if x.tls { return std::io::tls::send_bytes(x.handle, std::bytes::from_string(request_head(x, method, headers) + "Content-Length: " + to_string(len(form) + len(secret)) + "\r\n\r\n" + form + secret)) >= 0; }
-    std::io::tcp::send_fd(x.handle, std::bytes::from_string(request_head(x, method, headers) + "Content-Length: " + to_string(len(form) + len(secret)) + "\r\n\r\n" + form + secret)) or { return false; };
+    if x.tls {
+        return std::io::tls::send_bytes(
+            x.handle,
+            std::bytes::from_string(
+                request_head(x, method, headers) + "Content-Length: "
+                    + to_string(len(form) + len(secret)) + "\r\n\r\n" + form + secret,
+            ),
+        ) >= 0;
+    }
+    std::io::tcp::send_fd(
+        x.handle,
+        std::bytes::from_string(
+            request_head(x, method, headers) + "Content-Length: "
+                + to_string(len(form) + len(secret)) + "\r\n\r\n" + form + secret,
+        ),
+    ) or {
+        return false;
+    };
     return true;
 }
 
@@ -115,11 +153,21 @@ fn exchange_answer(x: Exchange) -> Answer {
             why = "no whole answer within the deadline";
             break;
         }
-        if x.tls { std::io::tls::set_recv_timeout(x.handle, left_of(x)) or discard; } else { std::io::tcp::set_recv_timeout(x.handle, left_of(x)) or discard; }
-        let chunk = if x.tls { std::io::tls::recv_bytes(x.handle, 65536) } else { s.recv_bytes(65536) or b"" };
+        if x.tls {
+            std::io::tls::set_recv_timeout(x.handle, left_of(x)) or discard;
+        } else {
+            std::io::tcp::set_recv_timeout(x.handle, left_of(x)) or discard;
+        }
+        let chunk = if x.tls {
+            std::io::tls::recv_bytes(x.handle, 65536)
+        } else {
+            s.recv_bytes(65536) or b""
+        };
         if len(chunk) == 0 {
             // the peer closed, or the deadline passed waiting
-            if std::time::monotonic_ns() >= x.deadline_ns { why = "no whole answer within the deadline"; }
+            if std::time::monotonic_ns() >= x.deadline_ns {
+                why = "no whole answer within the deadline";
+            }
             break;
         }
         got = std::bytes::concat(got, chunk);
@@ -135,7 +183,13 @@ fn exchange_answer(x: Exchange) -> Answer {
 }
 
 /// `x` sent `method` and answered, all within the deadline.
-fn exchange(target: String, within: Duration, method: String, headers: String, body: String) -> Answer {
+fn exchange(
+    target: String,
+    within: Duration,
+    method: String,
+    headers: String,
+    body: String
+) -> Answer {
     let x = exchange_open(target, within);
     if x.handle < 0 { return Answer { why: x.why }; }
     if !exchange_send(x, method, headers, body) {
@@ -169,7 +223,10 @@ fn answer_whole(text: String) -> Bool {
     let head = std::str::lower(text[0..end]);
     let body = text[(end + 4)..len(text)];
     // the last chunk is the empty one, and the (empty) trailer after it
-    if header_value(head, "transfer-encoding") == "chunked" { return std::str::ends_with(body, "0\r\n\r\n") && (std::str::starts_with(body, "0\r\n") || std::str::index_of(body, "\r\n0\r\n") >= 0); }
+    if header_value(head, "transfer-encoding") == "chunked" {
+        return std::str::ends_with(body, "0\r\n\r\n")
+            && (std::str::starts_with(body, "0\r\n") || std::str::index_of(body, "\r\n0\r\n") >= 0);
+    }
     let length = header_value(head, "content-length");
     if len(length) == 0 { return false; }
     return len(body) >= (std::str::parse_int(length) or 0);
@@ -179,7 +236,9 @@ fn answer_whole(text: String) -> Bool {
 @unbounded
 fn parse_answer(text: String) -> Answer {
     let end = head_end(text);
-    if end < 12 || !std::str::starts_with(text, "HTTP/1.") { return Answer { why: "not an HTTP answer" }; }
+    if end < 12 || !std::str::starts_with(text, "HTTP/1.") {
+        return Answer { why: "not an HTTP answer" };
+    }
     let status = std::str::parse_int(text[9..12]) or 0;
     if status < 100 { return Answer { why: "not an HTTP answer" }; }
     let head = std::str::lower(text[0..end]);
@@ -204,7 +263,15 @@ fn hex_size(text: String) -> Int {
     let mut i = 0;
     while i < len(text) {
         let c = std::str::byte_at_unchecked(text, i);
-        let d = if c >= 48 && c <= 57 { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { -1 };
+        let d = if c >= 48 && c <= 57 {
+            c - 48
+        } else if c >= 97 && c <= 102 {
+            c - 87
+        } else if c >= 65 && c <= 70 {
+            c - 55
+        } else {
+                -1
+        };
         if d < 0 { return -1; }
         n = n * 16 + d;
         i = i + 1;
@@ -228,10 +295,16 @@ fn dechunk(body: String) -> Dechunked {
         if size == 0 {
             // the trailer: header lines, then an empty one
             let trailer = rest[(line + 2)..len(rest)];
-            return Dechunked { body: out, whole: std::str::starts_with(trailer, "\r\n") || std::str::index_of(trailer, "\r\n\r\n") >= 0 };
+            return Dechunked {
+                body: out,
+                whole: std::str::starts_with(trailer, "\r\n")
+                    || std::str::index_of(trailer, "\r\n\r\n") >= 0,
+            };
         }
         // the chunk and the CRLF after it
-        if line + 4 + size > len(rest) || rest[(line + 2 + size)..(line + 4 + size)] != "\r\n" { return Dechunked { body: out }; }
+        if line + 4 + size > len(rest) || rest[(line + 2 + size)..(line + 4 + size)] != "\r\n" {
+            return Dechunked { body: out };
+        }
         out = out + rest[(line + 2)..(line + 2 + size)];
         rest = rest[(line + 4 + size)..len(rest)];
     }

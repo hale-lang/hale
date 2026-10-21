@@ -40,7 +40,19 @@ main locus Organism {
         reported_settled: Bool = false;
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "organism", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
+        nerves: nats::NatsConn = nats::NatsConn {
+            url: dna::nerves_spine_url(),
+            user: "spine",
+            credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
+            name: "organism",
+            subject_prefix: dna::nerves_subject_prefix(),
+            stream: dna::nerves_stream_here(),
+            consumer: nats::ConsumerSpec {
+                durable: dna::nerves_durable(),
+                filter: dna::nerves_filter(),
+            },
+            jetstream: true,
+        };
     }
 
     placement { nerves: pinned; }
@@ -70,7 +82,12 @@ main locus Organism {
         }
         if self.review.settled && !self.reported_settled {
             self.reported_settled = true;
-            println("organism: review r1 settled ", self.review.outcome, " by ", self.review.decided_by);
+            println(
+                "organism: review r1 settled ",
+                self.review.outcome,
+                " by ",
+                self.review.decided_by,
+            );
         }
     }
 

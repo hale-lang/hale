@@ -29,12 +29,22 @@ const SIGNERS: String = "position:api/reviewer=grace position:node/reviewer=hopp
 
 // A run the host observed at the forge, as forge_sync writes it.
 fn run_body(gate: String, sha: String, conclusion: String) -> String {
-    return "{\"gate\": \"" + gate + "\", \"sha\": \"" + sha + "\", \"conclusion\": \"" + conclusion + "\", \"url\": \"https://ci.example/runs/1\", \"forge\": \"memory\", \"run\": \"api\"}";
+    return "{\"gate\": \"" + gate + "\", \"sha\": \"" + sha + "\", \"conclusion\": \"" + conclusion
+        + "\", \"url\": \"https://ci.example/runs/1\", \"forge\": \"memory\", \"run\": \"api\"}";
 }
 
 // A Review of `id` requiring SIGNERS and `gates`, over the one record.
 fn review(rj: dna::ReviewJournal, id: String, gates: String) -> dna::Review {
-    return dna::Review { journal: rj, review_id: id, question: "apply " + id + "?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1", signers: SIGNERS, gates: gates };
+    return dna::Review {
+        journal: rj,
+        review_id: id,
+        question: "apply " + id + "?",
+        subject_digest: CANDIDATE,
+        required_authority: "board",
+        author: "dev1",
+        signers: SIGNERS,
+        gates: gates,
+    };
 }
 
 main locus App {
@@ -47,20 +57,39 @@ main locus App {
     bus { publish dna::ReviewVerdict; }
     // the organism over the record in `self.repo`, born again where a restart belongs
     fn born() {
-        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.org = dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo, author: "dna" }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::fixture_spine(self.repo) } },
-            verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: self.repo + "/.hale/dna/evidence" }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo, author: "dna" },
+                ledger: dna::MemoryLedger {
+                    repo: self.repo,
+                    dsn_env: dna::fixture_spine(self.repo),
+                },
+            },
+            verification: dna::HaleVerification {
+                receipts: dna::FileReceipts { dir: self.repo + "/.hale/dna/evidence" },
+                scratch: self.repo + "/.hale/dna/scratch",
+                repo: self.repo,
+            },
             deployment: dna::NoDeployment { },
             org_id: "rs"
         };
     }
     // The first row of `kind` for `entity` after row `from`, waited for, bounded; "" when none came.
-    fn answer_after(from: Int, kind: String, entity: String) -> String { return self.answer_within(from, kind, entity, 20); }
+    fn answer_after(from: Int, kind: String, entity: String) -> String {
+        return self.answer_within(from, kind, entity, 20);
+    }
     fn answer_within(from: Int, kind: String, entity: String, secs: Int) -> String {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo } };
+            let j = dna::RoutedJournal {
+                record: dna::RecordJournal { repo: self.repo },
+                ledger: dna::MemoryLedger { repo: self.repo },
+            };
             let mut i = from;
             while i < j.revision() {
                 let e = j.read(i);
@@ -72,15 +101,39 @@ main locus App {
         return "";
     }
     fn verdict(id: String, command: String, who: String, word: String) -> dna::Verdict {
-        return dna::Verdict { command_id: command, review_id: id, subject_digest: CANDIDATE, verdict: word, reviewer: who, authority: "board", comment: "" };
+        return dna::Verdict {
+            command_id: command,
+            review_id: id,
+            subject_digest: CANDIDATE,
+            verdict: word,
+            reviewer: who,
+            authority: "board",
+            comment: "",
+        };
     }
     // The host observed a run of `gate` at the forge, for Review `id`.
     // The Review opened at the memory forge, as forge_sync records it.
     fn opened(id: String) {
-        std::test::assert(self.journal.append(self.journal.revision(), "github.pr", id, "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}").ok, "opened at the forge");
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "github.pr",
+                id,
+                "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}",
+            ).ok,
+            "opened at the forge",
+        );
     }
     fn observed(id: String, gate: String, sha: String, conclusion: String) {
-        std::test::assert(self.journal.append(self.journal.revision(), "gate.observed", id, run_body(gate, sha, conclusion)).ok, "a run observed");
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "gate.observed",
+                id,
+                run_body(gate, sha, conclusion),
+            ).ok,
+            "a run observed",
+        );
     }
     run() {
         let scratch = dna::scratch_root("review-signers");
@@ -89,109 +142,374 @@ main locus App {
         // ---- an unauthorized claim: whatever authority it names, a verdict
         // from no required position is refused, saying which were required
         let r1 = review(self.rj, "m1", "");
-        std::test::assert(!r1.consider(self.verdict("m1", "", "mallory", "approve")), "mallory holds no required position");
-        std::test::assert_eq_str(r1.last_refusal, "reviewer mallory holds no position this Review requires (position:api/reviewer position:node/reviewer)", "refused with the positions it needed");
-        std::test::assert(!r1.consider(self.verdict("m1", "", "dev1", "approve")), "the author is refused too");
+        std::test::assert(
+            !r1.consider(self.verdict("m1", "", "mallory", "approve")),
+            "mallory holds no required position",
+        );
+        std::test::assert_eq_str(
+            r1.last_refusal,
+            "reviewer mallory holds no position this Review requires (position:api/reviewer position:node/reviewer)",
+            "refused with the positions it needed",
+        );
+        std::test::assert(
+            !r1.consider(self.verdict("m1", "", "dev1", "approve")),
+            "the author is refused too",
+        );
         std::test::assert(!r1.settled, "nothing settled it");
 
         // ---- an incomplete required review: one position approving is not
         // enough; the Review waits for the rest, and says for what
-        std::test::assert(r1.consider(self.verdict("m1", "", "grace", "approve")), "grace signs for api's reviewer");
+        std::test::assert(
+            r1.consider(self.verdict("m1", "", "grace", "approve")),
+            "grace signs for api's reviewer",
+        );
         std::test::assert(!r1.settled, "node's reviewer has not approved");
-        std::test::assert_eq_str(r1.awaiting(), "position:node/reviewer", "it waits for node's reviewer");
-        std::test::assert(r1.consider(self.verdict("m1", "", "ada", "approve")), "ada signs for node's reviewer");
-        std::test::assert(r1.settled && r1.outcome == "approve", "every required position approved: settled");
-        std::test::assert(std::str::contains(r1.comment, "every required position approved: position:api/reviewer position:node/reviewer"), "and it says so: " + r1.comment);
+        std::test::assert_eq_str(
+            r1.awaiting(),
+            "position:node/reviewer",
+            "it waits for node's reviewer",
+        );
+        std::test::assert(
+            r1.consider(self.verdict("m1", "", "ada", "approve")),
+            "ada signs for node's reviewer",
+        );
+        std::test::assert(
+            r1.settled && r1.outcome == "approve",
+            "every required position approved: settled",
+        );
+        std::test::assert(
+            std::str::contains(
+                r1.comment,
+                "every required position approved: position:api/reviewer position:node/reviewer",
+            ),
+            "and it says so: " + r1.comment,
+        );
         // one required position's rejection settles it, like any rejection
         let r2 = review(self.rj, "m2", "");
-        std::test::assert(r2.consider(self.verdict("m2", "", "hopper", "reject")) && r2.settled && r2.outcome == "reject", "a required position rejects: settled rejected");
+        std::test::assert(
+            r2.consider(self.verdict("m2", "", "hopper", "reject"))
+                && r2.settled
+                && r2.outcome == "reject",
+            "a required position rejects: settled rejected",
+        );
 
         // ---- a gate's run is the forge's: every position approving is not
         // enough without it, and a run at another commit, one that did not
         // pass, or another gate's counts for nothing
         let r3 = review(self.rj, "m3", "gate:ci/api");
-        std::test::assert(r3.consider(self.verdict("m3", "", "grace", "approve")) && r3.consider(self.verdict("m3", "", "hopper", "approve")), "both positions approve");
+        std::test::assert(
+            r3.consider(self.verdict("m3", "", "grace", "approve"))
+                && r3.consider(self.verdict("m3", "", "hopper", "approve")),
+            "both positions approve",
+        );
         std::test::assert(!r3.settled, "no passing run at the candidate: not settled");
         std::test::assert_eq_str(r3.awaiting(), "gate:ci/api", "it waits for ci/api's run");
         self.opened("m3");
         self.observed("m3", "ci/api", OTHER, "success");
         self.observed("m3", "gate:ci/api", CANDIDATE, "failure");
         // a run another forge reported is not the forge the Review was opened at
-        std::test::assert(self.journal.append(self.journal.revision(), "gate.observed", "m3", "{\"gate\": \"ci/api\", \"sha\": \"" + CANDIDATE + "\", \"conclusion\": \"success\", \"forge\": \"file\"}").ok, "a file forge's run");
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "gate.observed",
+                "m3",
+                "{\"gate\": \"ci/api\", \"sha\": \"" + CANDIDATE
+                    + "\", \"conclusion\": \"success\", \"forge\": \"file\"}",
+            ).ok,
+            "a file forge's run",
+        );
         self.observed("m3", "ci/web", CANDIDATE, "success");
         self.observed("m3x", "ci/api", CANDIDATE, "success");
-        std::test::assert(!r3.recheck() && !r3.settled, "a stale run, a failed one, another gate's, another forge's and another Review's settle nothing");
+        std::test::assert(
+            !r3.recheck() && !r3.settled,
+            "a stale run, a failed one, another gate's, another forge's and another Review's settle nothing",
+        );
         std::test::assert_eq_str(r3.awaiting(), "gate:ci/api", "it still waits for ci/api's run");
         // the forge reports ci/api passing at the candidate: the approvals in
         // settle it, on the last of them
         self.observed("m3", "ci/api", CANDIDATE, "success");
-        std::test::assert(r3.recheck() && r3.settled && r3.outcome == "approve" && r3.decided_by == "hopper" && std::str::contains(r3.comment, "evidenced by gate:ci/api"), "settled, evidenced: " + r3.comment);
+        std::test::assert(
+            r3.recheck()
+                && r3.settled
+                && r3.outcome == "approve"
+                && r3.decided_by == "hopper"
+                && std::str::contains(r3.comment, "evidenced by gate:ci/api"),
+            "settled, evidenced: " + r3.comment,
+        );
         std::test::assert(!r3.recheck(), "and settled once");
 
         // ---- a restart between the approvals and the run: the plain verdicts
         // the record holds are admitted again, and the run settles on them
         let before_restart = review(self.rj, "m9g", "gate:ci/api");
-        std::test::assert(before_restart.consider(self.verdict("m9g", "", "grace", "approve")) && before_restart.consider(self.verdict("m9g", "", "hopper", "approve")) && !before_restart.settled, "both positions approve; the run is not in");
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}").ok, "grace's verdict row");
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}").ok, "hopper's verdict row");
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"mallory\", \"authority\": \"board\", \"comment\": \"\"}").ok, "mallory's verdict row");
+        std::test::assert(
+            before_restart.consider(self.verdict("m9g", "", "grace", "approve"))
+                && before_restart.consider(self.verdict("m9g", "", "hopper", "approve"))
+                && !before_restart.settled,
+            "both positions approve; the run is not in",
+        );
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9g",
+                "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}",
+            ).ok,
+            "grace's verdict row",
+        );
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9g",
+                "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}",
+            ).ok,
+            "hopper's verdict row",
+        );
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9g",
+                "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"approve\", \"reviewer\": \"mallory\", \"authority\": \"board\", \"comment\": \"\"}",
+            ).ok,
+            "mallory's verdict row",
+        );
         // a Review opened after its verdicts arrived (an ingest's, opened when
         // the organization hears the request) weighs them in record order: a
         // reject before the approvals settles it rejected, as it would have live
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"reject\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"not this\"}").ok, "grace rejects first");
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}").ok, "then approves");
-        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9r", "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}").ok, "and hopper approves");
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9r",
+                "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"reject\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"not this\"}",
+            ).ok,
+            "grace rejects first",
+        );
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9r",
+                "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}",
+            ).ok,
+            "then approves",
+        );
+        std::test::assert(
+            self.journal.append(
+                self.journal.revision(),
+                "review.verdict",
+                "m9r",
+                "{\"review_id\": \"m9r\", \"subject_digest\": \"" + CANDIDATE
+                    + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}",
+            ).ok,
+            "and hopper approves",
+        );
         let late = review(self.rj, "m9r", "");
-        std::test::assert(late.recheck() && late.settled && late.outcome == "reject" && late.decided_by == "grace", "the first decisive verdict decides: " + late.outcome + " by " + late.decided_by);
+        std::test::assert(
+            late.recheck()
+                && late.settled
+                && late.outcome == "reject"
+                && late.decided_by == "grace",
+            "the first decisive verdict decides: " + late.outcome + " by " + late.decided_by,
+        );
         let rebuilt = review(self.rj, "m9g", "gate:ci/api");
-        std::test::assert_eq_str(rebuilt.signed, "position:api/reviewer position:node/reviewer", "rebuilt, it holds both approvals, and not mallory's");
+        std::test::assert_eq_str(
+            rebuilt.signed,
+            "position:api/reviewer position:node/reviewer",
+            "rebuilt, it holds both approvals, and not mallory's",
+        );
         self.opened("m9g");
         self.observed("m9g", "ci/api", CANDIDATE, "success");
-        std::test::assert(rebuilt.recheck() && rebuilt.settled && rebuilt.outcome == "approve", "the run observed after the restart settles it on them");
+        std::test::assert(
+            rebuilt.recheck() && rebuilt.settled && rebuilt.outcome == "approve",
+            "the run observed after the restart settles it on them",
+        );
 
         // ---- restart or a lost response: a command is decided once
         let r4 = review(self.rj, "m4", "gate:ci/api");
         let first = r4.command_decide(self.verdict("m4", "c1", "grace", "approve"));
-        std::test::assert(std::json::find_bool_field(first, "accepted") && !std::json::find_bool_field(first, "settled"), "grace's approval is accepted and settles nothing yet: " + first);
+        std::test::assert(
+            std::json::find_bool_field(first, "accepted")
+                && !std::json::find_bool_field(first, "settled"),
+            "grace's approval is accepted and settles nothing yet: " + first,
+        );
         let rows = self.journal.revision();
-        std::test::assert_eq_str(r4.command_decide(self.verdict("m4", "c1", "grace", "approve")), first, "the response lost, the same command answers the same decision");
+        std::test::assert_eq_str(
+            r4.command_decide(self.verdict("m4", "c1", "grace", "approve")),
+            first,
+            "the response lost, the same command answers the same decision",
+        );
         std::test::assert_eq_int(self.journal.revision(), rows, "and writes nothing new");
         let refused = r4.command_decide(self.verdict("m4", "c2", "mallory", "approve"));
-        std::test::assert(!std::json::find_bool_field(refused, "accepted") && std::str::contains(refused, "holds no position this Review requires"), "mallory's command is refused: " + refused);
+        std::test::assert(
+            !std::json::find_bool_field(refused, "accepted")
+                && std::str::contains(refused, "holds no position this Review requires"),
+            "mallory's command is refused: " + refused,
+        );
         self.opened("m4");
         self.observed("m4", "ci/api", CANDIDATE, "success");
         // the organization restarts: the Review is rebuilt from the record
         let again = review(self.rj, "m4", "gate:ci/api");
-        std::test::assert_eq_str(again.signed, "position:api/reviewer", "grace's signature comes back from the record");
+        std::test::assert_eq_str(
+            again.signed,
+            "position:api/reviewer",
+            "grace's signature comes back from the record",
+        );
         std::test::assert_eq_str(again.evidenced, "gate:ci/api", "and the run the forge reported");
         std::test::assert_eq_int(again.refused, 1, "and mallory's refusal");
-        std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c1", "grace", "approve")), first, "c1 asked of the rebuilt Review answers the same decision");
-        std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c2", "mallory", "approve")), refused, "and so does c2");
-        std::test::assert_eq_int(self.journal.revision(), rows + 3, "still nothing new: mallory's refusal, the forge's review and the observed run");
+        std::test::assert_eq_str(
+            again.command_decide(self.verdict("m4", "c1", "grace", "approve")),
+            first,
+            "c1 asked of the rebuilt Review answers the same decision",
+        );
+        std::test::assert_eq_str(
+            again.command_decide(self.verdict("m4", "c2", "mallory", "approve")),
+            refused,
+            "and so does c2",
+        );
+        std::test::assert_eq_int(
+            self.journal.revision(),
+            rows + 3,
+            "still nothing new: mallory's refusal, the forge's review and the observed run",
+        );
         let last = again.command_decide(self.verdict("m4", "c3", "ada", "approve"));
-        std::test::assert(std::json::find_bool_field(last, "settled") && again.settled && again.outcome == "approve", "ada's approval completes it: " + last);
+        std::test::assert(
+            std::json::find_bool_field(last, "settled")
+                && again.settled
+                && again.outcome == "approve",
+            "ada's approval completes it: " + last,
+        );
         let after = review(self.rj, "m4", "gate:ci/api");
-        std::test::assert(after.settled && after.outcome == "approve", "a second restart finds it settled approved");
-        std::test::assert_eq_str(after.command_decide(self.verdict("m4", "c3", "ada", "approve")), last, "and c3 redelivered answers the settlement it made");
+        std::test::assert(
+            after.settled && after.outcome == "approve",
+            "a second restart finds it settled approved",
+        );
+        std::test::assert_eq_str(
+            after.command_decide(self.verdict("m4", "c3", "ada", "approve")),
+            last,
+            "and c3 redelivered answers the settlement it made",
+        );
 
         // ---- no route: the Review keeps its own required authority
-        let r5 = dna::Review { journal: self.rj, review_id: "m5", question: "apply m5?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1" };
-        std::test::assert(!r5.consider(dna::Verdict { review_id: "m5", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "leader" }) && std::str::contains(r5.last_refusal, "authority leader does not satisfy board"), "with no signers, the authority decides: " + r5.last_refusal);
-        std::test::assert(r5.consider(dna::Verdict { review_id: "m5", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "board" }) && r5.settled, "and the board's settles it");
+        let r5 = dna::Review {
+            journal: self.rj,
+            review_id: "m5",
+            question: "apply m5?",
+            subject_digest: CANDIDATE,
+            required_authority: "board",
+            author: "dev1",
+        };
+        std::test::assert(
+            !r5.consider(
+                dna::Verdict {
+                    review_id: "m5",
+                    subject_digest: CANDIDATE,
+                    verdict: "approve",
+                    reviewer: "mallory",
+                    authority: "leader",
+                },
+            )
+                && std::str::contains(r5.last_refusal, "authority leader does not satisfy board"),
+            "with no signers, the authority decides: " + r5.last_refusal,
+        );
+        std::test::assert(
+            r5.consider(
+                dna::Verdict {
+                    review_id: "m5",
+                    subject_digest: CANDIDATE,
+                    verdict: "approve",
+                    reviewer: "mallory",
+                    authority: "board",
+                },
+            )
+                && r5.settled,
+            "and the board's settles it",
+        );
 
         // ---- a route that left a path to the Review's own authority: that
         // authority, claimed, stands beside the positions, and is required
-        let r6 = dna::Review { journal: self.rj, review_id: "m6", question: "apply m6?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1", signers: "position:api/reviewer=grace", fallback: true };
-        std::test::assert(r6.consider(dna::Verdict { review_id: "m6", subject_digest: CANDIDATE, verdict: "approve", reviewer: "grace", authority: "reviewer" }) && !r6.settled, "grace signs, and the path left to the Board is not yet approved");
-        std::test::assert_eq_str(r6.awaiting(), "authority:board", "it awaits the Board's authority");
-        std::test::assert(!r6.consider(dna::Verdict { review_id: "m6", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "leader" }) && std::str::contains(r6.last_refusal, "holds no position this Review requires (position:api/reviewer) and authority leader does not satisfy board"), "a weaker authority is refused: " + r6.last_refusal);
-        std::test::assert(r6.consider(dna::Verdict { review_id: "m6", subject_digest: CANDIDATE, verdict: "approve", reviewer: "ada", authority: "board" }) && r6.settled && r6.outcome == "approve", "the Board's approval completes it");
+        let r6 = dna::Review {
+            journal: self.rj,
+            review_id: "m6",
+            question: "apply m6?",
+            subject_digest: CANDIDATE,
+            required_authority: "board",
+            author: "dev1",
+            signers: "position:api/reviewer=grace",
+            fallback: true,
+        };
+        std::test::assert(
+            r6.consider(
+                dna::Verdict {
+                    review_id: "m6",
+                    subject_digest: CANDIDATE,
+                    verdict: "approve",
+                    reviewer: "grace",
+                    authority: "reviewer",
+                },
+            )
+                && !r6.settled,
+            "grace signs, and the path left to the Board is not yet approved",
+        );
+        std::test::assert_eq_str(
+            r6.awaiting(),
+            "authority:board",
+            "it awaits the Board's authority",
+        );
+        std::test::assert(
+            !r6.consider(
+                dna::Verdict {
+                    review_id: "m6",
+                    subject_digest: CANDIDATE,
+                    verdict: "approve",
+                    reviewer: "mallory",
+                    authority: "leader",
+                },
+            )
+                && std::str::contains(
+                    r6.last_refusal,
+                    "holds no position this Review requires (position:api/reviewer) and authority leader does not satisfy board",
+                ),
+            "a weaker authority is refused: " + r6.last_refusal,
+        );
+        std::test::assert(
+            r6.consider(
+                dna::Verdict {
+                    review_id: "m6",
+                    subject_digest: CANDIDATE,
+                    verdict: "approve",
+                    reviewer: "ada",
+                    authority: "board",
+                },
+            )
+                && r6.settled
+                && r6.outcome == "approve",
+            "the Board's approval completes it",
+        );
 
         // ---- re-routed: who holds the positions now signs, and who left does not
         let r9 = review(self.rj, "m9", "");
-        r9.on_routed(dna::ReviewRouting { review_id: "m9", signers: "position:api/reviewer=zoe position:node/reviewer=hopper,ada" });
-        std::test::assert(!r9.consider(self.verdict("m9", "", "grace", "approve")) && std::str::contains(r9.last_refusal, "grace holds no position"), "grace left api/reviewer: refused");
-        std::test::assert(r9.consider(self.verdict("m9", "", "zoe", "approve")), "zoe, who holds it now, signs");
+        r9.on_routed(
+            dna::ReviewRouting {
+                review_id: "m9",
+                signers: "position:api/reviewer=zoe position:node/reviewer=hopper,ada",
+            },
+        );
+        std::test::assert(
+            !r9.consider(self.verdict("m9", "", "grace", "approve"))
+                && std::str::contains(r9.last_refusal, "grace holds no position"),
+            "grace left api/reviewer: refused",
+        );
+        std::test::assert(
+            r9.consider(self.verdict("m9", "", "zoe", "approve")),
+            "zoe, who holds it now, signs",
+        );
 
         // ---- over a git record: a restart rebuilds a proposal's Review from
         // its routing row, and it is decided by the Board's holder alone
@@ -199,48 +517,135 @@ main locus App {
         std::io::fs::mkdir(self.repo) or discard;
         std::io::fs::mkdir(self.repo + "/.hale") or discard;
         std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
-        std::io::fs::write_file(self.repo + "/main.hl", "fn main() { println(\"app\"); }\n") or discard;
+        std::io::fs::write_file(
+            self.repo + "/main.hl",
+            "fn main() { println(\"app\"); }\n",
+        ) or discard;
         let init = sh("git\n-C\n" + self.repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + self.repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + self.repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + self.repo
+                + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "a repository: " + c0.stderr);
         self.born();
-        self.org.on_practice_requested(dna::PracticeRequest { request_id: "p1", name: "acceptance/receipts", text: "An expense closes with its receipt.", by: "riley" });
+        self.org.on_practice_requested(
+            dna::PracticeRequest {
+                request_id: "p1",
+                name: "acceptance/receipts",
+                text: "An expense closes with its receipt.",
+                by: "riley",
+            },
+        );
         let proposed = self.answer_after(0, "practice.proposed", "p1");
         std::test::assert(len(proposed) > 0, "the practice is proposed");
         let digest = std::json::find_string_field(proposed, "digest");
         let rid = dna::knowledge_review_id(digest);
-        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(self.repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         let j = dna::RecordJournal { repo: self.repo, author: "dna" };
-        let routed = j.append(j.revision(), "review.routed", rid, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}");
+        let routed = j.append(
+            j.revision(),
+            "review.routed",
+            rid,
+            "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}",
+        );
         std::test::assert(routed.ok, "the Review's routing is in the record: " + routed.error);
         self.born();
         let before = dna::RecordJournal { repo: self.repo }.revision();
-        dna::ReviewVerdict <- dna::Verdict { review_id: rid, subject_digest: digest, verdict: "approve", reviewer: "bob", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: rid,
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "bob",
+            authority: "board",
+        };
         let refused = self.answer_after(before, "review.refused", rid);
-        std::test::assert(std::str::contains(refused, "reviewer bob holds no position this Review requires (position:board)"), "rebuilt, it refuses bob whatever he claims: " + refused);
-        dna::ReviewVerdict <- dna::Verdict { review_id: rid, subject_digest: digest, verdict: "approve", reviewer: "ada", authority: "reviewer" };
+        std::test::assert(
+            std::str::contains(
+                refused,
+                "reviewer bob holds no position this Review requires (position:board)",
+            ),
+            "rebuilt, it refuses bob whatever he claims: " + refused,
+        );
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: rid,
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "ada",
+            authority: "reviewer",
+        };
         let settled = self.answer_after(before, "review.settled", rid);
-        std::test::assert(std::str::starts_with(settled, "approve by ada"), "and ada, who holds the board, settles it: " + settled);
+        std::test::assert(
+            std::str::starts_with(settled, "approve by ada"),
+            "and ada, who holds the board, settles it: " + settled,
+        );
 
         // ---- a gated Review in the organism (GH #1161): ada's approval waits
         // for the gate's run; the host observes it at the forge, the organism
         // tells the Review, and it settles on ada's approval
-        self.org.on_practice_requested(dna::PracticeRequest { request_id: "p2", name: "acceptance/gated", text: "A gated change closes with its run.", by: "riley" });
+        self.org.on_practice_requested(
+            dna::PracticeRequest {
+                request_id: "p2",
+                name: "acceptance/gated",
+                text: "A gated change closes with its run.",
+                by: "riley",
+            },
+        );
         let proposed2 = self.answer_after(0, "practice.proposed", "p2");
         let digest2 = std::json::find_string_field(proposed2, "digest");
         let rid2 = dna::knowledge_review_id(digest2);
-        std::test::assert(j.append(j.revision(), "review.routed", rid2, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"gate:ci/api\", \"fallback\": false}").ok, "a gated routing");
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "review.routed",
+                rid2,
+                "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"gate:ci/api\", \"fallback\": false}",
+            ).ok,
+            "a gated routing",
+        );
         self.born();
         let before2 = dna::RecordJournal { repo: self.repo }.revision();
-        dna::ReviewVerdict <- dna::Verdict { review_id: rid2, subject_digest: digest2, verdict: "approve", reviewer: "ada", authority: "board" };
-        std::test::assert_eq_str(self.answer_within(before2, "review.settled", rid2, 3), "", "ada's approval waits for the gate's run");
-        std::test::assert(j.append(j.revision(), "github.pr", rid2, "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}").ok, "opened at the forge");
-        std::test::assert(j.append(j.revision(), "gate.observed", rid2, run_body("ci/api", digest2, "success")).ok, "the host observes ci/api passing at the forge");
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: rid2,
+            subject_digest: digest2,
+            verdict: "approve",
+            reviewer: "ada",
+            authority: "board",
+        };
+        std::test::assert_eq_str(
+            self.answer_within(before2, "review.settled", rid2, 3),
+            "",
+            "ada's approval waits for the gate's run",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "github.pr",
+                rid2,
+                "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}",
+            ).ok,
+            "opened at the forge",
+        );
+        std::test::assert(
+            j.append(
+                j.revision(),
+                "gate.observed",
+                rid2,
+                run_body("ci/api", digest2, "success"),
+            ).ok,
+            "the host observes ci/api passing at the forge",
+        );
         let moved = self.org.journal.refresh();
         self.org.announce_gate_runs();
         let settled2 = self.answer_after(before2, "review.settled", rid2);
-        std::test::assert(std::str::starts_with(settled2, "approve by ada"), "told, the Review settles on ada's approval: " + settled2);
+        std::test::assert(
+            std::str::starts_with(settled2, "approve by ada"),
+            "told, the Review settles on ada's approval: " + settled2,
+        );
 
         dna::scratch_done(scratch);
     }

@@ -46,7 +46,9 @@ fn completion_by(body: String) -> String {
 // admission's bound terms. Bounded by the record.
 fn case_completion(j: Journal, case_id: String, admission: String) -> CaseCompletion {
     let mut assignee = std::json::find_string_field(admission, "assignee");
-    let evidence_required = std::str::trim(std::json::find_field_raw(admission, "evidence_required")) == "true";
+    let evidence_required = std::str::trim(
+        std::json::find_field_raw(admission, "evidence_required"),
+    ) == "true";
     let acceptance = std::json::find_string_field(admission, "acceptance");
     let mut out = CaseCompletion { };
     let mut evidence = "";
@@ -64,7 +66,9 @@ fn case_completion(j: Journal, case_id: String, admission: String) -> CaseComple
                 assignee = std::json::find_string_field(e.body, "to");
             } else if e.kind == "completion.linked" {
                 // evidence linked under the bound practice, the same one
-                if std::json::find_string_field(e.body, "practice") == acceptance { evidence = std::json::find_string_field(e.body, "evidence"); }
+                if std::json::find_string_field(e.body, "practice") == acceptance {
+                    evidence = std::json::find_string_field(e.body, "evidence");
+                }
             } else if e.kind == "completion.excepted" {
                 if std::json::find_string_field(e.body, "practice") == acceptance {
                     exception = std::json::find_string_field(e.body, "why");
@@ -73,7 +77,9 @@ fn case_completion(j: Journal, case_id: String, admission: String) -> CaseComple
                 }
             } else if e.kind == "decision.reported" {
                 let reporter = std::json::find_string_field(e.body, "reporter");
-                let accepted = std::str::trim(std::json::find_field_raw(e.body, "accepted")) == "true";
+                let accepted = std::str::trim(
+                    std::json::find_field_raw(e.body, "accepted"),
+                ) == "true";
                 // accepted under the bound policy, naming this case as its
                 // scope — a decision accepted under a later, permissive
                 // practice closes nothing bound to the earlier one, and one
@@ -85,7 +91,10 @@ fn case_completion(j: Journal, case_id: String, admission: String) -> CaseComple
                     out.found = true;
                     out.refused = out.refused + 1;
                     out.why = if len(policy) == 0 { "a decision accepted under no named policy" }
-                    else if policy != acceptance { "a decision accepted under " + policy + ", not under " + acceptance + " as bound at hand-off" }
+                    else if policy != acceptance {
+                        "a decision accepted under " + policy + ", not under " + acceptance
+                            + " as bound at hand-off"
+                    }
                     else if len(scope) == 0 { "a decision naming no case as its scope" }
                     else { "a decision for " + scope + ", not for this case" };
                 } else if bound && (len(assignee) == 0 || same_party(reporter, assignee)) {
@@ -98,17 +107,34 @@ fn case_completion(j: Journal, case_id: String, admission: String) -> CaseComple
                 } else if bound {
                     out.found = true;
                     out.refused = out.refused + 1;
-                    out.why = "a decision reported by " + reporter + ", not by the assignee " + assignee;
+                    out.why = "a decision reported by " + reporter + ", not by the assignee "
+                        + assignee;
                 }
             } else if e.kind == "task.done" {
                 let by = completion_by(e.body);
                 out.found = true;
                 // the exception applies to the person closing: recorded
                 // in their name, authorized by someone else than them
-                let excepted = len(exception) > 0 && len(exception_authorizer) > 0 && same_party(exception_by, by) && !same_party(exception_authorizer, by);
+                let excepted = len(exception) > 0
+                    && len(exception_authorizer) > 0
+                    && same_party(exception_by, by)
+                    && !same_party(exception_authorizer, by);
                 let refusal = if len(by) == 0 { "the completion names nobody (`by <who>`)" }
-                else if len(assignee) > 0 && !same_party(by, assignee) { "completed by " + by + ", not by the assignee " + assignee }
-                else if evidence_required && len(evidence) == 0 && !excepted { "closes only with its evidence under " + acceptance + " as bound at hand-off, and none is linked" + (if len(exception) > 0 { " (the exception recorded is not " + by + "'s, or " + by + " authorized it)" } else { " (nor an exception authorized)" }) }
+                else if len(assignee) > 0 && !same_party(by, assignee) {
+                    "completed by " + by + ", not by the assignee " + assignee
+                }
+                else if evidence_required && len(evidence) == 0 && !excepted {
+                    "closes only with its evidence under " + acceptance
+                        + " as bound at hand-off, and none is linked"
+                        + (
+                            if len(exception) > 0 {
+                                " (the exception recorded is not " + by + "'s, or " + by
+                                    + " authorized it)"
+                            } else {
+                                " (nor an exception authorized)"
+                            }
+                        )
+                }
                 else { "" };
                 if len(refusal) == 0 {
                     out.valid = true;

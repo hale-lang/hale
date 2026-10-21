@@ -37,7 +37,13 @@ const RELAY_RECV_NS: Int = 60000000000;
 // A buffered answer (the gate, the head read) is small; larger is cut.
 const BUFFER_LIMIT: Int = 4194304;
 
-type Answer { ok: Bool = false; status: Int = 0; head: String = ""; body: String = ""; raw: Bytes = b""; }
+type Answer {
+    ok: Bool = false;
+    status: Int = 0;
+    head: String = "";
+    body: String = "";
+    raw: Bytes = b"";
+}
 
 fn integer(text: String, ceiling: Int) -> Int {
     let n = std::str::parse_int(text) or - 1;
@@ -61,12 +67,21 @@ fn head_request(req: std::http::Request, head_port: Int) -> String {
         let line = if cut < 0 { rest } else { rest[0..cut] };
         rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
         let name = lower_name(line);
-        if len(name) > 0 && name != "connection" && name != "content-length" && name != "transfer-encoding" && name != "keep-alive" && name != "expect" {
+        if len(name) > 0
+            && name != "connection"
+            && name != "content-length"
+            && name != "transfer-encoding"
+            && name != "keep-alive"
+            && name != "expect"
+        {
             lines = lines + line + "\r\n";
         }
     }
-    if req.method == "POST" || len(req.body) > 0 { lines = lines + "Content-Length: " + to_string(len(req.body)) + "\r\n"; }
-    return req.method + " " + req.path + " HTTP/1.1\r\n" + lines + "Connection: close\r\n\r\n" + req.body;
+    if req.method == "POST" || len(req.body) > 0 {
+        lines = lines + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    }
+    return req.method + " " + req.path + " HTTP/1.1\r\n" + lines + "Connection: close\r\n\r\n"
+        + req.body;
 }
 
 fn refusal(status: Int, code: String, message: String) -> std::http::Response {
@@ -78,7 +93,12 @@ fn refusal(status: Int, code: String, message: String) -> std::http::Response {
     b.string_field("message", message);
     b.end_object();
     b.end_object();
-    return std::http::Response { status: status, content_type: "application/json", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff", body: b.result() };
+    return std::http::Response {
+        status: status,
+        content_type: "application/json",
+        headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+        body: b.result(),
+    };
 }
 
 // One whole exchange with the head: `text` sent, the answer read to the
@@ -104,7 +124,13 @@ fn buffered(head_port: Int, text: String) -> Answer {
     let split = std::str::index_of(all, "\r\n\r\n");
     if split < 0 || total > BUFFER_LIMIT || len(all) < 12 { return Answer { }; }
     let status = std::str::parse_int(all[9..12]) or 0;
-    return Answer { ok: status >= 100, status: status, head: all[0..split], body: all[(split + 4)..len(all)], raw: raw };
+    return Answer {
+        ok: status >= 100,
+        status: status,
+        head: all[0..split],
+        body: all[(split + 4)..len(all)],
+        raw: raw,
+    };
 }
 
 // One read from the head, written to the browser: the bytes moved, 0 at
@@ -130,7 +156,13 @@ locus Face {
     // `raw` written to the browser's connection as it is, and the
     // connection closed.
     fn hand_over(req: std::http::Request, raw: Bytes) -> std::http::Response {
-        if req.conn_fd < 0 { return refusal(500, "internal", "an answer is written to its connection, and this request has none"); }
+        if req.conn_fd < 0 {
+            return refusal(
+                500,
+                "internal",
+                "an answer is written to its connection, and this request has none",
+            );
+        }
         std::io::tcp::send_fd(req.conn_fd, raw) or discard;
         std::io::tcp::close_fd(req.conn_fd);
         return std::http::Response { status: 200, body: "", takeover_raw: true };
@@ -139,9 +171,17 @@ locus Face {
     // The head's answer to `req`, relayed chunk by chunk until the head or
     // the browser closes: an event stream is held open this way.
     fn relay(req: std::http::Request) -> std::http::Response {
-        if req.conn_fd < 0 { return refusal(500, "internal", "an answer is written to its connection, and this request has none"); }
+        if req.conn_fd < 0 {
+            return refusal(
+                500,
+                "internal",
+                "an answer is written to its connection, and this request has none",
+            );
+        }
         let fd = std::io::tcp::connect("127.0.0.1", self.head_port) or - 1;
-        if fd < 0 { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
+        if fd < 0 {
+            return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+        }
         let armed = std::io::tcp::__set_recv_timeout_ns(fd, RELAY_RECV_NS);
         std::io::tcp::set_send_timeout(req.conn_fd, 10s) or discard;
         let up = std::io::tcp::Stream { conn_fd: fd };
@@ -163,19 +203,35 @@ locus Face {
     // The attached project's `ui/` page: the head says which project is
     // attached, to the person whose session this is.
     fn head_read(req: std::http::Request) -> Answer {
-        return buffered(self.head_port, std::str::replace(head_request(req, self.head_port), req.method + " " + req.path + " ", "GET " + HEAD_READ + " "));
+        return buffered(
+            self.head_port,
+            std::str::replace(
+                head_request(req, self.head_port),
+                req.method + " " + req.path + " ",
+                "GET " + HEAD_READ + " ",
+            ),
+        );
     }
 
     fn app_asset(req: std::http::Request, path: String) -> std::http::Response {
         let read = self.head_read(req);
-        if !read.ok { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
+        if !read.ok {
+            return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+        }
         if read.status != 200 { return self.hand_over(req, read.raw); }
-        let active = std::json::find_field_raw(std::json::find_field_raw(read.body, "data"), "active");
+        let active = std::json::find_field_raw(
+            std::json::find_field_raw(read.body, "data"),
+            "active",
+        );
         let root = std::json::find_string_field(active, "root");
-        if len(root) == 0 { return refusal(503, "head_detached", "the head has no attached project"); }
+        if len(root) == 0 {
+            return refusal(503, "head_detached", "the head has no attached project");
+        }
         let a = ops::application_asset(root, path);
         if a.status != 200 { return refusal(404, "not_found", a.why); }
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: " + a.content_type + "\r\nContent-Length: " + to_string(len(a.bytes)) + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: " + a.content_type + "\r\nContent-Length: "
+            + to_string(len(a.bytes))
+            + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
         return self.hand_over(req, std::bytes::concat(std::bytes::from_string(head), a.bytes));
     }
 
@@ -185,26 +241,47 @@ locus Face {
     // the visitor's own cookies.
     fn index_page(req: std::http::Request) -> std::http::Response {
         let read = self.head_read(req);
-        if !read.ok { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
+        if !read.ok {
+            return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+        }
         if read.status != 200 { return self.hand_over(req, read.raw); }
-        let reader = IndexReader { head_port: self.head_port, cookie: std::http::header(req, "Cookie") };
+        let reader = IndexReader {
+            head_port: self.head_port,
+            cookie: std::http::header(req, "Cookie"),
+        };
         let page = index_page(reader.read(), std::http::header(req, "Host"));
-        return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", body: page };
+        return std::http::Response {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            body: page,
+        };
     }
 
     fn handle(req: std::http::Request) -> std::http::Response {
         let cut = std::str::index_of(req.path, "?");
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
-        if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_asset(req, path); }
+        if req.method == "GET"
+            && (
+                path == ops::APP_ASSETS_PREFIX
+                    || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")
+            )
+        {
+            return self.app_asset(req, path);
+        }
         if req.method == "GET" && path == "/index" { return self.index_page(req); }
         if req.method == "GET" && path == "/" {
             // the head's gate: 204 lets the shell out, anything else is the head's to say
             let gate = buffered(self.head_port, head_request(req, self.head_port));
-            if !gate.ok { return refusal(502, "head_unreachable", "the head does not answer on the loopback"); }
+            if !gate.ok {
+                return refusal(502, "head_unreachable", "the head does not answer on the loopback");
+            }
             if gate.status != 204 { return self.hand_over(req, gate.raw); }
             return self.web.response(path);
         }
-        if req.method == "GET" && self.web.serves(path) && cut < 0 { return self.web.response(path); }
+        if req.method == "GET" && self.web.serves(path) && cut < 0 {
+            return self.web.response(path);
+        }
         return self.relay(req);
     }
 }
@@ -212,7 +289,14 @@ locus Face {
 // The F.3 rule: the loaded assets reach the server literal through a
 // parameter, never from a `let` in the same scope.
 fn serve_face(port: Int, web: assets::WebAssets, head_port: Int) {
-    FaceMain { srv: std::http::Server { host: "127.0.0.1", port: port, ready_signal: "hale dna face: http://127.0.0.1:" + to_string(port) + "/", handler: Face { web: web, head_port: head_port } } };
+    FaceMain {
+        srv: std::http::Server {
+            host: "127.0.0.1",
+            port: port,
+            ready_signal: "hale dna face: http://127.0.0.1:" + to_string(port) + "/",
+            handler: Face { web: web, head_port: head_port },
+        },
+    };
 }
 
 // It must be the program's own `main locus`: the server off the main pool,
@@ -233,7 +317,13 @@ fn main() {
     let port = integer(std::env::arg_or(1, ""), 65535);
     let webroot = std::env::arg_or(2, "");
     let head_port = integer(std::env::arg_or(3, ""), 65535);
-    if port < 1 || head_port < 1 || port == head_port || len(webroot) == 0 || std::str::contains(webroot, "\n") || std::str::contains(webroot, "\r") {
+    if port < 1
+        || head_port < 1
+        || port == head_port
+        || len(webroot) == 0
+        || std::str::contains(webroot, "\n")
+        || std::str::contains(webroot, "\r")
+    {
         eprintln(USAGE);
         std::process::exit(2);
     }

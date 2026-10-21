@@ -40,12 +40,19 @@ fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> 
     // regrouped or reparented, and `kill_tree` stops the whole session
     // (GH #970)
     let argv = dna::in_new_session(argv);
-    let outer = "( sh -c " + shq(pid_script(dir, name)) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
+    let outer = "( sh -c " + shq(pid_script(dir, name)) + " sh sh -c " + shq(script) + " sh "
+        + argv_words(argv) + " ) >/dev/null 2>&1 &";
     let r = dna::run_tool("sh\n-c\n" + outer);
     let mut waited = 0;
     while waited < 50 {
         let pid = std::io::fs::read_file(dir + "/" + name + ".pid") or "";
-        if len(dna::trim_nl(pid)) > 0 { return Proc { pid: std::str::parse_int(dna::trim_nl(pid)) or - 1, dir: dir, name: name }; }
+        if len(dna::trim_nl(pid)) > 0 {
+            return Proc {
+                pid: std::str::parse_int(dna::trim_nl(pid)) or - 1,
+                dir: dir,
+                name: name,
+            };
+        }
         std::time::sleep(20ms);
         waited = waited + 1;
     }
@@ -76,7 +83,8 @@ fn argv_words(argv: String) -> String {
 // The outer shell's script: run the rest, record its pid, wait, record
 // its code.
 fn pid_script(dir: String, name: String) -> String {
-    return "\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit");
+    return "\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > "
+        + shq(dir + "/" + name + ".exit");
 }
 
 // How the inner shell's script ends: the rest exec'd, with the log as
@@ -117,7 +125,9 @@ fn descendants(pid: String) -> String {
             if sp < 0 { continue; }
             let child = line[0..sp];
             let parent = std::str::trim(line[(sp + 1)..len(line)]);
-            if std::str::contains(found, "\n" + parent + "\n") && !std::str::contains(found, "\n" + child + "\n") {
+            if std::str::contains(found, "\n" + parent + "\n")
+                && !std::str::contains(found, "\n" + child + "\n")
+            {
                 found = found + child + "\n";
                 grew = true;
             }
@@ -198,7 +208,9 @@ fn cmd_matches(dir: String, name: String, pid: Int) -> Bool {
 fn cmdline_of(pid: Int) -> String {
     let mut tries = 0;
     while tries < 50 {
-        let r = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid));
+        let r = dna::run_tool(
+            "sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid),
+        );
         if r.code != 0 { return ""; }
         let line = dna::trim_nl(r.stdout);
         if len(line) > 0 { return line; }
@@ -254,9 +266,19 @@ fn peel(dir: String, name: String, line: String, stage: Int) -> String {
         return rest;
     }
     if stage == 4 { return if first == "setsid" { drop_words(line, 1) } else { line }; }
-    if first != "sh" || dna::line_at(line, 1) != "-c" || dna::line_at(line, 3) != "sh" { return line; }
+    if first != "sh" || dna::line_at(line, 1) != "-c" || dna::line_at(line, 3) != "sh" {
+        return line;
+    }
     let script = dna::line_at(line, 2);
-    let ours = if stage == 0 { script == pid_script(dir, name) } else if stage == 1 { std::str::starts_with(script, "cd ") && std::str::contains(script, " && exec env ") && std::str::ends_with(script, log_redirect(dir, name)) } else { script == session_script() };
+    let ours = if stage == 0 {
+        script == pid_script(dir, name)
+    } else if stage == 1 {
+        std::str::starts_with(script, "cd ")
+            && std::str::contains(script, " && exec env ")
+            && std::str::ends_with(script, log_redirect(dir, name))
+    } else {
+        script == session_script()
+    };
     return if ours { drop_words(line, 4) } else { line };
 }
 

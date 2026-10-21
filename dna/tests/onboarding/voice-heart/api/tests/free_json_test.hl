@@ -18,7 +18,14 @@ fn big_config(n: Int) -> String {
 }
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 const CONFIG: String = "{\"text\":  \"hi\", \"z\": 1, \"a\": [1, 2.50, {\"deep\": null}]}";
@@ -29,55 +36,158 @@ fn main() {
     call(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}");
     call(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
     call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}");
-    let seat = call(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": " + CONFIG + "}");
+    let seat = call(
+        e,
+        "POST",
+        "/admin/v1/nodes/laptop/seats",
+        "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": "
+            + CONFIG + "}",
+    );
     std::test::assert_eq_int(seat.status, 201, "a seat: " + seat.body);
-    std::test::assert(std::str::contains(seat.body, "\"config\": " + CONFIG), "its config, byte for byte: " + seat.body);
+    std::test::assert(
+        std::str::contains(seat.body, "\"config\": " + CONFIG),
+        "its config, byte for byte: " + seat.body,
+    );
     let got = call(e, "GET", "/admin/v1/nodes/laptop/seats/static", "");
-    std::test::assert(std::str::contains(got.body, "\"config\": " + CONFIG), "and read back so: " + got.body);
+    std::test::assert(
+        std::str::contains(got.body, "\"config\": " + CONFIG),
+        "and read back so: " + got.body,
+    );
     let changes = call(e, "GET", "/admin/v1/changes?target=nodes/laptop/seats/static", "");
-    std::test::assert(std::str::contains(changes.body, CONFIG), "the change's after holds it as written: " + changes.body);
-    std::test::assert(std::str::contains(changes.body, "\"before\": null"), "and a create's before is null");
-    std::test::assert_eq_int(call(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"config\": [1, 2]}").status, 400, "a config is an object");
+    std::test::assert(
+        std::str::contains(changes.body, CONFIG),
+        "the change's after holds it as written: " + changes.body,
+    );
+    std::test::assert(
+        std::str::contains(changes.body, "\"before\": null"),
+        "and a create's before is null",
+    );
+    std::test::assert_eq_int(
+        call(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"config\": [1, 2]}").status,
+        400,
+        "a config is an object",
+    );
 
     // a config stored before the 64 KiB a value holds (an old row): never
     // replaced, written back as stored, and assigned to its node intact
     let big = big_config(70000);
     std::test::assert(len(big) > 65536, "a config past 64 KiB");
-    let token = std::json::find_string_field(call(e, "POST", "/admin/v1/nodes", "{\"id\": \"mini\"}").body, "enrollment_token");
-    let mut old = st::SeatRow { ref: "mini/old", node: "mini", id: "old", engine: "static", account: "static", config: big };
+    let token = std::json::find_string_field(
+        call(e, "POST", "/admin/v1/nodes", "{\"id\": \"mini\"}").body,
+        "enrollment_token",
+    );
+    let mut old = st::SeatRow {
+        ref: "mini/old",
+        node: "mini",
+        id: "old",
+        engine: "static",
+        account: "static",
+        config: big,
+    };
     push(old.serves.items, st::SeatModel { model: "echo-1" }) or discard;
     push(old.data_classes.items, "internal") or discard;
-    let stored = e.store.insert_seat(old, st::ChangeRow { action: "create", target: "nodes/mini/seats/old", after: "{\"id\": \"old\", \"config\": " + big + "}" }) or false;
+    let stored = e.store.insert_seat(
+        old,
+        st::ChangeRow {
+            action: "create",
+            target: "nodes/mini/seats/old",
+            after: "{\"id\": \"old\", \"config\": " + big + "}",
+        },
+    ) or false;
     std::test::assert(stored, "the old row, written into the store directly");
     let read = call(e, "GET", "/admin/v1/nodes/mini/seats/old", "");
     std::test::assert_eq_int(read.status, 200, "read: " + head(read.body));
-    std::test::assert(std::str::contains(read.body, "\"config\": " + big + ", "), "the stored config, byte for byte");
+    std::test::assert(
+        std::str::contains(read.body, "\"config\": " + big + ", "),
+        "the stored config, byte for byte",
+    );
     let listed = call(e, "GET", "/admin/v1/nodes/mini", "");
-    std::test::assert(std::str::contains(listed.body, "\"config\": " + big + ", "), "in its node too");
+    std::test::assert(
+        std::str::contains(listed.body, "\"config\": " + big + ", "),
+        "in its node too",
+    );
     let history = call(e, "GET", "/admin/v1/changes?target=nodes/mini/seats/old", "");
     std::test::assert(std::str::contains(history.body, big), "and its change's after as stored");
-    let reg = e.handle(std::http::Request { method: "POST", path: "/node/v1/register", headers: "Authorization: Bearer " + token, body: "{\"protocol\": 2, \"version\": \"x\", \"capabilities\": {\"max_in_flight\": 4, \"engines\": [{\"id\": \"static\", \"kind\": \"static\", \"models\": null, \"config_schema\": {\"type\": \"object\"}}]}, \"local\": {\"paused\": false, \"paused_seats\": [], \"max_in_flight\": null, \"reason\": null}}" });
+    let reg = e.handle(
+        std::http::Request {
+            method: "POST",
+            path: "/node/v1/register",
+            headers: "Authorization: Bearer " + token,
+            body: "{\"protocol\": 2, \"version\": \"x\", \"capabilities\": {\"max_in_flight\": 4, \"engines\": [{\"id\": \"static\", \"kind\": \"static\", \"models\": null, \"config_schema\": {\"type\": \"object\"}}]}, \"local\": {\"paused\": false, \"paused_seats\": [], \"max_in_flight\": null, \"reason\": null}}",
+        },
+    );
     std::test::assert_eq_int(reg.status, 200, "the node registers: " + head(reg.body));
-    std::test::assert(std::str::contains(reg.body, "\"config\": " + big + "}"), "and is assigned the seat with its config intact");
+    std::test::assert(
+        std::str::contains(reg.body, "\"config\": " + big + "}"),
+        "and is assigned the seat with its config intact",
+    );
     // the surface's typed answer cannot hold it: an error that says so, never null
-    let typed = e.seats.get(api::SeatRef { node: "mini", seat: "old" }) or api::SeatView { ref: "refused", status: api::SeatStatus::offline };
-    std::test::assert_eq_str(typed.ref, "refused", "the typed answer refuses it rather than answering null");
-    let why = e.seats.get(api::SeatRef { node: "mini", seat: "old" }) or api::SeatView { ref: err.message, status: api::SeatStatus::offline };
-    std::test::assert(std::str::contains(why.ref, "seat mini/old's config is ") && std::str::contains(why.ref, " bytes"), "naming the field and its size: " + why.ref);
+    let typed = e.seats.get(api::SeatRef { node: "mini", seat: "old" }) or api::SeatView {
+        ref: "refused",
+        status: api::SeatStatus::offline,
+    };
+    std::test::assert_eq_str(
+        typed.ref,
+        "refused",
+        "the typed answer refuses it rather than answering null",
+    );
+    let why = e.seats.get(api::SeatRef { node: "mini", seat: "old" }) or api::SeatView {
+        ref: err.message,
+        status: api::SeatStatus::offline,
+    };
+    std::test::assert(
+        std::str::contains(why.ref, "seat mini/old's config is ")
+            && std::str::contains(why.ref, " bytes"),
+        "naming the field and its size: " + why.ref,
+    );
     // an engine without its config_schema is refused, naming the engine
-    let bare = e.handle(std::http::Request { method: "PUT", path: "/node/v1/capabilities", headers: "Authorization: Bearer " + token, body: "{\"max_in_flight\": 4, \"engines\": [{\"id\": \"static\", \"kind\": \"static\"}]}" });
-    std::test::assert(bare.status == 400 && std::str::contains(bare.body, "engine static declares no `config_schema`"), "an engine with no config_schema: " + head(bare.body));
+    let bare = e.handle(
+        std::http::Request {
+            method: "PUT",
+            path: "/node/v1/capabilities",
+            headers: "Authorization: Bearer " + token,
+            body: "{\"max_in_flight\": 4, \"engines\": [{\"id\": \"static\", \"kind\": \"static\"}]}",
+        },
+    );
+    std::test::assert(
+        bare.status == 400
+            && std::str::contains(bare.body, "engine static declares no `config_schema`"),
+        "an engine with no config_schema: " + head(bare.body),
+    );
 
     // a new write past it is refused, naming the limit
     let past = call(e, "PATCH", "/admin/v1/nodes/mini/seats/old", "{\"config\": " + big + "}");
-    std::test::assert(past.status == 400 && std::str::contains(past.body, "64 KiB"), "a new config past 64 KiB is refused: " + head(past.body));
+    std::test::assert(
+        past.status == 400 && std::str::contains(past.body, "64 KiB"),
+        "a new config past 64 KiB is refused: " + head(past.body),
+    );
 
     // an engine's config_schema, through the codec of the node's capabilities
-    let caps = api::NodeCapabilities::api_decode("{\"max_in_flight\": 2, \"engines\": [{\"id\": \"static\", \"kind\": \"static\", \"models\": null, \"config_schema\": " + SCHEMA + "}]}") or api::no_capabilities();
+    let caps = api::NodeCapabilities::api_decode(
+        "{\"max_in_flight\": 2, \"engines\": [{\"id\": \"static\", \"kind\": \"static\", \"models\": null, \"config_schema\": "
+            + SCHEMA + "}]}",
+    ) or api::no_capabilities();
     std::test::assert(caps.max_in_flight == 2 && count(caps.engines) == 1, "the capabilities read");
-    let engine = at(caps.engines, 0) or api::NodeEngine { id: "", kind: "", config_schema: std::json::Value::null() };
+    let engine = at(caps.engines, 0) or api::NodeEngine {
+        id: "",
+        kind: "",
+        config_schema: std::json::Value::null(),
+    };
     std::test::assert_eq_str(engine.config_schema.text, SCHEMA, "the config_schema, as written");
-    std::test::assert(std::str::contains(api::NodeCapabilities::api_encode(caps), "\"config_schema\":" + SCHEMA) || std::str::contains(api::NodeCapabilities::api_encode(caps), "\"config_schema\": " + SCHEMA), "and written back as it was: " + api::NodeCapabilities::api_encode(caps));
-    let refused = api::NodeCapabilities::api_decode("{\"max_in_flight\": 2, \"engines\": [{\"id\": \"s\", \"kind\": \"static\", \"config_schema\": {\"a\": }}]}") or api::NodeCapabilities { max_in_flight: -7 };
-    std::test::assert_eq_int(refused.max_in_flight, -7, "a config_schema that is not JSON is refused");
+    std::test::assert(
+        std::str::contains(api::NodeCapabilities::api_encode(caps), "\"config_schema\":" + SCHEMA)
+            || std::str::contains(
+                api::NodeCapabilities::api_encode(caps),
+                "\"config_schema\": " + SCHEMA,
+            ),
+        "and written back as it was: " + api::NodeCapabilities::api_encode(caps),
+    );
+    let refused = api::NodeCapabilities::api_decode(
+        "{\"max_in_flight\": 2, \"engines\": [{\"id\": \"s\", \"kind\": \"static\", \"config_schema\": {\"a\": }}]}",
+    ) or api::NodeCapabilities { max_in_flight: -7 };
+    std::test::assert_eq_int(
+        refused.max_in_flight,
+            -7,
+        "a config_schema that is not JSON is refused",
+    );
 }

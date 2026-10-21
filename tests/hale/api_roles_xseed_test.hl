@@ -46,7 +46,9 @@ fn app_source(sock: String, me: String) -> String {
         + "    rpc Relay::on_ping;\n"
         + "}\n"
         + "main locus App {\n"
-        + "    params { desk: Desk = Desk { }; relay: Relay = Relay { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \"" + sock + "\", roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me + "\" } }, as: \"shop\", receivers: { Desk: self.desk, Relay: self.relay }, bound: 8, on_full: refuse); }\n"
+        + "    params { desk: Desk = Desk { }; relay: Relay = Relay { }; h: api::Exposure = api::serve(Public, unix::Rpc { path: \""
+        + sock + "\", roles: lib::TableRoles { table: \"support=uid:" + me + ";owner=uid:" + me
+        + "\" } }, as: \"shop\", receivers: { Desk: self.desk, Relay: self.relay }, bound: 8, on_full: refuse); }\n"
         + "    run() {\n"
         + "        std::time::sleep(8s);\n"
         + "        self.h.stop();\n"
@@ -139,7 +141,11 @@ fn main() {
     std::io::fs::write_file(root + "/lib/roles.hl", lib_source()) or discard;
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me)) or discard;
     let checked = run_tool(hale + "\ncheck\n" + root + "/app");
-    std::test::assert_eq_int(checked.code, 0, "the app with an imported source checks: " + checked.stderr);
+    std::test::assert_eq_int(
+        checked.code,
+        0,
+        "the app with an imported source checks: " + checked.stderr,
+    );
     let built = run_tool(hale + "\nbuild\n" + root + "/app");
     std::test::assert_eq_int(built.code, 0, "and builds: " + built.stderr);
     let p = Proc { };
@@ -147,19 +153,35 @@ fn main() {
     let api = Api { };
     std::test::assert(api.connect(sock), "connected to " + sock);
     let r1 = api.call("Desk::on_refund", "{\"order_id\":1}");
-    std::test::assert(std::str::contains(r1, "\"ok\":true") && std::str::contains(r1, "\"role\":\"support\""), "the library's source authorizes, and the handler's context carries the role: " + r1);
+    std::test::assert(
+        std::str::contains(r1, "\"ok\":true") && std::str::contains(r1, "\"role\":\"support\""),
+        "the library's source authorizes, and the handler's context carries the role: " + r1,
+    );
     let d = api.ask("{\"describe\":true}");
-    std::test::assert(std::str::contains(d, "\"ok\":true") && std::str::contains(d, "\"name\":\"Desk::on_refund\""), "the library's word puts the row in this caller's description: " + d);
+    std::test::assert(
+        std::str::contains(d, "\"ok\":true")
+            && std::str::contains(d, "\"name\":\"Desk::on_refund\""),
+        "the library's word puts the row in this caller's description: " + d,
+    );
     // the imported main is not the app's entry: its handler is no member of
     // the app's surface
-    std::test::assert(!std::str::contains(d, "LibHead::on_ping"), "the library's handler is no member of the app's surface: " + d);
+    std::test::assert(
+        !std::str::contains(d, "LibHead::on_ping"),
+        "the library's handler is no member of the app's surface: " + d,
+    );
     let relayed = api.call("Relay::on_ping", "{\"n\":7}");
-    std::test::assert(std::str::contains(relayed, "\"ok\":true") && std::str::contains(relayed, "\"n\":7"), "the app's relay of the imported type answers: " + relayed);
+    std::test::assert(
+        std::str::contains(relayed, "\"ok\":true") && std::str::contains(relayed, "\"n\":7"),
+        "the app's relay of the imported type answers: " + relayed,
+    );
     p.stop();
     std::io::fs::unlink(sock) or discard;
 
     // The same app under a principal the library's table does not name.
-    std::io::fs::write_file(root + "/app/main.hl", app_source(sock, to_string((std::str::parse_int(me) or 0) + 1))) or discard;
+    std::io::fs::write_file(
+        root + "/app/main.hl",
+        app_source(sock, to_string((std::str::parse_int(me) or 0) + 1)),
+    ) or discard;
     let built2 = run_tool(hale + "\nbuild\n" + root + "/app");
     std::test::assert_eq_int(built2.code, 0, "rebuilt: " + built2.stderr);
     let q = Proc { };
@@ -167,7 +189,10 @@ fn main() {
     let api2 = Api { };
     std::test::assert(api2.connect(sock), "reconnected");
     let r2 = api2.call("Desk::on_refund", "{\"order_id\":1}");
-    std::test::assert(std::str::contains(r2, "\"kind\":\"unauthorized\"") && !std::str::contains(r2, "\"by\""), "the library's source refuses, and the handler never ran: " + r2);
+    std::test::assert(
+        std::str::contains(r2, "\"kind\":\"unauthorized\"") && !std::str::contains(r2, "\"by\""),
+        "the library's source refuses, and the handler never ran: " + r2,
+    );
     q.stop();
     std::io::fs::unlink(sock) or discard;
     let _rm = run_tool("rm\n-rf\n" + root);

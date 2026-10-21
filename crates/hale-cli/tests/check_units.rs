@@ -110,32 +110,32 @@ committed_form.hl:53:1  type Ledger = quantity Int in cent { round: half_even; }
 
 narrowings:
 
-committed_form.hl:64:17  d.in(s)
+committed_form.hl:68:17  d.in(s)
     Duration -> Duration in s, factor 1/1000000000
     policy       : or <value>, at the site
 
-committed_form.hl:65:16  d.in(s)
+committed_form.hl:69:16  d.in(s)
     Duration -> Duration in s, factor 1/1000000000
     policy       : or floor, at the site
 
-committed_form.hl:73:26  a
+committed_form.hl:77:26  a
     Time -> WireStamp, factor 1/1000
     policy       : floor, the `round:` of `type WireStamp = Time in us { round: floor; }` (committed_form.hl:51:1)
 
-committed_form.hl:76:22  spread / 2
+committed_form.hl:80:22  spread / 2
     Tick -> Tick, factor 1/2
     policy       : or floor, at the site
 
-committed_form.hl:81:24  odd
+committed_form.hl:85:24  odd
     Money in 1/10000 cent -> Ledger, factor 1/10000
     policy       : half_even, the `round:` of `type Ledger = quantity Int in cent { round: half_even; }` (committed_form.hl:53:1)
     headroom     : ±922337203685477 cent (9223372036854 USD), of Money in 1/10000 cent
 
-committed_form.hl:83:16  Session(hdr.session)
+committed_form.hl:87:16  Session(hdr.session)
     Int -> Session, range 0..64
     policy       : or <value>, at the site
 
-committed_form.hl:84:15  SeqNo(n)
+committed_form.hl:88:15  SeqNo(n)
     Int -> SeqNo, range 0..65536
     policy       : or wrap, at the site
 "#;

@@ -83,7 +83,11 @@ components:
 
 // The document moved upstream: a parcel's weight is required.
 fn stowage_moved() -> String {
-    let a = std::str::replace(STOWAGE, "required: [label, zone]\n      properties:\n        label:\n          type: string\n        zone:\n          type: string\n", "required: [label, zone, weightGrams]\n      properties:\n        label:\n          type: string\n        zone:\n          type: string\n        weightGrams:\n          type: integer\n");
+    let a = std::str::replace(
+        STOWAGE,
+        "required: [label, zone]\n      properties:\n        label:\n          type: string\n        zone:\n          type: string\n",
+        "required: [label, zone, weightGrams]\n      properties:\n        label:\n          type: string\n        zone:\n          type: string\n        weightGrams:\n          type: integer\n",
+    );
     return a;
 }
 
@@ -114,34 +118,82 @@ main locus App {
     }
     bus { publish dna::ReviewVerdict; }
     fn rows(kind: String, prefix: String) -> Int { return w::rows(self.repo, kind, prefix); }
-    fn last_body(kind: String, prefix: String) -> String { return w::last_body(self.repo, kind, prefix); }
+    fn last_body(kind: String, prefix: String) -> String {
+        return w::last_body(self.repo, kind, prefix);
+    }
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
-        while tries < 600 * dna::wait_scale() && self.rows(kind, entity) == 0 { std::time::sleep(25ms); tries = tries + 1; }
-        std::test::assert(self.rows(kind, entity) > 0, what + ": no `" + kind + " " + entity + "` row within the deadline");
+        while tries < 600 * dna::wait_scale() && self.rows(kind, entity) == 0 {
+            std::time::sleep(25ms);
+            tries = tries + 1;
+        }
+        std::test::assert(
+            self.rows(kind, entity) > 0,
+            what + ": no `" + kind + " " + entity + "` row within the deadline",
+        );
     }
     // The standard pack's template adopted for one upstream, naming the
     // codebase, and the Board's ratification of it.
     fn adopt(name: String, source: String, kind: String) {
-        let applied = w::dna_cli(self.repo, "pack\napply\nstandard\n--set\nintegration=" + name + "\n--set\nposition=app/dev\n--set\nsource=" + source + "\n--set\nkind=" + kind + "\n--set\nevery=1h\n--set\ncodebase=" + CODEBASE + "\n--as\nada");
-        std::test::assert(applied.code == 0 && std::str::contains(applied.stdout, "+ practice " + watched(name) + "\n"), "the template is proposed for " + name + ": " + applied.stdout + applied.stderr);
-        let review = std::json::find_string_field(self.last_body("batch.proposed", ""), "review_id");
-        std::test::assert(len(review) > 0, "as one Review: " + self.last_body("batch.proposed", ""));
-        std::test::assert(self.d.journal.append(self.d.journal.revision(), "review.settled", review, "approve by ada").ok, "the Board approves it");
+        let applied = w::dna_cli(
+            self.repo,
+            "pack\napply\nstandard\n--set\nintegration=" + name
+                + "\n--set\nposition=app/dev\n--set\nsource=" + source + "\n--set\nkind=" + kind
+                + "\n--set\nevery=1h\n--set\ncodebase=" + CODEBASE + "\n--as\nada",
+        );
+        std::test::assert(
+            applied.code == 0
+                && std::str::contains(applied.stdout, "+ practice " + watched(name) + "\n"),
+            "the template is proposed for " + name + ": " + applied.stdout + applied.stderr,
+        );
+        let review = std::json::find_string_field(
+            self.last_body("batch.proposed", ""),
+            "review_id",
+        );
+        std::test::assert(
+            len(review) > 0,
+            "as one Review: " + self.last_body("batch.proposed", ""),
+        );
+        std::test::assert(
+            self.d.journal.append(
+                self.d.journal.revision(),
+                "review.settled",
+                review,
+                "approve by ada",
+            ).ok,
+            "the Board approves it",
+        );
         self.d.ratify_through(review);
         let mut waited = 0;
-        while self.rows("schedule.declared", watched(name)) == 0 && self.rows("schedule.refused", watched(name)) == 0 && waited < 300 { std::time::sleep(100ms); waited = waited + 1; }
-        std::test::assert_eq_int(self.rows("schedule.declared", watched(name)), 1, "the practice declares its schedule: " + self.last_body("schedule.refused", watched(name)));
+        while self.rows("schedule.declared", watched(name)) == 0
+            && self.rows("schedule.refused", watched(name)) == 0
+            && waited < 300
+        {
+            std::time::sleep(100ms);
+            waited = waited + 1;
+        }
+        std::test::assert_eq_int(
+            self.rows("schedule.declared", watched(name)),
+            1,
+            "the practice declares its schedule: "
+                + self.last_body("schedule.refused", watched(name)),
+        );
     }
     // Wait until `checks` source-check executions have been admitted and
     // every one of them, and every concern they raised, has settled.
     fn settle(checks: Int, what: String) {
         let mut tries = 0;
-        while tries < 600 * dna::wait_scale() && (w::admitted_checks(self.repo) < checks || w::open_executions(self.repo) > 0) {
+        while tries < 600 * dna::wait_scale()
+            && (w::admitted_checks(self.repo) < checks || w::open_executions(self.repo) > 0)
+        {
             std::time::sleep(100ms);
             tries = tries + 1;
         }
-        std::test::assert(w::admitted_checks(self.repo) >= checks && w::open_executions(self.repo) == 0, what + ": " + to_string(w::admitted_checks(self.repo)) + " check(s) admitted, " + to_string(w::open_executions(self.repo)) + " still open");
+        std::test::assert(
+            w::admitted_checks(self.repo) >= checks && w::open_executions(self.repo) == 0,
+            what + ": " + to_string(w::admitted_checks(self.repo)) + " check(s) admitted, "
+                + to_string(w::open_executions(self.repo)) + " still open",
+        );
     }
     // The canned leg's turns: one model turn a file, numbered from 1.
     fn turns(name: String, script: String) -> String {
@@ -164,28 +216,71 @@ main locus App {
     fn leg(task: String, turns: String) -> legs::Performance {
         let work = task + "/wf1/s0/w";
         let attempt = dna::attempt_id_of(work, 0);
-        self.wait_row("effect.relayed", "attempt:" + attempt, "the owner relays the position's Work to legs");
-        let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": " + to_string(std::time::now() + 600) + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"ada\"}";
+        self.wait_row(
+            "effect.relayed",
+            "attempt:" + attempt,
+            "the owner relays the position's Work to legs",
+        );
+        let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": "
+            + to_string(std::time::now() + 600)
+            + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"ada\"}";
         let moved = self.d.journal.refresh();
-        std::test::assert(self.d.journal.append(self.d.journal.revision(), "attempt.claimed", attempt, claim).ok, "the position's holder claims the Work (the lease, as a row)");
-        let reader = ops::HatReader { j: self.d.journal, receipts: dna::MemoryReceipts { repo: self.repo }, knowledge: dna::MemoryKnowledge { repo: self.repo }, ledger_ready: true };
+        std::test::assert(
+            self.d.journal.append(self.d.journal.revision(), "attempt.claimed", attempt, claim).ok,
+            "the position's holder claims the Work (the lease, as a row)",
+        );
+        let reader = ops::HatReader {
+            j: self.d.journal,
+            receipts: dna::MemoryReceipts { repo: self.repo },
+            knowledge: dna::MemoryKnowledge { repo: self.repo },
+            ledger_ready: true,
+        };
         let hat = reader.read(work);
         std::test::assert(hat.ok, "the head gives the leg its hat: " + hat.why);
         let hat_text = dna::hat_json(hat);
         let rendered = legs::render(hat_text, "agent");
-        let req = dna::ModelRequest { attempt_id: attempt, role: "edit", prompt: rendered, prompt_digest: legs::prompt_digest(rendered), data_class: "internal" };
-        let brief = legs::Brief { work_id: work, attempt_id: attempt, task_id: task, performer_kind: "agent", position: "position:app/dev", hat: hat_text, rendered: rendered, holder: LEG, token: 1 };
+        let req = dna::ModelRequest {
+            attempt_id: attempt,
+            role: "edit",
+            prompt: rendered,
+            prompt_digest: legs::prompt_digest(rendered),
+            data_class: "internal",
+        };
+        let brief = legs::Brief {
+            work_id: work,
+            attempt_id: attempt,
+            task_id: task,
+            performer_kind: "agent",
+            position: "position:app/dev",
+            hat: hat_text,
+            rendered: rendered,
+            holder: LEG,
+            token: 1,
+        };
         let hands = legs::Hands { forge: legs::ForgeBridge { forge: self.forge } };
         let perf = legs::ModelPerformer {
-            router: dna::ModelRouter { quick: dna::FakeModel { name: "quick", turns_dir: turns, price_micros: 0 }, deep: dna::FakeModel { name: "deep", turns_dir: turns, price_micros: 0 }, private: dna::FakeModel { name: "private", turns_dir: turns, price_micros: 0 } },
+            router: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", turns_dir: turns, price_micros: 0 },
+                deep: dna::FakeModel { name: "deep", turns_dir: turns, price_micros: 0 },
+                private: dna::FakeModel { name: "private", turns_dir: turns, price_micros: 0 },
+            },
             effect: "idempotent", repo: self.repo, max_turns: 10
         };
         let done = perf.perform_loop(brief, hands, req, -1, "do");
         hands.git.clean();
         self.d.on_work_submit(dna::WorkSubmission {
-            attempt_id: attempt, holder: LEG, token: 1, disposition: done.disposition, result: done.result, result_ref: done.result_ref,
+            attempt_id: attempt,
+            holder: LEG,
+            token: 1,
+            disposition: done.disposition,
+            result: done.result,
+            result_ref: done.result_ref,
             narrative: done.narrative, evidence_ref: "", calls: done.calls, request: "r-" + attempt,
-            hat_digest: hat.digest, hat_head: hat.head, hat_watermark: hat.watermark, prompt_digest: done.prompt_digest, renderer: done.renderer
+            hat_digest: hat.digest,
+            hat_head: hat.head,
+            hat_watermark: hat.watermark,
+            prompt_digest: done.prompt_digest,
+            renderer: done.renderer
         });
         self.wait_row("attempt.outcome", attempt, "the owner settles the attempt");
         return done;
@@ -194,25 +289,63 @@ main locus App {
     // sync records it.
     fn intake() -> Int {
         let moved = self.d.journal.refresh();
-        let rows = dna::codebase_intake(self.d.journal, self.forge, dna::MemoryReceipts { repo: self.repo }, CODEBASE);
+        let rows = dna::codebase_intake(
+            self.d.journal,
+            self.forge,
+            dna::MemoryReceipts { repo: self.repo },
+            CODEBASE,
+        );
         return dna::codebase_intake_apply(self.d.journal, rows);
     }
-    fn receipts_of(done: legs::Performance, needle: String) -> Bool { return std::str::contains(done.receipts, needle); }
+    fn receipts_of(done: legs::Performance, needle: String) -> Bool {
+        return std::str::contains(done.receipts, needle);
+    }
     // A move upstream is a reading, a concern and a task, filed by no person.
     fn moved_into_task(watch: String, kind_word: String) -> String {
         let reading_prefix = "sources/" + watch + ".changed/";
-        std::test::assert_eq_int(self.rows("reading.recorded", reading_prefix), 1, watch + ": the move is a reading");
-        std::test::assert_eq_int(self.rows("concern.raised", "app/dev/" + watch), 1, watch + ": and a concern routed to the position");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", reading_prefix),
+            1,
+            watch + ": the move is a reading",
+        );
+        std::test::assert_eq_int(
+            self.rows("concern.raised", "app/dev/" + watch),
+            1,
+            watch + ": and a concern routed to the position",
+        );
         let task = w::task_of(self.repo, "source-" + watch + "-", 1);
         std::test::assert(len(task) > 0, watch + ": and a task under the position");
-        std::test::assert_eq_int(self.rows("workflow.admitted", task), 1, watch + ": one task for one move");
-        let authors = w::last_author(self.repo, "reading.recorded", reading_prefix) + " " + w::last_author(self.repo, "concern.raised", "app/dev/" + watch) + " " + w::task_author(self.repo, task);
-        std::test::assert(!std::str::contains(authors, "ada"), watch + ": no person filed any of the three: " + authors);
+        std::test::assert_eq_int(
+            self.rows("workflow.admitted", task),
+            1,
+            watch + ": one task for one move",
+        );
+        let authors = w::last_author(self.repo, "reading.recorded", reading_prefix) + " "
+            + w::last_author(self.repo, "concern.raised", "app/dev/" + watch) + " "
+            + w::task_author(self.repo, task);
+        std::test::assert(
+            !std::str::contains(authors, "ada"),
+            watch + ": no person filed any of the three: " + authors,
+        );
         let adm = self.d.recorded_admission(task).value.inputs;
-        std::test::assert(std::json::find_string_field(adm, "position") == "position:app/dev" && std::json::find_string_field(adm, "codebase") == CODEBASE, watch + ": the task names the codebase: " + adm);
+        std::test::assert(
+            std::json::find_string_field(adm, "position") == "position:app/dev"
+                && std::json::find_string_field(adm, "codebase") == CODEBASE,
+            watch + ": the task names the codebase: " + adm,
+        );
         let brief = std::json::find_field_raw(adm, "integration");
-        std::test::assert(std::json::find_string_field(brief, "practice") == watched(watch) && std::json::find_string_field(brief, "integration") == watch, watch + ": from the practice that convened the check: " + brief);
-        std::test::assert(std::str::contains(std::json::find_string_field(brief, "note"), "# " + kind_word + " integration"), watch + ": its brief carries the architecture note: " + brief);
+        std::test::assert(
+            std::json::find_string_field(brief, "practice") == watched(watch)
+                && std::json::find_string_field(brief, "integration") == watch,
+            watch + ": from the practice that convened the check: " + brief,
+        );
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(brief, "note"),
+                "# " + kind_word + " integration",
+            ),
+            watch + ": its brief carries the architecture note: " + brief,
+        );
         return task;
     }
     run() {
@@ -220,14 +353,24 @@ main locus App {
         // ---- both upstreams watched: a practice each, ratified by the Board
         self.adopt("tallyhub", "file://" + self.upstream + "/tallyhub.html", "changelog");
         self.adopt("stowage", "integrations/stowage.hl", "openapi");
-        let from = std::json::find_int_field(self.last_body("schedule.declared", watched("tallyhub")), "from");
-        let from2 = std::json::find_int_field(self.last_body("schedule.declared", watched("stowage")), "from");
+        let from = std::json::find_int_field(
+            self.last_body("schedule.declared", watched("tallyhub")),
+            "from",
+        );
+        let from2 = std::json::find_int_field(
+            self.last_body("schedule.declared", watched("stowage")),
+            "from",
+        );
         self.t = (if from > from2 { from } else { from2 }) + 3600000;
 
         // ---- the baseline: nothing is asked of anyone
         self.d.tick(self.t);
         self.settle(2, "the baselines settle");
-        std::test::assert_eq_int(self.rows("reading.recorded", "sources/"), 0, "a baseline lands no reading");
+        std::test::assert_eq_int(
+            self.rows("reading.recorded", "sources/"),
+            0,
+            "a baseline lands no reading",
+        );
         std::test::assert_eq_str(w::task_of(self.repo, "source-", 1), "", "and asks no task");
 
         // ---- both upstreams move
@@ -239,92 +382,252 @@ main locus App {
         let t_stow = self.moved_into_task("stowage", "Stowage");
         let t_tally = self.moved_into_task("tallyhub", "Tallyhub");
         std::test::assert(t_stow != t_tally, "two moves, two tasks");
-        std::test::assert(std::str::contains(std::json::find_string_field(std::json::find_field_raw(self.d.recorded_admission(t_stow).value.inputs, "integration"), "diff"), "weightGrams"), "the OpenAPI task's diff shows the new field");
+        std::test::assert(
+            std::str::contains(
+                std::json::find_string_field(
+                    std::json::find_field_raw(
+                        self.d.recorded_admission(t_stow).value.inputs,
+                        "integration",
+                    ),
+                    "diff",
+                ),
+                "weightGrams",
+            ),
+            "the OpenAPI task's diff shows the new field",
+        );
 
         // ---- a leg answers the OpenAPI task with a pull request that changes the client
         let old = std::io::fs::read_file(self.source + "/stowage/client.go") or "";
-        let changed = std::str::replace(old, "\tZone  string `json:\"zone\"`\n", "\tZone  string `json:\"zone\"`\n\tWeightGrams int    `json:\"weightGrams\"`\n");
-        let new_client = std::str::replace(std::str::replace(changed, "\tLabel string", "\tLabel       string"), "\tZone  string", "\tZone        string");
-        let pr_turns = self.turns("pr", read_call("docs/integrations/stowage.md") + "\n@@\n" + read_call("stowage/client.go") + "\n@@\n" + read_call("stowage/client_test.go")
-                + "\n@@\n" + tool_call("edit", "{\"path\": \"stowage/client.go\", \"text\": " + quoted(new_client) + "}")
-                + "\n@@\n" + tool_call("gofmt_check", "{}") + "\n@@\n" + tool_call("go_vet", "{}") + "\n@@\n" + tool_call("go_test", "{\"package\": \"./...\"}")
+        let changed = std::str::replace(
+            old,
+            "\tZone  string `json:\"zone\"`\n",
+            "\tZone  string `json:\"zone\"`\n\tWeightGrams int    `json:\"weightGrams\"`\n",
+        );
+        let new_client = std::str::replace(
+            std::str::replace(changed, "\tLabel string", "\tLabel       string"),
+            "\tZone  string",
+            "\tZone        string",
+        );
+        let pr_turns = self.turns(
+            "pr",
+            read_call("docs/integrations/stowage.md") + "\n@@\n" + read_call("stowage/client.go")
+                + "\n@@\n" + read_call("stowage/client_test.go")
+                + "\n@@\n"
+                + tool_call(
+                    "edit",
+                    "{\"path\": \"stowage/client.go\", \"text\": " + quoted(new_client) + "}",
+                )
+                + "\n@@\n" + tool_call("gofmt_check", "{}") + "\n@@\n" + tool_call("go_vet", "{}")
+                + "\n@@\n" + tool_call("go_test", "{\"package\": \"./...\"}")
                 + "\n@@\n{\"content\": \"stowage requires weightGrams: add it to NewParcel\"}");
         let done = self.leg(t_stow, pr_turns);
         std::test::assert_eq_str(done.disposition, "done", "the leg answers: " + done.narrative);
-        std::test::assert_eq_str(done.result_ref, "review:#1", "with a pull request on the codebase's forge: " + done.result_ref + " " + done.narrative);
-        std::test::assert(self.receipts_of(done, "Stowage integration"), "the note is a receipt: " + done.receipts);
-        std::test::assert(self.receipts_of(done, "docs/integrations/stowage.md") && self.receipts_of(done, "stowage/client.go") && self.receipts_of(done, "stowage/client_test.go"), "and so is every file it read: " + done.receipts);
-        std::test::assert(self.receipts_of(done, "weightGrams"), "and the upstream's diff: " + done.receipts);
-        std::test::assert(self.receipts_of(done, "go_test") && self.receipts_of(done, "go_vet") && self.receipts_of(done, "gofmt_check"), "the Go hand ran as the model's calls: " + done.receipts);
+        std::test::assert_eq_str(
+            done.result_ref,
+            "review:#1",
+            "with a pull request on the codebase's forge: " + done.result_ref + " "
+                + done.narrative,
+        );
+        std::test::assert(
+            self.receipts_of(done, "Stowage integration"),
+            "the note is a receipt: " + done.receipts,
+        );
+        std::test::assert(
+            self.receipts_of(done, "docs/integrations/stowage.md")
+                && self.receipts_of(done, "stowage/client.go")
+                && self.receipts_of(done, "stowage/client_test.go"),
+            "and so is every file it read: " + done.receipts,
+        );
+        std::test::assert(
+            self.receipts_of(done, "weightGrams"),
+            "and the upstream's diff: " + done.receipts,
+        );
+        std::test::assert(
+            self.receipts_of(done, "go_test")
+                && self.receipts_of(done, "go_vet")
+                && self.receipts_of(done, "gofmt_check"),
+            "the Go hand ran as the model's calls: " + done.receipts,
+        );
         let review = self.forge.reviews.get("#1") or dna::MemReview { };
-        std::test::assert_eq_str(review.candidate, "leg/" + CODEBASE + "/" + t_stow, "the review is of the leg's branch of the codebase");
+        std::test::assert_eq_str(
+            review.candidate,
+            "leg/" + CODEBASE + "/" + t_stow,
+            "the review is of the leg's branch of the codebase",
+        );
         let leg_commit = dna::leg_commit_in(review.body);
         std::test::assert_eq_int(len(leg_commit), 40, "naming the commit the leg left it at");
         // the Go hand passes on the pull request's branch, checked out apart
-        let onbranch = w::sh("rm -rf branch && git clone -q -b leg/" + CODEBASE + "/" + t_stow + " shipyard.git branch && cd branch && test -z \"$(gofmt -l .)\" && go vet ./... && go test ./... && grep -q WeightGrams stowage/client.go", self.scratch);
-        std::test::assert_eq_int(onbranch.code, 0, "gofmt, go vet and go test pass on the branch: " + onbranch.stdout + onbranch.stderr);
+        let onbranch = w::sh(
+            "rm -rf branch && git clone -q -b leg/" + CODEBASE + "/" + t_stow
+                + " shipyard.git branch && cd branch && test -z \"$(gofmt -l .)\" && go vet ./... && go test ./... && grep -q WeightGrams stowage/client.go",
+            self.scratch,
+        );
+        std::test::assert_eq_int(
+            onbranch.code,
+            0,
+            "gofmt, go vet and go test pass on the branch: " + onbranch.stdout + onbranch.stderr,
+        );
         std::test::assert_eq_int(self.intake(), 0, "an open review has no verdict");
 
         // ---- a leg answers the changelog task: nothing needs to change
-        let brief_turns = self.turns("brief", read_call("docs/integrations/tallyhub.md") + "\n@@\n" + read_call("tallyhub/client.go")
+        let brief_turns = self.turns(
+            "brief",
+            read_call("docs/integrations/tallyhub.md") + "\n@@\n" + read_call("tallyhub/client.go")
                 + "\n@@\n{\"content\": \"NO IMPACT: tallyhub/client.go sends an account and cents only, never a memo.\"}");
         let brief = self.leg(t_tally, brief_turns);
-        std::test::assert(brief.disposition == "done" && std::str::starts_with(brief.result_ref, "brief:"), "the leg answers with a brief: " + brief.result_ref + " " + brief.narrative);
-        std::test::assert(self.receipts_of(brief, "Tallyhub integration") && self.receipts_of(brief, "tallyhub/client.go") && self.receipts_of(brief, "docs/integrations/tallyhub.md") && self.receipts_of(brief, "memo is trimmed"), "with the note, the files it read and the upstream's diff as receipts: " + brief.receipts);
+        std::test::assert(
+            brief.disposition == "done" && std::str::starts_with(brief.result_ref, "brief:"),
+            "the leg answers with a brief: " + brief.result_ref + " " + brief.narrative,
+        );
+        std::test::assert(
+            self.receipts_of(brief, "Tallyhub integration")
+                && self.receipts_of(brief, "tallyhub/client.go")
+                && self.receipts_of(brief, "docs/integrations/tallyhub.md")
+                && self.receipts_of(brief, "memo is trimmed"),
+            "with the note, the files it read and the upstream's diff as receipts: "
+                + brief.receipts,
+        );
         std::test::assert_eq_int(self.forge.next, 2, "and opens no review at the forge");
         let briefed = w::proposal(self.repo, "integration/tallyhub/brief/");
         let digest = std::json::find_string_field(briefed, "digest");
-        std::test::assert(len(digest) > 0 && std::str::starts_with(std::json::find_string_field(receipts.read(digest), "provenance"), "brief of task " + t_tally + " "), "the brief is put to a Review in the organism: " + briefed);
+        std::test::assert(
+            len(digest) > 0
+                && std::str::starts_with(
+                    std::json::find_string_field(receipts.read(digest), "provenance"),
+                    "brief of task " + t_tally + " ",
+                ),
+            "the brief is put to a Review in the organism: " + briefed,
+        );
         std::test::assert_eq_int(self.rows("task.delivered", t_tally), 0, "undecided");
-        dna::ReviewVerdict <- dna::Verdict { command_id: "brief/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        dna::ReviewVerdict <- dna::Verdict {
+            command_id: "brief/decision",
+            review_id: dna::knowledge_review_id(digest),
+            subject_digest: digest,
+            verdict: "approve",
+            reviewer: "board-member",
+            authority: "board",
+        };
         self.wait_row("task.delivered", t_tally, "the Board's verdict is the task's");
-        std::test::assert(std::str::contains(self.last_body("task.delivered", t_tally), "\"via\": \"brief\""), "delivered by the brief's Review: " + self.last_body("task.delivered", t_tally));
+        std::test::assert(
+            std::str::contains(self.last_body("task.delivered", t_tally), "\"via\": \"brief\""),
+            "delivered by the brief's Review: " + self.last_body("task.delivered", t_tally),
+        );
 
         // ---- the team edits the pull request, merges it, and the forge's word comes back
-        let edit = w::sh("rm -rf team && git clone -q shipyard.git team && cd team && git checkout -q -b edit " + leg_commit + " && printf '\\n// WeightGrams is the parcel weight Stowage requires.\\n' >> stowage/client.go && gofmt -l . && git add -A && git -c user.name=ben -c user.email=ben@shipyard commit -q -m 'document the weight' && git push -q origin edit:trunk", self.scratch);
-        std::test::assert_eq_int(edit.code, 0, "the team edits the branch on top of the leg's commit: " + edit.stderr);
-        let merged = dna::trim_nl(w::sh("git --git-dir shipyard.git rev-parse trunk", self.scratch).stdout);
-        std::test::assert(self.forge.say("#1", "ben", "please document the weight\nit is in grams") && self.forge.merge("#1", merged), "and merges it");
+        let edit = w::sh(
+            "rm -rf team && git clone -q shipyard.git team && cd team && git checkout -q -b edit "
+                + leg_commit
+                + " && printf '\\n// WeightGrams is the parcel weight Stowage requires.\\n' >> stowage/client.go && gofmt -l . && git add -A && git -c user.name=ben -c user.email=ben@shipyard commit -q -m 'document the weight' && git push -q origin edit:trunk",
+            self.scratch,
+        );
+        std::test::assert_eq_int(
+            edit.code,
+            0,
+            "the team edits the branch on top of the leg's commit: " + edit.stderr,
+        );
+        let merged = dna::trim_nl(
+            w::sh("git --git-dir shipyard.git rev-parse trunk", self.scratch).stdout,
+        );
+        std::test::assert(
+            self.forge.say("#1", "ben", "please document the weight\nit is in grams")
+                && self.forge.merge("#1", merged),
+            "and merges it",
+        );
         std::test::assert_eq_int(self.intake(), 1, "the forge's word is recorded");
         let delivered = self.last_body("task.delivered", t_stow);
-        std::test::assert(std::json::find_bool_field(delivered, "edited") && std::json::find_string_field(delivered, "leg_commit") == leg_commit && std::json::find_string_field(delivered, "merge_commit") == merged, "the pull request's task is delivered, and edited: " + delivered);
+        std::test::assert(
+            std::json::find_bool_field(delivered, "edited")
+                && std::json::find_string_field(delivered, "leg_commit") == leg_commit
+                && std::json::find_string_field(delivered, "merge_commit") == merged,
+            "the pull request's task is delivered, and edited: " + delivered,
+        );
         let diff = receipts.read(std::json::find_string_field(delivered, "edit_receipt"));
-        std::test::assert(std::str::contains(diff, "+// WeightGrams is the parcel weight Stowage requires."), "with the edit's diff as a receipt: " + diff);
+        std::test::assert(
+            std::str::contains(diff, "+// WeightGrams is the parcel weight Stowage requires."),
+            "with the edit's diff as a receipt: " + diff,
+        );
         let comment = std::json::find_string_field(delivered, "comment_receipts");
-        std::test::assert(len(comment) == 64 && std::str::contains(receipts.read(comment), "ben on review #1:\nplease document the weight\nit is in grams"), "and the review's comment: " + delivered);
+        std::test::assert(
+            len(comment) == 64
+                && std::str::contains(
+                    receipts.read(comment),
+                    "ben on review #1:\nplease document the weight\nit is in grams",
+                ),
+            "and the review's comment: " + delivered,
+        );
         std::test::assert_eq_int(self.intake(), 0, "recorded once");
-        std::test::assert_eq_int(self.rows("mutation.requested", ""), 0, "the organism's own genome is untouched");
+        std::test::assert_eq_int(
+            self.rows("mutation.requested", ""),
+            0,
+            "the organism's own genome is untouched",
+        );
         dna::scratch_done(self.scratch);
     }
 }
 
 fn main() {
-    let has_go = dna::run_tool("sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh").code == 0;
+    let has_go = dna::run_tool(
+        "sh\n-c\ncommand -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1\nsh",
+    ).code == 0;
     if !has_go {
-        std::test::assert(!(std::env::var_exists("CI") && std::env::var("CI") == "true"), "CI has no `go` on PATH: the SDLC exit fixture must run there, not skip");
+        std::test::assert(
+            !(std::env::var_exists("CI") && std::env::var("CI") == "true"),
+            "CI has no `go` on PATH: the SDLC exit fixture must run there, not skip",
+        );
         println("sdlc_exit_test: no `go` on PATH, the fixture is skipped");
         return;
     }
-    let source = (if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." }) + "/dna/tests/sdlc_exit_repo";
-    std::test::assert(std::io::fs::file_exists(source + "/go.mod"), "the reference Go repository is at " + source + " (HALE_DNA_SOURCE is the checkout)");
+    let source = (
+        if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." }
+    )
+        + "/dna/tests/sdlc_exit_repo";
+    std::test::assert(
+        std::io::fs::file_exists(source + "/go.mod"),
+        "the reference Go repository is at " + source + " (HALE_DNA_SOURCE is the checkout)",
+    );
     let scratch = dna::scratch_root("sdlc-exit");
     let made = dna::grafted(scratch, "app");
     std::test::assert_eq_int(made.code, 0, "an organism grafted: " + made.stdout + made.stderr);
     let repo = scratch + "/app";
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let as_ada = dna::RecordJournal { repo: repo, author: "ada" };
-    std::test::assert(as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok, "ada is a person the record knows");
-    std::test::assert_eq_str(ops::graph_seat(w::journal(repo), "position:app/dev", "ada"), "", "ada holds app/dev");
+    std::test::assert(
+        as_ada.append(as_ada.revision(), "note.kept", "n-ada", "ada was here").ok,
+        "ada is a person the record knows",
+    );
+    std::test::assert_eq_str(
+        ops::graph_seat(w::journal(repo), "position:app/dev", "ada"),
+        "",
+        "ada holds app/dev",
+    );
     let spine = dna::kept_spine_dsn(repo);
     std::test::assert(len(spine) > 0, "the clone reaches memory as the spine");
     let projected = ops::MemoryProjection { root: repo, dsn_env: spine }.apply();
     std::test::assert_eq_str(projected.error, "", "the record projects into memory");
 
     // the foreign codebase: the reference module, in a bare repository
-    let seed_cp = dna::run_tool("sh\n-c\nrm -rf \"$1/seed\" && cp -r \"$2\" \"$1/seed\" && cd \"$1/seed\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && git init -q -b trunk && git config user.name f && git config user.email f@f && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed shipyard.git\nsh\n" + scratch + "\n" + source);
-    std::test::assert_eq_int(seed_cp.code, 0, "the codebase's repository is made: " + seed_cp.stderr);
-    let attached = w::dna_cli(repo, "codebase\nattach\n" + CODEBASE + "\n--repo\n" + scratch + "/shipyard.git\n--build\ngo build ./...\n--test\ngo test ./...\n--toolchain\ngo\n--branch\ntrunk\n--as\nada");
-    std::test::assert(attached.code == 0, "the codebase is attached with the Go hand: " + attached.stdout + attached.stderr);
+    let seed_cp = dna::run_tool(
+        "sh\n-c\nrm -rf \"$1/seed\" && cp -r \"$2\" \"$1/seed\" && cd \"$1/seed\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && git init -q -b trunk && git config user.name f && git config user.email f@f && git add -A && git commit -qm trunk && cd .. && git clone -q --bare seed shipyard.git\nsh\n"
+            + scratch + "\n" + source,
+    );
+    std::test::assert_eq_int(
+        seed_cp.code,
+        0,
+        "the codebase's repository is made: " + seed_cp.stderr,
+    );
+    let attached = w::dna_cli(
+        repo,
+        "codebase\nattach\n" + CODEBASE + "\n--repo\n" + scratch
+            + "/shipyard.git\n--build\ngo build ./...\n--test\ngo test ./...\n--toolchain\ngo\n--branch\ntrunk\n--as\nada",
+    );
+    std::test::assert(
+        attached.code == 0,
+        "the codebase is attached with the Go hand: " + attached.stdout + attached.stderr,
+    );
 
     // the upstreams: a changelog page and an OpenAPI document, files; the
     // OpenAPI surface imported and committed in the genome
@@ -332,19 +635,35 @@ fn main() {
     std::io::fs::mkdir(upstream) or discard;
     std::io::fs::write_file(upstream + "/tallyhub.html", TALLYHUB_PAGE) or discard;
     std::io::fs::write_file(upstream + "/stowage.yaml", STOWAGE) or discard;
-    let imported = dna::run_tool("sh\n-c\ncd \"$1\" && mkdir -p integrations && exec \"$2\" api import \"$3\" --as Stowage --out integrations/stowage.hl\nsh\n" + repo + "\n" + w::toolchain() + "\n" + upstream + "/stowage.yaml");
-    std::test::assert_eq_int(imported.code, 0, "the API's surface is imported: " + imported.stdout + imported.stderr);
-    let committed = w::sh("git add -A && git -c user.name=ada -c user.email=ada@dna commit -qm 'the imported surface'", repo);
+    let imported = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && mkdir -p integrations && exec \"$2\" api import \"$3\" --as Stowage --out integrations/stowage.hl\nsh\n"
+            + repo + "\n" + w::toolchain() + "\n" + upstream + "/stowage.yaml",
+    );
+    std::test::assert_eq_int(
+        imported.code,
+        0,
+        "the API's surface is imported: " + imported.stdout + imported.stderr,
+    );
+    let committed = w::sh(
+        "git add -A && git -c user.name=ada -c user.email=ada@dna commit -qm 'the imported surface'",
+        repo,
+    );
     std::test::assert_eq_int(committed.code, 0, "the genome commits it: " + committed.stderr);
 
     App {
         repo: repo, upstream: upstream, scratch: scratch, source: source,
         d: dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: spine } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: spine },
+            },
             knowledge_client: dna::MemoryKnowledge { repo: repo },
             verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo } },
             gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: repo } },
-            work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
+            work: dna::WorkSystem {
+                agent: dna::LegRelay { name: "legs" },
+                agent_reconciler: dna::RelayReplay { },
+            },
             org_id: "watch"
         }
     };

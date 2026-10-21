@@ -9,7 +9,10 @@ locus Admin {
         port: Int = 8081;
     }
     run() {
-        log_info("serving the admin API", std::log::kv("url", "http://" + self.host + ":" + to_string(self.port)));
+        log_info(
+            "serving the admin API",
+            std::log::kv("url", "http://" + self.host + ":" + to_string(self.port)),
+        );
         let api = AdminApi { id: self.id, data: self.data, capabilities: self.capabilities };
         std::http::Server { host: self.host, port: self.port, handler: api };
     }
@@ -25,12 +28,26 @@ locus AdminApi {
 
     fn handle(req: std::http::Request) -> std::http::Response {
         let c = std::http::build_context(req);
-        if std::http::is_route(c, "GET", "/healthz") { return json_response(200, "{\"status\": \"ok\", \"version\": \"" + NODE_VERSION + "\"}"); }
+        if std::http::is_route(c, "GET", "/healthz") {
+            return json_response(
+                200,
+                "{\"status\": \"ok\", \"version\": \"" + NODE_VERSION + "\"}",
+            );
+        }
         if std::http::is_route(c, "GET", "/node/v1/status") { return self.status(); }
-        if std::http::is_route(c, "GET", "/node/v1/capabilities") { return json_response(200, self.capabilities); }
-        if std::http::is_route(c, "GET", "/node/v1/local") { return json_response(200, read_local(self.data)); }
+        if std::http::is_route(c, "GET", "/node/v1/capabilities") {
+            return json_response(200, self.capabilities);
+        }
+        if std::http::is_route(c, "GET", "/node/v1/local") {
+            return json_response(200, read_local(self.data));
+        }
         if std::http::is_route(c, "PUT", "/node/v1/local") { return self.set_local(req.body); }
-        return error_response(404, "not_found", "not_found", "no such endpoint: " + req.method + " " + req.path);
+        return error_response(
+            404,
+            "not_found",
+            "not_found",
+            "no such endpoint: " + req.method + " " + req.path,
+        );
     }
 
     /// The node as it sees itself: the session's last report (its
@@ -40,16 +57,36 @@ locus AdminApi {
         let session = std::io::fs::read_file(self.data + "/session.json") or "";
         let local = read_local(self.data);
         if len(session) == 0 {
-            return json_response(200, "{\"id\": " + q(self.id) + ", \"version\": " + q(NODE_VERSION) + ", \"coordinator\": {\"url\": \"\", \"state\": \"connecting\", \"connected_at\": null, \"last_error\": null}, \"assignment_version\": null, \"max_in_flight\": " + to_string(effective_cap(self.capabilities, local)) + ", \"in_flight\": 0, \"local\": " + local + ", \"seats\": []}");
+            return json_response(
+                200,
+                "{\"id\": " + q(self.id) + ", \"version\": " + q(NODE_VERSION)
+                    + ", \"coordinator\": {\"url\": \"\", \"state\": \"connecting\", \"connected_at\": null, \"last_error\": null}, \"assignment_version\": null, \"max_in_flight\": "
+                    + to_string(effective_cap(self.capabilities, local))
+                    + ", \"in_flight\": 0, \"local\": " + local + ", \"seats\": []}",
+            );
         }
-        return json_response(200, "{\"id\": " + q(self.id) + ", \"version\": " + q(NODE_VERSION) + ", \"coordinator\": " + top_value(session, "coordinator")
-                + ", \"assignment_version\": " + top_value(session, "assignment_version") + ", \"max_in_flight\": " + top_value(session, "max_in_flight")
-                + ", \"in_flight\": " + (if len(top_value(session, "in_flight")) > 0 { top_value(session, "in_flight") } else { "0" }) + ", \"local\": " + local + ", \"seats\": " + top_value(session, "seats") + "}");
+        return json_response(
+            200,
+            "{\"id\": " + q(self.id) + ", \"version\": " + q(NODE_VERSION) + ", \"coordinator\": "
+                + top_value(session, "coordinator")
+                + ", \"assignment_version\": " + top_value(session, "assignment_version")
+                + ", \"max_in_flight\": " + top_value(session, "max_in_flight")
+                + ", \"in_flight\": "
+                + (
+                    if len(top_value(session, "in_flight")) > 0 {
+                        top_value(session, "in_flight")
+                    } else {
+                        "0"
+                    }
+                )
+                + ", \"local\": " + local + ", \"seats\": " + top_value(session, "seats") + "}");
     }
 
     fn set_local(body: String) -> std::http::Response {
         let problem = local_problem(body);
-        if len(problem) > 0 { return error_response(400, "invalid_request", "invalid_request", problem); }
+        if len(problem) > 0 {
+            return error_response(400, "invalid_request", "invalid_request", problem);
+        }
         let local = normalized_local(body);
         std::io::fs::write_file(self.data + "/local.json", local) or discard;
         return json_response(200, local);

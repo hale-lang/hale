@@ -33,7 +33,10 @@ main locus App {
         self.editor = dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "fn main() {\n    println(\"v2\");\n}\n" },
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "fn main() {\n    println(\"v2\");\n}\n",
+                },
                 deep: dna::FakeModel { name: "deep", answer: "startup_prints +" }
             },
             tools: dna::WorktreeTools { root: root, hale_bin: toolchain() }
@@ -41,15 +44,37 @@ main locus App {
 
         // ---- one Attempt: edit, fmt, check, propose ---------------------
         let r = self.editor.perform(dna::WorkRequest {
-            work_id: "w1", task_id: "t1", objective: "print v2 instead of v1", target: "main.hl", data_class: "internal"
+            work_id: "w1",
+            task_id: "t1",
+            objective: "print v2 instead of v1",
+            target: "main.hl",
+            data_class: "internal"
         });
         std::test::assert_eq_str(r.disposition, "done", "attempt done: " + r.narrative);
         std::test::assert_eq_str(r.performer, "editor", "performer");
-        std::test::assert(std::str::contains(r.evidence, "fmt=0 check=0"), "toolchain evidence: " + r.evidence);
-        std::test::assert(std::str::contains(r.evidence, "backends=quick,deep"), "two tiers under one attempt: " + r.evidence);
-        std::test::assert_eq_str(std::json::find_string_field(r.result, "files_changed"), "main.hl", "files changed");
-        std::test::assert_eq_str(std::json::find_string_field(r.result, "fitness_signals"), "startup_prints +", "fitness signals");
-        std::test::assert(std::str::contains(r.result, "\"check_clean\": true") || std::str::contains(r.result, "\"check_clean\":true"), "check clean in the proposal: " + r.result);
+        std::test::assert(
+            std::str::contains(r.evidence, "fmt=0 check=0"),
+            "toolchain evidence: " + r.evidence,
+        );
+        std::test::assert(
+            std::str::contains(r.evidence, "backends=quick,deep"),
+            "two tiers under one attempt: " + r.evidence,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(r.result, "files_changed"),
+            "main.hl",
+            "files changed",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(r.result, "fitness_signals"),
+            "startup_prints +",
+            "fitness signals",
+        );
+        std::test::assert(
+            std::str::contains(r.result, "\"check_clean\": true")
+                || std::str::contains(r.result, "\"check_clean\":true"),
+            "check clean in the proposal: " + r.result,
+        );
         let after = std::io::fs::read_file(root + "/main.hl") or "";
         std::test::assert(std::str::contains(after, "v2"), "the worktree holds the edit");
         std::test::assert_eq_int(self.editor.tools.reads, 1, "one read");
@@ -59,23 +84,58 @@ main locus App {
             name: "fenced",
             tools: dna::WorktreeTools { root: root, hale_bin: toolchain() },
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: "Here is the rewritten file:\n\n```hale\nfn main() {\n    println(\"v3\");\n}\n```\n\nI kept the structure.\n" },
-                deep: dna::FakeModel { name: "deep", answer: "Looking at the change, I would expect:\n\nstartup_prints +\nlatency_p99 -\n\nNothing else moves." }
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "Here is the rewritten file:\n\n```hale\nfn main() {\n    println(\"v3\");\n}\n```\n\nI kept the structure.\n",
+                },
+                deep: dna::FakeModel {
+                    name: "deep",
+                    answer: "Looking at the change, I would expect:\n\nstartup_prints +\nlatency_p99 -\n\nNothing else moves.",
+                }
             }
         };
-        let r3 = fenced.perform(dna::WorkRequest { work_id: "w3", task_id: "t1", objective: "print v3", target: "main.hl", requires: "edit", attempt_no: 0 });
-        std::test::assert_eq_str(r3.disposition, "done", "a fenced answer is the file inside the fence: " + r3.narrative);
+        let r3 = fenced.perform(
+            dna::WorkRequest {
+                work_id: "w3",
+                task_id: "t1",
+                objective: "print v3",
+                target: "main.hl",
+                requires: "edit",
+                attempt_no: 0,
+            },
+        );
+        std::test::assert_eq_str(
+            r3.disposition,
+            "done",
+            "a fenced answer is the file inside the fence: " + r3.narrative,
+        );
         let after3 = std::io::fs::read_file(root + "/main.hl") or "";
-        std::test::assert(std::str::contains(after3, "v3") && !std::str::contains(after3, "```") && !std::str::contains(after3, "Here is"), "the worktree holds the file, not the fence or the remarks: " + after3);
-        std::test::assert_eq_str(std::json::find_string_field(r3.result, "fitness_signals"), "startup_prints +\nlatency_p99 -", "only the well-formed signal lines count: " + r3.result);
+        std::test::assert(
+            std::str::contains(after3, "v3")
+                && !std::str::contains(after3, "```")
+                && !std::str::contains(after3, "Here is"),
+            "the worktree holds the file, not the fence or the remarks: " + after3,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(r3.result, "fitness_signals"),
+            "startup_prints +\nlatency_p99 -",
+            "only the well-formed signal lines count: " + r3.result,
+        );
         std::test::assert_eq_int(self.editor.tools.edits, 1, "one edit");
         std::test::assert_eq_int(self.editor.models.calls, 2, "edit + assess");
 
         // ---- the grant is confined -----------------------------------------
-        let out = self.editor.perform(dna::WorkRequest { work_id: "w2", objective: "x", target: "../etc/passwd" });
+        let out = self.editor.perform(
+            dna::WorkRequest { work_id: "w2", objective: "x", target: "../etc/passwd" },
+        );
         std::test::assert_eq_str(out.disposition, "failed", "outside path refused");
-        std::test::assert(std::str::contains(out.narrative, "outside the worktree"), "refusal names the reason: " + out.narrative);
-        let abs = self.editor.perform(dna::WorkRequest { work_id: "w3", objective: "x", target: "/tmp/x.hl" });
+        std::test::assert(
+            std::str::contains(out.narrative, "outside the worktree"),
+            "refusal names the reason: " + out.narrative,
+        );
+        let abs = self.editor.perform(
+            dna::WorkRequest { work_id: "w3", objective: "x", target: "/tmp/x.hl" },
+        );
         std::test::assert_eq_str(abs.disposition, "failed", "absolute path refused");
         std::test::assert_eq_int(self.editor.tools.refused, 2, "two refusals");
         std::test::assert_eq_int(self.editor.tools.edits, 1, "no edit outside");
@@ -83,22 +143,47 @@ main locus App {
         // ---- a proposal that does not check is a failed Attempt ------------
         self.breaker = dna::SourceEditor {
             name: "breaker",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "fn main() { let x: Int = \"no\"; }\n" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel {
+                    name: "quick",
+                    answer: "fn main() { let x: Int = \"no\"; }\n",
+                },
+            },
             tools: dna::WorktreeTools { root: root, hale_bin: toolchain() }
         };
-        let bad = self.breaker.perform(dna::WorkRequest { work_id: "w4", objective: "break it", target: "main.hl" });
+        let bad = self.breaker.perform(
+            dna::WorkRequest { work_id: "w4", objective: "break it", target: "main.hl" },
+        );
         std::test::assert_eq_str(bad.disposition, "failed", "unchecked proposal fails");
-        std::test::assert(std::str::contains(bad.evidence, "fmt=0 check=1"), "check failed in evidence: " + bad.evidence);
-        std::test::assert(std::str::contains(bad.narrative, "type error"), "diagnostics travel with the attempt: " + bad.narrative);
+        std::test::assert(
+            std::str::contains(bad.evidence, "fmt=0 check=1"),
+            "check failed in evidence: " + bad.evidence,
+        );
+        std::test::assert(
+            std::str::contains(bad.narrative, "type error"),
+            "diagnostics travel with the attempt: " + bad.narrative,
+        );
         std::test::assert_eq_int(self.editor.attempts, 3, "three attempts on the first editor");
 
         // ---- several files from one ask (GH #566 F3) -----------------------
         let root2 = dna::scratch_root("edit2");
         std::io::fs::mkdir(root2 + "/answers") or discard;
-        std::io::fs::write_file(root2 + "/main.hl", "fn main() { println(add(1, 2)); }\n") or discard;
-        std::io::fs::write_file(root2 + "/util.hl", "fn add(a: Int, b: Int) -> Int { return a + b; }\n") or discard;
-        std::io::fs::write_file(root2 + "/answers/main.hl", "// prints a sum\nfn main() { println(add(1, 2)); }\n") or discard;
-        std::io::fs::write_file(root2 + "/answers/util.hl", "// adds\nfn add(a: Int, b: Int) -> Int { return a + b; }\n") or discard;
+        std::io::fs::write_file(
+            root2 + "/main.hl",
+            "fn main() { println(add(1, 2)); }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            root2 + "/util.hl",
+            "fn add(a: Int, b: Int) -> Int { return a + b; }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            root2 + "/answers/main.hl",
+            "// prints a sum\nfn main() { println(add(1, 2)); }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            root2 + "/answers/util.hl",
+            "// adds\nfn add(a: Int, b: Int) -> Int { return a + b; }\n",
+        ) or discard;
         self.multi = dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -107,21 +192,50 @@ main locus App {
             },
             tools: dna::WorktreeTools { root: root2, hale_bin: toolchain() }
         };
-        let both = self.multi.perform(dna::WorkRequest { work_id: "w5", objective: "document main.hl and util.hl", data_class: "internal" });
-        std::test::assert_eq_str(both.disposition, "done", "two files from one ask: " + both.narrative);
-        std::test::assert_eq_str(std::json::find_string_field(both.result, "files_changed"), "main.hl util.hl", "both files named");
+        let both = self.multi.perform(
+            dna::WorkRequest {
+                work_id: "w5",
+                objective: "document main.hl and util.hl",
+                data_class: "internal",
+            },
+        );
+        std::test::assert_eq_str(
+            both.disposition,
+            "done",
+            "two files from one ask: " + both.narrative,
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(both.result, "files_changed"),
+            "main.hl util.hl",
+            "both files named",
+        );
         std::test::assert(std::str::contains(both.evidence, "tries=1"), both.evidence);
-        std::test::assert(std::str::contains(std::io::fs::read_file(root2 + "/util.hl") or "", "// adds"), "util.hl edited");
-        std::test::assert(std::str::contains(std::io::fs::read_file(root2 + "/main.hl") or "", "// prints a sum"), "main.hl edited");
+        std::test::assert(
+            std::str::contains(std::io::fs::read_file(root2 + "/util.hl") or "", "// adds"),
+            "util.hl edited",
+        );
+        std::test::assert(
+            std::str::contains(std::io::fs::read_file(root2 + "/main.hl") or "", "// prints a sum"),
+            "main.hl edited",
+        );
         std::test::assert_eq_int(self.multi.tools.edits, 2, "two edits");
 
         // ---- a proposal that fails check twice and passes on the third try
         let root3 = dna::scratch_root("edit3");
         std::io::fs::mkdir(root3 + "/answers") or discard;
         std::io::fs::write_file(root3 + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
-        std::io::fs::write_file(root3 + "/answers/main.hl@a0", "fn main() { let x: Int = \"no\"; }\n") or discard;
-        std::io::fs::write_file(root3 + "/answers/main.hl@a1", "fn main() { let y: Bool = 1; }\n") or discard;
-        std::io::fs::write_file(root3 + "/answers/main.hl@a2", "fn main() { println(\"v2\"); }\n") or discard;
+        std::io::fs::write_file(
+            root3 + "/answers/main.hl@a0",
+            "fn main() { let x: Int = \"no\"; }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            root3 + "/answers/main.hl@a1",
+            "fn main() { let y: Bool = 1; }\n",
+        ) or discard;
+        std::io::fs::write_file(
+            root3 + "/answers/main.hl@a2",
+            "fn main() { println(\"v2\"); }\n",
+        ) or discard;
         self.retrier = dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -130,21 +244,49 @@ main locus App {
             },
             tools: dna::WorktreeTools { root: root3, hale_bin: toolchain() }
         };
-        let third = self.retrier.perform(dna::WorkRequest { work_id: "w6", objective: "print v2 instead of v1", target: "main.hl", data_class: "internal" });
-        std::test::assert_eq_str(third.disposition, "done", "passes on the third try: " + third.narrative);
+        let third = self.retrier.perform(
+            dna::WorkRequest {
+                work_id: "w6",
+                objective: "print v2 instead of v1",
+                target: "main.hl",
+                data_class: "internal",
+            },
+        );
+        std::test::assert_eq_str(
+            third.disposition,
+            "done",
+            "passes on the third try: " + third.narrative,
+        );
         std::test::assert(std::str::contains(third.evidence, "tries=3"), third.evidence);
         std::test::assert(std::str::contains(third.narrative, "after 3 try(ies)"), third.narrative);
         std::test::assert_eq_int(self.retrier.models.calls, 4, "three edits and one assessment");
-        std::test::assert(std::str::contains(std::io::fs::read_file(root3 + "/main.hl") or "", "v2"), "the third answer stands");
+        std::test::assert(
+            std::str::contains(std::io::fs::read_file(root3 + "/main.hl") or "", "v2"),
+            "the third answer stands",
+        );
         // the fourth would be one too many: the bound holds
         self.bounded = dna::SourceEditor {
             name: "editor", max_tries: 2,
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answers_dir: root3 + "/answers" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answers_dir: root3 + "/answers" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root3, hale_bin: toolchain() }
         };
         std::io::fs::write_file(root3 + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
-        let gave_up = self.bounded.perform(dna::WorkRequest { work_id: "w7", objective: "print v2", target: "main.hl", data_class: "internal" });
-        std::test::assert_eq_str(gave_up.disposition, "failed", "two tries were not enough, and it says so");
+        let gave_up = self.bounded.perform(
+            dna::WorkRequest {
+                work_id: "w7",
+                objective: "print v2",
+                target: "main.hl",
+                data_class: "internal",
+            },
+        );
+        std::test::assert_eq_str(
+            gave_up.disposition,
+            "failed",
+            "two tries were not enough, and it says so",
+        );
         std::test::assert(std::str::contains(gave_up.evidence, "tries=2"), gave_up.evidence);
 
         // ---- a removal that does not happen is not a removal --------------
@@ -160,8 +302,14 @@ main locus App {
         let refused_before = tools.refused;
         std::test::assert(!tools.remove("held"), "a removal that cannot happen is false");
         std::test::assert_eq_int(tools.refused, refused_before + 1, "and counted as a refusal");
-        std::test::assert(std::str::contains(tools.last_refusal, "remove failed"), "named: " + tools.last_refusal);
-        std::test::assert(std::io::fs::file_exists(root3 + "/held/inside.hl"), "the file is still there");
+        std::test::assert(
+            std::str::contains(tools.last_refusal, "remove failed"),
+            "named: " + tools.last_refusal,
+        );
+        std::test::assert(
+            std::io::fs::file_exists(root3 + "/held/inside.hl"),
+            "the file is still there",
+        );
         // the ordinary removal still works
         std::io::fs::write_file(root3 + "/gone.hl", "fn gone() { }\n") or discard;
         std::test::assert(tools.remove("gone.hl"), "a file that can go, goes");
@@ -183,34 +331,89 @@ main locus App {
         std::io::fs::write_file(root4 + "/README.md", "todo\n") or discard;
         let picks = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "api/todo.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(picks.files(), "api/todo.hl\n", "the listing reaches the seed under the root, and nothing of the organization's: " + picks.files());
-        std::test::assert_eq_str(picks.locate("a1", "add a Todos::count rpc"), "api/todo.hl", "the model picks from the listing: " + picks.located_why);
-        std::test::assert_eq_str(picks.locate("a2", "change api/todo.hl so it counts"), "api/todo.hl", "and a file the ask names needs no model");
+        std::test::assert_eq_str(
+            picks.files(),
+            "api/todo.hl\n",
+            "the listing reaches the seed under the root, and nothing of the organization's: "
+                + picks.files(),
+        );
+        std::test::assert_eq_str(
+            picks.locate("a1", "add a Todos::count rpc"),
+            "api/todo.hl",
+            "the model picks from the listing: " + picks.located_why,
+        );
+        std::test::assert_eq_str(
+            picks.locate("a2", "change api/todo.hl so it counts"),
+            "api/todo.hl",
+            "and a file the ask names needs no model",
+        );
         let wrong = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "nowhere.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "nowhere.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(wrong.locate("a3", "add a Todos::count rpc"), "", "a file the model names that is not listed is no target");
-        std::test::assert(std::str::contains(wrong.located_why, "`nowhere.hl`") && std::str::contains(wrong.located_why, "not one of the grant's 1 listed"), "and the failure says the model's answer was the cause, not the grant: " + wrong.located_why);
+        std::test::assert_eq_str(
+            wrong.locate("a3", "add a Todos::count rpc"),
+            "",
+            "a file the model names that is not listed is no target",
+        );
+        std::test::assert(
+            std::str::contains(wrong.located_why, "`nowhere.hl`")
+                && std::str::contains(wrong.located_why, "not one of the grant's 1 listed"),
+            "and the failure says the model's answer was the cause, not the grant: "
+                + wrong.located_why,
+        );
         // a target is a complete listed path: the bare name resolves to the one
         // entry it is the basename of, a suffix of nothing listed is no target,
         // and two entries sharing the name make the bare name ambiguous
         let bn = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "todo.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root4, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(bn.locate("b1", "change todo.hl so it counts"), "api/todo.hl", "the basename in the objective resolves to the listed path: " + bn.located_why);
+        std::test::assert_eq_str(
+            bn.locate("b1", "change todo.hl so it counts"),
+            "api/todo.hl",
+            "the basename in the objective resolves to the listed path: " + bn.located_why,
+        );
         std::test::assert(bn.models.calls == 0, "and asks no model");
-        std::test::assert_eq_str(bn.plan("b2", "change todo.hl and api/todo.hl"), "api/todo.hl", "the plan resolves each named file the same way, once");
-        std::test::assert_eq_str(bn.locate("b3", "add a Todos::count rpc"), "api/todo.hl", "a basename in the model's answer resolves too: " + bn.located_why);
-        std::test::assert_eq_str(bn.plan("b4", "add a Todos::count rpc"), "api/todo.hl", "and in the model's plan");
-        std::test::assert_eq_str(bn.locate("b5", "change pi/todo.hl"), "api/todo.hl", "an unlisted path in the objective falls to the model, not to a suffix");
-        std::test::assert_eq_str(wrong.locate("b6", "change i/todo.hl"), "", "a suffix of a listed path is no target");
+        std::test::assert_eq_str(
+            bn.plan("b2", "change todo.hl and api/todo.hl"),
+            "api/todo.hl",
+            "the plan resolves each named file the same way, once",
+        );
+        std::test::assert_eq_str(
+            bn.locate("b3", "add a Todos::count rpc"),
+            "api/todo.hl",
+            "a basename in the model's answer resolves too: " + bn.located_why,
+        );
+        std::test::assert_eq_str(
+            bn.plan("b4", "add a Todos::count rpc"),
+            "api/todo.hl",
+            "and in the model's plan",
+        );
+        std::test::assert_eq_str(
+            bn.locate("b5", "change pi/todo.hl"),
+            "api/todo.hl",
+            "an unlisted path in the objective falls to the model, not to a suffix",
+        );
+        std::test::assert_eq_str(
+            wrong.locate("b6", "change i/todo.hl"),
+            "",
+            "a suffix of a listed path is no target",
+        );
         std::test::assert_eq_str(bn.tools.root, root4, "the grant is unchanged");
         let root6 = dna::scratch_root("edit-dup");
         std::io::fs::mkdir(root6 + "/a") or discard;
@@ -219,15 +422,43 @@ main locus App {
         std::io::fs::write_file(root6 + "/b/todo.hl", "fn b() { }\n") or discard;
         let dup = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "todo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "todo.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root6, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(dup.locate("c1", "change todo.hl"), "", "a bare name two files share is no target");
-        std::test::assert(std::str::contains(dup.located_why, "ambiguous") && std::str::contains(dup.located_why, "a/todo.hl") && std::str::contains(dup.located_why, "b/todo.hl") && dup.models.calls == 0, "the refusal names both: " + dup.located_why);
-        std::test::assert_eq_str(dup.locate("c2", "change b/todo.hl"), "b/todo.hl", "the full path is exact");
-        std::test::assert_eq_str(dup.locate("c3", "add a rpc"), "", "a model answer that is ambiguous is refused");
-        std::test::assert(std::str::contains(dup.located_why, "ambiguous"), "naming why: " + dup.located_why);
-        std::test::assert_eq_str(dup.plan("c4", "change a/todo.hl and todo.hl"), "a/todo.hl", "the plan keeps the exact path and drops the ambiguous name");
+        std::test::assert_eq_str(
+            dup.locate("c1", "change todo.hl"),
+            "",
+            "a bare name two files share is no target",
+        );
+        std::test::assert(
+            std::str::contains(dup.located_why, "ambiguous")
+                && std::str::contains(dup.located_why, "a/todo.hl")
+                && std::str::contains(dup.located_why, "b/todo.hl")
+                && dup.models.calls == 0,
+            "the refusal names both: " + dup.located_why,
+        );
+        std::test::assert_eq_str(
+            dup.locate("c2", "change b/todo.hl"),
+            "b/todo.hl",
+            "the full path is exact",
+        );
+        std::test::assert_eq_str(
+            dup.locate("c3", "add a rpc"),
+            "",
+            "a model answer that is ambiguous is refused",
+        );
+        std::test::assert(
+            std::str::contains(dup.located_why, "ambiguous"),
+            "naming why: " + dup.located_why,
+        );
+        std::test::assert_eq_str(
+            dup.plan("c4", "change a/todo.hl and todo.hl"),
+            "a/todo.hl",
+            "the plan keeps the exact path and drops the ambiguous name",
+        );
         dna::scratch_done(root6);
         // a plan keeps every complete entry it names: a root file and a nested
         // file of the same basename are two targets, in the order named, and
@@ -238,12 +469,27 @@ main locus App {
         std::io::fs::write_file(root8 + "/api/todo.hl", "fn nested() { }\n") or discard;
         let both = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "api/todo.hl\ntodo.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "api/todo.hl\ntodo.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root8, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(both.plan("d1", "change api/todo.hl and todo.hl"), "api/todo.hl todo.hl", "the nested path first keeps the root file");
-        std::test::assert_eq_str(both.plan("d2", "change todo.hl and api/todo.hl"), "todo.hl api/todo.hl", "and the root file first keeps the nested one");
-        std::test::assert_eq_str(both.plan("d3", "add a rpc to both"), "api/todo.hl todo.hl", "a model plan naming both keeps both");
+        std::test::assert_eq_str(
+            both.plan("d1", "change api/todo.hl and todo.hl"),
+            "api/todo.hl todo.hl",
+            "the nested path first keeps the root file",
+        );
+        std::test::assert_eq_str(
+            both.plan("d2", "change todo.hl and api/todo.hl"),
+            "todo.hl api/todo.hl",
+            "and the root file first keeps the nested one",
+        );
+        std::test::assert_eq_str(
+            both.plan("d3", "add a rpc to both"),
+            "api/todo.hl todo.hl",
+            "a model plan naming both keeps both",
+        );
         dna::scratch_done(root8);
         // the listing stays inside the grant: a directory that links out of the
         // worktree is not descended, and its files can be neither read nor edited
@@ -256,27 +502,77 @@ main locus App {
         std::test::assert(ln.code == 0, "the link is made: " + ln.stderr);
         let lk = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "linked/private.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "linked/private.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root7, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(lk.files(), "real/x.hl\n", "a real nested directory lists, a linked one lists nothing: " + lk.files());
-        std::test::assert_eq_str(lk.locate("d1", "add a rpc"), "", "and the model naming a path through the link has no target");
-        std::test::assert_eq_str(lk.tools.read("linked/private.hl"), "", "a read through the link is refused");
-        std::test::assert(lk.tools.refused == 1 && std::str::contains(lk.tools.last_refusal, "outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
-        std::test::assert(!lk.tools.edit("linked/private.hl", "fn pwned() { }\n"), "an edit through the link is refused");
-        std::test::assert(lk.tools.refused == 2 && std::str::contains(lk.tools.last_refusal, "edit outside the worktree: linked/private.hl"), "naming the grant: " + lk.tools.last_refusal);
-        std::test::assert_eq_str(std::io::fs::read_file(outside + "/private.hl") or "", "fn private() { }\n", "the file outside is untouched");
-        std::test::assert_eq_str(lk.tools.read("real/x.hl"), "fn x() { }\n", "a real file is still read");
+        std::test::assert_eq_str(
+            lk.files(),
+            "real/x.hl\n",
+            "a real nested directory lists, a linked one lists nothing: " + lk.files(),
+        );
+        std::test::assert_eq_str(
+            lk.locate("d1", "add a rpc"),
+            "",
+            "and the model naming a path through the link has no target",
+        );
+        std::test::assert_eq_str(
+            lk.tools.read("linked/private.hl"),
+            "",
+            "a read through the link is refused",
+        );
+        std::test::assert(
+            lk.tools.refused == 1
+                && std::str::contains(
+                    lk.tools.last_refusal,
+                    "outside the worktree: linked/private.hl",
+                ),
+            "naming the grant: " + lk.tools.last_refusal,
+        );
+        std::test::assert(
+            !lk.tools.edit("linked/private.hl", "fn pwned() { }\n"),
+            "an edit through the link is refused",
+        );
+        std::test::assert(
+            lk.tools.refused == 2
+                && std::str::contains(
+                    lk.tools.last_refusal,
+                    "edit outside the worktree: linked/private.hl",
+                ),
+            "naming the grant: " + lk.tools.last_refusal,
+        );
+        std::test::assert_eq_str(
+            std::io::fs::read_file(outside + "/private.hl") or "",
+            "fn private() { }\n",
+            "the file outside is untouched",
+        );
+        std::test::assert_eq_str(
+            lk.tools.read("real/x.hl"),
+            "fn x() { }\n",
+            "a real file is still read",
+        );
         dna::scratch_done(root7);
         dna::scratch_done(outside);
         let root5 = dna::scratch_root("edit-empty");
         let empty = dna::SourceEditor {
             name: "editor",
-            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "x.hl" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "x.hl" },
+                deep: dna::FakeModel { name: "deep", answer: "x" },
+            },
             tools: dna::WorktreeTools { root: root5, hale_bin: toolchain() }
         };
-        std::test::assert_eq_str(empty.locate("a4", "add a rpc"), "", "a grant that lists nothing finds nothing");
-        std::test::assert(std::str::contains(empty.located_why, "lists no .hl file") && empty.models.calls == 0, "and says so, asking no model: " + empty.located_why);
+        std::test::assert_eq_str(
+            empty.locate("a4", "add a rpc"),
+            "",
+            "a grant that lists nothing finds nothing",
+        );
+        std::test::assert(
+            std::str::contains(empty.located_why, "lists no .hl file") && empty.models.calls == 0,
+            "and says so, asking no model: " + empty.located_why,
+        );
         dna::scratch_done(root4);
         dna::scratch_done(root5);
         dna::scratch_done(root);

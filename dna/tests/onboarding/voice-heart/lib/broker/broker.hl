@@ -52,16 +52,50 @@ fn env_of(name: String) -> String {
 /// The broker the habitat handed over, or, with none, the server `given`
 /// names (`--nats`), as it always was.
 fn broker_or(given: String) -> Broker {
-    return broker_from(given, env_of(BROKER_URL_ENV), env_of(BROKER_USER_ENV), env_of(BROKER_VAULT_ENV), env_of(BROKER_SUBJECTS_ENV), env_of(BROKER_INBOX_ENV), env_of(BROKER_NODE_USER_ENV), env_of(BROKER_NODE_VAULT_ENV));
+    return broker_from(
+        given,
+        env_of(BROKER_URL_ENV),
+        env_of(BROKER_USER_ENV),
+        env_of(BROKER_VAULT_ENV),
+        env_of(BROKER_SUBJECTS_ENV),
+        env_of(BROKER_INBOX_ENV),
+        env_of(BROKER_NODE_USER_ENV),
+        env_of(BROKER_NODE_VAULT_ENV),
+    );
 }
 
 /// The broker from a hand-over's variables, `given` when none is set. A
 /// hand-over is all of its URL, user, vault entry and subjects, or none of
 /// them: any one set without the rest is refused, never read as no
 /// hand-over (that would run standalone, on `--nats` and under `voice.`).
-fn broker_from(given: String, url: String, user: String, vault: String, subjects: String, inbox: String, node_user: String, node_vault: String) -> Broker {
-    if len(url) == 0 && len(user) == 0 && len(vault) == 0 && len(subjects) == 0 && len(inbox) == 0 && len(node_user) == 0 && len(node_vault) == 0 { return Broker { url: given }; }
-    if len(url) == 0 { return Broker { url: given, problem: "a hand-over of the habitat's broker is set without " + BROKER_URL_ENV + ": it needs " + BROKER_URL_ENV + ", " + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV + " and " + BROKER_SUBJECTS_ENV }; }
+fn broker_from(
+    given: String,
+    url: String,
+    user: String,
+    vault: String,
+    subjects: String,
+    inbox: String,
+    node_user: String,
+    node_vault: String
+) -> Broker {
+    if len(url) == 0
+        && len(user) == 0
+        && len(vault) == 0
+        && len(subjects) == 0
+        && len(inbox) == 0
+        && len(node_user) == 0
+        && len(node_vault) == 0
+    {
+        return Broker { url: given };
+    }
+    if len(url) == 0 {
+        return Broker {
+            url: given,
+            problem: "a hand-over of the habitat's broker is set without " + BROKER_URL_ENV
+                + ": it needs " + BROKER_URL_ENV + ", " + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV
+                + " and " + BROKER_SUBJECTS_ENV,
+        };
+    }
     let b = broker_of(url, user, vault, subjects);
     return with_nodes(with_inbox(b, inbox), node_user, node_vault);
 }
@@ -72,7 +106,8 @@ fn with_nodes(b: Broker, user: String, vault: String) -> Broker {
     if len(b.problem) > 0 { return b; }
     let mut out = b;
     if (len(user) == 0) != (len(vault) == 0) {
-        out.problem = "the nodes' account needs both " + BROKER_NODE_USER_ENV + " and " + BROKER_NODE_VAULT_ENV;
+        out.problem = "the nodes' account needs both " + BROKER_NODE_USER_ENV + " and "
+            + BROKER_NODE_VAULT_ENV;
         return out;
     }
     out.node_user = user;
@@ -86,7 +121,10 @@ fn with_inbox(b: Broker, inbox: String) -> Broker {
     if len(inbox) == 0 || len(b.problem) > 0 { return b; }
     let prefix = if std::str::ends_with(inbox, ".>") { inbox[0..(len(inbox) - 2)] } else { inbox };
     let mut out = b;
-    if len(prefix) == 0 || std::str::index_of(prefix, "*") >= 0 || std::str::index_of(prefix, ">") >= 0 {
+    if len(prefix) == 0
+        || std::str::index_of(prefix, "*") >= 0
+        || std::str::index_of(prefix, ">") >= 0
+    {
         out.problem = BROKER_INBOX_ENV + " is not a prefix of subjects";
         return out;
     }
@@ -96,9 +134,38 @@ fn with_inbox(b: Broker, inbox: String) -> Broker {
 
 /// A hand-over's broker: `subjects` a prefix `<root>.>`.
 fn broker_of(url: String, user: String, vault: String, subjects: String) -> Broker {
-    if len(user) == 0 || len(vault) == 0 || len(subjects) == 0 { return Broker { url: url, problem: BROKER_URL_ENV + " names the habitat's broker, but its user, vault entry or subjects are missing (" + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV + ", " + BROKER_SUBJECTS_ENV + ")" }; }
-    if std::str::index_of(url, "@") >= 0 { return Broker { url: url, problem: BROKER_URL_ENV + " carries credentials: they are " + BROKER_USER_ENV + " and the vault's" }; }
-    if !std::str::ends_with(subjects, ".>") || len(subjects) < 3 || std::str::index_of(subjects[0..(len(subjects) - 2)], "*") >= 0 || std::str::index_of(subjects[0..(len(subjects) - 2)], ">") >= 0 { return Broker { url: url, problem: BROKER_SUBJECTS_ENV + " is not a prefix of subjects (`heart.<id>.>`)" }; }
+    if len(user) == 0 || len(vault) == 0 || len(subjects) == 0 {
+        return Broker {
+            url: url,
+            problem: BROKER_URL_ENV
+                + " names the habitat's broker, but its user, vault entry or subjects are missing ("
+                + BROKER_USER_ENV + ", " + BROKER_VAULT_ENV + ", " + BROKER_SUBJECTS_ENV + ")",
+        };
+    }
+    if std::str::index_of(url, "@") >= 0 {
+        return Broker {
+            url: url,
+            problem: BROKER_URL_ENV + " carries credentials: they are " + BROKER_USER_ENV
+                + " and the vault's",
+        };
+    }
+    if !std::str::ends_with(subjects, ".>")
+        || len(subjects) < 3
+        || std::str::index_of(subjects[0..(len(subjects) - 2)], "*") >= 0
+        || std::str::index_of(subjects[0..(len(subjects) - 2)], ">") >= 0
+    {
+        return Broker {
+            url: url,
+            problem: BROKER_SUBJECTS_ENV + " is not a prefix of subjects (`heart.<id>.>`)",
+        };
+    }
     let root = subjects[0..(len(subjects) - 2)];
-    return Broker { url: url, user: user, vault: vault, root: root, inbox: root + "._INBOX", grafted: true };
+    return Broker {
+        url: url,
+        user: user,
+        vault: vault,
+        root: root,
+        inbox: root + "._INBOX",
+        grafted: true,
+    };
 }

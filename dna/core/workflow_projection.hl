@@ -351,7 +351,11 @@ locus WorkflowProjection {
             let mut i = 0;
             while i < self.tree.len() {
                 let n = self.tree.get(i) or BoundNode { };
-                if n.kind == "task" && len(n.parent) > 0 && std::str::contains(tasks, " " + n.parent + " ") && !std::str::contains(tasks, " " + n.id + " ") {
+                if n.kind == "task"
+                    && len(n.parent) > 0
+                    && std::str::contains(tasks, " " + n.parent + " ")
+                    && !std::str::contains(tasks, " " + n.id + " ")
+                {
                     tasks = tasks + n.id + " ";
                     grew = true;
                 }
@@ -362,7 +366,9 @@ locus WorkflowProjection {
         let mut i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
-            if std::str::contains(tasks, " " + w.task_id + " ") && len(w.disposition) == 0 { n = n + 1; }
+            if std::str::contains(tasks, " " + w.task_id + " ") && len(w.disposition) == 0 {
+                n = n + 1;
+            }
             i = i + 1;
         }
         // an admitted descendant Task is a responsibility of its own until
@@ -370,7 +376,12 @@ locus WorkflowProjection {
         i = 0;
         while i < self.tasks.len() {
             let t = self.tasks.get(i) or TaskView { };
-            if t.task_id != task_id && std::str::contains(tasks, " " + t.task_id + " ") && len(t.disposition) == 0 { n = n + 1; }
+            if t.task_id != task_id
+                && std::str::contains(tasks, " " + t.task_id + " ")
+                && len(t.disposition) == 0
+            {
+                n = n + 1;
+            }
             i = i + 1;
         }
         return n;
@@ -476,11 +487,16 @@ locus WorkflowProjection {
         let mut hops = 0;
         while len(up) > 0 {
             if hops >= self.tasks.len() {
-                return "task " + task_id + " sits under an ancestry that does not resolve (it loops above " + up + ")";
+                return "task " + task_id
+                    + " sits under an ancestry that does not resolve (it loops above " + up + ")";
             }
             let anc = self.task(up);
-            if len(anc.task_id) == 0 { return "task " + task_id + " sits under " + up + ", which was never admitted"; }
-            if anc.disposition == "cancelled" { return "task " + up + ", above " + task_id + ", was cancelled"; }
+            if len(anc.task_id) == 0 {
+                return "task " + task_id + " sits under " + up + ", which was never admitted";
+            }
+            if anc.disposition == "cancelled" {
+                return "task " + up + ", above " + task_id + ", was cancelled";
+            }
             up = anc.parent_task;
             hops = hops + 1;
         }
@@ -506,19 +522,25 @@ locus WorkflowProjection {
         let mut i = 0;
         while i < self.tasks.len() {
             let t = self.tasks.get(i) or TaskView { };
-            out = out + "task " + t.task_id + " " + t.definition + "@" + to_string(t.revision) + " <" + t.parent_task + " " + t.spawning_step + " " + t.member_key + "> " + t.disposition + " " + t.reason + "\n";
+            out = out + "task " + t.task_id + " " + t.definition + "@" + to_string(t.revision)
+                + " <" + t.parent_task + " " + t.spawning_step + " " + t.member_key + "> "
+                + t.disposition + " " + t.reason + "\n";
             i = i + 1;
         }
         i = 0;
         while i < self.steps.len() {
             let s = self.steps.get(i) or StepView { };
-            out = out + "step " + s.step_id + " [" + s.required + "] {" + s.entities + "} settled [" + s.settled + "] " + (if s.activated { "active " } else { "" }) + s.disposition + " " + s.failed_member + "\n";
+            out = out + "step " + s.step_id + " [" + s.required + "] {" + s.entities + "} settled ["
+                + s.settled + "] " + (if s.activated { "active " } else { "" }) + s.disposition
+                + " " + s.failed_member + "\n";
             i = i + 1;
         }
         i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
-            out = out + "work " + w.work_id + " " + w.attempt_id + " " + w.attempt_disposition + " " + w.attempt_result + " | " + w.disposition + " " + w.result + " " + w.result_ref + "\n";
+            out = out + "work " + w.work_id + " " + w.attempt_id + " " + w.attempt_disposition + " "
+                + w.attempt_result + " | " + w.disposition + " " + w.result + " " + w.result_ref
+                + "\n";
             i = i + 1;
         }
         i = 0;
@@ -527,7 +549,8 @@ locus WorkflowProjection {
             out = out + "ask " + a.request + "#" + to_string(a.decision) + " " + a.why + "\n";
             i = i + 1;
         }
-        return out + "facts " + to_string(self.facts.len()) + " nodes " + to_string(self.tree.len()) + "\n";
+        return out + "facts " + to_string(self.facts.len()) + " nodes " + to_string(self.tree.len())
+            + "\n";
     }
 
     // ---- the fact already recorded under an identity ----------------------
@@ -562,7 +585,8 @@ locus WorkflowProjection {
     // row's entity is the fact's own identity.
     fn envelope(entity: String, id: String, what: String) -> String {
         if entity == id { return ""; }
-        return "the row is about `" + entity + "`; the " + what + " it carries is about `" + id + "`";
+        return "the row is about `" + entity + "`; the " + what + " it carries is about `" + id
+            + "`";
     }
 
     // ---- applying one fact ---------------------------------------------
@@ -576,7 +600,9 @@ locus WorkflowProjection {
         if kind == "attempt.admitted" { return self.attempt(entity, body); }
         if kind == "attempt.outcome" { return self.attempt_outcome(entity, body); }
         if kind == "work.settled" { return self.work_settled(entity, body); }
-        if kind == "step.completed" || kind == "step.failed" { return self.step_settled(kind, entity, body); }
+        if kind == "step.completed" || kind == "step.failed" {
+            return self.step_settled(kind, entity, body);
+        }
         if kind == "workflow.settled" { return self.workflow_settled(entity, body); }
         return refused("`" + kind + "` is no fact of a workflow execution");
     }
@@ -595,47 +621,104 @@ locus WorkflowProjection {
         let seen = self.known("workflow.admitted", a.task_id, body);
         if len(seen.why) > 0 { return seen; }
         if len(self.task(a.task_id).task_id) > 0 {
-            return refused("task " + a.task_id + " was already admitted, and this row says something else");
+            return refused(
+                "task " + a.task_id + " was already admitted, and this row says something else",
+            );
         }
         // the recipe has to be readable whole, and has to bind this Task
         // as the admission describes it
         let gap = self.reader.decode_bound(a.recipe);
-        if len(gap) > 0 { return refused("the admission of " + a.task_id + " carries a recipe that cannot be read: " + gap); }
+        if len(gap) > 0 {
+            return refused(
+                "the admission of " + a.task_id + " carries a recipe that cannot be read: " + gap,
+            );
+        }
         let root = self.reader.bound_node(a.task_id);
-        if root.kind != "task" { return refused("the recipe an admission of " + a.task_id + " carries does not bind that task"); }
+        if root.kind != "task" {
+            return refused(
+                "the recipe an admission of " + a.task_id + " carries does not bind that task",
+            );
+        }
         if root.definition != a.definition || root.revision != a.revision {
-            return refused("task " + a.task_id + " is bound to " + definition_name(root.definition, root.revision) + ", not " + definition_name(a.definition, a.revision));
+            return refused(
+                "task " + a.task_id + " is bound to "
+                    + definition_name(root.definition, root.revision) + ", not "
+                    + definition_name(a.definition, a.revision),
+            );
         }
         // the workflow the recipe binds the task under is §4's, and is
         // read from the recipe from here on — never re-derived — so the
         // two never say different things
         let wf = a.task_id + "/wf" + to_string(a.revision);
         if root.workflow_id != wf {
-            return refused("the recipe an admission of " + a.task_id + " carries binds it under `" + root.workflow_id + "`, not `" + wf + "`, the workflow of " + a.task_id + " at revision " + to_string(a.revision));
+            return refused(
+                "the recipe an admission of " + a.task_id + " carries binds it under `"
+                    + root.workflow_id + "`, not `" + wf + "`, the workflow of " + a.task_id
+                    + " at revision " + to_string(a.revision),
+            );
         }
-        if root.parent != a.parent_task || root.spawning_step != a.spawning_step || root.member_key != a.member_key {
-            return refused("task " + a.task_id + " is bound under <" + root.parent + " " + root.spawning_step + " " + root.member_key + ">, not <" + a.parent_task + " " + a.spawning_step + " " + a.member_key + ">");
+        if root.parent != a.parent_task
+            || root.spawning_step != a.spawning_step
+            || root.member_key != a.member_key
+        {
+            return refused(
+                "task " + a.task_id + " is bound under <" + root.parent + " " + root.spawning_step
+                    + " " + root.member_key + ">, not <" + a.parent_task + " " + a.spawning_step
+                    + " " + a.member_key + ">",
+            );
         }
         // a child is admitted for what its parent bound under it, from a
         // step that is registered and active
         if len(a.parent_task) > 0 {
             if len(self.task(a.parent_task).task_id) == 0 {
-                return refused("task " + a.task_id + " names parent " + a.parent_task + ", which was never admitted");
+                return refused(
+                    "task " + a.task_id + " names parent " + a.parent_task
+                        + ", which was never admitted",
+                );
             }
             if self.stopped(a.parent_task) {
-                return refused("task " + a.task_id + " names parent " + a.parent_task + ": " + self.stop(a.parent_task) + "; it admits nothing further");
+                return refused(
+                    "task " + a.task_id + " names parent " + a.parent_task + ": "
+                        + self.stop(a.parent_task) + "; it admits nothing further",
+                );
             }
             let bound = self.node(a.task_id);
             if bound.kind != "task" {
-                return refused("task " + a.task_id + " is not a task the recipe of " + a.parent_task + " binds");
+                return refused(
+                    "task " + a.task_id + " is not a task the recipe of " + a.parent_task
+                        + " binds",
+                );
             }
-            if bound.spawning_step != a.spawning_step || bound.member_key != a.member_key || bound.definition != a.definition || bound.revision != a.revision {
-                return refused("task " + a.task_id + " is bound by its parent as " + definition_name(bound.definition, bound.revision) + " under <" + bound.spawning_step + " " + bound.member_key + ">");
+            if bound.spawning_step != a.spawning_step
+                || bound.member_key != a.member_key
+                || bound.definition != a.definition
+                || bound.revision != a.revision
+            {
+                return refused(
+                    "task " + a.task_id + " is bound by its parent as "
+                        + definition_name(bound.definition, bound.revision) + " under <"
+                        + bound.spawning_step + " " + bound.member_key + ">",
+                );
             }
             let up = self.step(a.spawning_step);
-            if len(up.step_id) == 0 { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which was never registered"); }
-            if !up.activated { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which was never activated"); }
-            if len(up.disposition) > 0 { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which " + up.disposition); }
+            if len(up.step_id) == 0 {
+                return refused(
+                    "task " + a.task_id + " is spawned by step " + a.spawning_step
+                        + ", which was never registered",
+                );
+            }
+            if !up.activated {
+                return refused(
+                    "task " + a.task_id + " is spawned by step " + a.spawning_step
+                        + ", which was never activated",
+                );
+            }
+            if len(up.disposition) > 0 {
+                return refused(
+                    "task " + a.task_id + " is spawned by step " + a.spawning_step + ", which "
+                        + up.disposition,
+                );
+            }
         }
         // A root's recipe binds a fresh execution: nothing in it may already
         // be bound. A child's recipe is the subtree its parent already
@@ -648,7 +731,10 @@ locus WorkflowProjection {
             while i < self.reader.bound_count() {
                 let n = self.reader.bound_at(i);
                 if len(self.node(n.id).id) > 0 {
-                    return refused("the recipe an admission of " + a.task_id + " carries binds " + n.id + ", which is already bound");
+                    return refused(
+                        "the recipe an admission of " + a.task_id + " carries binds " + n.id
+                            + ", which is already bound",
+                    );
                 }
                 i = i + 1;
             }
@@ -660,7 +746,9 @@ locus WorkflowProjection {
             }
         } else {
             let gap = self.subtree_gap(a.task_id);
-            if len(gap) > 0 { return refused("the recipe an admission of " + a.task_id + " carries " + gap); }
+            if len(gap) > 0 {
+                return refused("the recipe an admission of " + a.task_id + " carries " + gap);
+            }
             if self.dry { return applied(); }
         }
         self.tasks.push(TaskView {
@@ -701,11 +789,17 @@ locus WorkflowProjection {
         let mut i = 0;
         while i < self.reader.bound_count() {
             let n = self.reader.bound_at(i);
-            if !node_under(n.id, task_id) { return "binds " + n.id + ", which is not under " + task_id; }
+            if !node_under(n.id, task_id) {
+                return "binds " + n.id + ", which is not under " + task_id;
+            }
             let have = self.node(n.id);
-            if len(have.id) == 0 { return "binds " + n.id + ", which its parent never bound under " + task_id; }
+            if len(have.id) == 0 {
+                return "binds " + n.id + ", which its parent never bound under " + task_id;
+            }
             let differs = node_difference(have, n);
-            if len(differs) > 0 { return "binds " + n.id + " with another " + differs + " than its parent bound"; }
+            if len(differs) > 0 {
+                return "binds " + n.id + " with another " + differs + " than its parent bound";
+            }
             i = i + 1;
         }
         let mut bound = 0;
@@ -714,11 +808,16 @@ locus WorkflowProjection {
             let n = self.tree.get(i) or BoundNode { };
             if node_under(n.id, task_id) {
                 bound = bound + 1;
-                if self.reader.bound_node(n.id).kind != n.kind { return "leaves out " + n.id + ", which its parent bound under " + task_id; }
+                if self.reader.bound_node(n.id).kind != n.kind {
+                    return "leaves out " + n.id + ", which its parent bound under " + task_id;
+                }
             }
             i = i + 1;
         }
-        if bound != self.reader.bound_count() { return "binds " + to_string(self.reader.bound_count()) + " node(s) where its parent bound " + to_string(bound); }
+        if bound != self.reader.bound_count() {
+            return "binds " + to_string(self.reader.bound_count())
+                + " node(s) where its parent bound " + to_string(bound);
+        }
         return "";
     }
 
@@ -739,7 +838,10 @@ locus WorkflowProjection {
         while i < self.asks.len() {
             let a = self.asks.get(i) or AskView { };
             if a.request == r.request && a.decision == r.decision {
-                return refused("ask " + r.request + " decision " + to_string(r.decision) + " is already recorded, and this row says something else");
+                return refused(
+                    "ask " + r.request + " decision " + to_string(r.decision)
+                        + " is already recorded, and this row says something else",
+                );
             }
             i = i + 1;
         }
@@ -770,8 +872,12 @@ locus WorkflowProjection {
         let mut i = 0;
         while i < self.tree.len() {
             let n = self.tree.get(i) or BoundNode { };
-            if n.kind == "work" && n.parent == step_id { out = set_add(out, n.member_key + ":leaf=" + n.id); }
-            if n.kind == "task" && n.spawning_step == step_id { out = set_add(out, n.member_key + ":child=" + n.id); }
+            if n.kind == "work" && n.parent == step_id {
+                out = set_add(out, n.member_key + ":leaf=" + n.id);
+            }
+            if n.kind == "task" && n.spawning_step == step_id {
+                out = set_add(out, n.member_key + ":child=" + n.id);
+            }
             i = i + 1;
         }
         return out;
@@ -788,20 +894,34 @@ locus WorkflowProjection {
         let seen = self.known("step.registered", m.step_id, body);
         if len(seen.why) > 0 { return seen; }
         if len(self.task(m.task_id).task_id) == 0 {
-            return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which was never admitted");
+            return refused(
+                "step " + m.step_id + " belongs to task " + m.task_id
+                    + ", which was never admitted",
+            );
         }
         if self.stopped(m.task_id) {
-            return refused("step " + m.step_id + " belongs to task " + m.task_id + ": " + self.stop(m.task_id) + "; it admits nothing further");
+            return refused(
+                "step " + m.step_id + " belongs to task " + m.task_id + ": " + self.stop(m.task_id)
+                    + "; it admits nothing further",
+            );
         }
         let bound = self.node(m.step_id);
         if bound.kind != "step" || bound.parent != m.task_id {
-            return refused("step " + m.step_id + " is not a step the recipe binds for task " + m.task_id);
+            return refused(
+                "step " + m.step_id + " is not a step the recipe binds for task " + m.task_id,
+            );
         }
         if bound.step_index != m.step_index || bound.workflow_id != m.workflow_id {
-            return refused("step " + m.step_id + " is bound as step " + to_string(bound.step_index) + " of " + bound.workflow_id + ", not step " + to_string(m.step_index) + " of " + m.workflow_id);
+            return refused(
+                "step " + m.step_id + " is bound as step " + to_string(bound.step_index) + " of "
+                    + bound.workflow_id + ", not step " + to_string(m.step_index) + " of "
+                    + m.workflow_id,
+            );
         }
         if len(self.step(m.step_id).step_id) > 0 {
-            return refused("step " + m.step_id + " was already registered, and this row says something else");
+            return refused(
+                "step " + m.step_id + " was already registered, and this row says something else",
+            );
         }
         // the registration names exactly the members the recipe bound
         // under this step: each by key, kind and entity, none missing,
@@ -817,20 +937,38 @@ locus WorkflowProjection {
             rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
             if len(one) == 0 { continue; }
             let c1 = std::str::index_of(one, ":");
-            if c1 < 0 { return refused("step " + m.step_id + " registers `" + one + "`, which names no kind and no entity"); }
+            if c1 < 0 {
+                return refused(
+                    "step " + m.step_id + " registers `" + one
+                        + "`, which names no kind and no entity",
+                );
+            }
             let key = one[0..c1];
             let after = one[(c1 + 1)..len(one)];
             let c2 = std::str::index_of(after, ":");
-            if c2 < 0 { return refused("step " + m.step_id + " registers `" + one + "`, which names no entity"); }
+            if c2 < 0 {
+                return refused(
+                    "step " + m.step_id + " registers `" + one + "`, which names no entity",
+                );
+            }
             let kind = after[0..c2];
             let id = after[(c2 + 1)..len(after)];
-            if set_has(required, key) { return refused("step " + m.step_id + " registers `" + key + "` twice"); }
+            if set_has(required, key) {
+                return refused("step " + m.step_id + " registers `" + key + "` twice");
+            }
             let want = map_get(bound_set, key + ":" + kind, "=");
             if len(want) == 0 {
-                return refused("step " + m.step_id + " registers `" + key + "` as a " + kind + ", which the recipe does not bind under it (it bound `" + bound_set + "`)");
+                return refused(
+                    "step " + m.step_id + " registers `" + key + "` as a " + kind
+                        + ", which the recipe does not bind under it (it bound `" + bound_set
+                        + "`)",
+                );
             }
             if want != id {
-                return refused("step " + m.step_id + " registers `" + key + "` as " + id + "; the recipe bound " + want);
+                return refused(
+                    "step " + m.step_id + " registers `" + key + "` as " + id
+                        + "; the recipe bound " + want,
+                );
             }
             required = set_add(required, key);
             kinds = set_add(kinds, key + ":" + kind);
@@ -846,7 +984,10 @@ locus WorkflowProjection {
             if len(one) == 0 { continue; }
             let key = one[0..std::str::index_of(one, ":")];
             if !set_has(required, key) {
-                return refused("step " + m.step_id + " registers `" + required + "` and leaves out `" + key + "`, which the recipe bound under it; a required set is whole");
+                return refused(
+                    "step " + m.step_id + " registers `" + required + "` and leaves out `" + key
+                        + "`, which the recipe bound under it; a required set is whole",
+                );
             }
         }
         if self.dry { return applied(); }
@@ -884,14 +1025,29 @@ locus WorkflowProjection {
         while i < self.steps.len() {
             let s = self.steps.get(i) or StepView { };
             if s.step_id == a.step_id {
-                if s.activated { return refused("step " + a.step_id + " was already activated, and this row says something else"); }
-                if len(s.disposition) > 0 { return refused("step " + a.step_id + " " + s.disposition + "; it does not activate"); }
+                if s.activated {
+                    return refused(
+                        "step " + a.step_id
+                            + " was already activated, and this row says something else",
+                    );
+                }
+                if len(s.disposition) > 0 {
+                    return refused(
+                        "step " + a.step_id + " " + s.disposition + "; it does not activate",
+                    );
+                }
                 if self.stopped(s.task_id) {
-                    return refused("step " + a.step_id + " belongs to task " + s.task_id + ": " + self.stop(s.task_id) + "; nothing further activates");
+                    return refused(
+                        "step " + a.step_id + " belongs to task " + s.task_id + ": "
+                            + self.stop(s.task_id) + "; nothing further activates",
+                    );
                 }
                 let ahead = self.step_ahead(s.task_id, s.step_index);
                 if len(ahead) > 0 {
-                    return refused("step " + a.step_id + " cannot activate while step " + ahead + " has not completed");
+                    return refused(
+                        "step " + a.step_id + " cannot activate while step " + ahead
+                            + " has not completed",
+                    );
                 }
                 if self.dry { return applied(); }
                 s.activated = true;
@@ -919,38 +1075,72 @@ locus WorkflowProjection {
         let gap = self.member_gap(a.step_id, a.work_id);
         if len(gap) > 0 { return refused(gap); }
         let s = self.step(a.step_id);
-        if s.task_id != a.task_id { return refused("work " + a.work_id + " belongs to task " + s.task_id + ", not " + a.task_id); }
+        if s.task_id != a.task_id {
+            return refused(
+                "work " + a.work_id + " belongs to task " + s.task_id + ", not " + a.task_id,
+            );
+        }
         if self.stopped(s.task_id) {
             return refused(self.stop(s.task_id) + "; it admits no attempt");
         }
-        if !s.activated { return refused("work " + a.work_id + " cannot be attempted before step " + a.step_id + " is activated"); }
-        if len(s.disposition) > 0 { return refused("work " + a.work_id + " cannot be attempted after step " + a.step_id + " " + s.disposition); }
+        if !s.activated {
+            return refused(
+                "work " + a.work_id + " cannot be attempted before step " + a.step_id
+                    + " is activated",
+            );
+        }
+        if len(s.disposition) > 0 {
+            return refused(
+                "work " + a.work_id + " cannot be attempted after step " + a.step_id + " "
+                    + s.disposition,
+            );
+        }
         let bound = self.node(a.work_id);
         let departs = request_difference(bound, a.request);
         if len(departs) > 0 {
-            return refused("attempt " + a.attempt_id + " asks for another " + departs + " than the recipe bound for " + a.work_id);
+            return refused(
+                "attempt " + a.attempt_id + " asks for another " + departs
+                    + " than the recipe bound for " + a.work_id,
+            );
         }
         if a.attempt_no >= bound.attempts {
-            return refused("attempt " + a.attempt_id + " exhausts the allowance of " + to_string(bound.attempts) + " the recipe bound for " + a.work_id);
+            return refused(
+                "attempt " + a.attempt_id + " exhausts the allowance of "
+                    + to_string(bound.attempts) + " the recipe bound for " + a.work_id,
+            );
         }
         let mut i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
             if w.work_id == a.work_id {
                 if len(w.disposition) > 0 {
-                    return refused("work " + a.work_id + " settled " + w.disposition + "; a settled Work is not attempted again");
+                    return refused(
+                        "work " + a.work_id + " settled " + w.disposition
+                            + "; a settled Work is not attempted again",
+                    );
                 }
                 if a.attempt_no <= w.attempt_no {
-                    return refused("attempt " + a.attempt_id + " was superseded by " + w.attempt_id);
+                    return refused(
+                        "attempt " + a.attempt_id + " was superseded by " + w.attempt_id,
+                    );
                 }
                 if a.attempt_no != w.attempt_no + 1 {
-                    return refused("attempt " + a.attempt_id + " skips attempt " + to_string(w.attempt_no + 1) + " of " + a.work_id);
+                    return refused(
+                        "attempt " + a.attempt_id + " skips attempt " + to_string(w.attempt_no + 1)
+                            + " of " + a.work_id,
+                    );
                 }
                 if len(w.attempt_disposition) == 0 {
-                    return refused("attempt " + w.attempt_id + " is still outstanding; " + a.work_id + " is not retried until its outcome is recorded");
+                    return refused(
+                        "attempt " + w.attempt_id + " is still outstanding; " + a.work_id
+                            + " is not retried until its outcome is recorded",
+                    );
                 }
                 if w.attempt_disposition == "done" {
-                    return refused("attempt " + w.attempt_id + " was done; a Work that succeeded is not retried");
+                    return refused(
+                        "attempt " + w.attempt_id
+                            + " was done; a Work that succeeded is not retried",
+                    );
                 }
                 if self.dry { return applied(); }
                 w.attempt_id = std::str::clone(a.attempt_id);
@@ -965,7 +1155,10 @@ locus WorkflowProjection {
             i = i + 1;
         }
         if a.attempt_no != 0 {
-            return refused("attempt " + a.attempt_id + " is not the first attempt of " + a.work_id + "; that is " + attempt_id_of(a.work_id, 0));
+            return refused(
+                "attempt " + a.attempt_id + " is not the first attempt of " + a.work_id
+                    + "; that is " + attempt_id_of(a.work_id, 0),
+            );
         }
         if self.dry { return applied(); }
         self.works.push(WorkView {
@@ -992,10 +1185,16 @@ locus WorkflowProjection {
             let w = self.works.get(i) or WorkView { };
             if w.work_id == o.work_id {
                 if w.attempt_id != o.attempt_id {
-                    return refused("attempt " + o.attempt_id + " was superseded by " + w.attempt_id + "; its outcome decides nothing");
+                    return refused(
+                        "attempt " + o.attempt_id + " was superseded by " + w.attempt_id
+                            + "; its outcome decides nothing",
+                    );
                 }
                 if len(w.attempt_disposition) > 0 {
-                    return refused("attempt " + o.attempt_id + " was " + w.attempt_disposition + "; an attempt has one outcome");
+                    return refused(
+                        "attempt " + o.attempt_id + " was " + w.attempt_disposition
+                            + "; an attempt has one outcome",
+                    );
                 }
                 if self.dry { return applied(); }
                 w.attempt_disposition = std::str::clone(o.disposition);
@@ -1027,13 +1226,22 @@ locus WorkflowProjection {
             let w = self.works.get(i) or WorkView { };
             if w.work_id == o.work_id {
                 if w.step_id != o.step_id {
-                    return refused("work " + o.work_id + " is a member of step " + w.step_id + ", not " + o.step_id);
+                    return refused(
+                        "work " + o.work_id + " is a member of step " + w.step_id + ", not "
+                            + o.step_id,
+                    );
                 }
                 if w.attempt_id != o.attempt_id {
-                    return refused("work " + o.work_id + " ran attempt " + w.attempt_id + "; it cannot settle on " + o.attempt_id);
+                    return refused(
+                        "work " + o.work_id + " ran attempt " + w.attempt_id
+                            + "; it cannot settle on " + o.attempt_id,
+                    );
                 }
                 if len(w.disposition) > 0 {
-                    return refused("work " + o.work_id + " settled " + w.disposition + "; a settled Work does not settle again");
+                    return refused(
+                        "work " + o.work_id + " settled " + w.disposition
+                            + "; a settled Work does not settle again",
+                    );
                 }
                 let basis = self.settlement_basis(w, o.disposition);
                 if len(basis) > 0 { return refused(basis); }
@@ -1041,7 +1249,11 @@ locus WorkflowProjection {
                 w.disposition = std::str::clone(o.disposition);
                 if o.disposition == "done" {
                     w.result = std::str::clone(w.attempt_result);
-                    w.result_ref = if len(o.result_ref) > 0 { std::str::clone(o.result_ref) } else { std::str::clone(w.attempt_result_ref) };
+                    w.result_ref = if len(o.result_ref) > 0 {
+                        std::str::clone(o.result_ref)
+                    } else {
+                        std::str::clone(w.attempt_result_ref)
+                    };
                 }
                 self.works.set(i, w) or discard;
                 self.record("work.settled", o.work_id, body);
@@ -1065,23 +1277,38 @@ locus WorkflowProjection {
     fn settlement_basis(w: WorkView, disposition: String) -> String {
         if disposition == "done" {
             if w.attempt_disposition != "done" {
-                if len(w.attempt_disposition) == 0 { return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id + " is still outstanding"; }
-                return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id + " " + w.attempt_disposition;
+                if len(w.attempt_disposition) == 0 {
+                    return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id
+                        + " is still outstanding";
+                }
+                return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id + " "
+                    + w.attempt_disposition;
             }
             return "";
         }
         let step = self.step(w.step_id);
         if disposition == "cancelled" {
-            if !self.fenced(w.task_id) { return "work " + w.work_id + " cannot settle cancelled: neither task " + w.task_id + " nor anything above it was cancelled"; }
+            if !self.fenced(w.task_id) {
+                return "work " + w.work_id + " cannot settle cancelled: neither task " + w.task_id
+                    + " nor anything above it was cancelled";
+            }
             return "";
         }
         if disposition == "failed" {
-            if len(w.attempt_disposition) == 0 { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " is still outstanding"; }
-            if w.attempt_disposition == "done" { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " was done"; }
+            if len(w.attempt_disposition) == 0 {
+                return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id
+                    + " is still outstanding";
+            }
+            if w.attempt_disposition == "done" {
+                return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id
+                    + " was done";
+            }
             let exhausted = w.attempt_no + 1 >= w.allowance;
             let draining = step.disposition == "failed" || self.fenced(w.task_id);
             if !exhausted && !draining {
-                return "work " + w.work_id + " cannot settle failed with " + to_string(w.allowance - w.attempt_no - 1) + " attempt(s) of its allowance left";
+                return "work " + w.work_id + " cannot settle failed with "
+                    + to_string(w.allowance - w.attempt_no - 1)
+                    + " attempt(s) of its allowance left";
             }
             return "";
         }
@@ -1095,7 +1322,11 @@ locus WorkflowProjection {
         while i < self.steps.len() {
             let s = self.steps.get(i) or StepView { };
             if s.step_id == step_id {
-                if set_has(s.settled, key) { return replayed("member `" + key + "` of step " + step_id + " had already answered"); }
+                if set_has(s.settled, key) {
+                    return replayed(
+                        "member `" + key + "` of step " + step_id + " had already answered",
+                    );
+                }
                 s.settled = set_add(s.settled, key);
                 self.steps.set(i, s) or discard;
                 return applied();
@@ -1114,7 +1345,9 @@ locus WorkflowProjection {
         let bad = self.envelope(entity, o.step_id, "step outcome");
         if len(bad) > 0 { return refused(bad); }
         // the row's kind and the fact's disposition are one statement
-        if (kind == "step.completed" && o.disposition != "completed") || (kind == "step.failed" && o.disposition != "failed") {
+        if (kind == "step.completed" && o.disposition != "completed")
+            || (kind == "step.failed" && o.disposition != "failed")
+        {
             return refused("a `" + kind + "` row carries a step that " + o.disposition);
         }
         let seen = self.known(kind, o.step_id, body);
@@ -1124,15 +1357,26 @@ locus WorkflowProjection {
             let s = self.steps.get(i) or StepView { };
             if s.step_id == o.step_id {
                 if len(s.disposition) > 0 {
-                    return refused("step " + o.step_id + " " + s.disposition + "; a settled Step does not settle again");
+                    return refused(
+                        "step " + o.step_id + " " + s.disposition
+                            + "; a settled Step does not settle again",
+                    );
                 }
-                if !s.activated { return refused("step " + o.step_id + " was never activated; it does not settle"); }
+                if !s.activated {
+                    return refused(
+                        "step " + o.step_id + " was never activated; it does not settle",
+                    );
+                }
                 if o.disposition == "completed" && !self.joined(o.step_id) {
-                    return refused("step " + o.step_id + " still waits for `" + self.pending(o.step_id) + "`");
+                    return refused(
+                        "step " + o.step_id + " still waits for `" + self.pending(o.step_id) + "`",
+                    );
                 }
                 if o.disposition == "failed" {
                     if !set_has(s.required, o.failed_member) {
-                        return refused("step " + o.step_id + " has no member `" + o.failed_member + "`");
+                        return refused(
+                            "step " + o.step_id + " has no member `" + o.failed_member + "`",
+                        );
                     }
                     let why = self.failure_basis(s, o.failed_member);
                     if len(why) > 0 { return refused(why); }
@@ -1157,13 +1401,21 @@ locus WorkflowProjection {
         if kind == "leaf" {
             let w = self.work(id);
             if w.disposition == "failed" { return ""; }
-            if len(w.disposition) == 0 { return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " has not settled"; }
-            return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " settled " + w.disposition;
+            if len(w.disposition) == 0 {
+                return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id
+                    + " has not settled";
+            }
+            return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " settled "
+                + w.disposition;
         }
         let t = self.task(id);
         if t.disposition == "failed" { return ""; }
-        if len(t.disposition) == 0 { return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id + " has not settled"; }
-        return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id + " " + t.disposition;
+        if len(t.disposition) == 0 {
+            return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id
+                + " has not settled";
+        }
+        return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id + " "
+            + t.disposition;
     }
 
     // ---- an execution settles on its steps ---------------------------------
@@ -1181,15 +1433,24 @@ locus WorkflowProjection {
             let t = self.tasks.get(i) or TaskView { };
             if t.task_id == o.task_id {
                 if len(t.disposition) > 0 {
-                    return refused("task " + o.task_id + " " + t.disposition + "; a settled execution does not settle again");
+                    return refused(
+                        "task " + o.task_id + " " + t.disposition
+                            + "; a settled execution does not settle again",
+                    );
                 }
                 // the settlement may not redirect the answer: where a
                 // child answers is where it was admitted from
                 if len(o.parent_task) > 0 && o.parent_task != t.parent_task {
-                    return refused("task " + o.task_id + " was admitted under " + t.parent_task + ", not " + o.parent_task);
+                    return refused(
+                        "task " + o.task_id + " was admitted under " + t.parent_task + ", not "
+                            + o.parent_task,
+                    );
                 }
                 if len(o.spawning_step) > 0 && o.spawning_step != t.spawning_step {
-                    return refused("task " + o.task_id + " answers step " + t.spawning_step + ", not " + o.spawning_step);
+                    return refused(
+                        "task " + o.task_id + " answers step " + t.spawning_step + ", not "
+                            + o.spawning_step,
+                    );
                 }
                 let basis = self.task_basis(t, o.disposition);
                 if len(basis) > 0 { return refused(basis); }
@@ -1197,7 +1458,9 @@ locus WorkflowProjection {
                 // done. Whether its parent can receive that is decided
                 // before the child moves, so a refusal leaves nothing
                 // half-applied.
-                let answers = o.disposition == "done" && len(t.spawning_step) > 0 && len(t.member_key) > 0;
+                let answers = o.disposition == "done"
+                    && len(t.spawning_step) > 0
+                    && len(t.member_key) > 0;
                 if answers {
                     let gap = self.child_gap(t.spawning_step, t.member_key, t.task_id);
                     if len(gap) > 0 { return refused(gap); }
@@ -1242,22 +1505,30 @@ locus WorkflowProjection {
                 steps_bound = steps_bound + 1;
                 let s = self.step(n.id);
                 if s.disposition == "failed" && len(failed) == 0 { failed = std::str::clone(n.id); }
-                if s.disposition != "completed" && len(incomplete) == 0 { incomplete = std::str::clone(n.id); }
+                if s.disposition != "completed" && len(incomplete) == 0 {
+                    incomplete = std::str::clone(n.id);
+                }
             }
             i = i + 1;
         }
         if steps_bound == 0 { return "task " + t.task_id + " has no step bound; it cannot settle"; }
         if disposition == "done" {
-            if len(incomplete) > 0 { return "task " + t.task_id + " cannot settle done: step " + incomplete + " has not completed"; }
+            if len(incomplete) > 0 {
+                return "task " + t.task_id + " cannot settle done: step " + incomplete
+                    + " has not completed";
+            }
             return "";
         }
-        if len(failed) == 0 { return "task " + t.task_id + " cannot settle failed: no step of it failed"; }
+        if len(failed) == 0 {
+            return "task " + t.task_id + " cannot settle failed: no step of it failed";
+        }
         // the drain: what was admitted has said how it ended
         i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
             if w.task_id == t.task_id && len(w.disposition) == 0 {
-                return "task " + t.task_id + " cannot settle failed while work " + w.work_id + " is outstanding";
+                return "task " + t.task_id + " cannot settle failed while work " + w.work_id
+                    + " is outstanding";
             }
             i = i + 1;
         }
@@ -1265,7 +1536,8 @@ locus WorkflowProjection {
         while i < self.tasks.len() {
             let c = self.tasks.get(i) or TaskView { };
             if c.parent_task == t.task_id && len(c.disposition) == 0 {
-                return "task " + t.task_id + " cannot settle failed while child " + c.task_id + " is outstanding";
+                return "task " + t.task_id + " cannot settle failed while child " + c.task_id
+                    + " is outstanding";
             }
             i = i + 1;
         }
@@ -1284,13 +1556,16 @@ locus WorkflowProjection {
         let key = work_key_under(step_id, work_id);
         if len(key) == 0 { return "work " + work_id + " is not a work of step " + step_id; }
         if !set_has(s.required, key) {
-            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
+            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required
+                + "`)";
         }
         if map_get(s.kinds, key, ":") != "leaf" {
-            return "member `" + key + "` of step " + step_id + " is a child workflow; it answers by settling, not as a Work";
+            return "member `" + key + "` of step " + step_id
+                + " is a child workflow; it answers by settling, not as a Work";
         }
         if map_get(s.entities, key, "=") != work_id {
-            return "member `" + key + "` of step " + step_id + " is " + map_get(s.entities, key, "=") + ", not " + work_id;
+            return "member `" + key + "` of step " + step_id + " is "
+                + map_get(s.entities, key, "=") + ", not " + work_id;
         }
         return "";
     }
@@ -1302,13 +1577,16 @@ locus WorkflowProjection {
         let s = self.step(step_id);
         if len(s.step_id) == 0 { return "step " + step_id + " was never registered"; }
         if !set_has(s.required, key) {
-            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
+            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required
+                + "`)";
         }
         if map_get(s.kinds, key, ":") != "child" {
-            return "member `" + key + "` of step " + step_id + " is a Work; it answers when it settles, not as a child workflow";
+            return "member `" + key + "` of step " + step_id
+                + " is a Work; it answers when it settles, not as a child workflow";
         }
         if map_get(s.entities, key, "=") != task_id {
-            return "member `" + key + "` of step " + step_id + " is task " + map_get(s.entities, key, "=") + "; " + task_id + " does not answer for it";
+            return "member `" + key + "` of step " + step_id + " is task "
+                + map_get(s.entities, key, "=") + "; " + task_id + " does not answer for it";
         }
         return "";
     }

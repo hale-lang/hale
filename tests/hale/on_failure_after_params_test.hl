@@ -48,7 +48,11 @@ main locus App {
     birth() { self.at_birth = self.seen; }
     run() {
         std::test::assert_eq_int(self.count, 2, "both failures were delivered, once each");
-        std::test::assert_eq_str(self.seen, "got c:fuse;got p:fuse;", "delivered after the params were set, in arrival order");
+        std::test::assert_eq_str(
+            self.seen,
+            "got c:fuse;got p:fuse;",
+            "delivered after the params were set, in arrival order",
+        );
         std::test::assert_eq_str(self.at_birth, self.seen, "delivered before birth()");
     }
 }

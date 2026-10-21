@@ -113,14 +113,49 @@ fn fmt_stdin(args: &[&str], src: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// `--wrap` breaks a line wider than 100 columns by its shape (a call:
-/// one argument per line, a trailing comma); without it the line
-/// structure is the author's.
+/// A line wider than 100 columns is broken by its shape (a call: one
+/// argument per line, a trailing comma); one that fits is the author's.
 #[test]
-fn wrap_flag_breaks_a_wide_line() {
+fn a_wide_line_is_broken() {
     let wide = "fn main() {\n    let r = build_the_record(alpha_argument_value, beta_argument_value, gamma_argument_value, delta);\n}\n";
     let wrapped = "fn main() {\n    let r = build_the_record(\n        alpha_argument_value,\n        beta_argument_value,\n        gamma_argument_value,\n        delta,\n    );\n}\n";
-    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wide);
-    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wide), wrapped);
-    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wrapped), wrapped);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wrapped);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wrapped), wrapped);
+}
+
+#[test]
+fn a_frozen_directory_is_skipped_by_the_walk_but_not_by_name() {
+    let dir = std::env::temp_dir().join(format!("hale_fmt_cli_frozen_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let frozen = dir.join("fixture");
+    std::fs::create_dir_all(&frozen).unwrap();
+    std::fs::write(
+        frozen.join(".hale-fmt-frozen"),
+        "recorded fixture: a tape is keyed on these bytes; re-record the tape to reformat\n",
+    )
+    .unwrap();
+    std::fs::write(frozen.join("a.hl"), MESSY).unwrap();
+    std::fs::write(dir.join("b.hl"), MESSY).unwrap();
+
+    // the walk formats b.hl and leaves the frozen directory's file alone
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).arg("fmt").arg(&dir).output().expect("walk");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("b.hl")).unwrap(), CANON);
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), MESSY, "frozen by the walk");
+
+    // a frozen directory named on the command line is skipped too
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).arg("fmt").arg(&frozen).output().expect("dir");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), MESSY, "frozen when named");
+
+    // a file named on the command line is formatted
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("fmt")
+        .arg(frozen.join("a.hl"))
+        .output()
+        .expect("named");
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(frozen.join("a.hl")).unwrap(), CANON);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

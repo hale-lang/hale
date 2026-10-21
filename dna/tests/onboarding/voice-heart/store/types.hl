@@ -3,7 +3,11 @@
 // limits, a budget, the models a seat serves), and the JSON they are
 // written as where a store keeps JSON.
 
-type ModelPrice { input_per_mtok_micros: Int = 0; output_per_mtok_micros: Int = 0; currency: String = "USD"; }
+type ModelPrice {
+    input_per_mtok_micros: Int = 0;
+    output_per_mtok_micros: Int = 0;
+    currency: String = "USD";
+}
 
 /// A list of names that is never `null`: owners, data classes, seats. At
 /// most 32, as every list of names here.
@@ -96,7 +100,11 @@ type BudgetSet {
 
 /// `SeatModel`. `engine_name` is its `as` (a word Hale keeps), `null` when
 /// `has_engine_name` is false.
-type SeatModel { model: String = ""; has_engine_name: Bool = false; engine_name: String = "" `json:"as"`; }
+type SeatModel {
+    model: String = "";
+    has_engine_name: Bool = false;
+    engine_name: String = "" `json:"as"`;
+}
 
 type SeatModels { items: bounded[SeatModel; 16]; }
 
@@ -115,7 +123,9 @@ fn jnames(ns: bounded[String; 32]) -> String {
 
 fn jprice(priced: Bool, p: ModelPrice) -> String {
     if !priced { return "null"; }
-    return "{\"input_per_mtok_micros\": " + to_string(p.input_per_mtok_micros) + ", \"output_per_mtok_micros\": " + to_string(p.output_per_mtok_micros) + ", \"currency\": " + jq(p.currency) + "}";
+    return "{\"input_per_mtok_micros\": " + to_string(p.input_per_mtok_micros)
+        + ", \"output_per_mtok_micros\": " + to_string(p.output_per_mtok_micros)
+        + ", \"currency\": " + jq(p.currency) + "}";
 }
 
 fn pad(n: Int, width: Int) -> String {
@@ -129,7 +139,10 @@ fn pad(n: Int, width: Int) -> String {
 fn serves_json(ms: bounded[SeatModel; 16]) -> String {
     let out_list = JsonList { };
     for m in ms {
-        out_list.add("{\"model\": " + jq(m.model) + ", \"as\": " + (if m.has_engine_name { jq(m.engine_name) } else { "null" }) + "}");
+        out_list.add(
+            "{\"model\": " + jq(m.model) + ", \"as\": "
+                + (if m.has_engine_name { jq(m.engine_name) } else { "null" }) + "}",
+        );
     }
     let out = out_list.text();
     return "[" + out + "]";

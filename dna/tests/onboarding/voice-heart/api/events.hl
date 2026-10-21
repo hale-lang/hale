@@ -70,7 +70,15 @@ fn usage_event(r: InferenceRequest, s: Served) -> UsageEvent {
 /// The usage of a request of `r` that seat `c` began and did not finish:
 /// `status` says how it ended. Nothing is charged, and the seat reported
 /// no tokens.
-fn unfinished_usage(r: InferenceRequest, request_id: String, k: st::KeyRow, m: st::ModelRow, c: Candidate, status: String, wall_ms: Int) -> UsageEvent {
+fn unfinished_usage(
+    r: InferenceRequest,
+    request_id: String,
+    k: st::KeyRow,
+    m: st::ModelRow,
+    c: Candidate,
+    status: String,
+    wall_ms: Int
+) -> UsageEvent {
     return UsageEvent {
         id: request_id,
         created_at: now_seconds(),
@@ -103,6 +111,8 @@ locus UsageJson {
         return std::bytes::from_string(UsageEvent::api_encode(u));
     }
     fn decode(b: Bytes) -> UsageEvent fallible(CodecError) {
-        return UsageEvent::api_decode(std::str::from_bytes(b)) or fail CodecError { kind: "usage_event" };
+        return UsageEvent::api_decode(
+            std::str::from_bytes(b),
+        ) or fail CodecError { kind: "usage_event" };
     }
 }

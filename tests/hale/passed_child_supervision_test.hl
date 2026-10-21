@@ -62,15 +62,35 @@ main locus App {
             std::time::sleep(10ms);
             i = i + 1;
         }
-        std::test::assert_eq_int(self.pinned_got, 1, "the pinned child passed in from fn main reached App");
-        std::test::assert_eq_str(self.got, "c:fuse branch:fuse ", "the cooperative and branch children reached App");
-        std::test::assert_eq_str(self.w.got, "n:fuse", "the child in Wrap's literal reached Wrap, not App");
+        std::test::assert_eq_int(
+            self.pinned_got,
+            1,
+            "the pinned child passed in from fn main reached App",
+        );
+        std::test::assert_eq_str(
+            self.got,
+            "c:fuse branch:fuse ",
+            "the cooperative and branch children reached App",
+        );
+        std::test::assert_eq_str(
+            self.w.got,
+            "n:fuse",
+            "the child in Wrap's literal reached Wrap, not App",
+        );
 
         // Built in a method body: the literal's locus supervises its
         // child, not the method's.
         let h = Wrap { b: Boom { name: "h" } };
-        std::test::assert_eq_str(h.got, "h:fuse", "the child in a literal built in run() reached that literal");
-        std::test::assert_eq_str(self.got, "c:fuse branch:fuse ", "App did not take the Wrap child's failure");
+        std::test::assert_eq_str(
+            h.got,
+            "h:fuse",
+            "the child in a literal built in run() reached that literal",
+        );
+        std::test::assert_eq_str(
+            self.got,
+            "c:fuse branch:fuse ",
+            "App did not take the Wrap child's failure",
+        );
     }
 }
 

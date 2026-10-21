@@ -68,7 +68,11 @@ fn random_text(r: Rng, pieces: Int, escaped: Bool) -> String {
 
 fn check(s: String, what: String) {
     std::test::assert_eq_str(std::json::escape_string(s), old_escape_string(s), "escape: " + what);
-    std::test::assert_eq_str(std::json::unescape_string(s), old_unescape_string(s), "unescape: " + what);
+    std::test::assert_eq_str(
+        std::json::unescape_string(s),
+        old_unescape_string(s),
+        "unescape: " + what,
+    );
 }
 
 fn main() {
@@ -79,7 +83,11 @@ fn main() {
         check(random_text(r, pieces, false), "raw text " + to_string(n));
         check(random_text(r, pieces, true), "escaped text " + to_string(n));
         let raw = random_text(r, pieces, false);
-        std::test::assert_eq_str(std::json::unescape_string(std::json::escape_string(raw)), raw, "round trip " + to_string(n));
+        std::test::assert_eq_str(
+            std::json::unescape_string(std::json::escape_string(raw)),
+            raw,
+            "round trip " + to_string(n),
+        );
         n = n + 1;
     }
     // the edges: empty, nothing to escape, only escapes, one byte

@@ -47,7 +47,9 @@ fn route_pairs(raw: String) -> String {
 }
 
 // Whether `lines` holds `line`.
-fn route_has(lines: String, line: String) -> Bool { return std::str::contains("\n" + lines, "\n" + line + "\n"); }
+fn route_has(lines: String, line: String) -> Bool {
+    return std::str::contains("\n" + lines, "\n" + line + "\n");
+}
 
 locus Router {
     params {
@@ -64,7 +66,10 @@ locus Router {
     fn load(json: String) {
         let mut it = std::json::array_first(std::json::find_field_raw(json, "nodes"));
         while !it.done {
-            self.nodes = self.nodes + std::json::find_string_field(it.element, "id") + "\t" + std::json::find_string_field(it.element, "kind") + "\t" + std::json::find_string_field(it.element, "name") + "\t" + std::json::find_string_field(it.element, "source") + "\n";
+            self.nodes = self.nodes + std::json::find_string_field(it.element, "id") + "\t"
+                + std::json::find_string_field(it.element, "kind") + "\t"
+                + std::json::find_string_field(it.element, "name") + "\t"
+                + std::json::find_string_field(it.element, "source") + "\n";
             it = std::json::array_next(it);
         }
         self.unfold = route_pairs(std::json::find_field_raw(json, "unfold"));
@@ -94,10 +99,23 @@ locus Router {
             let t3 = std::str::index_of(tail, "\t");
             let name = tail[0..t3];
             let source = tail[(t3 + 1)..len(tail)];
-            if kind == "contract" && (path == name || std::str::starts_with(path, name + "/")) { return id; }
+            if kind == "contract" && (path == name || std::str::starts_with(path, name + "/")) {
+                return id;
+            }
             if kind == "document" && path == name { return id; }
-            if kind == "deployment" && len(source) > 0 && !std::str::ends_with(source, ".md") && path == source { deployment = id; }
-            if kind == "seed" && (path == name || std::str::starts_with(path, name + "/")) && len(name) > len(seed) { seed = name; }
+            if kind == "deployment"
+                && len(source) > 0
+                && !std::str::ends_with(source, ".md")
+                && path == source
+            {
+                deployment = id;
+            }
+            if kind == "seed"
+                && (path == name || std::str::starts_with(path, name + "/"))
+                && len(name) > len(seed)
+            {
+                seed = name;
+            }
         }
         if len(deployment) > 0 { return deployment; }
         return if len(seed) > 0 { "seed:" + seed } else { "" };
@@ -124,7 +142,14 @@ locus Router {
     // for a seed, under the processes that unfold into it.
     fn positions_under(part: String) -> String {
         let mut out = "";
-        let mut parents = part + "\n" + (if std::str::starts_with(part, "seed:") { self.related(self.unfold, part, true) } else { "" });
+        let mut parents = part + "\n"
+            + (
+                if std::str::starts_with(part, "seed:") {
+                    self.related(self.unfold, part, true)
+                } else {
+                    ""
+                }
+            );
         while len(parents) > 0 {
             let nl = std::str::index_of(parents, "\n");
             let parent = parents[0..nl];
@@ -132,7 +157,9 @@ locus Router {
             let mut kids = self.related(self.unfold, parent, false);
             while len(kids) > 0 {
                 let n2 = std::str::index_of(kids, "\n");
-                if std::str::starts_with(kids[0..n2], "position:") { out = out + kids[0..n2] + "\n"; }
+                if std::str::starts_with(kids[0..n2], "position:") {
+                    out = out + kids[0..n2] + "\n";
+                }
                 kids = kids[(n2 + 1)..len(kids)];
             }
         }
@@ -166,7 +193,15 @@ locus Router {
         let because = "consumes " + show_name(spec);
         if !std::str::starts_with(node, "process:") && !std::str::starts_with(node, "seed:") {
             let n = self.sign_all(self.related(self.reviews, node, true), because);
-            if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
+            if n == 0
+                && !route_has(
+                    self.route.unsigned,
+                    node + "\t" + because + "; no position reviews it",
+                )
+            {
+                self.route.unsigned = self.route.unsigned + node + "\t" + because
+                    + "; no position reviews it\n";
+            }
             return n;
         }
         let mut n = 0;
@@ -177,7 +212,12 @@ locus Router {
             if route_has(reviewing, under[0..nl]) { n = n + 1; }
             under = under[(nl + 1)..len(under)];
         }
-        if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
+        if n == 0
+            && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it")
+        {
+            self.route.unsigned = self.route.unsigned + node + "\t" + because
+                + "; no position reviews it\n";
+        }
         return n;
     }
     // One path of the change set: its node, who signs it, the gates that
@@ -185,10 +225,23 @@ locus Router {
     @bounded_by(paths)
     fn path(p: String) {
         let node = self.node_of(p);
-        if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract, document or deployment file the graph holds\n"; return; }
+        if len(node) == 0 {
+            self.route.fallback = self.route.fallback + p
+                + "\tnames no seed, contract, document or deployment file the graph holds\n";
+            return;
+        }
         // every position that reviews the node signs it
-        let verb = if std::str::starts_with(node, "deployment:") { "operates " } else if std::str::starts_with(node, "seed:") { "reviews " } else { "signs " };
-        let mut signed = self.sign_all(self.related(self.reviews, node, true), verb + show_name(node));
+        let verb = if std::str::starts_with(node, "deployment:") {
+            "operates "
+        } else if std::str::starts_with(node, "seed:") {
+            "reviews "
+        } else {
+            "signs "
+        };
+        let mut signed = self.sign_all(
+            self.related(self.reviews, node, true),
+            verb + show_name(node),
+        );
         if std::str::starts_with(node, "contract:") {
             let mut it = std::json::array_first(self.meets);
             while !it.done {
@@ -203,16 +256,28 @@ locus Router {
                 }
                 it = std::json::array_next(it);
             }
-            if route_has(self.law, node) && self.sign("position:board", show_name(node) + " is law") { signed = signed + 1; }
+            if route_has(self.law, node)
+                && self.sign("position:board", show_name(node) + " is law")
+            {
+                signed = signed + 1;
+            }
         }
         // the evidence: every gate guarding the node
         let mut g = std::json::array_first(self.gates);
         while !g.done {
             let gate = std::json::find_string_field(g.element, "gate");
-            if route_has(show_strings(std::json::find_field_raw(g.element, "guarded")), node) && !route_has(self.route.evidence, gate) { self.route.evidence = self.route.evidence + gate + "\n"; }
+            if route_has(show_strings(std::json::find_field_raw(g.element, "guarded")), node)
+                && !route_has(self.route.evidence, gate)
+            {
+                self.route.evidence = self.route.evidence + gate + "\n";
+            }
             g = std::json::array_next(g);
         }
-        if signed == 0 { self.route.fallback = self.route.fallback + p + "\tno position " + (if std::str::starts_with(node, "deployment:") { "operates " } else { "signs " }) + show_name(node) + "\n"; }
+        if signed == 0 {
+            self.route.fallback = self.route.fallback + p + "\tno position "
+                + (if std::str::starts_with(node, "deployment:") { "operates " } else { "signs " })
+                + show_name(node) + "\n";
+        }
     }
 }
 
@@ -245,7 +310,9 @@ fn route_holders(json: String, position: String) -> String {
 // The `<idea>\t<target>` pairs of the routing query's `bound`: a ratified
 // practice and what it is bound to, for the caller to keep those ratified
 // as law.
-fn route_bound(json: String) -> String { return route_pairs(std::json::find_field_raw(json, "bound")); }
+fn route_bound(json: String) -> String {
+    return route_pairs(std::json::find_field_raw(json, "bound"));
+}
 
 // ---- what a Review requires, from its route (GH #1089) ----------------------
 //
@@ -284,7 +351,9 @@ fn route_law(bound: String, receipts: Receipts) -> String {
         let idea = line[0..tab];
         let target = line[(tab + 1)..len(line)];
         let raw = if std::str::starts_with(idea, "sha256:") { idea[7..len(idea)] } else { idea };
-        if std::json::find_bool_field(receipts.read(raw), "law") && !route_has(out, target) { out = out + target + "\n"; }
+        if std::json::find_bool_field(receipts.read(raw), "law") && !route_has(out, target) {
+            out = out + target + "\n";
+        }
     }
     return out;
 }
@@ -302,7 +371,11 @@ fn route_held_by(json: String, position: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let holder = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        let each = if std::str::starts_with(holder, "organization:") { r.related(r.holds, holder, false) } else { holder + "\n" };
+        let each = if std::str::starts_with(holder, "organization:") {
+            r.related(r.holds, holder, false)
+        } else {
+            holder + "\n"
+        };
         let mut m = each;
         while len(m) > 0 {
             let n2 = std::str::index_of(m, "\n");
@@ -356,7 +429,8 @@ fn signers_held_now(json: String, signers: String) -> String {
         let entry = nth_word(signers, i);
         let eq = std::str::index_of(entry, "=");
         let position = if eq > 0 { entry[0..eq] } else { entry };
-        out = out + (if len(out) > 0 { " " } else { "" }) + position + "=" + route_held_by(json, position);
+        out = out + (if len(out) > 0 { " " } else { "" }) + position + "="
+            + route_held_by(json, position);
         i = i + 1;
     }
     return out;
@@ -399,7 +473,9 @@ fn show_strings(raw: String) -> String {
     let mut it = std::json::array_first(raw);
     while !it.done {
         let e = std::str::trim(it.element);
-        if len(e) >= 2 && std::str::starts_with(e, "\"") { out = out + std::json::unescape_string(e[1..(len(e) - 1)]) + "\n"; }
+        if len(e) >= 2 && std::str::starts_with(e, "\"") {
+            out = out + std::json::unescape_string(e[1..(len(e) - 1)]) + "\n";
+        }
         it = std::json::array_next(it);
     }
     return out;

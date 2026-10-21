@@ -87,8 +87,18 @@ fn source_watch(digest: String, doc: String) -> SourceWatch {
     let target = std::json::find_string_field(doc, "target");
     let w = SourceWatch {
         practice: digest, name: name, watch: last_segment(name),
-        position: if std::str::starts_with(target, "position:") { target[9..len(target)] } else { "" },
-        source: practice_term(text, "source"), kind: practice_term(text, "kind"), codebase: if practice_term(text, "codebase") == "none" { "" } else { practice_term(text, "codebase") }
+        position: if std::str::starts_with(target, "position:") {
+            target[9..len(target)]
+        } else {
+            ""
+        },
+        source: practice_term(text, "source"),
+        kind: practice_term(text, "kind"),
+        codebase: if practice_term(text, "codebase") == "none" {
+            ""
+        } else {
+            practice_term(text, "codebase")
+        }
     };
     let mut out = w;
     out.why = source_refusal(w);
@@ -97,22 +107,44 @@ fn source_watch(digest: String, doc: String) -> SourceWatch {
 
 // Why `w`'s terms cannot stand, "" when they can.
 fn source_refusal(w: SourceWatch) -> String {
-    if len(w.name) == 0 || len(w.watch) == 0 { return "the practice has no name its readings could carry"; }
-    if len(w.position) == 0 { return "the practice `" + w.name + "` is bound to no position, which a move would be a concern for"; }
-    if !word_in(w.kind, SOURCE_KINDS) { return "its `kind=` is one of " + SOURCE_KINDS + ", not `" + w.kind + "`"; }
-    if len(w.codebase) > 0 && !codebase_name_ok(w.codebase) { return "its `codebase=` names an attached codebase, not `" + w.codebase + "`"; }
+    if len(w.name) == 0 || len(w.watch) == 0 {
+        return "the practice has no name its readings could carry";
+    }
+    if len(w.position) == 0 {
+        return "the practice `" + w.name
+            + "` is bound to no position, which a move would be a concern for";
+    }
+    if !word_in(w.kind, SOURCE_KINDS) {
+        return "its `kind=` is one of " + SOURCE_KINDS + ", not `" + w.kind + "`";
+    }
+    if len(w.codebase) > 0 && !codebase_name_ok(w.codebase) {
+        return "its `codebase=` names an attached codebase, not `" + w.codebase + "`";
+    }
     if w.kind == "openapi" {
-        if len(w.source) == 0 || std::str::starts_with(w.source, "/") || std::str::contains(w.source, "..") || std::str::contains(w.source, "://") { return "an openapi `source=` is the surface `hale api import` committed, a path inside the genome"; }
+        if len(w.source) == 0
+            || std::str::starts_with(w.source, "/")
+            || std::str::contains(w.source, "..")
+            || std::str::contains(w.source, "://")
+        {
+            return "an openapi `source=` is the surface `hale api import` committed, a path inside the genome";
+        }
         return "";
     }
-    if !(std::str::starts_with(w.source, "https://") || std::str::starts_with(w.source, "http://") || std::str::starts_with(w.source, "file://")) { return "its `source=` is an http://, https:// or file:// URL, not `" + w.source + "`"; }
+    if !(
+        std::str::starts_with(w.source, "https://")
+            || std::str::starts_with(w.source, "http://")
+            || std::str::starts_with(w.source, "file://")
+    ) {
+        return "its `source=` is an http://, https:// or file:// URL, not `" + w.source + "`";
+    }
     return "";
 }
 
 // The concern's words for a move: what moved, and where its reading and
 // diff are.
 fn source_concern_what(w: SourceWatch, reading: String, diff: String) -> String {
-    return "the upstream " + w.watch + " (" + w.kind + " " + w.source + ", watched by the practice " + w.name + ") moved: reading " + reading + ", its diff the receipt " + diff;
+    return "the upstream " + w.watch + " (" + w.kind + " " + w.source + ", watched by the practice "
+        + w.name + ") moved: reading " + reading + ", its diff the receipt " + diff;
 }
 
 // ---- reading a source --------------------------------------------------------
@@ -123,13 +155,25 @@ fn source_fetch(url: String) -> SourceSeen {
         let path = url[7..len(url)];
         if !std::io::fs::file_exists(path) { return SourceSeen { why: "no file at " + path }; }
         let text = std::io::fs::read_file(path) or "";
-        if len(text) > SOURCE_FETCH_MAX { return SourceSeen { why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes" }; }
+        if len(text) > SOURCE_FETCH_MAX {
+            return SourceSeen {
+                why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes",
+            };
+        }
         return SourceSeen { ok: true, text: text };
     }
-    let r = std::http::get(url) or std::http::ClientResponse { status: -1, headers: err.kind + " " + err.detail, body: b"" };
+    let r = std::http::get(url) or std::http::ClientResponse {
+        status: -1,
+        headers: err.kind + " " + err.detail,
+        body: b"",
+    };
     if r.status < 0 { return SourceSeen { why: "the fetch failed: " + r.headers }; }
-    if r.status < 200 || r.status > 299 { return SourceSeen { why: url + " answered " + to_string(r.status) }; }
-    if len(r.body) > SOURCE_FETCH_MAX { return SourceSeen { why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes" }; }
+    if r.status < 200 || r.status > 299 {
+        return SourceSeen { why: url + " answered " + to_string(r.status) };
+    }
+    if len(r.body) > SOURCE_FETCH_MAX {
+        return SourceSeen { why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes" };
+    }
     let text = std::str::from_bytes(r.body);
     if std::str::cp_count(text) < 0 { return SourceSeen { why: "the source is not UTF-8" }; }
     return SourceSeen { ok: true, text: text };
@@ -143,11 +187,21 @@ fn source_observe(w: SourceWatch, root: String, hale: String) -> SourceSeen {
         // the document itself identifies the upstream revision; the drift
         // lines (a row and a slot) summarize it against the surface, and
         // stay the same through a second change to a row that drifted
-        let doc = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\" --document\nsh\n" + root + "\n" + hale + "\n" + w.source);
+        let doc = run_tool(
+            "sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\" --document\nsh\n" + root + "\n"
+                + hale + "\n" + w.source,
+        );
         if doc.code != 0 { return SourceSeen { why: drift_failure(w.source, doc) }; }
-        let r = run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\"\nsh\n" + root + "\n" + hale + "\n" + w.source);
+        let r = run_tool(
+            "sh\n-c\ncd \"$1\" && exec \"$2\" api drift \"$3\"\nsh\n" + root + "\n" + hale + "\n"
+                + w.source,
+        );
         if r.code != 0 && r.code != 1 { return SourceSeen { why: drift_failure(w.source, r) }; }
-        if len(doc.stdout) > SOURCE_FETCH_MAX { return SourceSeen { why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes" }; }
+        if len(doc.stdout) > SOURCE_FETCH_MAX {
+            return SourceSeen {
+                why: "the source is over " + to_string(SOURCE_FETCH_MAX) + " bytes",
+            };
+        }
         return SourceSeen { ok: true, text: doc.stdout, summary: drift_lines(r.stdout) };
     }
     let got = source_fetch(w.source);
@@ -159,7 +213,14 @@ fn source_observe(w: SourceWatch, root: String, hale: String) -> SourceSeen {
 // Why the drift check of `surface` could not read its source.
 fn drift_failure(surface: String, r: RunResult) -> String {
     let said = std::str::trim(r.stderr + " " + r.stdout);
-    return "the drift check of " + surface + " exited " + to_string(r.code) + (if len(said) > 0 { ": " + (if len(said) > 400 { said[0..400] } else { said }) } else { "" });
+    return "the drift check of " + surface + " exited " + to_string(r.code)
+        + (
+            if len(said) > 0 {
+                ": " + (if len(said) > 400 { said[0..400] } else { said })
+            } else {
+                ""
+            }
+        );
 }
 
 // The `drift …` lines of `hale api drift`'s output.
@@ -264,7 +325,11 @@ fn text_lines(s: String) -> String {
     while i < n {
         let nl = std::str::find(v, "\n", i);
         let end = if nl < 0 { n } else { nl };
-        let mut line = std::str::replace(std::str::replace(std::str::slice(v, i, end), "\r", " "), "\t", " ");
+        let mut line = std::str::replace(
+            std::str::replace(std::str::slice(v, i, end), "\r", " "),
+            "\t",
+            " ",
+        );
         while std::str::contains(line, "  ") { line = std::str::replace(line, "  ", " "); }
         line = std::str::trim(html_unescape(line));
         if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
@@ -321,7 +386,13 @@ fn feed_entries(feed: String) -> String {
         let low = low_all[at..end];
         let title = feed_field(entry, low, "title");
         let link = feed_field(entry, low, "link");
-        let id = if len(link) > 0 { link } else if len(feed_field(entry, low, "guid")) > 0 { feed_field(entry, low, "guid") } else { feed_field(entry, low, "id") };
+        let id = if len(link) > 0 {
+            link
+        } else if len(feed_field(entry, low, "guid")) > 0 {
+            feed_field(entry, low, "guid")
+        } else {
+            feed_field(entry, low, "id")
+        };
         let line = std::str::trim(title + (if len(id) > 0 { " | " + id } else { "" }));
         if len(line) > 0 { std::str::builder_append(out, line + "\n"); }
         i = end + len(tag) + 3;
@@ -330,7 +401,9 @@ fn feed_entries(feed: String) -> String {
 }
 
 // The sha256 of `text`, hex: the digest its receipt is kept under.
-fn source_digest(text: String) -> String { return hex(std::crypto::sha256(std::bytes::from_string(text))); }
+fn source_digest(text: String) -> String {
+    return hex(std::crypto::sha256(std::bytes::from_string(text)));
+}
 
 // The unified diff from `before` to `after`, labelled with the practice's
 // name and both digests (hex), cut at `SOURCE_DIFF_MAX` bytes on a line,
@@ -350,15 +423,19 @@ fn source_diff(name: String, before: String, after: String, from: String, to: St
         body = if nl < 0 { "" } else { body[(nl + 1)..len(body)] };
         k = k + 1;
     }
-    let head = "--- " + name + " " + short_digest(from) + "\n+++ " + name + " " + short_digest(to) + "\n";
+    let head = "--- " + name + " " + short_digest(from) + "\n+++ " + name + " " + short_digest(to)
+        + "\n";
     let whole = head + body;
     if len(whole) <= SOURCE_DIFF_MAX { return whole; }
     let mut cut = SOURCE_DIFF_MAX;
     while cut > 0 && whole[(cut - 1)..cut] != "\n" { cut = cut - 1; }
-    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its " + to_string(len(whole)) + " bytes\n";
+    return whole[0..cut] + "… the diff is cut here at " + to_string(cut) + " of its "
+        + to_string(len(whole)) + " bytes\n";
 }
 
-fn short_digest(d: String) -> String { return if len(d) > 12 { d[0..12] } else if len(d) > 0 { d } else { "(none)" }; }
+fn short_digest(d: String) -> String {
+    return if len(d) > 12 { d[0..12] } else if len(d) > 0 { d } else { "(none)" };
+}
 
 // ---- the occurrences ------------------------------------------------------------
 
@@ -375,13 +452,34 @@ fn source_history(j: Journal, name: String, task: String) -> SourceHistory {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == "workflow.admitted" && e.entity != task && std::json::find_string_field(e.body, "definition") == "source-check" && std::json::find_string_field(std::json::find_string_field(e.body, "inputs"), "name") == name { tasks = tasks + e.entity + "\n"; }
-        if e.kind == "attempt.admitted" && std::str::contains(tasks, "\n" + std::json::find_string_field(e.body, "task_id") + "\n") { attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\n"; }
+        if e.kind == "workflow.admitted"
+            && e.entity != task
+            && std::json::find_string_field(e.body, "definition") == "source-check"
+            && std::json::find_string_field(
+                std::json::find_string_field(e.body, "inputs"),
+                "name",
+            ) == name
+        {
+            tasks = tasks + e.entity + "\n";
+        }
+        if e.kind == "attempt.admitted"
+            && std::str::contains(
+                tasks,
+                "\n" + std::json::find_string_field(e.body, "task_id") + "\n",
+            )
+        {
+            attempts = attempts + std::json::find_string_field(e.body, "attempt_id") + "\n";
+        }
         if e.kind == "attempt.outcome" && std::str::contains(attempts, "\n" + e.entity + "\n") {
             let disposition = std::json::find_string_field(e.body, "disposition");
             let result = std::json::find_string_field(e.body, "result");
-            if disposition == "done" && std::str::starts_with(result, "sha256:") { out.baseline = result; out.streak = 0; }
-            else if disposition == "failed" && result == "unreached" { out.streak = out.streak + 1; }
+            if disposition == "done" && std::str::starts_with(result, "sha256:") {
+                out.baseline = result;
+                out.streak = 0;
+            }
+            else if disposition == "failed" && result == "unreached" {
+                out.streak = out.streak + 1;
+            }
         }
         i = i + 1;
     }
@@ -393,7 +491,13 @@ fn source_history(j: Journal, name: String, task: String) -> SourceHistory {
 // failure to reach the source (its reading at the streak's threshold). The
 // journal is the organism's; the receipts keep the snapshots and diffs.
 @bounded_by(j)
-fn source_check(j: Journal, receipts: Receipts, task: String, w: SourceWatch, seen: SourceSeen) -> SourceAnswer {
+fn source_check(
+    j: Journal,
+    receipts: Receipts,
+    task: String,
+    w: SourceWatch,
+    seen: SourceSeen
+) -> SourceAnswer {
     // a reading this occurrence landed is its observation, committed: asked
     // again (a restart before its outcome), it answers what that reading
     // saw, never what the source says now
@@ -402,26 +506,67 @@ fn source_check(j: Journal, receipts: Receipts, task: String, w: SourceWatch, se
     let h = source_history(j, w.name, task);
     if !seen.ok {
         let streak = h.streak + 1;
-        let reading = if streak == SOURCE_UNREACHABLE_AFTER { source_unreachable(j, task, w, seen.why, streak) } else { "" };
-        if streak == SOURCE_UNREACHABLE_AFTER && len(reading) == 0 { return SourceAnswer { narrative: "the unreachable reading of " + w.name + " was not taken" }; }
+        let reading = if streak == SOURCE_UNREACHABLE_AFTER {
+            source_unreachable(j, task, w, seen.why, streak)
+        } else {
+            ""
+        };
+        if streak == SOURCE_UNREACHABLE_AFTER && len(reading) == 0 {
+            return SourceAnswer {
+                narrative: "the unreachable reading of " + w.name + " was not taken",
+            };
+        }
         return SourceAnswer { disposition: "failed", result: "unreached", reading: reading,
-            narrative: w.watch + " unreached (" + to_string(streak) + " in a row): " + seen.why + (if len(reading) > 0 { "; reading " + reading } else { "" }) };
+            narrative: w.watch + " unreached (" + to_string(streak) + " in a row): " + seen.why
+                + (if len(reading) > 0 { "; reading " + reading } else { "" }) };
     }
     let hex_digest = source_digest(seen.text);
     let digest = "sha256:" + hex_digest;
-    if h.baseline == digest { return SourceAnswer { disposition: "done", result: digest, narrative: w.watch + " unchanged at " + short_digest(hex_digest) }; }
-    if receipts.store(seen.text) != hex_digest { return SourceAnswer { narrative: "the snapshot of " + w.watch + " was not kept" }; }
-    if len(h.baseline) == 0 { return SourceAnswer { disposition: "done", result: digest, narrative: w.watch + " baseline at " + short_digest(hex_digest) }; }
+    if h.baseline == digest {
+        return SourceAnswer {
+            disposition: "done",
+            result: digest,
+            narrative: w.watch + " unchanged at " + short_digest(hex_digest),
+        };
+    }
+    if receipts.store(seen.text) != hex_digest {
+        return SourceAnswer { narrative: "the snapshot of " + w.watch + " was not kept" };
+    }
+    if len(h.baseline) == 0 {
+        return SourceAnswer {
+            disposition: "done",
+            result: digest,
+            narrative: w.watch + " baseline at " + short_digest(hex_digest),
+        };
+    }
     let from = h.baseline[7..len(h.baseline)];
     let unified = source_diff(w.name, receipts.read(from), seen.text, from, hex_digest);
     // an API's receipt leads with its drift lines, the summary of the move
     let diff = if len(seen.summary) > 0 { seen.summary + unified } else { unified };
     let diff_digest = receipts.store(diff);
-    if len(diff_digest) == 0 { return SourceAnswer { narrative: "the diff of " + w.watch + " was not kept" }; }
-    let reading = source_changed(j, task, w, h.baseline, digest, "sha256:" + diff_digest, diff, seen.summary);
-    if len(reading) == 0 { return SourceAnswer { narrative: "the reading of " + w.watch + " was not taken" }; }
-    return SourceAnswer { disposition: "done", result: digest, reading: reading, what: source_concern_what(w, reading, "sha256:" + diff_digest),
-        narrative: w.watch + " moved " + short_digest(from) + " -> " + short_digest(hex_digest) + ": reading " + reading };
+    if len(diff_digest) == 0 {
+        return SourceAnswer { narrative: "the diff of " + w.watch + " was not kept" };
+    }
+    let reading = source_changed(
+        j,
+        task,
+        w,
+        h.baseline,
+        digest,
+        "sha256:" + diff_digest,
+        diff,
+        seen.summary,
+    );
+    if len(reading) == 0 {
+        return SourceAnswer { narrative: "the reading of " + w.watch + " was not taken" };
+    }
+    return SourceAnswer {
+        disposition: "done",
+        result: digest,
+        reading: reading,
+        what: source_concern_what(w, reading, "sha256:" + diff_digest),
+        narrative: w.watch + " moved " + short_digest(from) + " -> " + short_digest(hex_digest)
+            + ": reading " + reading };
 }
 
 // What occurrence `task` of `w` already landed, as its answer: a move's
@@ -436,21 +581,43 @@ fn source_replay(j: Journal, task: String, w: SourceWatch) -> SourceAnswer {
     if len(moved.kind) > 0 {
         let payload = std::json::find_string_field(moved.body, "payload");
         let to = std::json::find_string_field(payload, "to");
-        return SourceAnswer { disposition: "done", result: to, reading: changed, what: source_concern_what(w, changed, std::json::find_string_field(payload, "receipt")),
-            narrative: w.watch + " moved to " + short_digest(if std::str::starts_with(to, "sha256:") { to[7..len(to)] } else { to }) + ": reading " + changed + " (landed already)" };
+        return SourceAnswer {
+            disposition: "done",
+            result: to,
+            reading: changed,
+            what: source_concern_what(w, changed, std::json::find_string_field(payload, "receipt")),
+            narrative: w.watch + " moved to "
+                + short_digest(
+                    if std::str::starts_with(to, "sha256:") { to[7..len(to)] } else { to },
+                )
+                + ": reading " + changed + " (landed already)" };
     }
     let unreachable = SOURCE_APP + "/" + w.watch + ".unreachable/" + id;
     let failed = first_row(j, "reading.recorded", unreachable);
     if len(failed.kind) > 0 {
         return SourceAnswer { disposition: "failed", result: "unreached", reading: unreachable,
-            narrative: w.watch + " unreached: " + std::json::find_string_field(std::json::find_string_field(failed.body, "payload"), "why") + "; reading " + unreachable + " (landed already)" };
+            narrative: w.watch + " unreached: "
+                + std::json::find_string_field(
+                    std::json::find_string_field(failed.body, "payload"),
+                    "why",
+                )
+                + "; reading " + unreachable + " (landed already)" };
     }
     return SourceAnswer { };
 }
 
 // The reading `<watch>.changed`, its payload naming the diff's receipt and
 // carrying the diff; its entity, "" when not taken.
-fn source_changed(j: Journal, task: String, w: SourceWatch, from: String, to: String, receipt: String, diff: String, drift: String) -> String {
+fn source_changed(
+    j: Journal,
+    task: String,
+    w: SourceWatch,
+    from: String,
+    to: String,
+    receipt: String,
+    diff: String,
+    drift: String
+) -> String {
     let b = std::json::Builder { };
     source_payload(b, task, w);
     b.string_field("from", from);
@@ -462,7 +629,13 @@ fn source_changed(j: Journal, task: String, w: SourceWatch, from: String, to: St
     return source_reading(j, task, w.watch + ".changed", b.result());
 }
 
-fn source_unreachable(j: Journal, task: String, w: SourceWatch, why: String, streak: Int) -> String {
+fn source_unreachable(
+    j: Journal,
+    task: String,
+    w: SourceWatch,
+    why: String,
+    streak: Int
+) -> String {
     let b = std::json::Builder { };
     source_payload(b, task, w);
     b.string_field("why", why);
@@ -508,7 +681,13 @@ fn reading_id(task: String) -> String {
     let mut i = 0;
     while i < len(task) {
         let c = task[i..(i + 1)];
-        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == ":";
+        let ok = (c >= "a" && c <= "z")
+            || (c >= "A" && c <= "Z")
+            || (c >= "0" && c <= "9")
+            || c == "-"
+            || c == "_"
+            || c == "."
+            || c == ":";
         out = out + (if ok { c } else { "-" });
         i = i + 1;
     }
@@ -525,14 +704,22 @@ fn cut_at_line(text: String, most: Int) -> String {
     if len(text) <= most { return text; }
     let mut cut = most;
     while cut > 0 && text[(cut - 1)..cut] != "\n" { cut = cut - 1; }
-    return text[0..cut] + "… cut here at " + to_string(cut) + " of " + to_string(len(text)) + " bytes\n";
+    return text[0..cut] + "… cut here at " + to_string(cut) + " of " + to_string(len(text))
+        + " bytes\n";
 }
 
 // What a moved source's task carries into its hat: the practice that
 // convened the check, the reading, its diff (also a receipt under
 // `diff_receipt`), and the architecture note the codebase's knowledge
 // directory holds for the source. `integration` names the watch.
-fn source_brief_json(w: SourceWatch, reading: String, diff_receipt: String, diff: String, note_path: String, note: String) -> String {
+fn source_brief_json(
+    w: SourceWatch,
+    reading: String,
+    diff_receipt: String,
+    diff: String,
+    note_path: String,
+    note: String
+) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("integration", w.watch);
@@ -562,5 +749,7 @@ fn id_tail(s: String) -> String {
 
 // The task a moved source is for, in words.
 fn source_task_outcome(w: SourceWatch, reading: String) -> String {
-    return "The upstream " + w.watch + " moved (reading " + reading + ", watched by the practice " + w.name + "). Assess its diff against the codebase `" + w.codebase + "`'s client of it, with the architecture note: change the client, or say that nothing needs to change.";
+    return "The upstream " + w.watch + " moved (reading " + reading + ", watched by the practice "
+        + w.name + "). Assess its diff against the codebase `" + w.codebase
+        + "`'s client of it, with the architecture note: change the client, or say that nothing needs to change.";
 }

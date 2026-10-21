@@ -51,7 +51,11 @@ fn main() {
     std::test::assert_eq_str(before.note, "first", "including its strings");
     k.twice();
     let s3 = k.rows.get(3) or Row { };
-    std::test::assert_eq_str(s3.id, "shared", "one value pushed twice: the other slot survives a set");
+    std::test::assert_eq_str(
+        s3.id,
+        "shared",
+        "one value pushed twice: the other slot survives a set",
+    );
     std::test::assert_eq_str(s3.note, "one value, two slots", "with its strings");
     std::test::assert_eq_int(k.rows.len(), 4, "four rows");
 }

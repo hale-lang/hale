@@ -39,185 +39,509 @@ locus NoEdgeReceipts {
 
 locus UnlinkCases {
     params { }
-    fn forward() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: LABEL }; }
-    fn reverse() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: RIGHT, to: LEFT, rel: LABEL }; }
-    fn self_edge() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: LEFT, rel: "self 🧭" }; }
-    fn parallel() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "parallel" }; }
+    fn forward() -> dna::KnowledgeEdge {
+        return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: LABEL };
+    }
+    fn reverse() -> dna::KnowledgeEdge {
+        return dna::KnowledgeEdge { from: RIGHT, to: LEFT, rel: LABEL };
+    }
+    fn self_edge() -> dna::KnowledgeEdge {
+        return dna::KnowledgeEdge { from: LEFT, to: LEFT, rel: "self 🧭" };
+    }
+    fn parallel() -> dna::KnowledgeEdge {
+        return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "parallel" };
+    }
     fn store_contract(store: dna::KnowledgeStore, graph: dna::GraphStore, label: String) {
         std::test::assert(store.open(), label + " store opens");
-        std::test::assert(store.upsert(dna::Idea { id: LEFT, text: "left" }, 0) && store.upsert(dna::Idea { id: RIGHT, text: "right" }, 0), label + " graph subjects exist");
-        std::test::assert(store.link(self.forward()) && store.link(self.reverse()) && store.link(self.self_edge()) && store.link(self.parallel()), label + " exact native edges");
+        std::test::assert(
+            store.upsert(dna::Idea { id: LEFT, text: "left" }, 0)
+                && store.upsert(dna::Idea { id: RIGHT, text: "right" }, 0),
+            label + " graph subjects exist",
+        );
+        std::test::assert(
+            store.link(self.forward())
+                && store.link(self.reverse())
+                && store.link(self.self_edge())
+                && store.link(self.parallel()),
+            label + " exact native edges",
+        );
         let before = graph.graph_generation();
-        std::test::assert(store.unlink(dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "missing" }), label + " missing tuple is successful no-op");
-        std::test::assert_eq_int(graph.graph_generation(), before, label + " missing tuple does not advance generation");
+        std::test::assert(
+            store.unlink(dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "missing" }),
+            label + " missing tuple is successful no-op",
+        );
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            before,
+            label + " missing tuple does not advance generation",
+        );
         std::test::assert(store.unlink(self.forward()), label + " exact forward removal");
-        std::test::assert_eq_int(store.count("edges"), 3, label + " only one directed tuple removed");
-        std::test::assert_eq_int(graph.graph_generation(), before + 1, label + " actual removal advances generation once");
+        std::test::assert_eq_int(
+            store.count("edges"),
+            3,
+            label + " only one directed tuple removed",
+        );
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            before + 1,
+            label + " actual removal advances generation once",
+        );
         std::test::assert(store.unlink(self.forward()), label + " repeated unlink is successful");
-        std::test::assert_eq_int(graph.graph_generation(), before + 1, label + " repeated removal does not advance generation");
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            before + 1,
+            label + " repeated removal does not advance generation",
+        );
         let policy = VisibleEdges { }; let capture = EdgeCapture { };
         let page = graph.read_graph(dna::GraphQuery { kind: "edges", id: LEFT }, policy, capture);
-        std::test::assert(page.ok && page.subject_present && !page.has_more, label + " graph read remains complete after removal");
-        std::test::assert_eq_int(capture.rows.len(), 3, label + " removed slot creates no graph row or scan error");
-        std::test::assert(!capture.has(self.forward()) && capture.has(self.reverse()) && capture.has(self.self_edge()) && capture.has(self.parallel()), label + " reverse, self and other label are untouched");
+        std::test::assert(
+            page.ok && page.subject_present && !page.has_more,
+            label + " graph read remains complete after removal",
+        );
+        std::test::assert_eq_int(
+            capture.rows.len(),
+            3,
+            label + " removed slot creates no graph row or scan error",
+        );
+        std::test::assert(
+            !capture.has(self.forward())
+                && capture.has(self.reverse())
+                && capture.has(self.self_edge())
+                && capture.has(self.parallel()),
+            label + " reverse, self and other label are untouched",
+        );
         let first = EdgeCapture { }; let next = EdgeCapture { };
-        let one = graph.read_graph(dna::GraphQuery { kind: "edges", id: LEFT, limit: 1 }, policy, first);
-        let rest = graph.read_graph(dna::GraphQuery { kind: "edges", id: LEFT, limit: 25, after_first: one.last_first, after_second: one.last_second, after_third: one.last_third }, policy, next);
-        std::test::assert(one.ok && one.has_more && rest.ok && !rest.has_more && first.rows.len() + next.rows.len() == 3, label + " tuple pagination survives compacted storage order");
-        std::test::assert(store.unlink(self.self_edge()) && store.link(self.self_edge()) && store.link(self.forward()), label + " exact self and forward relink");
-        std::test::assert_eq_int(store.count("edges"), 4, label + " relink restores only requested tuples");
+        let one = graph.read_graph(
+            dna::GraphQuery { kind: "edges", id: LEFT, limit: 1 },
+            policy,
+            first,
+        );
+        let rest = graph.read_graph(
+            dna::GraphQuery {
+                kind: "edges",
+                id: LEFT,
+                limit: 25,
+                after_first: one.last_first,
+                after_second: one.last_second,
+                after_third: one.last_third,
+            },
+            policy,
+            next,
+        );
+        std::test::assert(
+            one.ok
+                && one.has_more
+                && rest.ok
+                && !rest.has_more
+                && first.rows.len() + next.rows.len() == 3,
+            label + " tuple pagination survives compacted storage order",
+        );
+        std::test::assert(
+            store.unlink(self.self_edge())
+                && store.link(self.self_edge())
+                && store.link(self.forward()),
+            label + " exact self and forward relink",
+        );
+        std::test::assert_eq_int(
+            store.count("edges"),
+            4,
+            label + " relink restores only requested tuples",
+        );
         let restored = graph.graph_generation();
         std::test::assert(store.link(self.forward()), label + " duplicate relink succeeds");
-        std::test::assert_eq_int(graph.graph_generation(), restored, label + " duplicate relink is not a mutation");
+        std::test::assert_eq_int(
+            graph.graph_generation(),
+            restored,
+            label + " duplicate relink is not a mutation",
+        );
     }
     fn postgres(owner: String) {
         let identity = "knowledgeunlink" + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, identity); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let dsn = dna::migrated(owner, identity);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: identity };
         self.store_contract(store, store, "postgres");
         let before = store.graph_generation(); let mut i = 0;
         while i < 256 {
-            std::test::assert(store.unlink(self.forward()) && store.link(self.forward()), "postgres repeated unlink and relink");
-            std::test::assert_eq_int(store.count("edges"), 4, "postgres repeated removal and relink keeps exactly four edges");
+            std::test::assert(
+                store.unlink(self.forward()) && store.link(self.forward()),
+                "postgres repeated unlink and relink",
+            );
+            std::test::assert_eq_int(
+                store.count("edges"),
+                4,
+                "postgres repeated removal and relink keeps exactly four edges",
+            );
             i = i + 1;
         }
-        std::test::assert_eq_int(store.graph_generation(), before + 512, "each effective cycle has exactly two mutations");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            before + 512,
+            "each effective cycle has exactly two mutations",
+        );
         std::test::assert(store.unlink(self.forward()), "postgres final exact removal");
         let generation = store.graph_generation();
         let reopened = dna::Pq { conn: dna::pq_conn(dsn), record_id: identity };
         std::test::assert(reopened.open(), "postgres reopen exact scope");
-        std::test::assert_eq_int(reopened.count("edges"), 3, "postgres exact removal persists across connection restart");
-        std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres reopen does not fabricate a delete mutation");
+        std::test::assert_eq_int(
+            reopened.count("edges"),
+            3,
+            "postgres exact removal persists across connection restart",
+        );
+        std::test::assert_eq_int(
+            reopened.graph_generation(),
+            generation,
+            "postgres reopen does not fabricate a delete mutation",
+        );
         std::test::assert(reopened.unlink(self.forward()), "postgres absent replay succeeds");
-        std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres zero-row DELETE fires no row generation trigger");
+        std::test::assert_eq_int(
+            reopened.graph_generation(),
+            generation,
+            "postgres zero-row DELETE fires no row generation trigger",
+        );
         // GH #1026: the projection is one transaction per record row, and
         // the stamp moves first by compare-and-swap, so of two connections
         // that begin one row, one lands it and the other writes nothing.
-        std::test::assert_eq_int(store.begin_row(0, "", "head-1"), 1, "the first projector wins row 0");
+        std::test::assert_eq_int(
+            store.begin_row(0, "", "head-1"),
+            1,
+            "the first projector wins row 0",
+        );
         std::test::assert(store.commit_row(), "row 0 lands with its stamp");
-        std::test::assert_eq_int(reopened.begin_row(0, "", "head-1"), 0, "a second projector finds row 0 applied and writes nothing");
-        std::test::assert_eq_int(reopened.begin_row(1, "other-head", "head-2"), 0, "a row whose predecessor is not the stamped head is not begun");
-        std::test::assert_eq_int(reopened.begin_row(1, "head-1", "head-2"), 1, "the row after the stamp is begun");
-        std::test::assert(reopened.upsert(dna::Idea { id: "aborted", text: "never lands" }, 2), "an effect inside the row");
+        std::test::assert_eq_int(
+            reopened.begin_row(0, "", "head-1"),
+            0,
+            "a second projector finds row 0 applied and writes nothing",
+        );
+        std::test::assert_eq_int(
+            reopened.begin_row(1, "other-head", "head-2"),
+            0,
+            "a row whose predecessor is not the stamped head is not begun",
+        );
+        std::test::assert_eq_int(
+            reopened.begin_row(1, "head-1", "head-2"),
+            1,
+            "the row after the stamp is begun",
+        );
+        std::test::assert(
+            reopened.upsert(dna::Idea { id: "aborted", text: "never lands" }, 2),
+            "an effect inside the row",
+        );
         reopened.abort_row();
-        std::test::assert(!reopened.idea("aborted").present, "an aborted row lands none of its effects");
-        std::test::assert(reopened.projection_basis().watermark == 1 && reopened.projection_basis().head == "head-1", "an aborted row leaves the stamp where it was");
-        std::test::assert_eq_int(store.begin_row(1, "head-1", "head-2"), 1, "the row is begun again");
+        std::test::assert(
+            !reopened.idea("aborted").present,
+            "an aborted row lands none of its effects",
+        );
+        std::test::assert(
+            reopened.projection_basis().watermark == 1
+                && reopened.projection_basis().head == "head-1",
+            "an aborted row leaves the stamp where it was",
+        );
+        std::test::assert_eq_int(
+            store.begin_row(1, "head-1", "head-2"),
+            1,
+            "the row is begun again",
+        );
         std::test::assert(store.commit_row(), "and lands");
-        std::test::assert(!store.rebuild(1, "head-1") && len(store.last_error()) == 0, "a rebuild over a stamp that has moved changes nothing");
+        std::test::assert(
+            !store.rebuild(1, "head-1") && len(store.last_error()) == 0,
+            "a rebuild over a stamp that has moved changes nothing",
+        );
         std::test::assert(store.projection_basis().watermark == 2, "the stamp stands");
         std::test::assert(store.rebuild(2, "head-2"), "a rebuild at the stamp");
-        std::test::assert(store.projection_basis().watermark == 0 && store.projection_basis().head == "" && store.count("edges") == 0, "empties the graph and the stamp");
+        std::test::assert(
+            store.projection_basis().watermark == 0
+                && store.projection_basis().head == ""
+                && store.count("edges") == 0,
+            "empties the graph and the stamp",
+        );
         store.close(); reopened.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "remove only owned unlink test schema");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, identity),
+            "",
+            "remove only owned unlink test schema",
+        );
     }
     fn append(j: dna::Journal, kind: String, entity: String, body: String) {
         let result = j.append_exact(j.revision(), kind, entity, body);
         std::test::assert(result.ok, "native Record fixture append " + kind);
     }
-    fn command(j: dna::Journal, key: String, edge: dna::KnowledgeEdge, unlink: Bool) -> ops::KnowledgeCommand {
+    fn command(
+        j: dna::Journal,
+        key: String,
+        edge: dna::KnowledgeEdge,
+        unlink: Bool
+    ) -> ops::KnowledgeCommand {
         let codec = ops::KnowledgeCommandCodec { };
         return ops::KnowledgeCommand {
-            request_id: key, operation: if unlink { "dna.knowledge.edge.unlink" } else { "dna.knowledge.edge.link" },
+            request_id: key, operation: if unlink {
+                "dna.knowledge.edge.unlink"
+            } else {
+                "dna.knowledge.edge.link"
+            },
             application_id: j.read(0).digest, target_id: edge.from, record_head: j.head(),
             edge_id: if unlink { codec.edge_id(edge.from, edge.to, edge.rel) } else { "" },
-            from_id: edge.from, to_id: edge.to, rel: edge.rel, rationale: "Exact native unlink/relink 🧭."
+            from_id: edge.from,
+            to_id: edge.to,
+            rel: edge.rel,
+            rationale: "Exact native unlink/relink 🧭."
         };
     }
     fn body(j: dna::Journal, command: ops::KnowledgeCommand) -> String {
-        let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "graph-editor" };
+        let context = ops::GovernanceContext {
+            application_id: j.read(0).digest,
+            principal_mode: "local",
+            principal_name: "graph-editor",
+        };
         let codec = ops::KnowledgeCommandCodec { };
-        let body = codec.fact(context, command, ops::KnowledgeGrant { allowed: true, mode: "direct", authority: "graph-editor", basis: "fixed unlink test grant" });
-        std::test::assert(len(body) > 0, "codec constructs a complete native relationship fact"); return body;
+        let body = codec.fact(
+            context,
+            command,
+            ops::KnowledgeGrant {
+                allowed: true,
+                mode: "direct",
+                authority: "graph-editor",
+                basis: "fixed unlink test grant",
+            },
+        );
+        std::test::assert(len(body) > 0, "codec constructs a complete native relationship fact");
+        return body;
     }
     fn fact(j: dna::Journal, key: String, edge: dna::KnowledgeEdge, unlink: Bool) {
-        let codec = ops::KnowledgeCommandCodec { }; let command = self.command(j, key, edge, unlink);
-        self.append(j, if unlink { "knowledge.edge.unlinked" } else { "knowledge.edge.linked" }, codec.edge_id(edge.from, edge.to, edge.rel), self.body(j, command));
-        std::test::assert(codec.decode_fact(j.read(j.revision() - 1)).valid, "persisted exact relationship fact decodes");
+        let codec = ops::KnowledgeCommandCodec { };
+        let command = self.command(j, key, edge, unlink);
+        self.append(
+            j,
+            if unlink { "knowledge.edge.unlinked" } else { "knowledge.edge.linked" },
+            codec.edge_id(edge.from, edge.to, edge.rel),
+            self.body(j, command),
+        );
+        std::test::assert(
+            codec.decode_fact(j.read(j.revision() - 1)).valid,
+            "persisted exact relationship fact decodes",
+        );
     }
     fn remaining(store: dna::Pq) {
         // every fixture edge touches LEFT: its incident edges are the graph
         let capture = EdgeCapture { };
-        let page = store.read_graph(dna::GraphQuery { kind: "edges", id: LEFT, limit: 25 }, VisibleEdges { }, capture);
-        std::test::assert(page.ok && !page.has_more, "final Record order reads completely: " + page.error);
-        std::test::assert_eq_int(capture.rows.len(), 3, "final Record order reads exactly three edges");
-        std::test::assert_eq_int(store.count("edges"), 3, "final Record order leaves exactly three edges");
-        std::test::assert(!capture.has(self.forward()) && capture.has(self.reverse()) && capture.has(self.self_edge()) && capture.has(self.parallel()), "final Record order preserves unrelated exact tuples");
+        let page = store.read_graph(
+            dna::GraphQuery { kind: "edges", id: LEFT, limit: 25 },
+            VisibleEdges { },
+            capture,
+        );
+        std::test::assert(
+            page.ok && !page.has_more,
+            "final Record order reads completely: " + page.error,
+        );
+        std::test::assert_eq_int(
+            capture.rows.len(),
+            3,
+            "final Record order reads exactly three edges",
+        );
+        std::test::assert_eq_int(
+            store.count("edges"),
+            3,
+            "final Record order leaves exactly three edges",
+        );
+        std::test::assert(
+            !capture.has(self.forward())
+                && capture.has(self.reverse())
+                && capture.has(self.self_edge())
+                && capture.has(self.parallel()),
+            "final Record order preserves unrelated exact tuples",
+        );
     }
     fn durable_replay(owner: String) {
-        let root = "/tmp/dna-edge-unlink-" + to_string(std::process::pid()); std::io::fs::mkdir(root) or discard;
-        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "isolated native unlink Record");
+        let root = "/tmp/dna-edge-unlink-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "isolated native unlink Record");
         let id = "edgeunlinkreplay" + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
-        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
-        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = NoEdgeReceipts { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        let dsn = dna::migrated(owner, id);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        std::test::assert_eq_str(
+            dna::memory_fixture(root),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
+        let j = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
+        let receipts = NoEdgeReceipts { };
+        let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), "replay store opens: " + store.last_error());
         self.append(j, "application.started", "org", "{}");
-        self.fact(j, "initial-forward", self.forward(), false); self.fact(j, "reverse", self.reverse(), false);
-        self.fact(j, "self", self.self_edge(), false); self.fact(j, "parallel", self.parallel(), false);
-        let first = ops::apply_record(store, j, receipts); std::test::assert_eq_str(first.error, "", "initial native projection");
+        self.fact(j, "initial-forward", self.forward(), false);
+        self.fact(j, "reverse", self.reverse(), false);
+        self.fact(j, "self", self.self_edge(), false);
+        self.fact(j, "parallel", self.parallel(), false);
+        let first = ops::apply_record(store, j, receipts);
+        std::test::assert_eq_str(first.error, "", "initial native projection");
         std::test::assert_eq_int(store.count("edges"), 4, "initial edges projected");
         let before_unlink = store.watermark();
         self.fact(j, "unlink-forward", self.forward(), true);
         // Fault injection: effect ran, then process stopped before its watermark
         // advanced. Resume from the retained checkpoint, never from old links.
-        std::test::assert(store.unlink(self.forward()), "simulate effect before interrupted watermark");
-        let generation = store.graph_generation(); let reopened = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
+        std::test::assert(
+            store.unlink(self.forward()),
+            "simulate effect before interrupted watermark",
+        );
+        let generation = store.graph_generation();
+        let reopened = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
         let resumed = ops::apply_record(store, reopened, receipts);
-        std::test::assert_eq_str(resumed.error, "", "interrupted unlink resumes from durable Record");
+        std::test::assert_eq_str(
+            resumed.error,
+            "",
+            "interrupted unlink resumes from durable Record",
+        );
         std::test::assert_eq_int(resumed.rows, 1, "resume never reapplies older linked prefix");
-        std::test::assert_eq_int(resumed.watermark, before_unlink + 1, "resumed unlink advances checkpoint only after effect");
-        std::test::assert_eq_int(store.graph_generation(), generation, "absent unlink replay never resurrects edge or bumps generation");
+        std::test::assert_eq_int(
+            resumed.watermark,
+            before_unlink + 1,
+            "resumed unlink advances checkpoint only after effect",
+        );
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation,
+            "absent unlink replay never resurrects edge or bumps generation",
+        );
         self.remaining(store);
         self.fact(j, "unlink-again", self.forward(), true);
-        let absent = ops::apply_record(store, j, receipts); std::test::assert_eq_str(absent.error, "", "second native unlink is a no-op");
-        std::test::assert_eq_int(store.graph_generation(), generation, "absent command leaves generation alone");
+        let absent = ops::apply_record(store, j, receipts);
+        std::test::assert_eq_str(absent.error, "", "second native unlink is a no-op");
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation,
+            "absent command leaves generation alone",
+        );
         self.fact(j, "relink-forward", self.forward(), false);
-        let relinked = ops::apply_record(store, j, receipts); std::test::assert_eq_str(relinked.error, "", "later link restores exact tuple");
-        std::test::assert_eq_int(store.count("edges"), 4, "Record link after unlink restores relationship");
+        let relinked = ops::apply_record(store, j, receipts);
+        std::test::assert_eq_str(relinked.error, "", "later link restores exact tuple");
+        std::test::assert_eq_int(
+            store.count("edges"),
+            4,
+            "Record link after unlink restores relationship",
+        );
         self.fact(j, "final-unlink", self.forward(), true);
-        let final = ops::apply_record(store, j, receipts); std::test::assert_eq_str(final.error, "", "later unlink wins in Record order"); self.remaining(store);
+        let final = ops::apply_record(store, j, receipts);
+        std::test::assert_eq_str(final.error, "", "later unlink wins in Record order");
+        self.remaining(store);
         let fresh_id = id + "fresh";
-        let fresh_dsn = dna::migrated(owner, fresh_id); std::test::assert(fresh_dsn.ok, "fresh memory migrates: " + fresh_dsn.why);
-        let fresh_record = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let fresh = dna::Pq { conn: dna::pq_conn(fresh_dsn), record_id: fresh_id };
+        let fresh_dsn = dna::migrated(owner, fresh_id);
+        std::test::assert(fresh_dsn.ok, "fresh memory migrates: " + fresh_dsn.why);
+        let fresh_record = dna::RoutedJournal {
+            record: dna::RecordJournal { repo: root },
+            ledger: dna::MemoryLedger { repo: root },
+        };
+        let fresh = dna::Pq { conn: dna::pq_conn(fresh_dsn), record_id: fresh_id };
         std::test::assert(fresh.open(), "fresh store opens: " + fresh.last_error());
         let rebuilt = ops::apply_record(fresh, fresh_record, receipts);
-        std::test::assert_eq_str(rebuilt.error, "", "empty memory rebuilds link-unlink-relink-unlink history");
-        std::test::assert_eq_int(rebuilt.watermark, fresh_record.revision(), "rebuilt memory reaches exact final Record head"); self.remaining(fresh);
+        std::test::assert_eq_str(
+            rebuilt.error,
+            "",
+            "empty memory rebuilds link-unlink-relink-unlink history",
+        );
+        std::test::assert_eq_int(
+            rebuilt.watermark,
+            fresh_record.revision(),
+            "rebuilt memory reaches exact final Record head",
+        );
+        self.remaining(fresh);
         store.close(); fresh.close();
-        std::test::assert_eq_str(dna::unmigrate(owner, id), "", "replay record's schema and roles dropped");
-        std::test::assert_eq_str(dna::unmigrate(owner, fresh_id), "", "fresh record's schema and roles dropped");
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, id),
+            "",
+            "replay record's schema and roles dropped",
+        );
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, fresh_id),
+            "",
+            "fresh record's schema and roles dropped",
+        );
         let removed = dna::run_tool("rm\n-rf\n" + root);
     }
     fn refuses(owner: String, mode: String) {
         let id = "edgeunlink" + std::str::replace(mode, "-", "") + to_string(std::process::pid());
-        let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
-        let j = dna::MemJournal { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id }; let receipts = NoEdgeReceipts { }; let codec = ops::KnowledgeCommandCodec { };
+        let dsn = dna::migrated(owner, id);
+        std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
+        let j = dna::MemJournal { };
+        let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        let receipts = NoEdgeReceipts { };
+        let codec = ops::KnowledgeCommandCodec { };
         std::test::assert(store.open(), mode + " store opens: " + store.last_error());
-        self.append(j, "application.started", "org", "{}"); self.fact(j, "initial", self.forward(), false);
-        let command = self.command(j, "invalid-unlink", self.forward(), true); let body = self.body(j, command);
+        self.append(j, "application.started", "org", "{}");
+        self.fact(j, "initial", self.forward(), false);
+        let command = self.command(j, "invalid-unlink", self.forward(), true);
+        let body = self.body(j, command);
         let quote = ops::GovernanceCommandCodec { };
-        let malformed = if mode == "malformed" { "{\"format\":" } else if mode == "wrong-tuple" { std::str::replace(body, "\"from_id\":" + quote.quote(LEFT), "\"from_id\":" + quote.quote(RIGHT)) } else { body };
-        let entity = if mode == "wrong-edge" { codec.edge_id(RIGHT, LEFT, LABEL) } else { codec.edge_id(LEFT, RIGHT, LABEL) };
-        let before = j.revision(); self.append(j, "knowledge.edge.unlinked", entity, malformed); self.fact(j, "later-removal", self.forward(), true);
+        let malformed = if mode == "malformed" {
+            "{\"format\":"
+        } else if mode == "wrong-tuple" {
+            std::str::replace(
+                body,
+                "\"from_id\":" + quote.quote(LEFT),
+                "\"from_id\":" + quote.quote(RIGHT),
+            )
+        } else {
+            body
+        };
+        let entity = if mode == "wrong-edge" {
+            codec.edge_id(RIGHT, LEFT, LABEL)
+        } else {
+            codec.edge_id(LEFT, RIGHT, LABEL)
+        };
+        let before = j.revision();
+        self.append(j, "knowledge.edge.unlinked", entity, malformed);
+        self.fact(j, "later-removal", self.forward(), true);
         let refused = ops::apply_record(store, j, receipts);
         std::test::assert(len(refused.error) > 0, mode + " malformed removal refuses");
-        std::test::assert_eq_int(store.watermark(), before, mode + " invalid removal never advances watermark");
-        std::test::assert_eq_int(store.count("edges"), 1, mode + " invalid removal and later rows cannot delete the edge");
-        let generation = store.graph_generation(); let retry = ops::apply_record(store, j, receipts);
-        std::test::assert(len(retry.error) > 0 && retry.rows == 1 && retry.watermark == before, mode + " retry stops at the same offending row");
-        std::test::assert_eq_int(store.graph_generation(), generation, mode + " invalid retry does not mutate graph");
-        store.close(); std::test::assert_eq_str(dna::unmigrate(owner, id), "", mode + " record's schema and roles dropped");
+        std::test::assert_eq_int(
+            store.watermark(),
+            before,
+            mode + " invalid removal never advances watermark",
+        );
+        std::test::assert_eq_int(
+            store.count("edges"),
+            1,
+            mode + " invalid removal and later rows cannot delete the edge",
+        );
+        let generation = store.graph_generation();
+        let retry = ops::apply_record(store, j, receipts);
+        std::test::assert(
+            len(retry.error) > 0 && retry.rows == 1 && retry.watermark == before,
+            mode + " retry stops at the same offending row",
+        );
+        std::test::assert_eq_int(
+            store.graph_generation(),
+            generation,
+            mode + " invalid retry does not mutate graph",
+        );
+        store.close();
+        std::test::assert_eq_str(
+            dna::unmigrate(owner, id),
+            "",
+            mode + " record's schema and roles dropped",
+        );
     }
     fn check(owner: String) {
         self.postgres(owner); self.durable_replay(owner);
-        self.refuses(owner, "malformed"); self.refuses(owner, "wrong-edge"); self.refuses(owner, "wrong-tuple");
+        self.refuses(owner, "malformed");
+        self.refuses(owner, "wrong-edge");
+        self.refuses(owner, "wrong-tuple");
     }
 }
 
 main locus App {
     run() {
-        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") {
+            std::env::var("HALE_DNA_MEMORY_DSN_OWNER")
+        } else {
+            ""
+        };
         if len(owner) > 0 { UnlinkCases { }.check(owner); }
         else { eprintln("edge_unlink_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); }
     }

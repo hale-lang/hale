@@ -89,7 +89,9 @@ locus MemInfrastructure {
         stopped: Int = 0;
     }
     fn kind() -> String { return "memory"; }
-    fn knowledge_database(project: String) -> Database { return Database { present: true, dsn: self.dsn }; }
+    fn knowledge_database(project: String) -> Database {
+        return Database { present: true, dsn: self.dsn };
+    }
     fn install_unit(name: String, unit: String) -> Bool {
         self.units.set(MemUnit { name: name, unit: unit });
         return true;
@@ -110,7 +112,11 @@ locus MemInfrastructure {
     }
     fn status(name: String) -> UnitStatus {
         let u = self.units.get(name) or MemUnit { };
-        return UnitStatus { known: len(u.name) > 0, active: u.active, detail: if u.active { "active" } else { "inactive" } };
+        return UnitStatus {
+            known: len(u.name) > 0,
+            active: u.active,
+            detail: if u.active { "active" } else { "inactive" },
+        };
     }
     fn logs(name: String, lines: Int) -> String { return ""; }
     fn put_credential(name: String, value: String) -> Bool {

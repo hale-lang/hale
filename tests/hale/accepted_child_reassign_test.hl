@@ -52,7 +52,11 @@ main locus App {
         let s2 = self.a.spawn();
         Pings <- Ping { id: "m1", n: 2 };
         std::time::sleep(50ms);
-        std::test::assert_eq_int(self.heard, 2, "the dissolved child's subscription went with it: heard once, not twice");
+        std::test::assert_eq_int(
+            self.heard,
+            2,
+            "the dissolved child's subscription went with it: heard once, not twice",
+        );
         // and a second owner on the same key: still one hearing per live child
         self.b = Holder { key: "m1" };
         let s3 = self.b.spawn();

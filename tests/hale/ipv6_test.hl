@@ -65,8 +65,15 @@ fn main() {
     // a substrate listener on ::1 goes by `[::1]:<port>`, and stop(name)
     // finds it by that name
     let a = std::io::tcp::Acceptor { host: "::1", port: 0, max_accepts: 0 };
-    std::test::assert(std::str::starts_with(a.listener, "[::1]:"), "the listener's name is bracketed: " + a.listener);
-    std::test::assert_eq_str(a.listener, "[::1]:" + to_string(std::io::tcp::__local_port(a.listen_fd)), "and carries the bound port");
+    std::test::assert(
+        std::str::starts_with(a.listener, "[::1]:"),
+        "the listener's name is bracketed: " + a.listener,
+    );
+    std::test::assert_eq_str(
+        a.listener,
+        "[::1]:" + to_string(std::io::tcp::__local_port(a.listen_fd)),
+        "and carries the bound port",
+    );
     std::test::assert(std::io::tcp::stop(a.listener), "stop finds it by that name");
 
     // udp: bind ::1, send to it, read the source back unbracketed
@@ -78,7 +85,11 @@ fn main() {
     let d = std::io::udp::recv_with_source(u, 64) or b"";
     std::test::assert_eq_str(std::str::from_bytes(d), "dgram", "the datagram crossed ::1");
     std::test::assert_eq_str(std::io::udp::last_source_host(), "::1", "its source is ::1");
-    std::test::assert_eq_int(std::io::udp::last_source_port(), std::io::tcp::__local_port(out), "from the sender's port");
+    std::test::assert_eq_int(
+        std::io::udp::last_source_port(),
+        std::io::tcp::__local_port(out),
+        "from the sender's port",
+    );
     std::io::udp::close(u);
     std::io::udp::close(out);
 }

@@ -27,12 +27,18 @@ fn die_now() {
     let k = dna::run_tool("kill\n-KILL\n" + to_string(std::process::pid()));
 }
 
-fn attempt_of(req: dna::WorkRequest) -> String { return req.work_id + "/a" + to_string(req.attempt_no); }
+fn attempt_of(req: dna::WorkRequest) -> String {
+    return req.work_id + "/a" + to_string(req.attempt_no);
+}
 
 // A record (and its Ledger, GH #1590) that ends the process the moment the
 // named row is in it.
 locus Dying {
-    params { inner: dna::RoutedJournal = dna::RoutedJournal { }; on_kind: String = ""; on_entity: String = ""; }
+    params {
+        inner: dna::RoutedJournal = dna::RoutedJournal { };
+        on_kind: String = "";
+        on_entity: String = "";
+    }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -41,8 +47,15 @@ locus Dying {
         if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
         return r;
     }
-    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::append_rows(self, expected, rows); }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult {
+        return dna::append_rows(self, expected, rows);
+    }
+    fn append_exact(
+        expected: Int,
+        kind: String,
+        entity: String,
+        body: String
+    ) -> dna::AppendResult {
         let r = self.inner.append_exact(expected, kind, entity, body);
         if r.ok && kind == self.on_kind && entity == self.on_entity { die_now(); }
         return r;
@@ -61,9 +74,16 @@ locus FileStore {
     fn identity() -> String { return "ledger-service"; }
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         let id = attempt_of(req);
-        let w = dna::run_tool("sh\n-c\nprintf '%s\\n' \"$1\" >> \"$2\"\nsh\n" + id + "\n" + self.path);
+        let w = dna::run_tool(
+            "sh\n-c\nprintf '%s\\n' \"$1\" >> \"$2\"\nsh\n" + id + "\n" + self.path,
+        );
         if id == self.die_on { die_now(); }
-        return dna::WorkResult { disposition: "done", result: "posted " + req.objective, performer: "ledger-service", attempt_id: id };
+        return dna::WorkResult {
+            disposition: "done",
+            result: "posted " + req.objective,
+            performer: "ledger-service",
+            attempt_id: id,
+        };
     }
     fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
         let id = attempt_of(req);
@@ -74,13 +94,24 @@ locus FileStore {
             if line == id {
                 return dna::Reconciliation {
                     kind: kind, identity: "ledger-service", established: true, performed: true,
-                    result: dna::WorkResult { disposition: "done", result: "posted (from the store)", performer: "ledger-service", attempt_id: id },
+                    result: dna::WorkResult {
+                        disposition: "done",
+                        result: "posted (from the store)",
+                        performer: "ledger-service",
+                        attempt_id: id,
+                    },
                     why: "the invocation of " + id + " is in the adapter's store"
                 };
             }
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
         }
-        return dna::Reconciliation { kind: kind, identity: "ledger-service", established: true, performed: false, why: "no invocation of " + id + " is in the adapter's store" };
+        return dna::Reconciliation {
+            kind: kind,
+            identity: "ledger-service",
+            established: true,
+            performed: false,
+            why: "no invocation of " + id + " is in the adapter's store",
+        };
     }
 }
 
@@ -90,12 +121,16 @@ main locus App {
     }
     // the bound organism's bus configuration: a listen binding makes
     // every publish queued (F.15)
-    bindings { dna::IntentOffered: unix("/tmp/hale-dna.conformance-runner.intent.sock", role: listen); }
+    bindings {
+        dna::IntentOffered: unix("/tmp/hale-dna.conformance-runner.intent.sock", role: listen);
+    }
     fn root_settled() -> String {
         let mut i = 0;
         while i < self.one.journal.revision() {
             let e = self.one.journal.read(i);
-            if e.kind == "workflow.settled" && len(std::json::find_string_field(e.body, "parent_task")) == 0 {
+            if e.kind == "workflow.settled"
+                && len(std::json::find_string_field(e.body, "parent_task")) == 0
+            {
                 return std::json::find_string_field(e.body, "disposition");
             }
             i = i + 1;
@@ -107,14 +142,20 @@ main locus App {
         let mut i = 0;
         while i < self.one.journal.revision() {
             let e = self.one.journal.read(i);
-            if e.kind == "workflow.admitted" && len(std::json::find_string_field(e.body, "parent_task")) == 0 { n = n + 1; }
+            if e.kind == "workflow.admitted"
+                && len(std::json::find_string_field(e.body, "parent_task")) == 0
+            {
+                n = n + 1;
+            }
             i = i + 1;
         }
         return n;
     }
     run() {
         if std::env::args_count() < 4 {
-            println("usage: runner <repo> <store file> <none | row:<kind>:<entity> | effect:<attempt id>>");
+            println(
+                "usage: runner <repo> <store file> <none | row:<kind>:<entity> | effect:<attempt id>>",
+            );
             std::process::exit(2);
         }
         let repo = std::env::arg(1);
@@ -132,27 +173,76 @@ main locus App {
         if std::str::starts_with(die, "effect:") { effect = die[7..len(die)]; }
         // the assembly: born, it resumes every admitted root the record
         // holds unsettled
-        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.one = dna::Dna {
-            journal: Dying { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "runner" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, on_kind: on_kind, on_entity: on_entity },
-            work: dna::WorkSystem { service: FileStore { path: store, die_on: effect }, service_reconciler: FileStore { path: store } },
+            journal: Dying {
+                inner: dna::RoutedJournal {
+                    record: dna::RecordJournal { repo: repo, author: "runner" },
+                    ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+                },
+                on_kind: on_kind,
+                on_entity: on_entity,
+            },
+            work: dna::WorkSystem {
+                service: FileStore { path: store, die_on: effect },
+                service_reconciler: FileStore { path: store },
+            },
             genome_seed: "."
         };
         let d1 = self.one.catalog.define("close-month", 1, "record record", "close the month");
         let d2 = self.one.catalog.define("collect-receipts", 1, "record record", "");
         let d3 = self.one.catalog.define("chase-supplier", 1, "record", "");
-        let l1 = self.one.catalog.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" }, 1);
+        let l1 = self.one.catalog.leaf(
+            "close-month",
+            1,
+            0,
+            "a",
+            dna::WorkRequest { objective: "reconcile the bank feed", requires: "analysis" },
+            1,
+        );
         let l2 = self.one.catalog.child("close-month", 1, 0, "b", "collect-receipts", 1);
-        let l3 = self.one.catalog.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries", requires: "analysis" }, 1);
-        let l4 = self.one.catalog.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts", requires: "analysis" }, 1);
+        let l3 = self.one.catalog.leaf(
+            "close-month",
+            1,
+            1,
+            "d",
+            dna::WorkRequest { objective: "post the journal entries", requires: "analysis" },
+            1,
+        );
+        let l4 = self.one.catalog.leaf(
+            "collect-receipts",
+            1,
+            0,
+            "b1",
+            dna::WorkRequest { objective: "list missing receipts", requires: "analysis" },
+            1,
+        );
         let l5 = self.one.catalog.child("collect-receipts", 1, 1, "c", "chase-supplier", 1);
-        let l6 = self.one.catalog.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier", requires: "analysis" }, 2);
+        let l6 = self.one.catalog.leaf(
+            "chase-supplier",
+            1,
+            0,
+            "c1",
+            dna::WorkRequest { objective: "email the supplier", requires: "analysis" },
+            2,
+        );
         if len(d1 + d2 + d3 + l1 + l2 + l3 + l4 + l5 + l6) > 0 {
             println("the example does not bind: " + d1 + d2 + d3 + l1 + l2 + l3 + l4 + l5 + l6);
             std::process::exit(3);
         }
         if self.admitted_roots() == 0 {
-            let id = self.one.run_workflow(dna::WorkflowAsk { id: "ask1", definition: "close-month", revision: 1, from: "runner" });
+            let id = self.one.run_workflow(
+                dna::WorkflowAsk {
+                    id: "ask1",
+                    definition: "close-month",
+                    revision: 1,
+                    from: "runner",
+                },
+            );
             println("admitted " + id);
         } else {
             println("resumed " + to_string(self.one.executions_asked));

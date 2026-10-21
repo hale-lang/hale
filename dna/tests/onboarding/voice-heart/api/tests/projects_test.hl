@@ -3,7 +3,14 @@
 import ".." as api;
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -23,10 +30,23 @@ fn main() {
 
     expect(call(e, "GET", "/admin/v1/projects", ""), 200, "no projects yet");
 
-    let work = call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\", \"owners\": [\"operator@example.com\"], \"data_classes\": [\"public\", \"internal\"]}");
+    let work = call(
+        e,
+        "POST",
+        "/admin/v1/projects",
+        "{\"id\": \"work\", \"name\": \"Work\", \"owners\": [\"operator@example.com\"], \"data_classes\": [\"public\", \"internal\"]}",
+    );
     expect(work, 201, "create");
-    std::test::assert_eq_str(std::json::find_string_field(work.body, "status"), "active", "a new project is active");
-    std::test::assert_eq_str(raw(work, "data_classes"), "[\"public\", \"internal\"]", "its data classes");
+    std::test::assert_eq_str(
+        std::json::find_string_field(work.body, "status"),
+        "active",
+        "a new project is active",
+    );
+    std::test::assert_eq_str(
+        raw(work, "data_classes"),
+        "[\"public\", \"internal\"]",
+        "its data classes",
+    );
     std::test::assert_eq_str(raw(work, "models"), "null", "the whole catalog");
     std::test::assert_eq_str(raw(work, "accounts"), "null", "any account");
     std::test::assert_eq_str(raw(work, "budget"), "null", "no budget yet");
@@ -34,51 +54,186 @@ fn main() {
     std::test::assert_eq_int(std::json::find_int_field(work.body, "key_count"), 0, "no keys");
     std::test::assert_eq_str(raw(work, "archived_at"), "null", "not archived");
 
-    let lab = call(e, "POST", "/admin/v1/projects", "{\"id\": \"lab\", \"name\": \"Lab\", \"models\": [\"echo-1\"]}");
+    let lab = call(
+        e,
+        "POST",
+        "/admin/v1/projects",
+        "{\"id\": \"lab\", \"name\": \"Lab\", \"models\": [\"echo-1\"]}",
+    );
     expect(lab, 201, "a restricted project");
-    std::test::assert_eq_str(raw(lab, "data_classes"), "[\"internal\"]", "data classes default to internal");
+    std::test::assert_eq_str(
+        raw(lab, "data_classes"),
+        "[\"internal\"]",
+        "data classes default to internal",
+    );
     std::test::assert_eq_str(raw(lab, "models"), "[\"echo-1\"]", "restricted to one model");
 
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Again\"}"), 409, "an id is taken once");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"Work\", \"name\": \"W\"}"), 400, "an id is lowercase");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"-w\", \"name\": \"W\"}"), 400, "an id starts with a letter or digit");
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Again\"}"),
+        409,
+        "an id is taken once",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"Work\", \"name\": \"W\"}"),
+        400,
+        "an id is lowercase",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"-w\", \"name\": \"W\"}"),
+        400,
+        "an id starts with a letter or digit",
+    );
     expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"w\"}"), 400, "a name is required");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"w\", \"name\": \"W\", \"owners\": \"me\"}"), 400, "owners is a list");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"w\", \"name\": \"W\", \"budget\": {\"allowance_micros\": -1, \"period\": \"month\"}}"), 400, "an allowance is at least 0");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"w\", \"name\": \"W\", \"owners\": \"me\"}",
+        ),
+        400,
+        "owners is a list",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"w\", \"name\": \"W\", \"budget\": {\"allowance_micros\": -1, \"period\": \"month\"}}",
+        ),
+        400,
+        "an allowance is at least 0",
+    );
     expect(call(e, "GET", "/admin/v1/projects/w", ""), 404, "a refused create made nothing");
-    let budgeted = call(e, "POST", "/admin/v1/projects", "{\"id\": \"w\", \"name\": \"W\", \"budget\": {\"allowance_micros\": 1000, \"period\": \"month\"}, \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 600}]}");
+    let budgeted = call(
+        e,
+        "POST",
+        "/admin/v1/projects",
+        "{\"id\": \"w\", \"name\": \"W\", \"budget\": {\"allowance_micros\": 1000, \"period\": \"month\"}, \"limits\": [{\"scope\": \"project\", \"window_seconds\": 60, \"requests\": 600}]}",
+    );
     expect(budgeted, 201, "a project with its budget and limits");
-    std::test::assert_eq_int(std::json::find_int_field(raw(budgeted, "budget"), "allowance_micros"), 1000, "its budget");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::array_first(raw(budgeted, "limits")).element, "requests"), 600, "its limit");
-    let patched = call(e, "PATCH", "/admin/v1/projects/w", "{\"budget\": {\"allowance_micros\": 1, \"period\": \"day\"}}");
+    std::test::assert_eq_int(
+        std::json::find_int_field(raw(budgeted, "budget"), "allowance_micros"),
+        1000,
+        "its budget",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(
+            std::json::array_first(raw(budgeted, "limits")).element,
+            "requests",
+        ),
+        600,
+        "its limit",
+    );
+    let patched = call(
+        e,
+        "PATCH",
+        "/admin/v1/projects/w",
+        "{\"budget\": {\"allowance_micros\": 1, \"period\": \"day\"}}",
+    );
     expect(patched, 400, "a budget has its own endpoint");
     std::test::assert_eq_str(code(patched), "unsupported", "unsupported");
 
     expect(call(e, "GET", "/admin/v1/projects/work", ""), 200, "get");
     expect(call(e, "GET", "/admin/v1/projects/nope", ""), 404, "an unknown project");
 
-    let renamed = call(e, "PATCH", "/admin/v1/projects/lab", "{\"name\": \"The lab\", \"models\": null}");
+    let renamed = call(
+        e,
+        "PATCH",
+        "/admin/v1/projects/lab",
+        "{\"name\": \"The lab\", \"models\": null}",
+    );
     expect(renamed, 200, "patch");
-    std::test::assert_eq_str(std::json::find_string_field(renamed.body, "name"), "The lab", "renamed");
+    std::test::assert_eq_str(
+        std::json::find_string_field(renamed.body, "name"),
+        "The lab",
+        "renamed",
+    );
     std::test::assert_eq_str(raw(renamed, "models"), "null", "the restriction lifted");
-    std::test::assert_eq_str(raw(renamed, "data_classes"), "[\"internal\"]", "a field not set stays");
-    expect(call(e, "PATCH", "/admin/v1/projects/lab", "{\"name\": \"\"}"), 400, "a name is not empty");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"acct\", \"name\": \"A\", \"accounts\": [\"Not An Id!\"]}"), 400, "accounts are account ids");
-    let plain = e.handle(std::http::Request { method: "POST", path: "/admin/v1/projects", headers: "Content-Type: text/plain", body: "{\"id\": \"csrf\", \"name\": \"C\"}" });
+    std::test::assert_eq_str(
+        raw(renamed, "data_classes"),
+        "[\"internal\"]",
+        "a field not set stays",
+    );
+    expect(
+        call(e, "PATCH", "/admin/v1/projects/lab", "{\"name\": \"\"}"),
+        400,
+        "a name is not empty",
+    );
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"acct\", \"name\": \"A\", \"accounts\": [\"Not An Id!\"]}",
+        ),
+        400,
+        "accounts are account ids",
+    );
+    let plain = e.handle(
+        std::http::Request {
+            method: "POST",
+            path: "/admin/v1/projects",
+            headers: "Content-Type: text/plain",
+            body: "{\"id\": \"csrf\", \"name\": \"C\"}",
+        },
+    );
     expect(plain, 400, "an admin write is JSON");
     expect(call(e, "GET", "/admin/v1/projects/csrf", ""), 404, "and a refused one made nothing");
-    expect(e.handle(std::http::Request { method: "POST", path: "/admin/v1/projects", headers: "content-type: Application/JSON; charset=utf-8", body: "{\"id\": \"cased\", \"name\": \"C\"}" }), 201, "in any case, with parameters");
+    expect(
+        e.handle(
+            std::http::Request {
+                method: "POST",
+                path: "/admin/v1/projects",
+                headers: "content-type: Application/JSON; charset=utf-8",
+                body: "{\"id\": \"cased\", \"name\": \"C\"}",
+            },
+        ),
+        201,
+        "in any case, with parameters",
+    );
 
     // narrowing a project below what its keys name is refused, naming them
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"nar\", \"name\": \"N\", \"models\": [\"echo-1\", \"live-1\"]}"), 201, "a project with two models");
-    let narrow_key = call(e, "POST", "/admin/v1/projects/nar/keys", "{\"name\": \"k\", \"models\": [\"live-1\"]}");
+    expect(
+        call(
+            e,
+            "POST",
+            "/admin/v1/projects",
+            "{\"id\": \"nar\", \"name\": \"N\", \"models\": [\"echo-1\", \"live-1\"]}",
+        ),
+        201,
+        "a project with two models",
+    );
+    let narrow_key = call(
+        e,
+        "POST",
+        "/admin/v1/projects/nar/keys",
+        "{\"name\": \"k\", \"models\": [\"live-1\"]}",
+    );
     let narrow_id = std::json::find_string_field(narrow_key.body, "id");
     let narrowed = call(e, "PATCH", "/admin/v1/projects/nar", "{\"models\": [\"echo-1\"]}");
     expect(narrowed, 400, "narrowing below a key");
     std::test::assert(std::str::contains(narrowed.body, narrow_id), "names the key");
-    expect(call(e, "PATCH", "/admin/v1/projects/nar", "{\"models\": [\"echo-1\", \"live-1\", \"more-1\"]}"), 200, "widening is fine");
-    expect(call(e, "DELETE", "/admin/v1/projects/nar/keys/" + narrow_id, ""), 200, "once the key is revoked");
-    expect(call(e, "PATCH", "/admin/v1/projects/nar", "{\"models\": [\"echo-1\"]}"), 200, "the project narrows");
+    expect(
+        call(
+            e,
+            "PATCH",
+            "/admin/v1/projects/nar",
+            "{\"models\": [\"echo-1\", \"live-1\", \"more-1\"]}",
+        ),
+        200,
+        "widening is fine",
+    );
+    expect(
+        call(e, "DELETE", "/admin/v1/projects/nar/keys/" + narrow_id, ""),
+        200,
+        "once the key is revoked",
+    );
+    expect(
+        call(e, "PATCH", "/admin/v1/projects/nar", "{\"models\": [\"echo-1\"]}"),
+        200,
+        "the project narrows",
+    );
 
     // archiving revokes the project's keys and takes it out of the list
     let key = call(e, "POST", "/admin/v1/projects/lab/keys", "{\"name\": \"ci\"}");
@@ -86,25 +241,63 @@ fn main() {
     let key_id = std::json::find_string_field(key.body, "id");
     let gone = call(e, "DELETE", "/admin/v1/projects/lab", "");
     expect(gone, 200, "archive");
-    std::test::assert_eq_str(std::json::find_string_field(gone.body, "status"), "archived", "archived");
-    std::test::assert(std::str::ends_with(std::json::find_string_field(gone.body, "archived_at"), "Z"), "when");
+    std::test::assert_eq_str(
+        std::json::find_string_field(gone.body, "status"),
+        "archived",
+        "archived",
+    );
+    std::test::assert(
+        std::str::ends_with(std::json::find_string_field(gone.body, "archived_at"), "Z"),
+        "when",
+    );
     let revoked = call(e, "GET", "/admin/v1/projects/lab/keys/" + key_id, "");
-    std::test::assert_eq_str(std::json::find_string_field(revoked.body, "status"), "revoked", "its key is revoked");
+    std::test::assert_eq_str(
+        std::json::find_string_field(revoked.body, "status"),
+        "revoked",
+        "its key is revoked",
+    );
     let log = call(e, "GET", "/admin/v1/changes?target=projects/lab", "").body;
     let newest = std::json::array_first(std::json::find_field_raw(log, "data"));
-    std::test::assert_eq_str(std::json::find_string_field(newest.element, "action"), "archive", "the archive, newest");
+    std::test::assert_eq_str(
+        std::json::find_string_field(newest.element, "action"),
+        "archive",
+        "the archive, newest",
+    );
     let next = std::json::array_next(newest).element;
-    std::test::assert_eq_str(std::json::find_string_field(next, "action"), "revoke", "with a change for the key it revoked");
-    std::test::assert_eq_str(std::json::find_string_field(next, "target"), "projects/lab/keys/" + key_id, "under the key's own target");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(next, "after"), "status"), "revoked", "as it became");
+    std::test::assert_eq_str(
+        std::json::find_string_field(next, "action"),
+        "revoke",
+        "with a change for the key it revoked",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(next, "target"),
+        "projects/lab/keys/" + key_id,
+        "under the key's own target",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(next, "after"), "status"),
+        "revoked",
+        "as it became",
+    );
     expect(call(e, "DELETE", "/admin/v1/projects/lab", ""), 200, "archiving again changes nothing");
     let late = call(e, "POST", "/admin/v1/projects/lab/keys", "{\"name\": \"late\"}");
     expect(late, 400, "an archived project takes no key");
-    std::test::assert_eq_str(code(late), "invalid_request", "as an invalid request, not a conflict");
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"lab\", \"name\": \"Lab\"}"), 409, "its id is never reused");
+    std::test::assert_eq_str(
+        code(late),
+        "invalid_request",
+        "as an invalid request, not a conflict",
+    );
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"lab\", \"name\": \"Lab\"}"),
+        409,
+        "its id is never reused",
+    );
 
     let active = call(e, "GET", "/admin/v1/projects", "");
-    std::test::assert(std::str::contains(active.body, "\"work\"") && !std::str::contains(active.body, "\"lab\""), "the list leaves archived projects out");
+    std::test::assert(
+        std::str::contains(active.body, "\"work\"") && !std::str::contains(active.body, "\"lab\""),
+        "the list leaves archived projects out",
+    );
     let all = call(e, "GET", "/admin/v1/projects?include_archived=true", "");
     std::test::assert(std::str::contains(all.body, "\"lab\""), "unless it is asked for them");
 }

@@ -16,17 +16,39 @@ locus Recorder {
         self.last = node + " " + body;
         return true;
     }
-    fn offer(node: String, reply_to: String, body: String) -> api::ServeOutcome { return api::ServeOutcome { ack: "lost" }; }
+    fn offer(node: String, reply_to: String, body: String) -> api::ServeOutcome {
+        return api::ServeOutcome { ack: "lost" };
+    }
     fn next(wait: Duration) -> api::LinkMsg { return api::LinkMsg { kind: "lost" }; }
     fn finish() { }
 }
 
 fn admin(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
-fn plane(e: api::Endpoints, method: String, path: String, token: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Authorization: Bearer " + token, body: body });
+fn plane(
+    e: api::Endpoints,
+    method: String,
+    path: String,
+    token: String,
+    body: String
+) -> std::http::Response {
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Authorization: Bearer " + token,
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -45,99 +67,412 @@ fn main() {
     let e = api::Endpoints { link: link };
     admin(e, "POST", "/admin/v1/models", "{\"id\": \"echo-1\"}");
     admin(e, "POST", "/admin/v1/accounts", "{\"id\": \"static\", \"name\": \"Static\"}");
-    let token = str(admin(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\", \"max_in_flight\": 2}").body, "enrollment_token");
-    admin(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": {\"text\": \"hello from voice\"}}");
-    admin(e, "POST", "/admin/v1/nodes/laptop/seats", "{\"id\": \"cli\", \"engine\": \"claude-work\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}");
+    let token = str(
+        admin(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\", \"max_in_flight\": 2}").body,
+        "enrollment_token",
+    );
+    admin(
+        e,
+        "POST",
+        "/admin/v1/nodes/laptop/seats",
+        "{\"id\": \"static\", \"engine\": \"static\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}], \"config\": {\"text\": \"hello from voice\"}}",
+    );
+    admin(
+        e,
+        "POST",
+        "/admin/v1/nodes/laptop/seats",
+        "{\"id\": \"cli\", \"engine\": \"claude-work\", \"account\": \"static\", \"serves\": [{\"model\": \"echo-1\"}]}",
+    );
     std::test::assert_eq_int(link.assigned, 0, "a node that has never registered is told nothing");
 
     // the token
-    let reg = "{\"protocol\": 2, \"version\": \"0.1.0\", \"capabilities\": " + CAPS + ", \"local\": " + LOCAL + "}";
+    let reg = "{\"protocol\": 2, \"version\": \"0.1.0\", \"capabilities\": " + CAPS
+        + ", \"local\": " + LOCAL + "}";
     expect(plane(e, "POST", "/node/v1/register", "vn-nope", reg), 401, "an unknown token");
-    expect(e.handle(std::http::Request { method: "POST", path: "/node/v1/register", body: reg }), 401, "no token");
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": []}"), 400, "a report before registering");
-    expect(plane(e, "POST", "/node/v1/register", token, "{\"protocol\": 1, \"version\": \"x\", \"capabilities\": " + CAPS + ", \"local\": " + LOCAL + "}"), 400, "another protocol");
-    expect(plane(e, "POST", "/node/v1/register", token, "{\"protocol\": 2, \"version\": \"x\", \"capabilities\": {\"engines\": []}, \"local\": " + LOCAL + "}"), 400, "capabilities need a cap");
+    expect(
+        e.handle(std::http::Request { method: "POST", path: "/node/v1/register", body: reg }),
+        401,
+        "no token",
+    );
+    expect(
+        plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": []}"),
+        400,
+        "a report before registering",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/register",
+            token,
+            "{\"protocol\": 1, \"version\": \"x\", \"capabilities\": " + CAPS + ", \"local\": "
+                + LOCAL + "}",
+        ),
+        400,
+        "another protocol",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/register",
+            token,
+            "{\"protocol\": 2, \"version\": \"x\", \"capabilities\": {\"engines\": []}, \"local\": "
+                + LOCAL + "}",
+        ),
+        400,
+        "capabilities need a cap",
+    );
 
     // registering
     let registered = plane(e, "POST", "/node/v1/register", token, reg);
     expect(registered, 200, "register");
-    std::test::assert_eq_int(std::json::find_int_field(registered.body, "heartbeat_interval_ms"), 5000, "the interval");
+    std::test::assert_eq_int(
+        std::json::find_int_field(registered.body, "heartbeat_interval_ms"),
+        5000,
+        "the interval",
+    );
     let nats = std::json::find_field_raw(registered.body, "nats");
     std::test::assert_eq_str(str(nats, "url"), "nats://nats.test:4222", "where NATS is");
     std::test::assert_eq_str(str(nats, "subject"), "voice.node.laptop", "its subject");
     let a = std::json::find_field_raw(registered.body, "assignment");
-    std::test::assert_eq_int(std::json::find_int_field(a, "max_in_flight"), 2, "the coordinator's cap");
-    std::test::assert(std::str::contains(a, "\"hello from voice\"") && std::str::contains(a, "\"claude-work\""), "every seat");
+    std::test::assert_eq_int(
+        std::json::find_int_field(a, "max_in_flight"),
+        2,
+        "the coordinator's cap",
+    );
+    std::test::assert(
+        std::str::contains(a, "\"hello from voice\"") && std::str::contains(a, "\"claude-work\""),
+        "every seat",
+    );
     let version = std::json::find_int_field(a, "version");
     let node = admin(e, "GET", "/admin/v1/nodes/laptop", "").body;
     std::test::assert_eq_str(str(node, "status"), "up", "a node that registered is up");
     std::test::assert_eq_str(str(node, "version"), "0.1.0", "its software's version");
-    std::test::assert_eq_int(std::json::find_int_field(node, "effective_max_in_flight"), 2, "its effective cap");
-    std::test::assert_eq_str(str(std::json::array_first(std::json::find_field_raw(node, "seats")).element, "status"), "pending", "a seat waits for its node's report");
-    std::test::assert(std::str::contains(node, "node laptop does not offer engine claude-work"), "a seat outside what it offers");
+    std::test::assert_eq_int(
+        std::json::find_int_field(node, "effective_max_in_flight"),
+        2,
+        "its effective cap",
+    );
+    std::test::assert_eq_str(
+        str(std::json::array_first(std::json::find_field_raw(node, "seats")).element, "status"),
+        "pending",
+        "a seat waits for its node's report",
+    );
+    std::test::assert(
+        std::str::contains(node, "node laptop does not offer engine claude-work"),
+        "a seat outside what it offers",
+    );
     expect(plane(e, "GET", "/node/v1/assignment", token, ""), 200, "the assignment");
 
     // reporting
-    let states = "{\"assignment_version\": " + to_string(version) + ", \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}, {\"id\": \"cli\", \"status\": \"refused\", \"reason\": \"no engine claude-work\", \"in_flight\": 0}]}";
+    let states = "{\"assignment_version\": " + to_string(version)
+        + ", \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}, {\"id\": \"cli\", \"status\": \"refused\", \"reason\": \"no engine claude-work\", \"in_flight\": 0}]}";
     expect(plane(e, "POST", "/node/v1/seats", token, states), 204, "seat states");
     let seat = admin(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body;
     std::test::assert_eq_str(str(seat, "status"), "up", "the seat as the node reported it");
     let refused = admin(e, "GET", "/admin/v1/nodes/laptop/seats/cli", "").body;
     std::test::assert_eq_str(str(refused, "status"), "refused", "refused");
     std::test::assert_eq_str(str(refused, "reason"), "no engine claude-work", "and why");
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 1, \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 1}]}"), 204, "heartbeat");
-    std::test::assert_eq_int(std::json::find_int_field(admin(e, "GET", "/admin/v1/nodes/laptop", "").body, "in_flight"), 1, "its load");
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": [{\"id\": \"static\", \"status\": \"sleepy\", \"in_flight\": 0}]}"), 400, "a status the protocol has");
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": [{\"id\": \"ghost\", \"status\": \"up\", \"in_flight\": 0}, {\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}"), 204, "a heartbeat naming a seat it does not hold");
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 1, \"seats\": [{\"id\": \"static\", \"status\": \"up\", \"in_flight\": 1}]}",
+        ),
+        204,
+        "heartbeat",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(admin(e, "GET", "/admin/v1/nodes/laptop", "").body, "in_flight"),
+        1,
+        "its load",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 0, \"seats\": [{\"id\": \"static\", \"status\": \"sleepy\", \"in_flight\": 0}]}",
+        ),
+        400,
+        "a status the protocol has",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 0, \"seats\": [{\"id\": \"ghost\", \"status\": \"up\", \"in_flight\": 0}, {\"id\": \"static\", \"status\": \"up\", \"in_flight\": 0}]}",
+        ),
+        204,
+        "a heartbeat naming a seat it does not hold",
+    );
     let kept = e.store.seat_states("laptop") or st::SeatStateRows { };
-    std::test::assert_eq_int(count(kept.rows), 2, "keeps no state for it, only for the seats configured on the node");
-    expect(e.handle(std::http::Request { method: "GET", path: "/node/v1/assignment", headers: "authorization: bearer " + token }), 200, "the bearer scheme in any case");
-    expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [\"static\"], \"max_in_flight\": 1, \"reason\": \"on battery\"}"), 204, "local controls");
+    std::test::assert_eq_int(
+        count(kept.rows),
+        2,
+        "keeps no state for it, only for the seats configured on the node",
+    );
+    expect(
+        e.handle(
+            std::http::Request {
+                method: "GET",
+                path: "/node/v1/assignment",
+                headers: "authorization: bearer " + token,
+            },
+        ),
+        200,
+        "the bearer scheme in any case",
+    );
+    expect(
+        plane(
+            e,
+            "PUT",
+            "/node/v1/local",
+            token,
+            "{\"paused\": false, \"paused_seats\": [\"static\"], \"max_in_flight\": 1, \"reason\": \"on battery\"}",
+        ),
+        204,
+        "local controls",
+    );
     let held = admin(e, "GET", "/admin/v1/nodes/laptop", "").body;
-    std::test::assert_eq_int(std::json::find_int_field(held, "effective_max_in_flight"), 1, "a local cap lowers the effective one");
-    std::test::assert_eq_str(str(std::json::find_field_raw(held, "local"), "reason"), "on battery", "the controls as reported");
-    expect(plane(e, "PUT", "/node/v1/capabilities", token, "{\"max_in_flight\": 8, \"engines\": []}"), 204, "capabilities");
-    std::test::assert(std::str::contains(admin(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body, "does not offer engine static"), "the assignment is checked against them again");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"five_hour\", \"used_percent\": 12.5, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}"), 204, "quota");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [12]}"), 400, "a quota window is an object");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{}]}"), 400, "with a name, a use and when it was seen");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 140, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}"), 400, "a use of at most 100 percent");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"today\"}]}"), 400, "seen at a time");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"2026-10-17T00:00:00Z\", \"resets_at\": 5}]}"), 400, "and resetting at one, or null");
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"nope\", \"windows\": []}"), 404, "for a seat the node holds");
-    expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": -1}"), 400, "a local cap is at least 0");
-    expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 99999999999999999999}"), 400, "and in range");
-    expect(plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [1]}"), 400, "paused seats are seat ids");
-    std::test::assert(std::str::contains(admin(e, "GET", "/admin/v1/accounts/static", "").body, "five_hour"), "the account shows its windows");
+    std::test::assert_eq_int(
+        std::json::find_int_field(held, "effective_max_in_flight"),
+        1,
+        "a local cap lowers the effective one",
+    );
+    std::test::assert_eq_str(
+        str(std::json::find_field_raw(held, "local"), "reason"),
+        "on battery",
+        "the controls as reported",
+    );
+    expect(
+        plane(e, "PUT", "/node/v1/capabilities", token, "{\"max_in_flight\": 8, \"engines\": []}"),
+        204,
+        "capabilities",
+    );
+    std::test::assert(
+        std::str::contains(
+            admin(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body,
+            "does not offer engine static",
+        ),
+        "the assignment is checked against them again",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/quota",
+            token,
+            "{\"seat\": \"static\", \"windows\": [{\"name\": \"five_hour\", \"used_percent\": 12.5, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}",
+        ),
+        204,
+        "quota",
+    );
+    expect(
+        plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [12]}"),
+        400,
+        "a quota window is an object",
+    );
+    expect(
+        plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{}]}"),
+        400,
+        "with a name, a use and when it was seen",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/quota",
+            token,
+            "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 140, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}",
+        ),
+        400,
+        "a use of at most 100 percent",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/quota",
+            token,
+            "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"today\"}]}",
+        ),
+        400,
+        "seen at a time",
+    );
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/quota",
+            token,
+            "{\"seat\": \"static\", \"windows\": [{\"name\": \"day\", \"used_percent\": 1, \"observed_at\": \"2026-10-17T00:00:00Z\", \"resets_at\": 5}]}",
+        ),
+        400,
+        "and resetting at one, or null",
+    );
+    expect(
+        plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"nope\", \"windows\": []}"),
+        404,
+        "for a seat the node holds",
+    );
+    expect(
+        plane(
+            e,
+            "PUT",
+            "/node/v1/local",
+            token,
+            "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": -1}",
+        ),
+        400,
+        "a local cap is at least 0",
+    );
+    expect(
+        plane(
+            e,
+            "PUT",
+            "/node/v1/local",
+            token,
+            "{\"paused\": false, \"paused_seats\": [], \"max_in_flight\": 99999999999999999999}",
+        ),
+        400,
+        "and in range",
+    );
+    expect(
+        plane(e, "PUT", "/node/v1/local", token, "{\"paused\": false, \"paused_seats\": [1]}"),
+        400,
+        "paused seats are seat ids",
+    );
+    std::test::assert(
+        std::str::contains(admin(e, "GET", "/admin/v1/accounts/static", "").body, "five_hour"),
+        "the account shows its windows",
+    );
     // a use is written back as it was reported (to_string(Float) reads
     // back as itself since hale v0.26.0): 99.999995 as 100 would read as an
     // exhausted account
-    expect(plane(e, "POST", "/node/v1/quota", token, "{\"seat\": \"static\", \"windows\": [{\"name\": \"five_hour\", \"used_percent\": 99.999995, \"observed_at\": \"2026-10-17T00:00:00Z\"}, {\"name\": \"seven_day\", \"used_percent\": 33.333333333333336, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}"), 204, "quota near the top");
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/quota",
+            token,
+            "{\"seat\": \"static\", \"windows\": [{\"name\": \"five_hour\", \"used_percent\": 99.999995, \"observed_at\": \"2026-10-17T00:00:00Z\"}, {\"name\": \"seven_day\", \"used_percent\": 33.333333333333336, \"observed_at\": \"2026-10-17T00:00:00Z\"}]}",
+        ),
+        204,
+        "quota near the top",
+    );
     let shown = admin(e, "GET", "/admin/v1/accounts/static", "").body;
-    std::test::assert(std::str::contains(shown, "\"used_percent\": 99.999995,") && std::str::contains(shown, "\"used_percent\": 33.333333333333336,"), "each use survives the write-back: " + shown);
-    for t in ["0", "12.5", "100", "0.30000000000000004", "99.99999999999997", "0.000001234567891234567"] {
+    std::test::assert(
+        std::str::contains(shown, "\"used_percent\": 99.999995,")
+            && std::str::contains(shown, "\"used_percent\": 33.333333333333336,"),
+        "each use survives the write-back: " + shown,
+    );
+    for t in [
+        "0",
+        "12.5",
+        "100",
+        "0.30000000000000004",
+        "99.99999999999997",
+        "0.000001234567891234567"
+    ] {
         let x = std::str::parse_float(t) or - 1.0;
         let back = std::str::parse_float(to_string(x)) or - 2.0;
         std::test::assert(back == x, t + " reads back from " + to_string(x));
         // and through the api codec
-        let w = api::QuotaWindow::api_decode(api::QuotaWindow::api_encode(api::QuotaWindow { name: "w", used_percent: x, observed_at: `2026-10-17T00:00:00Z` })) or api::QuotaWindow { name: "refused", used_percent: -3.0, observed_at: `2026-10-17T00:00:00Z` };
-        std::test::assert(w.used_percent == x, t + " crosses the codec: " + api::QuotaWindow::api_encode(api::QuotaWindow { name: "w", used_percent: x, observed_at: `2026-10-17T00:00:00Z` }));
+        let w = api::QuotaWindow::api_decode(
+            api::QuotaWindow::api_encode(
+                api::QuotaWindow {
+                    name: "w",
+                    used_percent: x,
+                    observed_at: `2026-10-17T00:00:00Z`,
+                },
+            ),
+        ) or api::QuotaWindow {
+            name: "refused",
+            used_percent: -3.0,
+            observed_at: `2026-10-17T00:00:00Z`,
+        };
+        std::test::assert(
+            w.used_percent == x,
+            t + " crosses the codec: "
+                + api::QuotaWindow::api_encode(
+                    api::QuotaWindow {
+                        name: "w",
+                        used_percent: x,
+                        observed_at: `2026-10-17T00:00:00Z`,
+                    },
+                ),
+        );
     }
     expect(plane(e, "POST", "/node/v1/draining", token, ""), 204, "draining");
 
     // a change to its seats is a new assignment, published to it
-    expect(admin(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"concurrency\": 3}"), 200, "change a seat");
+    expect(
+        admin(e, "PATCH", "/admin/v1/nodes/laptop/seats/static", "{\"concurrency\": 3}"),
+        200,
+        "change a seat",
+    );
     std::test::assert_eq_int(link.assigned, 1, "published");
-    std::test::assert(std::str::starts_with(link.last, "laptop {\"type\": \"assign\""), "on the node's subject, as an assign");
-    std::test::assert(std::json::find_int_field(std::json::find_field_raw(link.last[7..len(link.last)], "assignment"), "version") > version, "at a newer version");
-    std::test::assert_eq_str(str(admin(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body, "status"), "pending", "pending until the node reports on it");
+    std::test::assert(
+        std::str::starts_with(link.last, "laptop {\"type\": \"assign\""),
+        "on the node's subject, as an assign",
+    );
+    std::test::assert(
+        std::json::find_int_field(
+            std::json::find_field_raw(link.last[7..len(link.last)], "assignment"),
+            "version",
+        ) > version,
+        "at a newer version",
+    );
+    std::test::assert_eq_str(
+        str(admin(e, "GET", "/admin/v1/nodes/laptop/seats/static", "").body, "status"),
+        "pending",
+        "pending until the node reports on it",
+    );
 
     // an assign the node missed is sent again when it says it is behind
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": [], \"assignment_version\": " + to_string(version) + "}"), 204, "a heartbeat at the old version");
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 0, \"seats\": [], \"assignment_version\": " + to_string(version) + "}",
+        ),
+        204,
+        "a heartbeat at the old version",
+    );
     std::test::assert_eq_int(link.assigned, 2, "publishes the assignment again");
-    expect(plane(e, "POST", "/node/v1/seats", token, "{\"assignment_version\": " + to_string(version) + ", \"seats\": []}"), 204, "seat states at the old version");
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/seats",
+            token,
+            "{\"assignment_version\": " + to_string(version) + ", \"seats\": []}",
+        ),
+        204,
+        "seat states at the old version",
+    );
     std::test::assert_eq_int(link.assigned, 3, "so do seat states");
-    expect(plane(e, "POST", "/node/v1/heartbeat", token, "{\"in_flight\": 0, \"seats\": [], \"assignment_version\": " + to_string(version + 1) + "}"), 204, "a heartbeat at the current version");
+    expect(
+        plane(
+            e,
+            "POST",
+            "/node/v1/heartbeat",
+            token,
+            "{\"in_flight\": 0, \"seats\": [], \"assignment_version\": " + to_string(version + 1)
+                + "}",
+        ),
+        204,
+        "a heartbeat at the current version",
+    );
     std::test::assert_eq_int(link.assigned, 3, "publishes nothing");
 
     // rotation and revocation
@@ -146,5 +481,9 @@ fn main() {
     expect(plane(e, "GET", "/node/v1/assignment", token2, ""), 200, "the new one works");
     admin(e, "DELETE", "/admin/v1/nodes/laptop", "");
     expect(plane(e, "POST", "/node/v1/register", token2, reg), 403, "a revoked node is refused");
-    std::test::assert_eq_str(str(admin(e, "GET", "/admin/v1/nodes/laptop", "").body, "status"), "revoked", "revoked");
+    std::test::assert_eq_str(
+        str(admin(e, "GET", "/admin/v1/nodes/laptop", "").body, "status"),
+        "revoked",
+        "revoked",
+    );
 }

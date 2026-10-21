@@ -3,7 +3,18 @@
 // first": ownership semantics of an interface-typed locus value.)
 interface Performer { fn perform(x: Int) -> Int; fn name() -> String; }
 
-locus Doubler { params { calls: Int = 0; } fn perform(x: Int) -> Int { self.calls = self.calls + 1; return x * 2; } fn name() -> String { return "doubler"; } }
+locus Doubler {
+    params {
+        calls: Int = 0;
+    }
+    fn perform(x: Int) -> Int {
+        self.calls = self.calls + 1;
+        return x * 2;
+    }
+    fn name() -> String {
+        return "doubler";
+    }
+}
 
 locus Attempt {
     params { performer: Performer; out: Int = 0; }

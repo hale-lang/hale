@@ -8,8 +8,12 @@ interface OrganizationAdmissionInputs {
 }
 locus NoOrganizationAdmissionInputs {
     params { }
-    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation { return dna::OrganizationSourcePreparation { }; }
-    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck { return dna::OrganizationSourceCheck { }; }
+    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation {
+        return dna::OrganizationSourcePreparation { };
+    }
+    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck {
+        return dna::OrganizationSourceCheck { };
+    }
 }
 
 type OrganizationCommandOutcome {
@@ -25,7 +29,13 @@ type OrganizationCommandOutcome {
 
 locus OrganizationAdmission {
     params { }
-    fn prepared(context: GovernanceContext, command: GovernanceCommand, grant: GovernanceGrant, owner: String, prepared: dna::OrganizationSourcePreparation) -> Bool {
+    fn prepared(
+        context: GovernanceContext,
+        command: GovernanceCommand,
+        grant: GovernanceGrant,
+        owner: String,
+        prepared: dna::OrganizationSourcePreparation
+    ) -> Bool {
         let codec = OrganizationCommandCodec { };
         let r = prepared.request;
         return prepared.ok && codec.matches(context, command, r) && r.source_owner == owner

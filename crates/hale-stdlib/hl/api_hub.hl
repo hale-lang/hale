@@ -144,7 +144,8 @@ fn __api_hub_refusal(topic: String, kind: String, reason: String, requires: Stri
     if len(topic) > 0 { t = __api_hub_quote(topic); }
     let mut extra = "";
     if len(requires) > 0 { extra = ",\"requires\":" + __api_hub_csv_json(requires); }
-    return "{\"type\":\"refusal\",\"topic\":" + t + ",\"refusal\":{\"kind\":" + __api_hub_quote(kind) + ",\"reason\":" + __api_hub_quote(reason) + extra + "}}";
+    return "{\"type\":\"refusal\",\"topic\":" + t + ",\"refusal\":{\"kind\":"
+        + __api_hub_quote(kind) + ",\"reason\":" + __api_hub_quote(reason) + extra + "}}";
 }
 
 /// A topic bound to a hub (`std::api::ws::Stream`): the adapter the compiler
@@ -159,7 +160,11 @@ locus __StdApiHubStream {
     bus { publish __ApiHubEventT; }
     fn send(subject: String, bytes: Bytes) {
         self.offered = self.offered + 1;
-        __ApiHubEventT <- __StdApiHubEvent { key: self.hub, stream: self.stream, payload: std::str::from_bytes(bytes) };
+        __ApiHubEventT <- __StdApiHubEvent {
+            key: self.hub,
+            stream: self.stream,
+            payload: std::str::from_bytes(bytes),
+        };
     }
 }
 
@@ -279,7 +284,11 @@ locus __StdApiWsPeer {
     fn datagram(text: String) {
         if !self.open { return; }
         if !std::json::valid_object(text) {
-            self.control(1, __api_hub_refusal("", "malformed", "a datagram is one JSON object", ""), false);
+            self.control(
+                1,
+                __api_hub_refusal("", "malformed", "a datagram is one JSON object", ""),
+                false,
+            );
             return;
         }
         let kind = std::json::find_string_field(text, "type");
@@ -294,7 +303,11 @@ locus __StdApiWsPeer {
             }
             let topic = std::json::find_string_field(text, "topic");
             if len(topic) == 0 {
-                self.control(1, __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""), false);
+                self.control(
+                    1,
+                    __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""),
+                    false,
+                );
                 return;
             }
             self.say(2, 0, topic);
@@ -304,7 +317,11 @@ locus __StdApiWsPeer {
             self.open = false;
             return;
         }
-        self.control(1, __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""), false);
+        self.control(
+            1,
+            __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""),
+            false,
+        );
     }
     // `{"type":"event",…}` as `{"type":"event","id":ID,…}`
     fn with_id(text: String) -> String {
@@ -312,7 +329,14 @@ locus __StdApiWsPeer {
         return text[0..(at + 1)] + ",\"id\":" + self.cid + text[(at + 1)..len(text)];
     }
     fn say(kind: Int, a: Int, text: String) {
-        __ApiHubUpT <- __StdApiHubUp { key: self.tid, conn: self.conn, kind: kind, a: a, text: text, text2: "" };
+        __ApiHubUpT <- __StdApiHubUp {
+            key: self.tid,
+            conn: self.conn,
+            kind: kind,
+            a: a,
+            text: text,
+            text2: "",
+        };
     }
     // ---- the request ----
     fn serve() {
@@ -343,7 +367,9 @@ locus __StdApiWsPeer {
             self.upgrade(key, self.credential(req));
             return;
         }
-        if req.method == "GET" && (req.path == "/.description" || std::str::starts_with(req.path, "/.description?")) {
+        if req.method == "GET"
+            && (req.path == "/.description" || std::str::starts_with(req.path, "/.description?"))
+        {
             self.describe(self.credential(req));
             return;
         }
@@ -367,7 +393,11 @@ locus __StdApiWsPeer {
     }
     fn http(status: Int, content_type: String, body: String) {
         let phrase = __status_phrase(status);
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + phrase + "\r\nContent-Type: " + content_type + "\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or discard;
+        self.stream.send(
+            "HTTP/1.1 " + to_string(status) + " " + phrase + "\r\nContent-Type: " + content_type
+                + "\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n"
+                + body,
+        ) or discard;
     }
     // `GET /.description`: the document for the caller, from the core.
     fn describe(cred: String) {
@@ -386,7 +416,11 @@ locus __StdApiWsPeer {
     }
     // ---- the WebSocket ----
     fn upgrade(key: String, cred: String) {
-        let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+        let answer = std::text::base64::encode(
+            std::crypto::sha1(
+                std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+            ),
+        );
         self.live = true;
         self.connected = true;
         self.say(1, 0, cred);
@@ -396,7 +430,12 @@ locus __StdApiWsPeer {
         while !self.auth_done && std::time::monotonic_ns() - started < 2000000000 {
             std::time::sleep(1ms);
         }
-        self.stream.send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + answer + "\r\n\r\n") or { self.hangup(); };
+        self.stream.send(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+                + answer + "\r\n\r\n",
+        ) or {
+            self.hangup();
+        };
         self.parse_frames();
         // each read is a method of its own, so what it allocates is freed
         // when it returns: this loop is the connection's whole life
@@ -418,7 +457,9 @@ locus __StdApiWsPeer {
         }
         let chunk = self.stream.recv_bytes(65536) or std::bytes::from_string("");
         if len(chunk) == 0 {
-            let waiting = self.expiry != 0 && !self.expired && self.expiry - std::time::nanos(std::time::current()) < 50000000;
+            let waiting = self.expiry != 0
+                && !self.expired
+                && self.expiry - std::time::nanos(std::time::current()) < 50000000;
             if !waiting { self.open = false; }
         } else {
             self.inbuf = std::bytes::concat(self.inbuf, chunk);
@@ -495,14 +536,22 @@ locus __StdApiWsPeer {
     }
     fn on_text(text: String) {
         if !std::json::valid_object(text) {
-            self.control(1, __api_hub_refusal("", "malformed", "a frame is one JSON object", ""), false);
+            self.control(
+                1,
+                __api_hub_refusal("", "malformed", "a frame is one JSON object", ""),
+                false,
+            );
             return;
         }
         let kind = std::json::find_string_field(text, "type");
         if kind == "subscribe" {
             let topic = std::json::find_string_field(text, "topic");
             if len(topic) == 0 {
-                self.control(1, __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""), false);
+                self.control(
+                    1,
+                    __api_hub_refusal("", "malformed", "a subscribe frame names its topic", ""),
+                    false,
+                );
                 return;
             }
             self.say(2, 0, topic);
@@ -514,7 +563,11 @@ locus __StdApiWsPeer {
             self.say(7, seq, text);
             return;
         }
-        self.control(1, __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""), false);
+        self.control(
+            1,
+            __api_hub_refusal("", "malformed", "unknown frame type: " + kind, ""),
+            false,
+        );
     }
     // ---- what the core says ----
     fn on_out(o: __StdApiHubOut) {
@@ -538,7 +591,11 @@ locus __StdApiWsPeer {
             self.sub_new[s] = 0;
             if policy == "drop_new" { self.sub_new[s] = 1; }
             self.sub_topic[s] = topic;
-            self.control(1, "{\"type\":\"subscribed\",\"topic\":" + __api_hub_quote(topic) + "}", false);
+            self.control(
+                1,
+                "{\"type\":\"subscribed\",\"topic\":" + __api_hub_quote(topic) + "}",
+                false,
+            );
             return;
         }
         if o.kind == 3 {
@@ -557,9 +614,17 @@ locus __StdApiWsPeer {
         if o.kind == 6 {
             if self.mode == 1 {
                 if o.a == 200 {
-                    self.control(1, "{\"type\":\"description\",\"document\":" + o.text + "}", false);
+                    self.control(
+                        1,
+                        "{\"type\":\"description\",\"document\":" + o.text + "}",
+                        false,
+                    );
                 } else {
-                    self.control(1, "{\"type\":\"description\",\"document\":null,\"refusal\":" + o.text + "}", false);
+                    self.control(
+                        1,
+                        "{\"type\":\"description\",\"document\":null,\"refusal\":" + o.text + "}",
+                        false,
+                    );
                 }
                 return;
             }
@@ -613,7 +678,16 @@ locus __StdApiWsPeer {
             self.shed_oldest(s);
         }
         self.order = self.order + 1;
-        self.put(__StdApiHubFrame { stream: s, order: self.order, op: 1, then_close: false, text: "{\"type\":\"event\",\"topic\":" + __api_hub_quote(self.sub_topic[s]) + ",\"seq\":" + to_string(seq) + ",\"payload\":" + e.payload + "}" });
+        self.put(
+            __StdApiHubFrame {
+                stream: s,
+                order: self.order,
+                op: 1,
+                then_close: false,
+                text: "{\"type\":\"event\",\"topic\":" + __api_hub_quote(self.sub_topic[s])
+                    + ",\"seq\":" + to_string(seq) + ",\"payload\":" + e.payload + "}",
+            },
+        );
         self.sub_count[s] = self.sub_count[s] + 1;
         self.flush();
     }
@@ -640,7 +714,8 @@ locus __StdApiWsPeer {
         while k < n {
             let f = self.frames.get(k) or __StdApiHubFrame { };
             if f.order != 0 && (best < 0 || f.order < best_order) {
-                let wanted = (s >= 0 && f.stream == s) || (s < 0 && (!controls_only || f.stream < 0));
+                let wanted = (s >= 0 && f.stream == s)
+                    || (s < 0 && (!controls_only || f.stream < 0));
                 if wanted {
                     best = k;
                     best_order = f.order;
@@ -675,7 +750,12 @@ locus __StdApiWsPeer {
         if s < 0 || s > 15 || self.sub_on[s] == 0 { return; }
         let topic = self.sub_topic[s];
         self.purge(s);
-        self.control(1, "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic) + ",\"reason\":" + __api_hub_quote(reason) + "}", false);
+        self.control(
+            1,
+            "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic) + ",\"reason\":"
+                + __api_hub_quote(reason) + "}",
+            false,
+        );
     }
     fn check_expiry() {
         self.check_expiry_quiet();
@@ -685,7 +765,15 @@ locus __StdApiWsPeer {
     fn control(op: Int, text: String, then_close: Bool) {
         if !self.open { return; }
         self.order = self.order + 1;
-        self.put(__StdApiHubFrame { stream: -1, order: self.order, op: op, then_close: then_close, text: text });
+        self.put(
+            __StdApiHubFrame {
+                stream: -1,
+                order: self.order,
+                op: op,
+                then_close: then_close,
+                text: text,
+            },
+        );
         self.flush();
     }
     // Write what is queued, oldest first: events only while the connection's
@@ -740,7 +828,16 @@ locus __StdApiWsPeer {
         let topic = self.sub_topic[s];
         self.purge(s);
         self.order = self.order + 1;
-        self.put(__StdApiHubFrame { stream: -1, order: self.order, op: 1, then_close: false, text: "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic) + ",\"reason\":" + __api_hub_quote(reason) + "}" });
+        self.put(
+            __StdApiHubFrame {
+                stream: -1,
+                order: self.order,
+                op: 1,
+                then_close: false,
+                text: "{\"type\":\"unauthorized\",\"topic\":" + __api_hub_quote(topic)
+                    + ",\"reason\":" + __api_hub_quote(reason) + "}",
+            },
+        );
     }
     // One WebSocket frame, unmasked, as a server writes it.
     fn write_frame(op: Int, text: String) {
@@ -789,7 +886,12 @@ locus __StdApiWsConns {
         tid: Int = 0;
     }
     fn serve(c: __StdIoTcpAccepted) {
-        __StdApiWsPeer { conn: c.seq, tid: self.tid, route: self.tid * 4294967296 + c.seq, fd: c.fd };
+        __StdApiWsPeer {
+            conn: c.seq,
+            tid: self.tid,
+            route: self.tid * 4294967296 + c.seq,
+            fd: c.fd,
+        };
     }
     accept(p: __StdApiWsPeer) { }
     release(p: __StdApiWsPeer) { }
@@ -816,7 +918,10 @@ locus __StdApiWsListener {
         // no route until then)
         listener: String = "";
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
-        conns: __StdIoTcpConnections = __StdIoTcpConnections { handler: __StdApiWsConns { tid: self.tid }, armed: false };
+        conns: __StdIoTcpConnections = __StdIoTcpConnections {
+            handler: __StdApiWsConns { tid: self.tid },
+            armed: false,
+        };
     }
     bus {
         subscribe __ApiHubOutT as on_ctl where key == self.tid;
@@ -840,7 +945,10 @@ locus __StdApiWsListener {
         }
         self.relay.name = self.listener;
         self.relay.armed = true;
-        self.conns = __StdIoTcpConnections { listener: self.listener, handler: __StdApiWsConns { tid: self.tid } };
+        self.conns = __StdIoTcpConnections {
+            listener: self.listener,
+            handler: __StdApiWsConns { tid: self.tid },
+        };
     }
     run() {
         // A connection accepted before the hub's core is subscribed would
@@ -850,7 +958,13 @@ locus __StdApiWsListener {
         // The asking carries the address it was bound to, which the hub's
         // description states.
         while !self.started && !self.stopped && !self.draining {
-            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: self.listener };
+            __ApiHubOutT <- __StdApiHubOut {
+                key: self.tid,
+                kind: 8,
+                a: 0,
+                b: 0,
+                text: self.listener,
+            };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {
@@ -932,14 +1046,24 @@ locus __StdApiUdpEndpoint {
         // (as the WebSocket listener: nothing is read before the core is
         // there, and the asking carries the address it was bound to)
         while !self.started && !self.stopped && !self.draining {
-            __ApiHubOutT <- __StdApiHubOut { key: self.tid, kind: 8, a: 0, b: 0, text: self.address };
+            __ApiHubOutT <- __StdApiHubOut {
+                key: self.tid,
+                kind: 8,
+                a: 0,
+                b: 0,
+                text: self.address,
+            };
             std::time::sleep(2ms);
         }
         while !self.stopped && !self.draining {
             let b = std::io::udp::recv_with_source(self.fd, 65536) or std::bytes::from_string("");
             if self.stopped || self.draining { break; }
             if len(b) > 0 {
-                self.route_datagram(std::str::from_bytes(b), std::io::udp::last_source_host(), std::io::udp::last_source_port());
+                self.route_datagram(
+                    std::str::from_bytes(b),
+                    std::io::udp::last_source_host(),
+                    std::io::udp::last_source_port(),
+                );
             }
         }
         // The subscribers send through this socket: it is theirs for the instant
@@ -961,9 +1085,24 @@ locus __StdApiUdpEndpoint {
             conn = self.next_conn;
             self.next_conn = conn + 1;
             self.remember(__StdApiUdpKnown { conn: conn, key: key });
-            __StdApiWsPeer { mode: 1, ufd: self.fd, host: host, port: port, cid: id, conn: conn, tid: self.tid, route: self.tid * 4294967296 + conn };
+            __StdApiWsPeer {
+                mode: 1,
+                ufd: self.fd,
+                host: host,
+                port: port,
+                cid: id,
+                conn: conn,
+                tid: self.tid,
+                route: self.tid * 4294967296 + conn,
+            };
         }
-        __ApiHubOutT <- __StdApiHubOut { key: self.tid * 4294967296 + conn, kind: 20, a: 0, b: 0, text: text };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.tid * 4294967296 + conn,
+            kind: 20,
+            a: 0,
+            b: 0,
+            text: text,
+        };
     }
     fn conn_of(key: String) -> Int {
         let n = self.known.len();
@@ -1192,7 +1331,15 @@ locus __StdApiHub {
         let mut expiry = 0;
         if len(u.text) > 0 {
             let p = self.principals.principal(u.text);
-            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.name };
+            who = std::api::Principal {
+                mode: "bearer",
+                name: p.name,
+                uid: p.uid,
+                gid: p.gid,
+                pid: p.pid,
+                groups: p.groups,
+                via: self.name,
+            };
             named = len(p.name) > 0;
             why = "";
             if !named {
@@ -1202,13 +1349,35 @@ locus __StdApiHub {
                 expiry = self.expiring.expiry(u.text);
             }
         }
-        self.put(__StdApiHubConn { conn: u.conn, p: who, cred: u.text, named: named, why: why, expiry: expiry, subs: 0 });
+        self.put(
+            __StdApiHubConn {
+                conn: u.conn,
+                p: who,
+                cred: u.text,
+                named: named,
+                why: why,
+                expiry: expiry,
+                subs: 0,
+            },
+        );
         let mut flag = 0;
         if named { flag = 1; }
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 1, a: expiry, b: flag, text: "" };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(u.conn),
+            kind: 1,
+            a: expiry,
+            b: flag,
+            text: "",
+        };
     }
     fn refuse(conn: Int, topic: String, kind: String, reason: String, requires: String) {
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(conn), kind: 3, a: 0, b: 0, text: __api_hub_refusal(topic, kind, reason, requires) };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(conn),
+            kind: 3,
+            a: 0,
+            b: 0,
+            text: __api_hub_refusal(topic, kind, reason, requires),
+        };
     }
     // Whether the caller holds `role` under this hub's role source: directly
     // or through a role that includes it (`grants` of the rows).
@@ -1271,7 +1440,13 @@ locus __StdApiHub {
             return;
         }
         if c.expiry != 0 && c.expiry <= std::time::nanos(std::time::current()) {
-            self.refuse(u.conn, topic, "unauthenticated", "the bearer token is refused: expired", "");
+            self.refuse(
+                u.conn,
+                topic,
+                "unauthenticated",
+                "the bearer token is refused: expired",
+                "",
+            );
             return;
         }
         let req = self.rows.requires(s);
@@ -1281,16 +1456,42 @@ locus __StdApiHub {
             return;
         }
         if (c.subs & (1 << s)) == 0 {
-            self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: c.subs | (1 << s) });
+            self.put(
+                __StdApiHubConn {
+                    conn: c.conn,
+                    p: c.p,
+                    cred: c.cred,
+                    named: c.named,
+                    why: c.why,
+                    expiry: c.expiry,
+                    subs: c.subs | (1 << s),
+                },
+            );
             self.admitted = self.admitted + 1;
         }
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 2, a: s, b: self.rows.bound(s), text: self.rows.on_full(s) + " " + topic };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(u.conn),
+            kind: 2,
+            a: s,
+            b: self.rows.bound(s),
+            text: self.rows.on_full(s) + " " + topic,
+        };
     }
     fn expired(u: __StdApiHubUp) {
         let k = self.index_of(u.conn);
         if k < 0 { return; }
         let c = self.conns.get(k) or __StdApiHubConn { };
-        self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: 0 });
+        self.put(
+            __StdApiHubConn {
+                conn: c.conn,
+                p: c.p,
+                cred: c.cred,
+                named: c.named,
+                why: c.why,
+                expiry: c.expiry,
+                subs: 0,
+            },
+        );
     }
     fn gone(u: __StdApiHubUp) {
         let k = self.index_of(u.conn);
@@ -1329,10 +1530,19 @@ locus __StdApiHub {
         self.pend(__StdApiHubPend { corr: corr, id: id });
         if self.rpc == 0 {
             // no surface is served over this hub
-            self.answer(corr, 0, "\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"this hub serves no surface\"}", "{\"mode\":\"bearer\",\"name\":\"\"}");
+            self.answer(
+                corr,
+                0,
+                "\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"this hub serves no surface\"}",
+                "{\"mode\":\"bearer\",\"name\":\"\"}",
+            );
             return;
         }
-        __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.rpc, correlation: corr, raw: std::bytes::from_string(cred + "\t" + u.text) };
+        __ApiRpcIngressT <- __StdApiRpcIngress {
+            exposure: self.rpc,
+            correlation: corr,
+            raw: std::bytes::from_string(cred + "\t" + u.text),
+        };
     }
     fn pend(p: __StdApiHubPend) {
         let n = self.pends.len();
@@ -1363,7 +1573,14 @@ locus __StdApiHub {
     fn answer(corr: Int, request_id: Int, answer: String, caller: String) {
         let id = self.take_id(corr);
         if len(id) == 0 { return; }
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(corr / 16777216), kind: 9, a: 0, b: 0, text: "{\"type\":\"reply\",\"request_id\":" + to_string(request_id) + ",\"id\":" + id + "," + answer + ",\"caller\":" + caller + "}" };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(corr / 16777216),
+            kind: 9,
+            a: 0,
+            b: 0,
+            text: "{\"type\":\"reply\",\"request_id\":" + to_string(request_id) + ",\"id\":" + id
+                + "," + answer + ",\"caller\":" + caller + "}",
+        };
     }
     fn attach(exposure: Int) -> String {
         self.rpc = exposure;
@@ -1381,21 +1598,60 @@ locus __StdApiHub {
         if call.kind == "string" {
             let payload = std::json::find_field_raw(line, "payload");
             if len(payload) == 0 {
-                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: cred, peer: nobody, reason: "a call carries a \"payload\" object" };
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    credential: cred,
+                    peer: nobody,
+                    reason: "a call carries a \"payload\" object",
+                };
             }
-            return std::api::Request { kind: 0, member: call.text, bytes: std::bytes::from_string(payload), digest: std::json::find_string_field(line, "digest"), correlation: correlation, credential: cred, peer: nobody, reason: "" };
+            return std::api::Request {
+                kind: 0,
+                member: call.text,
+                bytes: std::bytes::from_string(payload),
+                digest: std::json::find_string_field(line, "digest"),
+                correlation: correlation,
+                credential: cred,
+                peer: nobody,
+                reason: "",
+            };
         }
-        return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: cred, peer: nobody, reason: "a call names its member in \"call\"" };
+        return std::api::Request {
+            kind: 2,
+            bytes: raw,
+            correlation: correlation,
+            credential: cred,
+            peer: nobody,
+            reason: "a call names its member in \"call\"",
+        };
     }
-    fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
-        self.answer(correlation, request_id, __api_outcome_answer(outcome), __api_caller_json(caller, false));
+    fn reply(
+        correlation: Int,
+        request_id: Int,
+        caller: std::api::Principal,
+        outcome: std::api::Outcome
+    ) {
+        self.answer(
+            correlation,
+            request_id,
+            __api_outcome_answer(outcome),
+            __api_caller_json(caller, false),
+        );
     }
     // The call's connection is gone and its work has completed: nothing is
     // written; whatever is left of the connection is closed.
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
         self.take_id(correlation);
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(correlation / 16777216), kind: 10, a: 0, b: 0, text: "" };
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(correlation / 16777216),
+            kind: 10,
+            a: 0,
+            b: 0,
+            text: "",
+        };
     }
     fn stop_listening() {
         self.stop();
@@ -1414,13 +1670,29 @@ locus __StdApiHub {
                     let miss = self.missing_role(c.p, self.rows.requires(s));
                     if len(miss) > 0 {
                         subs = subs - (1 << s);
-                        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 4, a: s, b: 0, text: "" };
+                        __ApiHubOutT <- __StdApiHubOut {
+                            key: self.route(u.conn),
+                            kind: 4,
+                            a: s,
+                            b: 0,
+                            text: "",
+                        };
                     }
                 }
                 s = s + 1;
             }
             if subs != c.subs {
-                self.put(__StdApiHubConn { conn: c.conn, p: c.p, cred: c.cred, named: c.named, why: c.why, expiry: c.expiry, subs: subs });
+                self.put(
+                    __StdApiHubConn {
+                        conn: c.conn,
+                        p: c.p,
+                        cred: c.cred,
+                        named: c.named,
+                        why: c.why,
+                        expiry: c.expiry,
+                        subs: subs,
+                    },
+                );
             }
         }
         __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 5, a: u.a, b: 0, text: "" };
@@ -1433,7 +1705,15 @@ locus __StdApiHub {
         let mut why = "no credential was presented";
         if len(u.text) > 0 {
             let p = self.principals.principal(u.text);
-            who = std::api::Principal { mode: "bearer", name: p.name, uid: p.uid, gid: p.gid, pid: p.pid, groups: p.groups, via: self.name };
+            who = std::api::Principal {
+                mode: "bearer",
+                name: p.name,
+                uid: p.uid,
+                gid: p.gid,
+                pid: p.pid,
+                groups: p.groups,
+                via: self.name,
+            };
             if len(p.name) > 0 {
                 why = "";
             } else {
@@ -1448,7 +1728,14 @@ locus __StdApiHub {
             }
         }
         if len(why) > 0 {
-            __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 6, a: 401, b: 0, text: "{\"ok\":false,\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":" + __api_hub_quote(why) + "}}" };
+            __ApiHubOutT <- __StdApiHubOut {
+                key: self.route(u.conn),
+                kind: 6,
+                a: 401,
+                b: 0,
+                text: "{\"ok\":false,\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":"
+                    + __api_hub_quote(why) + "}}",
+            };
             return;
         }
         let n = self.rows.count();
@@ -1489,7 +1776,16 @@ locus __StdApiHub {
             }
             j = j + 1;
         }
-        let doc = self.rows.head(self.address) + "{\"mode\":" + __api_hub_quote(who.mode) + ",\"name\":" + __api_hub_quote(who.name) + "},\"roles\":" + __api_hub_csv_json(held) + "},\"members\":[],\"streams\":[" + streams + "],\"outcomes\":" + self.rows.outcomes() + ",\"schemas\":{" + schemas + "},\"notes\":" + self.rows.notes() + "}";
-        __ApiHubOutT <- __StdApiHubOut { key: self.route(u.conn), kind: 6, a: 200, b: 0, text: doc };
+        let doc = self.rows.head(self.address) + "{\"mode\":" + __api_hub_quote(who.mode)
+            + ",\"name\":" + __api_hub_quote(who.name) + "},\"roles\":" + __api_hub_csv_json(held)
+            + "},\"members\":[],\"streams\":[" + streams + "],\"outcomes\":" + self.rows.outcomes()
+            + ",\"schemas\":{" + schemas + "},\"notes\":" + self.rows.notes() + "}";
+        __ApiHubOutT <- __StdApiHubOut {
+            key: self.route(u.conn),
+            kind: 6,
+            a: 200,
+            b: 0,
+            text: doc,
+        };
     }
 }

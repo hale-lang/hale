@@ -29,7 +29,9 @@ locus Kid {
     fn on_go(g: Go) {
         self.heard = self.heard + 1;
         if self.heard == 100 && self.tag == 1 { std::io::fs::write_file(gate(), "go") or discard; }
-        if self.name != "kid-" + to_string(self.tag) + "-name" { println("ev handler-torn " + self.name); }
+        if self.name != "kid-" + to_string(self.tag) + "-name" {
+            println("ev handler-torn " + self.name);
+        }
         if self.tag == 1 { std::time::sleep(1ms); }
     }
     dissolve() { println("ev kid-dissolve " + to_string(self.tag) + " " + self.name); }
@@ -58,7 +60,9 @@ main locus App {
         let opened = gate();
         let stopped = stop();
         let until = std::time::monotonic_ns() + 10000000000;
-        while (!std::io::fs::file_exists(opened) && std::time::monotonic_ns() < until) { std::time::sleep(1ms); }
+        while (!std::io::fs::file_exists(opened) && std::time::monotonic_ns() < until) {
+            std::time::sleep(1ms);
+        }
         let sent = self.f.sent;
         self.b = Kid { tag: 2 };
         println("ev replaced");

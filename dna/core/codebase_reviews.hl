@@ -38,7 +38,9 @@ fn codebase_review_decided(j: Journal, task: String) -> Bool {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.entity == task && (e.kind == "task.delivered" || e.kind == "task.refused") { return true; }
+        if e.entity == task && (e.kind == "task.delivered" || e.kind == "task.refused") {
+            return true;
+        }
         i = i + 1;
     }
     return false;
@@ -53,12 +55,18 @@ fn codebase_reviews_open(j: Journal) -> String {
     let mut i = j.revision() - 1;
     while i >= 0 {
         let e = j.read(i);
-        if e.kind == "attempt.outcome" && std::json::find_string_field(e.body, "disposition") == "done" {
+        if e.kind == "attempt.outcome"
+            && std::json::find_string_field(e.body, "disposition") == "done"
+        {
             let ref = std::json::find_string_field(e.body, "result_ref");
             let task = task_of_attempt(e.entity);
-            if std::str::starts_with(ref, "review:") && !std::str::contains(seen, "\n" + task + "\n") {
+            if std::str::starts_with(ref, "review:")
+                && !std::str::contains(seen, "\n" + task + "\n")
+            {
                 seen = seen + task + "\n";
-                if task_codebase(j, task).present && !codebase_review_decided(j, task) { out = out + task + "\t" + ref[7..len(ref)] + "\n"; }
+                if task_codebase(j, task).present && !codebase_review_decided(j, task) {
+                    out = out + task + "\t" + ref[7..len(ref)] + "\n";
+                }
             }
         }
         i = i - 1;
@@ -66,7 +74,9 @@ fn codebase_reviews_open(j: Journal) -> String {
     return out;
 }
 
-fn intake_row(kind: String, entity: String, body: String) -> String { return kind + "\t" + entity + "\t" + body + "\n"; }
+fn intake_row(kind: String, entity: String, body: String) -> String {
+    return kind + "\t" + entity + "\t" + body + "\n";
+}
 
 // The n-th tab-separated field of a line ("" past the last).
 fn intake_field(line: String, n: Int) -> String {
@@ -109,7 +119,9 @@ fn codebase_intake(j: Journal, forge: Forge, receipts: Receipts, only: String) -
             let who = intake_field(cl, 0);
             let key = intake_field(cl, 1);
             let text = std::str::replace(intake_field(cl, 2), "\\n", "\n");
-            if len(key) == 0 || len(text) == 0 || std::str::contains(keys, "\n" + key + "\n") { continue; }
+            if len(key) == 0 || len(text) == 0 || std::str::contains(keys, "\n" + key + "\n") {
+                continue;
+            }
             keys = keys + key + "\n";
             let kept = receipts.store(who + " on review " + ref + ":\n" + text);
             if len(kept) == 0 { continue; }
@@ -162,7 +174,12 @@ fn codebase_intake_apply(j: Journal, rows: String) -> Int {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        let r = j.append(j.revision(), intake_field(line, 0), intake_field(line, 1), line[(len(intake_field(line, 0)) + len(intake_field(line, 1)) + 2)..len(line)]);
+        let r = j.append(
+            j.revision(),
+            intake_field(line, 0),
+            intake_field(line, 1),
+            line[(len(intake_field(line, 0)) + len(intake_field(line, 1)) + 2)..len(line)],
+        );
         if r.ok { n = n + 1; }
     }
     return n;

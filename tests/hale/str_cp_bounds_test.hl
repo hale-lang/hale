@@ -24,7 +24,11 @@ fn main() {
     std::test::assert_eq_int(std::str::cp_at(s, 1099511627776), -1, "2^40 past the end");
     std::test::assert_eq_int(std::str::cp_size(s, 1099511627776), -1, "2^40 past the end, width");
     std::test::assert_eq_int(std::str::cp_at(s, 9223372036854775807), -1, "the largest Int");
-    std::test::assert_eq_int(std::str::cp_size(s, 9223372036854775807), -1, "the largest Int, width");
+    std::test::assert_eq_int(
+        std::str::cp_size(s, 9223372036854775807),
+            -1,
+        "the largest Int, width",
+    );
     std::test::assert_eq_int(std::str::cp_at("", 0), -1, "the empty string");
     // a sequence the end cuts short: the first two bytes of '日' (E6 97)
     let cut = std::str::slice(std::str::bytes_view("日"), 0, 2);
@@ -42,7 +46,11 @@ fn main() {
     std::test::assert_eq_int(std::str::view_cp_at(v, 100000), -1, "view: past the end");
     std::test::assert_eq_int(std::str::view_cp_at(v, -1), -1, "view: a negative offset");
     std::test::assert_eq_int(std::str::view_cp_at(v, 1099511627776), -1, "view: 2^40");
-    std::test::assert_eq_int(std::str::view_cp_size(v, 9223372036854775807), -1, "view: the largest Int");
+    std::test::assert_eq_int(
+        std::str::view_cp_size(v, 9223372036854775807),
+            -1,
+        "view: the largest Int",
+    );
     let w = std::str::bytes_view("日本語");
     std::test::assert_eq_int(std::str::view_cp_at(w, 3), 26412, "view: a three-byte sequence");
     std::test::assert_eq_int(std::str::view_cp_size(w, 6), 3, "view: the last one");

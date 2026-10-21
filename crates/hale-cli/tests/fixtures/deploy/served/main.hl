@@ -16,6 +16,13 @@ main locus App {
     params {
         counter: Counter = Counter { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
-        h: api::Exposure = api::serve(Desk, self.f, as: "desk", receivers: { Counter: self.counter }, bound: 8, on_full: refuse);
+        h: api::Exposure = api::serve(
+            Desk,
+            self.f,
+            as: "desk",
+            receivers: { Counter: self.counter },
+            bound: 8,
+            on_full: refuse
+        );
     }
 }

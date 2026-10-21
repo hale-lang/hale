@@ -31,7 +31,13 @@ locus Pulse {
 
     run() {
         if len(self.database) > 0 {
-            log_info("heartbeating", fields2(std::log::kv("instance", self.instance), std::log::kv("every", to_string(self.interval / 1ms) + "ms")));
+            log_info(
+                "heartbeating",
+                fields2(
+                    std::log::kv("instance", self.instance),
+                    std::log::kv("every", to_string(self.interval / 1ms) + "ms"),
+                ),
+            );
             while true {
                 self.beat();
                 std::time::sleep(self.interval);
@@ -53,7 +59,10 @@ locus Pulse {
         }
         let a = db::Args { };
         a.add(self.instance);
-        let r = self.conn.exec_params("INSERT INTO api_instance (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_heartbeat_at = now(), reclaimed_at = NULL", a);
+        let r = self.conn.exec_params(
+            "INSERT INTO api_instance (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_heartbeat_at = now(), reclaimed_at = NULL",
+            a,
+        );
         if !r.ok {
             self.conn.close();
             self.opened = false;

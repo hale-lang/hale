@@ -79,7 +79,11 @@ fn main() {
     push(req2.models, "late") or raise;
     std::test::assert_eq_int(count(row.models), 2, "a push on the source does not reach the copy");
     clear(req2.models);
-    std::test::assert_eq_str(at(row.models, 1) or "", "m1", "a clear on the source does not reach the copy");
+    std::test::assert_eq_str(
+        at(row.models, 1) or "",
+        "m1",
+        "a clear on the source does not reach the copy",
+    );
 
     row.models = row.models;
     std::test::assert_eq_int(count(row.models), 2, "a self-assignment keeps the place");

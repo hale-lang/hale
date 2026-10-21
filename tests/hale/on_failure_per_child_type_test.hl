@@ -34,7 +34,11 @@ main locus App {
         self.a.go();
         self.b.go();
         std::test::assert_eq_int(self.alpha_seen, 1, "Alpha's failure ran the Alpha handler once");
-        std::test::assert_eq_int(self.beta_seen, 30, "Beta's two failures ran the Beta handler, handed Beta");
+        std::test::assert_eq_int(
+            self.beta_seen,
+            30,
+            "Beta's two failures ran the Beta handler, handed Beta",
+        );
     }
 }
 

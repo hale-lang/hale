@@ -34,7 +34,11 @@ main locus App {
         subscribe dna::ReviewSettled as on_settled;
     }
     fn on_settled(s: dna::ReviewSettlement) {
-        if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
+        if s.refusal != "" {
+            self.refused_seen = self.refused_seen + 1;
+        } else {
+            self.settled_seen = self.settled_seen + 1;
+        }
     }
     // The last body journaled for a kind and entity, "" when none.
     fn row_body(kind: String, entity: String) -> String {
@@ -56,19 +60,40 @@ main locus App {
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let c0 = sh(
+            "git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase",
+        );
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
-        let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
+        let cut = sh(
+            toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo
+                + "/.hale/dna/baseline.topology",
+        );
         std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
 
-        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        std::test::assert_eq_str(
+            dna::memory_fixture(repo),
+            "",
+            "the record is born in memory (GH #1590)",
+        );
         self.dna = dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             gateway: dna::MutationGateway {
-                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                workspaces: dna::IsolatedWorktrees {
+                    repo: repo,
+                    root: repo + "/.hale/dna/worktrees",
+                    base_exec_digest: "exec:base",
+                },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification {
+                hale_bin: toolchain(),
+                receipts: dna::MemoryReceipts { repo: repo },
+                scratch: repo + "/.hale/dna/scratch",
+                repo: repo,
+            },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -79,7 +104,12 @@ main locus App {
             },
             boundary: dna::AutonomyBoundary {
                 child: "app",
-                grant: dna::Grant { child: "app", classes: "feature refactor", max_magnitude: 40, review: "pre" }
+                grant: dna::Grant {
+                    child: "app",
+                    classes: "feature refactor",
+                    max_magnitude: 40,
+                    review: "pre",
+                }
             },
             baseline: ""
         };
@@ -101,15 +131,40 @@ main locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(len(candidate), 40, "a candidate commit: " + candidate);
-        std::test::assert_eq_str(std::json::find_string_field(requested, "subject_digest"), candidate, "the Review pins the candidate commit");
-        std::test::assert_eq_str(std::json::find_string_field(requested, "mutation_id"), "m1", "the request names the mutation");
-        std::test::assert_eq_str(std::json::find_string_field(requested, "disposition"), "review", "effects widened: a hard boundary, so review: " + requested);
-        std::test::assert(std::str::contains(requested, "\"external_blast\": 2"), "the magnitude travels with the request: " + requested);
-        std::test::assert_eq_int(evidence, 9, "nine receipts: base fmt check verify test fleet rollback diff magnitude");
+        std::test::assert_eq_str(
+            std::json::find_string_field(requested, "subject_digest"),
+            candidate,
+            "the Review pins the candidate commit",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(requested, "mutation_id"),
+            "m1",
+            "the request names the mutation",
+        );
+        std::test::assert_eq_str(
+            std::json::find_string_field(requested, "disposition"),
+            "review",
+            "effects widened: a hard boundary, so review: " + requested,
+        );
+        std::test::assert(
+            std::str::contains(requested, "\"external_blast\": 2"),
+            "the magnitude travels with the request: " + requested,
+        );
+        std::test::assert_eq_int(
+            evidence,
+            9,
+            "nine receipts: base fmt check verify test fleet rollback diff magnitude",
+        );
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
 
         // ---- 2. a verdict naming another digest is refused BY THE REVIEW ---
-        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: "0000000000000000000000000000000000000000", verdict: "approve", reviewer: "riley", authority: "maintainer" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: "m1",
+            subject_digest: "0000000000000000000000000000000000000000",
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "maintainer",
+        };
         std::time::sleep(100ms);
         std::test::assert_eq_int(self.refused_seen, 1, "the refusal is published");
         let mut refused_body = "";
@@ -119,10 +174,20 @@ main locus App {
             if e.kind == "review.refused" && e.entity == "m1" { refused_body = e.body; }
             i = i + 1;
         }
-        std::test::assert(std::str::contains(refused_body, "digest mismatch"), "journaled as refused by digest: " + refused_body);
+        std::test::assert(
+            std::str::contains(refused_body, "digest mismatch"),
+            "journaled as refused by digest: " + refused_body,
+        );
 
         // ---- 3. the maintainer's verdict on the exact candidate settles it -
-        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: candidate, verdict: "approve", reviewer: "riley", authority: "maintainer", comment: "ship it" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: "m1",
+            subject_digest: candidate,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "maintainer",
+            comment: "ship it",
+        };
         std::time::sleep(100ms);
         std::test::assert_eq_int(self.settled_seen, 1, "settled once");
         let mut settled_body = "";
@@ -139,10 +204,29 @@ main locus App {
         std::test::assert_eq_str(out2, "m2: review", out2);
         // a third, still in flight when this organization stops: the next
         // one fails it in the record rather than showing it located forever
-        let p3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.proposed", "m3", "task t3 feature: never finished (main.hl) at base");
-        let w3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.located", "m3", "main.hl under read edit fmt check");
-        let second = dna::Dna { journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
-        std::test::assert_eq_int(second.rehydrated, 1, "only the pending Review is re-born (m1 settled)");
+        let p3 = self.dna.journal.append(
+            self.dna.journal.revision(),
+            "mutation.proposed",
+            "m3",
+            "task t3 feature: never finished (main.hl) at base",
+        );
+        let w3 = self.dna.journal.append(
+            self.dna.journal.revision(),
+            "mutation.located",
+            "m3",
+            "main.hl under read edit fmt check",
+        );
+        let second = dna::Dna {
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
+        };
+        std::test::assert_eq_int(
+            second.rehydrated,
+            1,
+            "only the pending Review is re-born (m1 settled)",
+        );
         let mut failed3 = "";
         let mut q = 0;
         while q < second.journal.revision() {
@@ -150,9 +234,15 @@ main locus App {
             if e.kind == "mutation.failed" && e.entity == "m3" { failed3 = e.body; }
             q = q + 1;
         }
-        std::test::assert(std::str::contains(failed3, "in flight (located)"), "the in-flight mutation failed on rehydrate: " + failed3);
+        std::test::assert(
+            std::str::contains(failed3, "in flight (located)"),
+            "the in-flight mutation failed on rehydrate: " + failed3,
+        );
         std::test::assert_eq_int(second.reviews_open, 1, "and it is a live child");
-        std::test::assert(std::str::contains(second.status(), "\"rehydrated\": 1"), second.status());
+        std::test::assert(
+            std::str::contains(second.status(), "\"rehydrated\": 1"),
+            second.status(),
+        );
 
         // ---- the genome moved since the review (the shakeout's
         //      finding 2): two separately valid changes, one reviewed
@@ -160,25 +250,54 @@ main locus App {
         //      and call the result the reviewed candidate; nobody
         //      reviewed that tree and nothing verified it.
         let out2 = self.dna.mutate("t2", "refactor", "document the mailer", "main.hl", 3);
-        std::test::assert(std::str::contains(out2, ": review") || std::str::contains(out2, ": release"), "a second mutation reaches its Review: " + out2);
+        std::test::assert(
+            std::str::contains(out2, ": review") || std::str::contains(out2, ": release"),
+            "a second mutation reaches its Review: " + out2,
+        );
         let req2 = self.row_body("review.requested", "review:m2");
         let digest2 = std::json::find_string_field(req2, "subject_digest");
         let base2 = std::json::find_string_field(req2, "base_commit");
-        std::test::assert(len(digest2) > 0 && len(base2) > 0, "the Review names the candidate and its base: " + req2);
+        std::test::assert(
+            len(digest2) > 0 && len(base2) > 0,
+            "the Review names the candidate and its base: " + req2,
+        );
         // a maintainer commits to the genome while the review is pending
         std::io::fs::write_file(repo + "/NOTES.md", "a maintainer's note\n") or discard;
         let ma = sh("git\n-C\n" + repo + "\nadd\n-A");
-        let mc = sh("git\n-C\n" + repo + "\n-c\nuser.name=m\n-c\nuser.email=m@local\ncommit\n-q\n-m\nthe maintainers own change");
+        let mc = sh(
+            "git\n-C\n" + repo
+                + "\n-c\nuser.name=m\n-c\nuser.email=m@local\ncommit\n-q\n-m\nthe maintainers own change",
+        );
         std::test::assert_eq_int(mc.code, 0, "the maintainer's commit: " + mc.stderr);
         let moved_head = dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
         std::test::assert(moved_head != base2, "the genome moved");
         // the Board approves the candidate it reviewed
-        dna::ReviewVerdict <- dna::Verdict { review_id: "m2", subject_digest: digest2, verdict: "approve", reviewer: "riley", authority: "maintainer" };
+        dna::ReviewVerdict <- dna::Verdict {
+            review_id: "m2",
+            subject_digest: digest2,
+            verdict: "approve",
+            reviewer: "riley",
+            authority: "maintainer",
+        };
         std::time::sleep(200ms);
         // refused, and the genome is untouched: not a merge of the two
-        std::test::assert(std::str::contains(self.row_body("mutation.refused", "m2"), "the genome moved since the review"), "refused: " + self.row_body("mutation.refused", "m2"));
-        std::test::assert_eq_str(dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout), moved_head, "HEAD is the maintainer's commit, not a merge");
-        std::test::assert_eq_str(self.row_body("mutation.applied", "m2"), "", "nothing was applied");
+        std::test::assert(
+            std::str::contains(
+                self.row_body("mutation.refused", "m2"),
+                "the genome moved since the review",
+            ),
+            "refused: " + self.row_body("mutation.refused", "m2"),
+        );
+        std::test::assert_eq_str(
+            dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout),
+            moved_head,
+            "HEAD is the maintainer's commit, not a merge",
+        );
+        std::test::assert_eq_str(
+            self.row_body("mutation.applied", "m2"),
+            "",
+            "nothing was applied",
+        );
         dna::scratch_done(repo);
     }
 }

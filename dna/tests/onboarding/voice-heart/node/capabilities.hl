@@ -19,10 +19,15 @@ fn capabilities_problem(file: String) -> String {
     while !it.done {
         let id = std::json::iter_find_string_field(it, engines, "id");
         if !is_slug(id) { return "every engine needs an id matching ^[a-z0-9][a-z0-9-]{0,62}$"; }
-        if std::str::contains(seen, "\n" + id + "\n") { return "engine id " + id + " appears twice"; }
+        if std::str::contains(seen, "\n" + id + "\n") {
+            return "engine id " + id + " appears twice";
+        }
         seen = seen + id + "\n";
         let kind = std::json::iter_find_string_field(it, engines, "kind");
-        if kind != "static" { return "engine " + id + ": kind " + kind + " is not one this build runs (" + KINDS + ")"; }
+        if kind != "static" {
+            return "engine " + id + ": kind " + kind + " is not one this build runs (" + KINDS
+                + ")";
+        }
         it = std::json::array_next_span(it, engines);
     }
     return "";
@@ -40,7 +45,9 @@ fn declared_capabilities(file: String) -> String {
     while !it.done {
         if !first { out = out + ", "; }
         let id = std::json::iter_find_string_field(it, engines, "id");
-        out = out + "{\"id\": \"" + id + "\", \"kind\": \"static\", \"description\": \"Answers every request with the seat's configured text.\", \"models\": null, \"config_schema\": " + STATIC_CONFIG_SCHEMA + "}";
+        out = out + "{\"id\": \"" + id
+            + "\", \"kind\": \"static\", \"description\": \"Answers every request with the seat's configured text.\", \"models\": null, \"config_schema\": "
+            + STATIC_CONFIG_SCHEMA + "}";
         first = false;
         it = std::json::array_next_span(it, engines);
     }

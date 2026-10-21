@@ -18,7 +18,11 @@ type ChangeRead {
 }
 
 /// A page of changes; `next_cursor` is `null` on the last.
-type ChangeReadList { data: bounded[ChangeRead; 1000]; has_next_cursor: Bool = false; next_cursor: String = ""; }
+type ChangeReadList {
+    data: bounded[ChangeRead; 1000];
+    has_next_cursor: Bool = false;
+    next_cursor: String = "";
+}
 
 /// `Change`, as the surface describes it: `before` and `after` the
 /// resource's JSON, free-form, or `null`.
@@ -35,7 +39,11 @@ type Change {
     after: std::json::Value = std::json::Value::null();
 }
 
-type ChangeList { data: bounded[Change; 1000]; has_next_cursor: Bool = false; next_cursor: String = ""; }
+type ChangeList {
+    data: bounded[Change; 1000];
+    has_next_cursor: Bool = false;
+    next_cursor: String = "";
+}
 
 locus Changes {
     params { store: st::Store; }
@@ -49,11 +57,25 @@ locus Changes {
 
     fn list_read(q: st::ChangeQuery) -> ChangeReadList fallible(ApiError) {
         let rows = self.store.changes(q) or fail store_failed(err);
-        if !rows.cursor_known { fail invalid("`cursor` names no change; pass a page's `next_cursor`", "cursor"); }
+        if !rows.cursor_known {
+            fail invalid("`cursor` names no change; pass a page's `next_cursor`", "cursor");
+        }
         let mut out = ChangeReadList { };
         let mut last = "";
         for c in rows.rows {
-            push(out.data, ChangeRead { id: c.id, at: c.at, action: action_of(c.action), target: c.target, has_before: len(c.before) > 0, before: c.before, has_after: len(c.after) > 0, after: c.after }) or discard;
+            push(
+                out.data,
+                ChangeRead {
+                    id: c.id,
+                    at: c.at,
+                    action: action_of(c.action),
+                    target: c.target,
+                    has_before: len(c.before) > 0,
+                    before: c.before,
+                    has_after: len(c.after) > 0,
+                    after: c.after,
+                },
+            ) or discard;
             last = c.id;
         }
         if rows.more {
@@ -66,7 +88,26 @@ locus Changes {
 
 /// A `ChangeRead` as the surface's typed `Change`.
 fn change_of_read(c: ChangeRead) -> Change fallible(ApiError) {
-    return Change { id: c.id, at: c.at, has_principal: c.has_principal, principal: c.principal, action: c.action, target: c.target, has_before: c.has_before, before: if c.has_before { stored_value(c.before, "change " + c.id + "'s before") or raise } else { std::json::Value::null() }, has_after: c.has_after, after: if c.has_after { stored_value(c.after, "change " + c.id + "'s after") or raise } else { std::json::Value::null() } };
+    return Change {
+        id: c.id,
+        at: c.at,
+        has_principal: c.has_principal,
+        principal: c.principal,
+        action: c.action,
+        target: c.target,
+        has_before: c.has_before,
+        before: if c.has_before {
+            stored_value(c.before, "change " + c.id + "'s before") or raise
+        } else {
+            std::json::Value::null()
+        },
+        has_after: c.has_after,
+        after: if c.has_after {
+            stored_value(c.after, "change " + c.id + "'s after") or raise
+        } else {
+            std::json::Value::null()
+        },
+    };
 }
 
 /// A `ChangeReadList` as the surface's typed `ChangeList`.
@@ -80,36 +121,56 @@ fn change_list_of_read(l: ChangeReadList) -> ChangeList fallible(ApiError) {
 
 /// A change made now. `before` and `after` are JSON, "" for `null`.
 fn change(action: String, target: String, before: String, after: String) -> st::ChangeRow {
-    return st::ChangeRow { at: now_seconds(), action: action, target: target, before: before, after: after };
+    return st::ChangeRow {
+        at: now_seconds(),
+        action: action,
+        target: target,
+        before: before,
+        after: after,
+    };
 }
 
 // ---- the wire ----------------------------------------------------------
 
 /// `GET /admin/v1/changes`'s query.
 fn read_change_query(p: std::http::RouteParams) -> st::ChangeQuery fallible(ApiError) {
-    let mut q = st::ChangeQuery { target: std::http::query_param(p, "target"), cursor: std::http::query_param(p, "cursor") };
+    let mut q = st::ChangeQuery {
+        target: std::http::query_param(p, "target"),
+        cursor: std::http::query_param(p, "cursor"),
+    };
     let from = std::http::query_param(p, "from");
     if len(from) > 0 {
         q.has_from = true;
-        q.from = rfc3339(from) or fail invalid("`from` is an RFC 3339 time, such as 2026-10-01T00:00:00Z", "from");
+        q.from = rfc3339(from) or fail invalid(
+            "`from` is an RFC 3339 time, such as 2026-10-01T00:00:00Z",
+            "from"
+        );
     }
     let to = std::http::query_param(p, "to");
     if len(to) > 0 {
         q.has_to = true;
-        q.to = rfc3339(to) or fail invalid("`to` is an RFC 3339 time, such as 2026-10-01T00:00:00Z", "to");
+        q.to = rfc3339(to) or fail invalid(
+            "`to` is an RFC 3339 time, such as 2026-10-01T00:00:00Z",
+            "to"
+        );
     }
     let limit = std::http::query_param(p, "limit");
     if len(limit) > 0 {
         let n = std::str::parse_int(limit) or 0;
-        if !is_integer(limit) || n < 1 || n > 1000 { fail invalid("`limit` is 1 to 1000", "limit"); }
+        if !is_integer(limit) || n < 1 || n > 1000 {
+            fail invalid("`limit` is 1 to 1000", "limit");
+        }
         q.limit = n;
     }
     return q;
 }
 
 fn change_json(c: ChangeRead) -> String {
-    return "{\"id\": " + jq(c.id) + ", \"at\": " + jtime(c.at) + ", \"principal\": " + jstring_or_null(c.has_principal, c.principal) + ", \"action\": " + jq(action_name(c.action))
-        + ", \"target\": " + jq(c.target) + ", \"before\": " + jraw_if(c.has_before, c.before) + ", \"after\": " + jraw_if(c.has_after, c.after) + "}";
+    return "{\"id\": " + jq(c.id) + ", \"at\": " + jtime(c.at) + ", \"principal\": "
+        + jstring_or_null(c.has_principal, c.principal) + ", \"action\": "
+        + jq(action_name(c.action))
+        + ", \"target\": " + jq(c.target) + ", \"before\": " + jraw_if(c.has_before, c.before)
+        + ", \"after\": " + jraw_if(c.has_after, c.after) + "}";
 }
 
 fn change_list_json(l: ChangeReadList) -> String {
@@ -118,5 +179,6 @@ fn change_list_json(l: ChangeReadList) -> String {
         entries_list.add(change_json(c));
     }
     let entries = entries_list.text();
-    return "{\"data\": [" + entries + "], \"next_cursor\": " + jstring_or_null(l.has_next_cursor, l.next_cursor) + "}";
+    return "{\"data\": [" + entries + "], \"next_cursor\": "
+        + jstring_or_null(l.has_next_cursor, l.next_cursor) + "}";
 }

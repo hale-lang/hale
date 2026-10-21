@@ -60,7 +60,9 @@ fn p256_spki(x_b64url: String, y_b64url: String) -> String {
     let x = b64url_bytes(x_b64url);
     let y = b64url_bytes(y_b64url);
     if len(x) != 32 || len(y) != 32 { return ""; }
-    return std::text::base64::encode(std::bytes::concat(std::text::base64::decode(P256_SPKI_PREFIX), std::bytes::concat(x, y)));
+    return std::text::base64::encode(
+        std::bytes::concat(std::text::base64::decode(P256_SPKI_PREFIX), std::bytes::concat(x, y)),
+    );
 }
 
 // The signing keys of a JWKS document, `kid\t<SubjectPublicKeyInfo,
@@ -76,9 +78,19 @@ fn jwks_keys(doc: String, pinned: String) -> String {
         let k = it.element;
         let usage = std::json::find_string_field(k, "use");
         let kid = std::json::find_string_field(k, "kid");
-        if std::json::find_string_field(k, "kty") == "EC" && std::json::find_string_field(k, "crv") == "P-256" && (len(usage) == 0 || usage == "sig") && !std::str::contains(kid, "\t") && !std::str::contains(kid, "\n") {
-            let spki = p256_spki(std::json::find_string_field(k, "x"), std::json::find_string_field(k, "y"));
-            if len(spki) > 0 && (len(pinned) == 0 || spki == pinned) { out = out + kid + "\t" + spki + "\n"; }
+        if std::json::find_string_field(k, "kty") == "EC"
+            && std::json::find_string_field(k, "crv") == "P-256"
+            && (len(usage) == 0 || usage == "sig")
+            && !std::str::contains(kid, "\t")
+            && !std::str::contains(kid, "\n")
+        {
+            let spki = p256_spki(
+                std::json::find_string_field(k, "x"),
+                std::json::find_string_field(k, "y"),
+            );
+            if len(spki) > 0 && (len(pinned) == 0 || spki == pinned) {
+                out = out + kid + "\t" + spki + "\n";
+            }
         }
         it = std::json::array_next(it);
     }
@@ -88,7 +100,10 @@ fn jwks_keys(doc: String, pinned: String) -> String {
 // Whether `url` is an issuer on this machine (plain http to the loopback),
 // whose key a record must pin.
 fn issuer_loopback(url: String) -> Bool {
-    return std::str::starts_with(url, "http://127.0.0.1:") || std::str::starts_with(url, "http://127.0.0.1/") || std::str::starts_with(url, "http://localhost:") || std::str::starts_with(url, "http://localhost/");
+    return std::str::starts_with(url, "http://127.0.0.1:")
+        || std::str::starts_with(url, "http://127.0.0.1/")
+        || std::str::starts_with(url, "http://localhost:")
+        || std::str::starts_with(url, "http://localhost/");
 }
 
 // A SubjectPublicKeyInfo (base64) as the PEM the verifier reads.
@@ -100,7 +115,9 @@ fn spki_pem(b64: String) -> Bytes {
         body = body + b64[i..end] + "\n";
         i = end;
     }
-    return std::bytes::from_string("-----BEGIN PUBLIC KEY-----\n" + body + "-----END PUBLIC KEY-----\n");
+    return std::bytes::from_string(
+        "-----BEGIN PUBLIC KEY-----\n" + body + "-----END PUBLIC KEY-----\n",
+    );
 }
 
 // Why a JWT's signature is refused ("" when it verifies): ES256 alone,
@@ -129,11 +146,15 @@ fn es256_refusal(jwt: String, keys: String) -> String {
         if line[0..tab] == kid { spki = line[(tab + 1)..len(line)]; }
         if len(kid) == 0 && count == 1 { spki = line[(tab + 1)..len(line)]; }
     }
-    if len(kid) == 0 && count != 1 { return "key: the token names no key, and the issuer has " + to_string(count); }
+    if len(kid) == 0 && count != 1 {
+        return "key: the token names no key, and the issuer has " + to_string(count);
+    }
     if len(spki) == 0 { return "key: the issuer's JWKS has no signing key `" + kid + "`"; }
     let sig = b64url_bytes(jwt[(b + 1)..len(jwt)]);
     if len(sig) != 64 { return "signature: not an ES256 signature"; }
-    if !std::crypto::ecdsa_p256_verify(spki_pem(spki), std::bytes::from_string(jwt[0..b]), sig) { return "signature: does not verify under the issuer's key `" + kid + "`"; }
+    if !std::crypto::ecdsa_p256_verify(spki_pem(spki), std::bytes::from_string(jwt[0..b]), sig) {
+        return "signature: does not verify under the issuer's key `" + kid + "`";
+    }
     return "";
 }
 
@@ -157,7 +178,11 @@ fn id_token_claims(jwt: String) -> IdClaims {
     return IdClaims {
         present: true,
         iss: std::json::find_string_field(payload, "iss"),
-        aud: if std::str::starts_with(aud_raw, "[") { aud_raw } else { std::json::find_string_field(payload, "aud") },
+        aud: if std::str::starts_with(aud_raw, "[") {
+            aud_raw
+        } else {
+            std::json::find_string_field(payload, "aud")
+        },
         sub: std::json::find_string_field(payload, "sub"),
         email: std::json::find_string_field(payload, "email"),
         nonce: std::json::find_string_field(payload, "nonce"),
@@ -172,7 +197,9 @@ fn id_token_claims(jwt: String) -> IdClaims {
 fn claims_refusal(c: IdClaims, issuer: String, client: String, nonce: String, now: Int) -> String {
     let why = bearer_refusal(c, issuer, client, now);
     if len(why) > 0 { return why; }
-    if len(nonce) == 0 || c.nonce != nonce { return "nonce: the token does not answer this sign-in"; }
+    if len(nonce) == 0 || c.nonce != nonce {
+        return "nonce: the token does not answer this sign-in";
+    }
     return "";
 }
 
@@ -181,7 +208,9 @@ fn claims_refusal(c: IdClaims, issuer: String, client: String, nonce: String, no
 fn bearer_refusal(c: IdClaims, issuer: String, client: String, now: Int) -> String {
     if !c.present { return "token: not an ID token"; }
     if c.iss != issuer { return "issuer: `" + c.iss + "` is not `" + issuer + "`"; }
-    if !audience_names(c.aud, client) { return "audience: the token is not for client `" + client + "`"; }
+    if !audience_names(c.aud, client) {
+        return "audience: the token is not for client `" + client + "`";
+    }
     if c.exp <= now { return "expired: the token expired at " + to_string(c.exp); }
     if c.nbf > now + 60 { return "not yet valid: the token is valid from " + to_string(c.nbf); }
     if len(c.sub) == 0 { return "subject: none"; }
@@ -210,7 +239,9 @@ fn member_of(mapping: String, subject: String) -> String {
         let line = std::str::trim(rest[0..nl]);
         rest = rest[(nl + 1)..len(rest)];
         let eq = std::str::index_of(line, "=");
-        if eq > 0 && std::str::trim(line[0..eq]) == subject { return std::str::trim(line[(eq + 1)..len(line)]); }
+        if eq > 0 && std::str::trim(line[0..eq]) == subject {
+            return std::str::trim(line[(eq + 1)..len(line)]);
+        }
     }
     return "";
 }
@@ -274,10 +305,16 @@ fn endpoint_allowed(url: String) -> Bool {
 // else why. The ID token is authenticated by TLS to the token endpoint, so
 // that endpoint is https unless the issuer itself is on this machine.
 fn discovery_refusal(issuer: String, authorize: String, token: String) -> String {
-    if len(authorize) == 0 || len(token) == 0 { return "it names no authorization_endpoint or token_endpoint"; }
+    if len(authorize) == 0 || len(token) == 0 {
+        return "it names no authorization_endpoint or token_endpoint";
+    }
     let local = url_parts(issuer).scheme == "http";
-    if !endpoint_allowed(authorize) || (!local && url_parts(authorize).scheme != "https") { return "authorization_endpoint `" + authorize + "` is not https"; }
-    if !endpoint_allowed(token) || (!local && url_parts(token).scheme != "https") { return "token_endpoint `" + token + "` is not https"; }
+    if !endpoint_allowed(authorize) || (!local && url_parts(authorize).scheme != "https") {
+        return "authorization_endpoint `" + authorize + "` is not https";
+    }
+    if !endpoint_allowed(token) || (!local && url_parts(token).scheme != "https") {
+        return "token_endpoint `" + token + "` is not https";
+    }
     return "";
 }
 
@@ -303,7 +340,9 @@ fn response_header(headers: String, name: String) -> String {
         if nl < 0 { break; }
         let line = rest[0..nl];
         rest = rest[(nl + 2)..len(rest)];
-        if std::str::starts_with(std::str::lower(line), want) { return std::str::trim(line[len(want)..len(line)]); }
+        if std::str::starts_with(std::str::lower(line), want) {
+            return std::str::trim(line[len(want)..len(line)]);
+        }
     }
     return "";
 }

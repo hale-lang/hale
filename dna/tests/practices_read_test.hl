@@ -26,7 +26,12 @@ fn plain_count(j: dna::Journal) -> Int {
             let mut k = 0;
             while k < i {
                 let earlier = j.read(k);
-                if earlier.entity == e.entity && earlier.kind == "knowledge.proposed" && len(std::json::find_string_field(earlier.body, "name")) > 0 { first = false; }
+                if earlier.entity == e.entity
+                    && earlier.kind == "knowledge.proposed"
+                    && len(std::json::find_string_field(earlier.body, "name")) > 0
+                {
+                    first = false;
+                }
                 k = k + 1;
             }
             if first { n = n + 1; }
@@ -44,19 +49,33 @@ fn check() {
     let j = dna::RecordJournal { repo: repo };
     let q = ops::Queries { j: j, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     let total = q.practice_count();
-    std::test::assert(total > 100, "the birth proposed more practices than a page holds: " + to_string(total));
-    std::test::assert_eq_int(total, plain_count(j), "the linear read counts what the plain rule counts");
+    std::test::assert(
+        total > 100,
+        "the birth proposed more practices than a page holds: " + to_string(total),
+    );
+    std::test::assert_eq_int(
+        total,
+        plain_count(j),
+        "the linear read counts what the plain rule counts",
+    );
     // every item of a page, in the order of the record, none twice
     let mut seen = "\n";
     let mut i = 0;
     while i < total && i < 100 {
         let p = q.practice_at(i);
-        std::test::assert(len(p.id) > 0 && !std::str::contains(seen, "\n" + p.id + "\n"), "item " + to_string(i) + " is a practice of its own: " + p.id);
+        std::test::assert(
+            len(p.id) > 0 && !std::str::contains(seen, "\n" + p.id + "\n"),
+            "item " + to_string(i) + " is a practice of its own: " + p.id,
+        );
         seen = seen + p.id + "\n";
         i = i + 1;
     }
     std::test::assert_eq_str(q.practice_at(total).id, "", "past the end");
-    std::test::assert_eq_int(q.practice_count(), total, "a second count of the unmoved record is the same");
+    std::test::assert_eq_int(
+        q.practice_count(),
+        total,
+        "a second count of the unmoved record is the same",
+    );
     dna::scratch_done(scratch);
 }
 main locus App { run() { check(); } }

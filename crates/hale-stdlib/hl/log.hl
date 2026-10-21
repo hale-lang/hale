@@ -371,15 +371,18 @@ fn __log_time(ts: Int) -> String {
 // One event as the line a sink writes, in `format` (a resolved one).
 fn __log_render(format: String, e: __StdLogEvent) -> String {
     if format == "text" {
-        return "[" + __log_level_name(e.level) + " " + e.path + "] " + e.msg + __log_fields_suffix(e.fields);
+        return "[" + __log_level_name(e.level) + " " + e.path + "] " + e.msg
+            + __log_fields_suffix(e.fields);
     }
     if format == "json" {
         return "{\"time\":\"" + __log_time(e.ts) + "\",\"level\":\"" + __log_level_word(e.level)
-            + "\",\"logger\":\"" + std::json::escape_string(e.path) + "\",\"msg\":\"" + std::json::escape_string(e.msg)
+            + "\",\"logger\":\"" + std::json::escape_string(e.path) + "\",\"msg\":\""
+            + std::json::escape_string(e.msg)
             + "\"" + __log_fields_json(e.fields) + "}";
     }
     return "time=" + __log_time(e.ts) + " level=" + __log_level_word(e.level) + " "
-        + __std_log_kv("logger", e.path) + " " + __std_log_kv("msg", e.msg) + __log_fields_suffix(e.fields);
+        + __std_log_kv("logger", e.path) + " " + __std_log_kv("msg", e.msg)
+        + __log_fields_suffix(e.fields);
 }
 
 // A logfmt field list (`k=v k2="two words"`, as `std::log::kv` writes
@@ -394,7 +397,9 @@ fn __log_fields_json(fields: String) -> String {
         while i < n && (std::bytes::at(b, i) or 0) == 32 { i = i + 1; }
         if i >= n { break; }
         let key_start = i;
-        while i < n && (std::bytes::at(b, i) or 0) != 61 && (std::bytes::at(b, i) or 0) != 32 { i = i + 1; }
+        while i < n && (std::bytes::at(b, i) or 0) != 61 && (std::bytes::at(b, i) or 0) != 32 {
+            i = i + 1;
+        }
         let key = std::str::from_bytes(std::bytes::slice(b, key_start, i));
         let mut value = "";
         if i < n && (std::bytes::at(b, i) or 0) == 61 {
@@ -412,7 +417,8 @@ fn __log_fields_json(fields: String) -> String {
                         if e == 114 { v.append_u8(13); i = i + 2; continue; }
                         if e == 116 { v.append_u8(9); i = i + 2; continue; }
                         if e == 117 && i + 5 < n {
-                            let code = __log_hex(std::bytes::at(b, i + 4) or 0) * 16 + __log_hex(std::bytes::at(b, i + 5) or 0);
+                            let code = __log_hex(std::bytes::at(b, i + 4) or 0) * 16
+                                + __log_hex(std::bytes::at(b, i + 5) or 0);
                             if code > 0 { v.append_u8(code); }
                             i = i + 6;
                             continue;
@@ -432,7 +438,8 @@ fn __log_fields_json(fields: String) -> String {
                 value = std::str::from_bytes(std::bytes::slice(b, value_start, i));
             }
         }
-        out = out + ",\"" + std::json::escape_string(key) + "\":\"" + std::json::escape_string(value) + "\"";
+        out = out + ",\"" + std::json::escape_string(key) + "\":\""
+            + std::json::escape_string(value) + "\"";
     }
     return out;
 }

@@ -2,7 +2,14 @@
 import ".." as api;
 
 fn call(e: api::Endpoints, method: String, path: String, body: String) -> std::http::Response {
-    return e.handle(std::http::Request { method: method, path: path, headers: "Content-Type: application/json", body: body });
+    return e.handle(
+        std::http::Request {
+            method: method,
+            path: path,
+            headers: "Content-Type: application/json",
+            body: body,
+        },
+    );
 }
 
 fn expect(r: std::http::Response, status: Int, what: String) {
@@ -22,13 +29,39 @@ fn nth(page: String, i: Int) -> String {
 
 fn main() {
     let e = api::Endpoints { };
-    std::test::assert_eq_str(std::str::trim(call(e, "GET", "/admin/v1/changes", "").body), "{\"data\": [], \"next_cursor\": null}", "nothing yet");
+    std::test::assert_eq_str(
+        std::str::trim(call(e, "GET", "/admin/v1/changes", "").body),
+        "{\"data\": [], \"next_cursor\": null}",
+        "nothing yet",
+    );
 
-    expect(call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"), 201, "a project");
+    expect(
+        call(e, "POST", "/admin/v1/projects", "{\"id\": \"work\", \"name\": \"Work\"}"),
+        201,
+        "a project",
+    );
     let key = call(e, "POST", "/admin/v1/projects/work/keys", "{\"name\": \"ci\"}");
     let secret = std::json::find_string_field(key.body, "secret");
-    expect(call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 50000000, \"period\": \"month\"}"), 200, "a budget");
-    expect(call(e, "PUT", "/admin/v1/projects/work/budget", "{\"allowance_micros\": 75000000, \"period\": \"month\"}"), 200, "raised");
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/budget",
+            "{\"allowance_micros\": 50000000, \"period\": \"month\"}",
+        ),
+        200,
+        "a budget",
+    );
+    expect(
+        call(
+            e,
+            "PUT",
+            "/admin/v1/projects/work/budget",
+            "{\"allowance_micros\": 75000000, \"period\": \"month\"}",
+        ),
+        200,
+        "raised",
+    );
     expect(call(e, "PATCH", "/admin/v1/projects/work", "{\"name\": \"The work\"}"), 200, "renamed");
     let node = call(e, "POST", "/admin/v1/nodes", "{\"id\": \"laptop\"}");
     let token = std::json::find_string_field(node.body, "enrollment_token");
@@ -37,48 +70,131 @@ fn main() {
     let all = call(e, "GET", "/admin/v1/changes", "");
     expect(all, 200, "list");
     let newest = nth(all.body, 0);
-    std::test::assert_eq_str(std::json::find_string_field(newest, "target"), "nodes/laptop", "newest first");
+    std::test::assert_eq_str(
+        std::json::find_string_field(newest, "target"),
+        "nodes/laptop",
+        "newest first",
+    );
     std::test::assert_eq_str(std::json::find_string_field(newest, "action"), "create", "a create");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(newest, "before")), "null", "nothing before a create");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(newest, "principal")), "null", "nobody: admin authentication is off");
-    std::test::assert(!std::str::contains(all.body, token) && !std::str::contains(all.body, secret), "never a secret or a token");
-    std::test::assert(!std::str::contains(all.body, "enrollment_token") && !std::str::contains(all.body, "\"secret\""), "nor their fields");
-    std::test::assert(len(std::json::find_string_field(nth(all.body, 5), "id")) > 0, "six changes, the refused write none");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(newest, "before")),
+        "null",
+        "nothing before a create",
+    );
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(newest, "principal")),
+        "null",
+        "nobody: admin authentication is off",
+    );
+    std::test::assert(
+        !std::str::contains(all.body, token) && !std::str::contains(all.body, secret),
+        "never a secret or a token",
+    );
+    std::test::assert(
+        !std::str::contains(all.body, "enrollment_token")
+            && !std::str::contains(all.body, "\"secret\""),
+        "nor their fields",
+    );
+    std::test::assert(
+        len(std::json::find_string_field(nth(all.body, 5), "id")) > 0,
+        "six changes, the refused write none",
+    );
     std::test::assert(len(nth(all.body, 6)) == 0, "and no seventh");
 
     let renamed = nth(all.body, 1);
-    std::test::assert_eq_str(std::json::find_string_field(renamed, "action"), "update", "an update");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(renamed, "before"), "name"), "Work", "the project as it was");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(renamed, "after"), "name"), "The work", "and as it became");
+    std::test::assert_eq_str(
+        std::json::find_string_field(renamed, "action"),
+        "update",
+        "an update",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(renamed, "before"), "name"),
+        "Work",
+        "the project as it was",
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(renamed, "after"), "name"),
+        "The work",
+        "and as it became",
+    );
     let raised = nth(all.body, 2);
-    std::test::assert_eq_str(std::json::find_string_field(raised, "target"), "projects/work/budget", "the budget's own target");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(raised, "before"), "allowance_micros"), 50000000, "its allowance before");
-    std::test::assert_eq_int(std::json::find_int_field(std::json::find_field_raw(raised, "after"), "allowance_micros"), 75000000, "and after");
+    std::test::assert_eq_str(
+        std::json::find_string_field(raised, "target"),
+        "projects/work/budget",
+        "the budget's own target",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(std::json::find_field_raw(raised, "before"), "allowance_micros"),
+        50000000,
+        "its allowance before",
+    );
+    std::test::assert_eq_int(
+        std::json::find_int_field(std::json::find_field_raw(raised, "after"), "allowance_micros"),
+        75000000,
+        "and after",
+    );
 
     // filters and pages
     let projects = call(e, "GET", "/admin/v1/changes?target=projects/work", "");
     std::test::assert(!std::str::contains(projects.body, "nodes/laptop"), "under a target");
-    std::test::assert(std::str::contains(projects.body, "projects/work/keys/"), "its children included");
+    std::test::assert(
+        std::str::contains(projects.body, "projects/work/keys/"),
+        "its children included",
+    );
     let page = call(e, "GET", "/admin/v1/changes?limit=2", "");
     let cursor = std::json::find_string_field(page.body, "next_cursor");
     std::test::assert(len(cursor) > 0, "a page that stops early names where to go on");
     std::test::assert(len(nth(page.body, 2)) == 0, "two to a page");
     let next = call(e, "GET", "/admin/v1/changes?limit=2&cursor=" + cursor, "");
-    std::test::assert_eq_str(std::json::find_string_field(nth(next.body, 0), "target"), "projects/work/budget", "the next page goes on from it");
+    std::test::assert_eq_str(
+        std::json::find_string_field(nth(next.body, 0), "target"),
+        "projects/work/budget",
+        "the next page goes on from it",
+    );
     let last = call(e, "GET", "/admin/v1/changes?limit=10&cursor=" + cursor, "");
-    std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(last.body, "next_cursor")), "null", "the last page names none");
-    std::test::assert_eq_str(std::str::trim(call(e, "GET", "/admin/v1/changes?from=2099-01-01T00:00:00Z", "").body), "{\"data\": [], \"next_cursor\": null}", "from a time");
+    std::test::assert_eq_str(
+        std::str::trim(std::json::find_field_raw(last.body, "next_cursor")),
+        "null",
+        "the last page names none",
+    );
+    std::test::assert_eq_str(
+        std::str::trim(call(e, "GET", "/admin/v1/changes?from=2099-01-01T00:00:00Z", "").body),
+        "{\"data\": [], \"next_cursor\": null}",
+        "from a time",
+    );
     expect(call(e, "GET", "/admin/v1/changes?limit=0", ""), 400, "a limit is 1 to 1000");
     expect(call(e, "GET", "/admin/v1/changes?to=yesterday", ""), 400, "a time is RFC 3339");
-    std::test::assert_eq_str(std::str::trim(call(e, "GET", "/admin/v1/changes?from=2099-01-01T05:00:00%2B05:00", "").body), "{\"data\": [], \"next_cursor\": null}", "with an offset");
-    expect(call(e, "GET", "/admin/v1/changes?from=2099-02-30T00:00:00Z", ""), 400, "a day the month has");
+    std::test::assert_eq_str(
+        std::str::trim(
+            call(e, "GET", "/admin/v1/changes?from=2099-01-01T05:00:00%2B05:00", "").body,
+        ),
+        "{\"data\": [], \"next_cursor\": null}",
+        "with an offset",
+    );
+    expect(
+        call(e, "GET", "/admin/v1/changes?from=2099-02-30T00:00:00Z", ""),
+        400,
+        "a day the month has",
+    );
     let lost = call(e, "GET", "/admin/v1/changes?cursor=chg_nothing", "");
     expect(lost, 400, "a cursor that names no change");
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(lost.body, "error"), "param"), "cursor", "names the cursor");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(lost.body, "error"), "param"),
+        "cursor",
+        "names the cursor",
+    );
 
     // a node's change holds the node, not its seats
-    expect(call(e, "PATCH", "/admin/v1/nodes/laptop", "{\"name\": \"Laptop\"}"), 200, "rename the node");
+    expect(
+        call(e, "PATCH", "/admin/v1/nodes/laptop", "{\"name\": \"Laptop\"}"),
+        200,
+        "rename the node",
+    );
     let renamed_node = nth(call(e, "GET", "/admin/v1/changes?target=nodes/laptop", "").body, 0);
-    std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(renamed_node, "after"), "name"), "Laptop", "the node as it became");
+    std::test::assert_eq_str(
+        std::json::find_string_field(std::json::find_field_raw(renamed_node, "after"), "name"),
+        "Laptop",
+        "the node as it became",
+    );
     std::test::assert(!std::str::contains(renamed_node, "\"seats\""), "without its seats");
 }

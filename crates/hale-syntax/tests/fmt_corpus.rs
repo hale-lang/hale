@@ -215,7 +215,7 @@ fn tree_files() -> Vec<PathBuf> {
     out
 }
 
-/// `hale fmt --wrap` over every file in the tree and every program
+/// `hale fmt` over every file in the tree and every program
 /// embedded in a Rust test, at its width and at a narrow one that
 /// reaches every wrapping shape they hold: the gate holds (the trailing
 /// commas it adds are the only new tokens), wrapping is a fixed point

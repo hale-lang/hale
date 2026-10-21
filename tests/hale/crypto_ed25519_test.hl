@@ -11,19 +11,33 @@ fn hex(s: String) -> Bytes {
 fn vector(name: String, secret: String, public: String, message: String, signature: String) {
     let (pk, sk) = std::crypto::ed25519_keypair(hex(secret)) or(b"", b"");
     std::test::assert_eq_str(std::hex::encode(pk), public, name + ": the public key");
-    std::test::assert_eq_str(std::hex::encode(sk), secret + public, name + ": the secret key is seed + public key");
+    std::test::assert_eq_str(
+        std::hex::encode(sk),
+        secret + public,
+        name + ": the secret key is seed + public key",
+    );
 
     let msg = hex(message);
     let sig = std::crypto::ed25519_sign(sk, msg) or b"";
     std::test::assert_eq_str(std::hex::encode(sig), signature, name + ": the signature");
     let by_seed = std::crypto::ed25519_sign(hex(secret), msg) or b"";
-    std::test::assert_eq_str(std::hex::encode(by_seed), signature, name + ": signing with the seed alone");
+    std::test::assert_eq_str(
+        std::hex::encode(by_seed),
+        signature,
+        name + ": signing with the seed alone",
+    );
 
     std::test::assert(std::crypto::ed25519_verify(pk, msg, sig), name + ": verifies");
     let other = std::bytes::concat(msg, b"x");
-    std::test::assert(!std::crypto::ed25519_verify(pk, other, sig), name + ": a changed message does not");
+    std::test::assert(
+        !std::crypto::ed25519_verify(pk, other, sig),
+        name + ": a changed message does not",
+    );
     let bad = hex("00" + std::str::substring(signature, 2, 128));
-    std::test::assert(!std::crypto::ed25519_verify(pk, msg, bad), name + ": a changed signature does not");
+    std::test::assert(
+        !std::crypto::ed25519_verify(pk, msg, bad),
+        name + ": a changed signature does not",
+    );
 }
 
 fn main() {
@@ -57,13 +71,23 @@ fn main() {
     );
 
     // A wrong key does not verify another key's signature.
-    let (pk1, sk1) = std::crypto::ed25519_keypair(hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")) or(b"", b"");
-    let (pk2, sk2) = std::crypto::ed25519_keypair(hex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")) or(b"", b"");
+    let (pk1, sk1) = std::crypto::ed25519_keypair(
+        hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"),
+    ) or(b"", b"");
+    let (pk2, sk2) = std::crypto::ed25519_keypair(
+        hex("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"),
+    ) or(b"", b"");
     let sig = std::crypto::ed25519_sign(sk1, b"hello") or b"";
     std::test::assert(std::crypto::ed25519_verify(pk1, b"hello", sig), "its own key verifies");
     std::test::assert(!std::crypto::ed25519_verify(pk2, b"hello", sig), "another key does not");
-    std::test::assert(!std::crypto::ed25519_verify(b"short", b"hello", sig), "a public key that is not 32 bytes is false");
-    std::test::assert(!std::crypto::ed25519_verify(pk1, b"hello", b"short"), "a signature that is not 64 bytes is false");
+    std::test::assert(
+        !std::crypto::ed25519_verify(b"short", b"hello", sig),
+        "a public key that is not 32 bytes is false",
+    );
+    std::test::assert(
+        !std::crypto::ed25519_verify(pk1, b"hello", b"short"),
+        "a signature that is not 64 bytes is false",
+    );
 
     // The refusals: a seed that is not 32 bytes, a secret key of another
     // length, and a 64-byte key whose public half is not its seed's.
@@ -86,6 +110,14 @@ fn main() {
         kind = err.kind;
         b""
     };
-    std::test::assert_eq_str(kind, "ed25519_sign", "a secret key with another key's public half is refused");
-    std::test::assert_eq_int(len(s1) + len(s2) + len(sk2), 64, "nothing signed by the refused keys");
+    std::test::assert_eq_str(
+        kind,
+        "ed25519_sign",
+        "a secret key with another key's public half is refused",
+    );
+    std::test::assert_eq_int(
+        len(s1) + len(s2) + len(sk2),
+        64,
+        "nothing signed by the refused keys",
+    );
 }

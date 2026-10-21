@@ -32,7 +32,9 @@ fn count_declarations(diff: String, kind: String) -> Int {
     let mut n = 0;
     let mut it = std::json::array_first(std::json::find_field_raw(diff, "declarations"));
     while !it.done {
-        if std::json::find_string_field(it.element, "kind") == kind && std::json::find_string_field(it.element, "change") != "persisted" {
+        if std::json::find_string_field(it.element, "kind") == kind
+            && std::json::find_string_field(it.element, "change") != "persisted"
+        {
             n = n + 1;
         }
         it = std::json::array_next(it);
@@ -55,7 +57,9 @@ fn has_facet(diff: String, facet: String) -> Bool {
 // what external blast radius is read from.
 fn gained_classes(diff: String) -> String {
     let mut out = "";
-    let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_field_raw(diff, "effects"), "classes"));
+    let mut it = std::json::array_first(
+        std::json::find_field_raw(std::json::find_field_raw(diff, "effects"), "classes"),
+    );
     while !it.done {
         let mut g = std::json::array_first(std::json::find_field_raw(it.element, "gained"));
         while !g.done {
@@ -123,8 +127,13 @@ fn resolve_toolchain(given: String) -> String {
 // No base, or a diff that fails, is a failure (`code` not 0): a change
 // whose paths are unknown is never routed as one that touches nothing.
 fn changed_paths(worktree: String, base: String, candidate: String) -> RunResult {
-    if len(base) == 0 { return RunResult { code: 1, stderr: "the candidate names no base commit" }; }
-    return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + base + "\n" + candidate);
+    if len(base) == 0 {
+        return RunResult { code: 1, stderr: "the candidate names no base commit" };
+    }
+    return run_tool(
+        "git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n"
+            + base + "\n" + candidate,
+    );
 }
 
 // The paths of a `git diff --name-only --no-renames` a change may not
@@ -140,7 +149,9 @@ fn paths_outside(names: String, seed: String, fenced: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let outside = seed != "." && len(seed) > 0 && !std::str::starts_with(p, seed + "/");
         let fence = len(fenced) > 0 && (p == fenced || std::str::starts_with(p, fenced + "/"));
-        if len(p) > 0 && (outside || fence) { out = out + (if len(out) > 0 { " " } else { "" }) + p; }
+        if len(p) > 0 && (outside || fence) {
+            out = out + (if len(out) > 0 { " " } else { "" }) + p;
+        }
     }
     return out;
 }
@@ -198,7 +209,14 @@ fn seeds_of_files(root: String, files: String, sep: String) -> String {
         let mut seed = "";
         let mut found = false;
         while !found && len(dir) > 0 {
-            if std::io::fs::file_exists(root + "/" + dir + "/hale.toml") && holds_source(root + "/" + dir) { found = true; seed = dir; } else { dir = parent_dir(dir); }
+            if std::io::fs::file_exists(root + "/" + dir + "/hale.toml")
+                && holds_source(root + "/" + dir)
+            {
+                found = true;
+                seed = dir;
+            } else {
+                dir = parent_dir(dir);
+            }
         }
         if !found { seed = if len(own) > 0 { own } else { "." }; }
         if !std::str::contains("\n" + out, "\n" + seed + "\n") { out = out + seed + "\n"; }
@@ -212,7 +230,10 @@ fn has_hale_source(worktree: String, rev: String, seed: String) -> Bool {
     if len(rev) == 0 { return false; }
     let under = if len(seed) == 0 || seed == "." { "" } else { "\n--\n" + seed + "/" };
     let listed = run_tool("git\n-C\n" + worktree + "\nls-tree\n--name-only\n" + rev + under);
-    return listed.code == 0 && (std::str::contains(listed.stdout, ".hl\n") || std::str::ends_with(listed.stdout, ".hl"));
+    return listed.code == 0
+        && (
+            std::str::contains(listed.stdout, ".hl\n") || std::str::ends_with(listed.stdout, ".hl")
+        );
 }
 
 // Does a `git diff --name-only` name the fleet's shape — a plan
@@ -272,7 +293,13 @@ locus HaleVerification {
     // One step's receipt: the output content-addressed on disk, the
     // event on the candidate. Returns the exit code. (Per-run
     // allocation, bounded by the runs a Review asks for.)
-    fn record(j: Journal, candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
+    fn record(
+        j: Journal,
+        candidate: String,
+        mutation_id: String,
+        step: String,
+        r: RunResult
+    ) -> Int {
         let text = r.stdout + r.stderr;
         let digest = self.receipts.store(text);
         let b = std::json::Builder { };
@@ -321,7 +348,10 @@ locus HaleVerification {
         // candidate is judged in the seed that holds the files it changed
         // (the first, when it changed several)
         if (seed == "." || seed == "") && len(m.base_commit) > 0 && !root_is_seed(m.worktree) {
-            let changed = run_tool("git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + m.candidate_commit);
+            let changed = run_tool(
+                "git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n"
+                    + m.candidate_commit,
+            );
             let seeds = seeds_of_files(m.worktree, trim_nl(changed.stdout), "\n");
             let at = std::str::index_of(seeds, "\n");
             if at > 0 { seed = seeds[0..at]; }
@@ -332,34 +362,72 @@ locus HaleVerification {
         let mut base = base_topology;
         if len(base) == 0 {
             base = self.scratch + "/" + m.id + ".base.topology.json";
-            let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_of(self.repo, seed) + "\n--dump-topology=" + base));
+            let cut = self.record(
+                j,
+                cand,
+                m.id,
+                "base",
+                run_tool(
+                    self.hale_bin + "\ncheck\n" + self.seed_of(self.repo, seed)
+                        + "\n--dump-topology=" + base,
+                ),
+            );
         }
-        let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
+        let fmt = self.record(
+            j,
+            cand,
+            m.id,
+            "fmt",
+            run_tool(self.hale_bin + "\nfmt\n--check\n" + wt),
+        );
         // the laws in force on a Hale heart (GH #1591): a clause the Board
         // ratified as law is adopted by the check from outside, never
         // written into the heart's source
         let adopt = if self.standard_in_force(j) { "\n--adopt\nstd::law::Standard" } else { "" };
-        let checked = run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo + adopt);
+        let checked = run_tool(
+            self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo + adopt,
+        );
         let check = self.record(j, cand, m.id, "check", checked);
         // from the tree, never the check's words: Hale source in the seed
         // at the base or at the candidate (a candidate that deletes every
         // .hl file is still a Hale genome's, and is denied)
-        let hale_source = has_hale_source(m.worktree, m.base_commit, seed) || has_hale_source(m.worktree, cand, seed);
-        let verify = self.record(j, cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
+        let hale_source = has_hale_source(m.worktree, m.base_commit, seed)
+            || has_hale_source(m.worktree, cand, seed);
+        let verify = self.record(
+            j,
+            cand,
+            m.id,
+            "verify",
+            run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"),
+        );
         let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
         let test = self.record(j, cand, m.id, "test", tests);
         // the fleet (GH #566 F5): every arrangement the workspace declares,
         // composed from the candidate's own artifacts; a workspace that
         // declares none passes and says so
-        let fleet = self.record(j, cand, m.id, "fleet", run_tool(self.hale_bin + "\nfleet\ncheck\n--in\n" + m.worktree + "\n--if-declared"));
+        let fleet = self.record(
+            j,
+            cand,
+            m.id,
+            "fleet",
+            run_tool(self.hale_bin + "\nfleet\ncheck\n--in\n" + m.worktree + "\n--if-declared"),
+        );
         let mut topology = false;
         if len(m.base_commit) > 0 {
-            let names = run_tool("git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + cand);
+            let names = run_tool(
+                "git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + cand,
+            );
             topology = names_topology(names.stdout);
         }
         let mut replay_ok = false;
         if len(self.recording) > 0 {
-            let rp = self.record(j, cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
+            let rp = self.record(
+                j,
+                cand,
+                m.id,
+                "replay",
+                run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"),
+            );
             replay_ok = rp == 0;
         }
         // rollback rehearsed: the candidate can be stepped off and back
@@ -368,7 +436,17 @@ locus HaleVerification {
         if check == 0 && len(m.base_commit) > 0 {
             let back = run_tool("git\n-C\n" + m.worktree + "\ncheckout\n-q\n" + m.base_commit);
             let forth = run_tool("git\n-C\n" + m.worktree + "\ncheckout\n-q\n" + cand);
-            rehearsed = self.record(j, cand, m.id, "rollback", RunResult { code: if back.code == 0 && forth.code == 0 { 0 } else { 1 }, stdout: "checkout " + m.base_commit + " then " + cand + "\n", stderr: back.stderr + forth.stderr });
+            rehearsed = self.record(
+                j,
+                cand,
+                m.id,
+                "rollback",
+                RunResult {
+                    code: if back.code == 0 && forth.code == 0 { 0 } else { 1 },
+                    stdout: "checkout " + m.base_commit + " then " + cand + "\n",
+                    stderr: back.stderr + forth.stderr,
+                },
+            );
         }
         let mut diff = -1;
         let mut diff_json = "";
@@ -382,9 +460,14 @@ locus HaleVerification {
                 // the diff documents are receipts too: the review reads
                 // them by digest, from any clone that has the record
                 diff_json = self.receipts.store(dj.stdout);
-                let dt = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--text");
+                let dt = run_tool(
+                    self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--text",
+                );
                 diff_text = self.receipts.store(dt.stdout);
-                shape = std::json::find_string_field(std::json::find_field_raw(dj.stdout, "b"), "shape_hash");
+                shape = std::json::find_string_field(
+                    std::json::find_field_raw(dj.stdout, "b"),
+                    "shape_hash",
+                );
                 mag = assess_structure(dj.stdout, self.lineage_applied(j));
                 let x = j.append(j.revision(), "evidence.magnitude", cand, magnitude_json(mag));
             }
@@ -392,15 +475,46 @@ locus HaleVerification {
         // a project with no tests has no test evidence, only an exit code
         let tested = test == 0 && std::str::contains(tests.stdout, ", 0 failed");
         self.last = self.assemble(m.id, cand, shape,
-            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0, fleet_clean: fleet == 0, topology_changed: topology, hale_source: hale_source },
-            mag, fmt, check, verify, test, diff, rehearsed, fleet, if check == 0 { topo } else { "" }, diff_json, diff_text);
+            Evidence {
+                check_clean: check == 0,
+                verify_clean: verify == 0,
+                tests_pass: tested,
+                replay_ok: replay_ok,
+                rollback_rehearsed: rehearsed == 0,
+                fleet_clean: fleet == 0,
+                topology_changed: topology,
+                hale_source: hale_source,
+            },
+            mag, fmt, check, verify, test, diff, rehearsed, fleet, if check == 0 {
+                topo
+            } else {
+                ""
+            }, diff_json, diff_text);
         return self.last;
     }
     // One report per run; bounded by the runs a Review asks for.
-    fn assemble(id: String, cand: String, shape: String, e: Evidence, mag: Magnitude, fmt: Int, check: Int, verify: Int, test: Int, diff: Int, rehearsed: Int, fleet: Int, topo: String, diff_json: String, diff_text: String) -> VerificationReport {
+    fn assemble(
+        id: String,
+        cand: String,
+        shape: String,
+        e: Evidence,
+        mag: Magnitude,
+        fmt: Int,
+        check: Int,
+        verify: Int,
+        test: Int,
+        diff: Int,
+        rehearsed: Int,
+        fleet: Int,
+        topo: String,
+        diff_json: String,
+        diff_text: String
+    ) -> VerificationReport {
         return VerificationReport {
             mutation_id: id, candidate: cand, candidate_shape: shape, evidence: e, magnitude: mag,
-            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff) + " rollback=" + to_string(rehearsed) + " fleet=" + to_string(fleet),
+            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify="
+                + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff)
+                + " rollback=" + to_string(rehearsed) + " fleet=" + to_string(fleet),
             candidate_topology: topo, diff_json: diff_json, diff_text: diff_text
         };
     }

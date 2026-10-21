@@ -59,7 +59,13 @@ locus Tally {
 }
 
 locus App {
-    params { d: Decode = Decode { }; h: Handle = Handle { }; all: All = All { }; box: Box = Box { }; t: Tally = Tally { }; }
+    params {
+        d: Decode = Decode { };
+        h: Handle = Handle { };
+        all: All = All { };
+        box: Box = Box { };
+        t: Tally = Tally { };
+    }
     seam go(x: Int) -> String {
         x -> self.d.decode -> self.h;
     }

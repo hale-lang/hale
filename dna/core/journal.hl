@@ -77,7 +77,9 @@ fn hex(b: Bytes) -> String {
 }
 
 fn event_digest(prev: String, kind: String, entity: String, body: String) -> String {
-    return hex(std::crypto::sha256(std::bytes::from_string(prev + "|" + kind + "|" + entity + "|" + body)));
+    return hex(
+        std::crypto::sha256(std::bytes::from_string(prev + "|" + kind + "|" + entity + "|" + body)),
+    );
 }
 
 @form(vec)
@@ -95,7 +97,9 @@ locus MemJournal {
     fn revision() -> Int { return self.rows.len(); }
     fn refresh() -> Bool { return false; }
     // In memory every append is already exact.
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        return self.append(expected, kind, entity, body);
+    }
     fn head() -> String {
         if self.rows.len() == 0 { return "genesis"; }
         let e = self.rows.get(self.rows.len() - 1) or Event { };
@@ -105,12 +109,25 @@ locus MemJournal {
     // revision cannot both advance the same entity from the same state.
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
-        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        if expected != rev {
+            return AppendResult { error: "stale_revision", expected: expected, actual: rev };
+        }
         let prev = self.head();
-        self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: event_digest(prev, kind, entity, body) });
+        self.rows.push(
+            Event {
+                seq: rev,
+                kind: kind,
+                entity: entity,
+                body: body,
+                prev: prev,
+                digest: event_digest(prev, kind, entity, body),
+            },
+        );
         return AppendResult { ok: true, revision: rev + 1 };
     }
-    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return append_rows(self, expected, rows); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
+        return append_rows(self, expected, rows);
+    }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
 }
@@ -167,7 +184,9 @@ locus FileReceipts {
         self.stored = self.stored + 1;
         return digest;
     }
-    fn read(digest: String) -> String { return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or ""; }
+    fn read(digest: String) -> String {
+        return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or "";
+    }
     fn erase(digest: String) -> Bool {
         std::io::fs::unlink(self.dir + "/" + digest + ".txt") or discard;
         return len(self.read(digest)) == 0;
@@ -206,7 +225,13 @@ locus MemLeases {
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.rows.get(key) or Lease { };
         if cur.present && cur.expires > now && cur.holder != holder {
-            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
         }
         let t = self.next_token;
         self.next_token = self.next_token + 1;
@@ -220,7 +245,9 @@ locus MemLeases {
         let cur = self.rows.get(key) or Lease { };
         if !cur.present { return false; }
         if cur.token != token { return false; }
-        self.rows.set(Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
+        self.rows.set(
+            Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false },
+        );
         return true;
     }
     fn holder_of(key: String) -> String {
@@ -290,7 +317,13 @@ fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
         if e.entity == key && e.kind == "lease.taken" {
             let token = std::json::find_int_field(e.body, "token");
             if token > l.token {
-                l = Lease { key: key, holder: std::json::find_string_field(e.body, "holder"), token: token, expires: std::json::find_int_field(e.body, "expires"), present: true };
+                l = Lease {
+                    key: key,
+                    holder: std::json::find_string_field(e.body, "holder"),
+                    token: token,
+                    expires: std::json::find_int_field(e.body, "expires"),
+                    present: true,
+                };
             }
         }
         i = i + 1;
@@ -299,7 +332,10 @@ fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
     i = 0;
     while i < rev {
         let e = j.read(i);
-        if e.entity == key && std::json::find_int_field(e.body, "token") == l.token && std::json::find_string_field(e.body, "holder") == l.holder {
+        if e.entity == key
+            && std::json::find_int_field(e.body, "token") == l.token
+            && std::json::find_string_field(e.body, "holder") == l.holder
+        {
             if e.kind == "lease.renewed" {
                 let expires = std::json::find_int_field(e.body, "expires");
                 if expires > l.expires { l.expires = expires; }
@@ -331,12 +367,28 @@ fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Le
         let rev = j.revision();
         let cur = lease_at(j, key, rev);
         if cur.present && cur.expires > now && cur.holder != holder {
-            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+            return Lease {
+                key: key,
+                holder: cur.holder,
+                token: 0,
+                expires: cur.expires,
+                present: false,
+            };
         }
         let token = cur.token + 1;
         let w = j.append_exact(rev, "lease.taken", key, lease_row(token, holder, now + ttl));
-        if w.ok { return Lease { key: key, holder: holder, token: token, expires: now + ttl, present: true }; }
-        if w.error != "stale_revision" && w.error != "claimed" { return Lease { key: key, holder: cur.holder, present: false }; }
+        if w.ok {
+            return Lease {
+                key: key,
+                holder: holder,
+                token: token,
+                expires: now + ttl,
+                present: true,
+            };
+        }
+        if w.error != "stale_revision" && w.error != "claimed" {
+            return Lease { key: key, holder: cur.holder, present: false };
+        }
     }
     return Lease { key: key, present: false };
 }

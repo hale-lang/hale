@@ -42,7 +42,9 @@ fn show_org(json: String, pending: String) -> String {
         if !std::str::contains(parents, "\n" + under + "\n") {
             parents = parents + under + "\n";
             let shown = if len(under) == 0 { "(unplaced)" } else { dna::show_name(under) };
-            if graph_id_kind(under) != "purpose" && std::str::cp_count(shown) > width { width = std::str::cp_count(shown); }
+            if graph_id_kind(under) != "purpose" && std::str::cp_count(shown) > width {
+                width = std::str::cp_count(shown);
+            }
         }
         it = std::json::array_next(it);
     }
@@ -60,34 +62,65 @@ fn show_org(json: String, pending: String) -> String {
         while !p.done {
             if std::json::find_string_field(p.element, "under") == under {
                 let name = std::json::find_string_field(p.element, "name");
-                let prefix = (if len(under) > 0 { under[(std::str::index_of(under, ":") + 1)..len(under)] } else { "" }) + "/";
-                let mut role = if std::str::starts_with(name, prefix) { name[len(prefix)..len(name)] } else { name };
+                let prefix = (
+                    if len(under) > 0 {
+                        under[(std::str::index_of(under, ":") + 1)..len(under)]
+                    } else {
+                        ""
+                    }
+                )
+                    + "/";
+                let mut role = if std::str::starts_with(name, prefix) {
+                    name[len(prefix)..len(name)]
+                } else {
+                    name
+                };
                 // what it signs, shown by its contracts and documents: a
                 // reviewer's seed and an operator's deployment are its place
                 let mut signed = "";
-                let mut subjects = dna::show_strings(std::json::find_field_raw(p.element, "reviews"));
+                let mut subjects = dna::show_strings(
+                    std::json::find_field_raw(p.element, "reviews"),
+                );
                 while len(subjects) > 0 {
                     let n2 = std::str::index_of(subjects, "\n");
                     let sub = subjects[0..n2];
                     subjects = subjects[(n2 + 1)..len(subjects)];
-                    if graph_id_kind(sub) == "contract" || graph_id_kind(sub) == "document" { signed = signed + sub + "\n"; }
+                    if graph_id_kind(sub) == "contract" || graph_id_kind(sub) == "document" {
+                        signed = signed + sub + "\n";
+                    }
                 }
                 let reviews = dna::show_list(signed, true);
                 if len(reviews) > 0 { role = role + "(" + reviews + ")"; }
-                let holders = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "holders")), false);
+                let holders = dna::show_list(
+                    dna::show_strings(std::json::find_field_raw(p.element, "holders")),
+                    false,
+                );
                 if len(holders) > 0 { role = role + " [" + holders + "]"; }
                 // the mandate's state, and the API roles the position is fitted with
                 let id = std::json::find_string_field(p.element, "id");
-                let state = if std::json::find_string_field(p.element, "mandate") == "ratified" { "ratified" } else if std::str::contains(pending, "\n" + id + "\n") { "pending" } else { "none" };
-                let fitted = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "roles")), false);
-                role = role + " {mandate: " + state + (if len(fitted) > 0 { "; roles: " + fitted } else { "" }) + "}";
+                let state = if std::json::find_string_field(p.element, "mandate") == "ratified" {
+                    "ratified"
+                } else if std::str::contains(pending, "\n" + id + "\n") {
+                    "pending"
+                } else {
+                    "none"
+                };
+                let fitted = dna::show_list(
+                    dna::show_strings(std::json::find_field_raw(p.element, "roles")),
+                    false,
+                );
+                role = role + " {mandate: " + state
+                    + (if len(fitted) > 0 { "; roles: " + fitted } else { "" }) + "}";
                 if graph_id_kind(under) == "purpose" { out = out + "  " + role + "\n"; }
                 else { roles = roles + (if len(roles) > 0 { ", " } else { "" }) + role; }
             }
             p = std::json::array_next(p);
         }
         // padded by what a reader sees, code points, not bytes
-        if graph_id_kind(under) != "purpose" { out = out + "  " + shown + std::str::repeat(" ", width - std::str::cp_count(shown)) + "  " + roles + "\n"; }
+        if graph_id_kind(under) != "purpose" {
+            out = out + "  " + shown + std::str::repeat(" ", width - std::str::cp_count(shown))
+                + "  " + roles + "\n";
+        }
     }
     return out;
 }
@@ -98,24 +131,55 @@ fn show_processes(json: String) -> String {
     let mut it = std::json::array_first(std::json::find_field_raw(json, "meets"));
     while !it.done {
         let e = it.element;
-        let outside = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "outside")), false);
-        let consumers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "consumers")), true);
-        let from = if len(outside) > 0 && len(consumers) > 0 { outside + ", " + consumers } else if len(outside) > 0 { outside } else if len(consumers) > 0 { consumers } else { "(nobody)" };
-        let servers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "servers")), true);
+        let outside = dna::show_list(
+            dna::show_strings(std::json::find_field_raw(e, "outside")),
+            false,
+        );
+        let consumers = dna::show_list(
+            dna::show_strings(std::json::find_field_raw(e, "consumers")),
+            true,
+        );
+        let from = if len(outside) > 0 && len(consumers) > 0 {
+            outside + ", " + consumers
+        } else if len(outside) > 0 {
+            outside
+        } else if len(consumers) > 0 {
+            consumers
+        } else {
+            "(nobody)"
+        };
+        let servers = dna::show_list(
+            dna::show_strings(std::json::find_field_raw(e, "servers")),
+            true,
+        );
         let via = std::json::find_string_field(e, "via");
-        let carriers = dna::show_list(dna::show_strings(std::json::find_field_raw(e, "carriers")), true);
-        out = out + from + "  --" + (if len(via) > 0 { via + ": " } else { "" }) + dna::show_name(std::json::find_string_field(e, "contract")) + "-->  " + (if len(servers) > 0 { servers } else { "(nobody here)" }) + (if len(carriers) > 0 { "  (carried by " + carriers + ")" } else { "" }) + "\n";
+        let carriers = dna::show_list(
+            dna::show_strings(std::json::find_field_raw(e, "carriers")),
+            true,
+        );
+        out = out + from + "  --" + (if len(via) > 0 { via + ": " } else { "" })
+            + dna::show_name(std::json::find_string_field(e, "contract")) + "-->  "
+            + (if len(servers) > 0 { servers } else { "(nobody here)" })
+            + (if len(carriers) > 0 { "  (carried by " + carriers + ")" } else { "" }) + "\n";
         it = std::json::array_next(it);
     }
     let mut r = std::json::array_first(std::json::find_field_raw(json, "runs"));
     while !r.done {
-        out = out + dna::show_name(std::json::find_string_field(r.element, "deployment")) + " runs { " + dna::show_list(dna::show_strings(std::json::find_field_raw(r.element, "processes")), true) + " }\n";
+        out = out + dna::show_name(std::json::find_string_field(r.element, "deployment"))
+            + " runs { "
+            + dna::show_list(
+                dna::show_strings(std::json::find_field_raw(r.element, "processes")),
+                true,
+            )
+            + " }\n";
         r = std::json::array_next(r);
     }
     // GH #1143: the rhythms
     let mut c = std::json::array_first(std::json::find_field_raw(json, "convenes"));
     while !c.done {
-        out = out + dna::show_name(std::json::find_string_field(c.element, "position")) + " convenes " + dna::show_name(std::json::find_string_field(c.element, "definition")) + " " + std::json::find_string_field(c.element, "cadence") + "\n";
+        out = out + dna::show_name(std::json::find_string_field(c.element, "position"))
+            + " convenes " + dna::show_name(std::json::find_string_field(c.element, "definition"))
+            + " " + std::json::find_string_field(c.element, "cadence") + "\n";
         c = std::json::array_next(c);
     }
     return out;

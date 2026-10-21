@@ -50,7 +50,15 @@ main locus Api {
         // the limits as the reader last read them, which the request path
         // reads (and never the head); with no head the reader reads nothing
         held: HeldLimits = HeldLimits { };
-        governance: Governance = Governance { head: self.head, application: self.application, issuer: self.issuer, client: self.client, secret: std::secret::Credential { vault: self.client_vault }, every: self.limits_every_s * 1s, held: self.held };
+        governance: Governance = Governance {
+            head: self.head,
+            application: self.application,
+            issuer: self.issuer,
+            client: self.client,
+            secret: std::secret::Credential { vault: self.client_vault },
+            every: self.limits_every_s * 1s,
+            held: self.held,
+        };
         // the organization's nerves: its token ("" when voice is attached to
         // none), the application's server, its user and the vault entry of
         // that user's password
@@ -59,7 +67,12 @@ main locus Api {
         nerves_user: String = "";
         nerves_vault: String = "";
         // with no organization its url is "": it queues and dials nothing
-        teller: Teller = Teller { url: if len(self.org) > 0 { self.nerves_url } else { "" }, user: self.nerves_user, vault: self.nerves_vault, org: self.org };
+        teller: Teller = Teller {
+            url: if len(self.org) > 0 { self.nerves_url } else { "" },
+            user: self.nerves_user,
+            vault: self.nerves_vault,
+            org: self.org,
+        };
         // the runtime's own health, readiness and capacity, on a port of
         // their own: what a deployment's healthcheck asks (VOICE_PROBE_PORT)
         probe_port: Int = 9090;
@@ -70,34 +83,125 @@ main locus Api {
         teller: pinned;
         governance: pinned;
     }
-    run() { serve(self.host, self.port, self.canned, self.broker, self.node_nats, self.ui, self.database, self.first_s, self.idle_s, self.org, self.head, self.held); }
+    run() {
+        serve(
+            self.host,
+            self.port,
+            self.canned,
+            self.broker,
+            self.node_nats,
+            self.ui,
+            self.database,
+            self.first_s,
+            self.idle_s,
+            self.org,
+            self.head,
+            self.held,
+        );
+    }
 }
 
-fn serve(host: String, port: Int, canned: String, b: broker::Broker, node_nats: String, ui: String, database: String, first_s: Int, idle_s: Int, org: String, head: String, held: HeldLimits) {
-    log_info("serving", fields2(std::log::kv("url", "http://" + host + ":" + to_string(port)), std::log::kv("canned", canned)));
-    log_info("nodes over NATS", fields2(std::log::kv("nats", b.url), std::log::kv("node_nats", if len(node_nats) > 0 { node_nats } else { b.url })));
+fn serve(
+    host: String,
+    port: Int,
+    canned: String,
+    b: broker::Broker,
+    node_nats: String,
+    ui: String,
+    database: String,
+    first_s: Int,
+    idle_s: Int,
+    org: String,
+    head: String,
+    held: HeldLimits
+) {
+    log_info(
+        "serving",
+        fields2(
+            std::log::kv("url", "http://" + host + ":" + to_string(port)),
+            std::log::kv("canned", canned),
+        ),
+    );
+    log_info(
+        "nodes over NATS",
+        fields2(
+            std::log::kv("nats", b.url),
+            std::log::kv("node_nats", if len(node_nats) > 0 { node_nats } else { b.url }),
+        ),
+    );
     if len(ui) > 0 { log_info("serving the admin ui", std::log::kv("ui", ui)); }
-    if len(org) > 0 { log_info("telling the organization each served request", std::log::kv("subject", org + ".app.voice.usage.recorded")); }
-    if len(head) > 0 { log_info("the rate limits are the organization's ratified practices", std::log::kv("head", head)); }
+    if len(org) > 0 {
+        log_info(
+            "telling the organization each served request",
+            std::log::kv("subject", org + ".app.voice.usage.recorded"),
+        );
+    }
+    if len(head) > 0 {
+        log_info(
+            "the rate limits are the organization's ratified practices",
+            std::log::kv("head", head),
+        );
+    }
     if len(database) > 0 {
         let d = st::parse_dsn(database);
         log_info("the store is Postgres", std::log::kv("at", d.host + ":" + to_string(d.port)));
-        let endpoints = Endpoints { canned: canned, ui: ui, store: st::PgStore { url: database }, link: NatsLink { url: b.url, node_url: node_nats, user: b.user, vault: b.vault, subjects: b.root, inbox: b.inbox }, held: held, node_user: b.node_user, node_secret: std::secret::Credential { vault: b.node_vault } };
+        let endpoints = Endpoints {
+            canned: canned,
+            ui: ui,
+            store: st::PgStore { url: database },
+            link: NatsLink {
+                url: b.url,
+                node_url: node_nats,
+                user: b.user,
+                vault: b.vault,
+                subjects: b.root,
+                inbox: b.inbox,
+            },
+            held: held,
+            node_user: b.node_user,
+            node_secret: std::secret::Credential { vault: b.node_vault },
+        };
         endpoints.inference.first = first_s * 1s;
         endpoints.inference.idle = idle_s * 1s;
         endpoints.inference.pulse = len(org) > 0;
         endpoints.projects.governed = len(head) > 0;
         endpoints.inference.governed = len(head) > 0;
-        std::http::Server { host: host, port: port, handler: endpoints, max_request_bytes: MAX_REQUEST_BYTES, too_large: too_large() };
+        std::http::Server {
+            host: host,
+            port: port,
+            handler: endpoints,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            too_large: too_large(),
+        };
     } else {
         log_info("the store is in memory, lost on restart", "");
-        let endpoints = Endpoints { canned: canned, ui: ui, link: NatsLink { url: b.url, node_url: node_nats, user: b.user, vault: b.vault, subjects: b.root, inbox: b.inbox }, held: held, node_user: b.node_user, node_secret: std::secret::Credential { vault: b.node_vault } };
+        let endpoints = Endpoints {
+            canned: canned,
+            ui: ui,
+            link: NatsLink {
+                url: b.url,
+                node_url: node_nats,
+                user: b.user,
+                vault: b.vault,
+                subjects: b.root,
+                inbox: b.inbox,
+            },
+            held: held,
+            node_user: b.node_user,
+            node_secret: std::secret::Credential { vault: b.node_vault },
+        };
         endpoints.inference.first = first_s * 1s;
         endpoints.inference.idle = idle_s * 1s;
         endpoints.inference.pulse = len(org) > 0;
         endpoints.projects.governed = len(head) > 0;
         endpoints.inference.governed = len(head) > 0;
-        std::http::Server { host: host, port: port, handler: endpoints, max_request_bytes: MAX_REQUEST_BYTES, too_large: too_large() };
+        std::http::Server {
+            host: host,
+            port: port,
+            handler: endpoints,
+            max_request_bytes: MAX_REQUEST_BYTES,
+            too_large: too_large(),
+        };
     }
 }
 
@@ -128,10 +232,27 @@ fn migrate(database: String, dir: String) -> Int {
         return 2;
     }
     let d = st::parse_dsn(database);
-    let conn = pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, vault: d.vault, database: d.database, sslmode: d.sslmode };
+    let conn = pq::PgConn {
+        host: d.host,
+        port: d.port,
+        user: d.user,
+        password: d.password,
+        vault: d.vault,
+        database: d.database,
+        sslmode: d.sslmode,
+    };
     let st = conn.open();
     if !st.ok {
-        log_error("migrate: Postgres refused", fields2(std::log::kv("at", d.host + ":" + to_string(d.port)), fields2(std::log::kv("kind", st.err.kind), std::log::kv("detail", st::redact(st.err.detail, d)))));
+        log_error(
+            "migrate: Postgres refused",
+            fields2(
+                std::log::kv("at", d.host + ":" + to_string(d.port)),
+                fields2(
+                    std::log::kv("kind", st.err.kind),
+                    std::log::kv("detail", st::redact(st.err.detail, d)),
+                ),
+            ),
+        );
         return 1;
     }
     // pond's migrator creates its tracking table before it takes its own
@@ -139,7 +260,13 @@ fn migrate(database: String, dir: String) -> Int {
     // a lock of voice's first (lib/pond/README.md)
     let held = conn.query_one("SELECT pg_advisory_lock(7205)");
     if !held.ok {
-        log_error("migrate: could not take the migration lock", fields2(std::log::kv("kind", held.err.kind), std::log::kv("detail", st::redact(held.err.detail, d))));
+        log_error(
+            "migrate: could not take the migration lock",
+            fields2(
+                std::log::kv("kind", held.err.kind),
+                std::log::kv("detail", st::redact(held.err.detail, d)),
+            ),
+        );
         conn.close();
         return 1;
     }
@@ -166,12 +293,24 @@ fn migrate(database: String, dir: String) -> Int {
     conn.query_one("SELECT pg_advisory_unlock(7205)");
     conn.close();
     if applied < 0 { return 1; }
-    log_info("migrate: the schema is current", fields2(std::log::kv("applied", to_string(applied)), std::log::kv("version", to_string(set.count()))));
+    log_info(
+        "migrate: the schema is current",
+        fields2(
+            std::log::kv("applied", to_string(applied)),
+            std::log::kv("version", to_string(set.count())),
+        ),
+    );
     return 0;
 }
 
 fn migration_failed(e: migs::MigrationError, d: st::Dsn) -> Int {
-    log_error("migrate: a migration failed", fields2(fields2(std::log::kv("kind", e.kind), std::log::kv("version", to_string(e.version))), fields2(std::log::kv("name", e.name), std::log::kv("detail", st::redact(e.detail, d)))));
+    log_error(
+        "migrate: a migration failed",
+        fields2(
+            fields2(std::log::kv("kind", e.kind), std::log::kv("version", to_string(e.version))),
+            fields2(std::log::kv("name", e.name), std::log::kv("detail", st::redact(e.detail, d))),
+        ),
+    );
     return -1;
 }
 
@@ -192,7 +331,11 @@ fn main() {
     // the one sink: every logger's lines are written here (log.hl)
     let sink = logfmt::RecordSink { };
     let migrating = std::env::args_count() > 1 && std::env::arg(1) == "migrate";
-    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") { std::env::var("VOICE_DATABASE_URL") } else { "" };
+    let mut database = if std::env::var_exists("VOICE_DATABASE_URL") {
+        std::env::var("VOICE_DATABASE_URL")
+    } else {
+        ""
+    };
     let mut migrations = beside_binary("migrations");
     let mut host = "127.0.0.1";
     let mut port = 8080;
@@ -213,7 +356,10 @@ fn main() {
     if std::env::var_exists("VOICE_LIMITS_EVERY_S") {
         limits_every_s = std::str::parse_int(std::env::var("VOICE_LIMITS_EVERY_S")) or - 1;
         if limits_every_s < 1 {
-            log_error("VOICE_LIMITS_EVERY_S takes a number of seconds", std::log::kv("value", std::env::var("VOICE_LIMITS_EVERY_S")));
+            log_error(
+                "VOICE_LIMITS_EVERY_S takes a number of seconds",
+                std::log::kv("value", std::env::var("VOICE_LIMITS_EVERY_S")),
+            );
             std::process::exit(2);
         }
     }
@@ -222,7 +368,10 @@ fn main() {
     if std::env::var_exists("VOICE_PROBE_PORT") {
         probe_port = std::str::parse_int(std::env::var("VOICE_PROBE_PORT")) or - 1;
         if probe_port < 1 || probe_port > 65535 {
-            log_error("VOICE_PROBE_PORT takes a port number", std::log::kv("value", std::env::var("VOICE_PROBE_PORT")));
+            log_error(
+                "VOICE_PROBE_PORT takes a port number",
+                std::log::kv("value", std::env::var("VOICE_PROBE_PORT")),
+            );
             std::process::exit(2);
         }
     }
@@ -269,7 +418,10 @@ fn main() {
         } else if flag == "--limits-every-s" {
             limits_every_s = std::str::parse_int(value) or - 1;
             if limits_every_s < 1 {
-                log_error("--limits-every-s takes a number of seconds", std::log::kv("value", value));
+                log_error(
+                    "--limits-every-s takes a number of seconds",
+                    std::log::kv("value", value),
+                );
                 std::process::exit(2);
             }
         } else if flag == "--seat-idle-s" {
@@ -284,19 +436,35 @@ fn main() {
     // grafted, the habitat's database when none is given (store/pg_store.hl)
     let given = database;
     database = st::database_or_habitat(database);
-    if len(given) == 0 && len(database) > 0 { log_info("grafted: the store's database is the one the habitat provisioned", std::log::kv("from", st::HABITAT_DATABASE_ENV)); }
+    if len(given) == 0 && len(database) > 0 {
+        log_info(
+            "grafted: the store's database is the one the habitat provisioned",
+            std::log::kv("from", st::HABITAT_DATABASE_ENV),
+        );
+    }
     if len(database) > 0 {
         let d = st::parse_dsn(database);
         if len(d.problem) > 0 {
             log_error(d.problem, "");
             std::process::exit(2);
         }
-        if len(d.password) > 0 { log_warn("the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)", ""); }
+        if len(d.password) > 0 {
+            log_warn(
+                "the database URL carries its password in the open: name its vault entry instead (postgres://user@host/db?vault=ENTRY)",
+                "",
+            );
+        }
     }
     if migrating { std::process::exit(migrate(database, migrations)); }
     // grafted, the habitat hands over the head and this service's client
     // there; each one it hands over replaces its flag
-    let handed = head_handover(env_or("HALE_DNA_HEAD_URL", ""), env_or("HALE_DNA_APPLICATION_ID", ""), env_or("HALE_DNA_OIDC_ISSUER", ""), env_or("HALE_DNA_OIDC_CLIENT", ""), env_or("HALE_DNA_OIDC_CLIENT_VAULT", ""));
+    let handed = head_handover(
+        env_or("HALE_DNA_HEAD_URL", ""),
+        env_or("HALE_DNA_APPLICATION_ID", ""),
+        env_or("HALE_DNA_OIDC_ISSUER", ""),
+        env_or("HALE_DNA_OIDC_CLIENT", ""),
+        env_or("HALE_DNA_OIDC_CLIENT_VAULT", ""),
+    );
     if len(handed.problem) > 0 {
         log_error(handed.problem, "");
         std::process::exit(2);
@@ -311,12 +479,18 @@ fn main() {
     if len(head) > 0 {
         if len(client_vault) == 0 { client_vault = "oidc-service-" + client; }
         if len(application) == 0 || len(issuer) == 0 || len(client) == 0 {
-            log_error("--head takes --application, --issuer and --client: the limits are the application's practices, read through it as a service", "");
+            log_error(
+                "--head takes --application, --issuer and --client: the limits are the application's practices, read through it as a service",
+                "",
+            );
             std::process::exit(2);
         }
         let secret = std::secret::Credential { vault: client_vault };
         if !secret.ready() {
-            log_error("the vault holds no secret for this service", std::log::kv("entry", client_vault));
+            log_error(
+                "the vault holds no secret for this service",
+                std::log::kv("entry", client_vault),
+            );
             std::process::exit(2);
         }
     }
@@ -326,7 +500,10 @@ fn main() {
     let nerves_user = env_or("HALE_DNA_NATS_USER_APP", "");
     let nerves_vault = env_or("HALE_DNA_NATS_VAULT_APP", "");
     if len(org) > 0 && (len(nerves_url) == 0 || len(nerves_user) == 0 || len(nerves_vault) == 0) {
-        log_error("HALE_DNA_NATS_ORG names an organization, but its server, user or vault entry is missing (HALE_DNA_NATS_URL_APP, HALE_DNA_NATS_USER_APP, HALE_DNA_NATS_VAULT_APP)", "");
+        log_error(
+            "HALE_DNA_NATS_ORG names an organization, but its server, user or vault entry is missing (HALE_DNA_NATS_URL_APP, HALE_DNA_NATS_USER_APP, HALE_DNA_NATS_VAULT_APP)",
+            "",
+        );
         std::process::exit(2);
     }
     // grafted, voice's own NATS is the habitat's broker (lib/broker)
@@ -338,22 +515,57 @@ fn main() {
     if b.grafted {
         let own = std::secret::Credential { vault: b.vault };
         if !own.ready() {
-            log_error("the vault holds no password for this heart's broker account", std::log::kv("entry", b.vault));
+            log_error(
+                "the vault holds no password for this heart's broker account",
+                std::log::kv("entry", b.vault),
+            );
             std::process::exit(2);
         }
-        log_info("grafted: voice's own NATS is the habitat's broker", fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")));
+        log_info(
+            "grafted: voice's own NATS is the habitat's broker",
+            fields2(std::log::kv("user", b.user), std::log::kv("subjects", b.root + ".>")),
+        );
     }
     if len(b.node_user) > 0 {
         let node_secret = std::secret::Credential { vault: b.node_vault };
         if !node_secret.ready() {
-            log_error("the vault holds no password for the nodes' broker account", std::log::kv("entry", b.node_vault));
+            log_error(
+                "the vault holds no password for the nodes' broker account",
+                std::log::kv("entry", b.node_vault),
+            );
             std::process::exit(2);
         }
     } else if b.grafted {
-        log_warn("grafted, but no account for the nodes on the habitat's broker (HALE_DNA_BROKER_NODE_USER, HALE_DNA_BROKER_NODE_VAULT): nodes are handed none", "");
+        log_warn(
+            "grafted, but no account for the nodes on the habitat's broker (HALE_DNA_BROKER_NODE_USER, HALE_DNA_BROKER_NODE_VAULT): nodes are handed none",
+            "",
+        );
     }
     let id = st::random_id(6);
-    Api { host: host, port: port, canned: canned, nats: b.url, broker: b, node_nats: node_nats, ui: ui, database: database, first_s: first_s, idle_s: idle_s, instance: "api-" + id, head: head, application: application, issuer: issuer, client: client, client_vault: client_vault, limits_every_s: limits_every_s, org: org, nerves_url: nerves_url, nerves_user: nerves_user, nerves_vault: nerves_vault, probe_port: probe_port };
+    Api {
+        host: host,
+        port: port,
+        canned: canned,
+        nats: b.url,
+        broker: b,
+        node_nats: node_nats,
+        ui: ui,
+        database: database,
+        first_s: first_s,
+        idle_s: idle_s,
+        instance: "api-" + id,
+        head: head,
+        application: application,
+        issuer: issuer,
+        client: client,
+        client_vault: client_vault,
+        limits_every_s: limits_every_s,
+        org: org,
+        nerves_url: nerves_url,
+        nerves_user: nerves_user,
+        nerves_vault: nerves_vault,
+        probe_port: probe_port,
+    };
 }
 
 /// The environment's `name`, or `otherwise` when it is unset.

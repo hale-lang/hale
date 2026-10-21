@@ -48,7 +48,11 @@ fn main() {
     for c in h.checks {
         seen = seen + c.name + "=" + c.status + ";";
     }
-    std::test::assert_eq_str(seen, "db=ok;nats=unavailable;", "each record the key and its value, in order");
+    std::test::assert_eq_str(
+        seen,
+        "db=ok;nats=unavailable;",
+        "each record the key and its value, in order",
+    );
     for g in h.gauges {
         std::test::assert_eq_int(g.depth, 3, "an Int value");
     }
@@ -70,7 +74,11 @@ fn main() {
         std::test::assert(false, "no maps: " + err.kind + " " + err.field);
         return;
     };
-    std::test::assert_eq_int(count(none.checks) + count(none.stamps), 0, "absent and empty are empty");
+    std::test::assert_eq_int(
+        count(none.checks) + count(none.stamps),
+        0,
+        "absent and empty are empty",
+    );
     std::test::assert_eq_str(
         Health::api_encode(none),
         "{\"checks\":{},\"gauges\":{},\"prices\":{},\"marks\":{},\"stamps\":{},\"tags\":{},\"ok\":true}",
@@ -78,14 +86,34 @@ fn main() {
     );
 
     // refusals
-    std::test::assert_eq_str(refused("{\"checks\":{\"db\":\"ok\",\"db\":\"down\"}}"), "duplicate_key: checks", "a duplicate key");
+    std::test::assert_eq_str(
+        refused("{\"checks\":{\"db\":\"ok\",\"db\":\"down\"}}"),
+        "duplicate_key: checks",
+        "a duplicate key",
+    );
     std::test::assert_eq_str(
         refused("{\"checks\":{\"a\":\"1\",\"b\":\"2\",\"c\":\"3\",\"d\":\"4\"}}"),
         "too_long: checks",
         "more entries than the list holds"
     );
-    std::test::assert_eq_str(refused("{\"checks\":{\"db\":1}}"), "wrong_type: checks", "a value of the wrong kind");
-    std::test::assert_eq_str(refused("{\"checks\":{\"db\":{\"status\":\"ok\"}}}"), "wrong_type: checks", "a record is no value");
-    std::test::assert_eq_str(refused("{\"marks\":{\"disk\":\"middle\"}}"), "wrong_type: marks", "no such variant");
-    std::test::assert_eq_str(refused("{\"checks\":[\"ok\"]}"), "wrong_type: checks", "a list is no map");
+    std::test::assert_eq_str(
+        refused("{\"checks\":{\"db\":1}}"),
+        "wrong_type: checks",
+        "a value of the wrong kind",
+    );
+    std::test::assert_eq_str(
+        refused("{\"checks\":{\"db\":{\"status\":\"ok\"}}}"),
+        "wrong_type: checks",
+        "a record is no value",
+    );
+    std::test::assert_eq_str(
+        refused("{\"marks\":{\"disk\":\"middle\"}}"),
+        "wrong_type: marks",
+        "no such variant",
+    );
+    std::test::assert_eq_str(
+        refused("{\"checks\":[\"ok\"]}"),
+        "wrong_type: checks",
+        "a list is no map",
+    );
 }

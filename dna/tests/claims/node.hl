@@ -29,7 +29,11 @@ main locus Node {
         let mut i = 0;
         while i < self.core.journal.revision() {
             let e = self.core.journal.read(i);
-            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == self.intent { return e.entity; }
+            if e.kind == "workflow.admitted"
+                && std::json::find_string_field(e.body, "request") == self.intent
+            {
+                return e.entity;
+            }
             i = i + 1;
         }
         return "";
@@ -39,13 +43,19 @@ main locus Node {
         let mut said = "";
         let mut taken = false;
         let mut answered = false;
-        let ask = dna::Intent { id: self.intent, outcome: "file the quarter's expense report", from: "riley" };
+        let ask = dna::Intent {
+            id: self.intent,
+            outcome: "file the quarter's expense report",
+            from: "riley",
+        };
         while !taken && !answered && std::time::now() < until {
             let answer = self.core.ask(ask);
             if answer == "planning" {
                 taken = true;
                 println("node: claimed plan/", self.intent);
-            } else if std::str::starts_with(answer, "planning elsewhere") || std::str::starts_with(answer, "not planned:") {
+            } else if std::str::starts_with(answer, "planning elsewhere")
+                || std::str::starts_with(answer, "not planned:")
+            {
                 if answer != said { println("node: ", answer); said = answer; }
                 std::time::sleep(100ms);
             } else {
@@ -69,7 +79,11 @@ fn main() {
     let lead = std::env::arg_or(3, "no") == "yes";
     let ttl = std::str::parse_int(std::env::arg_or(4, "300")) or 300;
     let deadline = std::str::parse_int(std::env::arg_or(5, "60")) or 60;
-    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    std::test::assert_eq_str(
+        dna::memory_fixture(repo),
+        "",
+        "the record is born in memory (GH #1590)",
+    );
     let plan = "kind: person\nclass: process-policy\ntarget: (none)\ncount: 1\nassignee: riley\nobligation: expense-approval\nA person's job.";
     Node {
         repo: repo,
@@ -77,7 +91,10 @@ fn main() {
         lead: lead,
         deadline: deadline,
         core: dna::Dna {
-            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
+            journal: dna::RoutedJournal {
+                record: dna::RecordJournal { repo: repo },
+                ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) },
+            },
             claims: dna::MemoryLeases { repo: repo },
             claim_ttl: ttl,
             planned: true,

@@ -91,7 +91,18 @@ main locus Desk {
         bearer: Tokens = Tokens { };
         roles: Nobody = Nobody { };
         library: Library = Library { };
-        h: api::Exposure = api::serve(Shelves, http::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer, roles: self.roles }, as: "shelves", bound: 8, on_full: refuse);
+        h: api::Exposure = api::serve(
+            Shelves,
+            http::Rpc {
+                bind: "127.0.0.1:0",
+                codec: json,
+                principals: self.bearer,
+                roles: self.roles,
+            },
+            as: "shelves",
+            bound: 8,
+            on_full: refuse
+        );
     }
     run() {
         std::api::run_until_stopped(self.h);
