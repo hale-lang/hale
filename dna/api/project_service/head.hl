@@ -1,7 +1,8 @@
 // dna/api/project_service/head.hl — the head's handler
 // (GH #965, §2.4 of the head's contract). One process the browser
-// talks to: it serves the static shell through the API's own
-// `WebAssets`, owns the four head routes (`/api/hale/v1/head`,
+// talks to, through the standard face (dna/face/standard), which serves
+// the static shell and the project's `ui/` and passes every other request
+// here. The head serves surfaces only: it owns the four head routes (`/api/hale/v1/head`,
 // `/head/projects`, `/head/commands`, `/head/logs`) and reverse-proxies
 // every `/api/hale/v1/applications…` request to the attached
 // project's API child on the loopback. Before answering anything it
@@ -32,6 +33,10 @@ const API_READY_STEPS: Int = 150;
 // a copy.
 type HeadConfig {
     port: Int = 8792;
+    // the port the browser reaches the head's surfaces on: the standard
+    // face's, which passes them here (`HALE_DNA_PUBLIC_PORT`); 0 = `port`,
+    // the head reached directly
+    public_port: Int = 0;
     // the API child's reads port when an operator pins one; 0 = whatever
     // the child is given: it binds port 0 and reports the port it got
     // (`api_port_of`), so no port is drawn free and lost before the bind
@@ -74,7 +79,8 @@ type DetachResult {
     reason: String = "";
 }
 
-fn head_origin(cfg: HeadConfig) -> String { return "http://127.0.0.1:" + to_string(cfg.port); }
+fn public_port_of(cfg: HeadConfig) -> Int { return if cfg.public_port > 0 { cfg.public_port } else { cfg.port }; }
+fn head_origin(cfg: HeadConfig) -> String { return "http://127.0.0.1:" + to_string(public_port_of(cfg)); }
 fn children_dir(cfg: HeadConfig) -> String { return cfg.state_dir + "/children"; }
 // Where the API child reports the ports it got (`HALE_DNA_API_PORTS`).
 fn child_ports_file(cfg: HeadConfig) -> String { return children_dir(cfg) + "/api.ports"; }
@@ -515,7 +521,6 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
 locus Head {
     params {
         cfg: HeadConfig = HeadConfig { };
-        web: api::WebAssets = api::WebAssets { };
         slots: PushSlots; // the face's open event streams (push.hl, GH #986)
         auth: ui::Ui = ui::Ui { }; // GH #989: the sign-in and its sessions, under OIDC
         // the API child pid the head last saw answer, and the one it last saw refuse a connection
@@ -526,23 +531,6 @@ locus Head {
     fn error(status: Int, code: String, message: String, retryable: Bool) -> std::http::Response {
         let http = api::Http { };
         return http.error(status, code, message, retryable);
-    }
-
-    // Ruling 11b: the attached project's `ui/` — a directory with no
-    // manifest that the repository references — as the application's
-    // static assets, under `/app/` (`ops::application_asset`).
-    fn app_assets(req: std::http::Request, path: String) -> std::http::Response {
-        let ctx = context_of(self.cfg);
-        if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
-        let a = ops::application_asset(ctx.active_root, path);
-        if a.status != 200 { return self.error(404, "not_found", a.why, false); }
-        // the bytes as they are, on the connection: a `Response` body is a
-        // String, which ends at an image's first NUL byte
-        if req.conn_fd < 0 { return self.error(500, "internal", "an asset is written to its connection, and this request has none", false); }
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: " + a.content_type + "\r\nContent-Length: " + to_string(len(a.bytes)) + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n";
-        std::io::tcp::send_fd(req.conn_fd, std::bytes::concat(std::bytes::from_string(head), a.bytes)) or discard;
-        std::io::tcp::close_fd(req.conn_fd);
-        return std::http::Response { status: 200, body: "", takeover_raw: true };
     }
 
     // The head envelope (§2.4) around `data`.
@@ -888,7 +876,7 @@ locus Head {
             // the loopback by name only: a page on another name (DNS
             // rebinding) reaches nothing
             let host = std::http::header(req, "Host");
-            let port = to_string(self.cfg.port);
+            let port = to_string(public_port_of(self.cfg));
             if host != "127.0.0.1:" + port && host != "localhost:" + port { return self.error(421, "misdirected_request", "this head answers as 127.0.0.1:" + port + " or localhost:" + port + " only", false); }
             // Signing in is for the person who started the head: the URL it
             // printed carries a launch token (0600 in its state directory),
@@ -943,7 +931,7 @@ locus Head {
             let person = self.auth.session_name(req);
             if len(person) == 0 {
                 if path == "/" { return ui::redirect("/auth/login", ""); }
-                if !(req.method == "GET" && self.web.serves(path)) { return self.error(401, "unauthenticated", "sign in at /auth/login", false); }
+                return self.error(401, "unauthenticated", "sign in at /auth/login", false);
             }
         }
         // A fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1): the
@@ -953,11 +941,7 @@ locus Head {
             if path == "/" {
                 let given = api::query_token(raw_query);
                 if len(given) > 0 && !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
-                if len(given) > 0 {
-                    let mut shell = self.web.response(path);
-                    shell.headers = shell.headers + "\r\nSet-Cookie: dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Strict; Path=/";
-                    return shell;
-                }
+                if len(given) > 0 { return ui::redirect("/", "dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Strict; Path=/"); }
                 if !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "open the URL the head printed (the launch token is in the head's state directory)", false); }
             }
             // a mutation — the head's own command, or one proxied to the
@@ -967,8 +951,10 @@ locus Head {
                 if !api::token_matches(sent, self.cfg.token) && !api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token) { return self.error(401, "unauthenticated", "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token", false); }
             }
         }
-        if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
-        if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_assets(req, path); }
+        // `/` is the face's gate, not a page: the head owns no static file.
+        // A person who may open the shell is told so (204), and the face
+        // serves it; every refusal above is the face's to pass on as it is.
+        if req.method == "GET" && path == "/" { return std::http::Response { status: 204, headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff", body: "" }; }
         settle_all(self.cfg);
         if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {
             if req.method != "GET" { return self.error(405, "method_not_allowed", "this head route is a read", false); }

@@ -1,7 +1,8 @@
 # The face
 
-The face is the DNA organism's people surface, served by the head
-(`dna/api/project_service`): a browser surface for ordinary Hale
+The face is the DNA organism's people surface, served by the standard
+face (`dna/face/standard`) in front of the head (`dna/api/project_service`,
+which serves surfaces only): a browser surface for ordinary Hale
 application controls, plus DNA organization, workflow definitions,
 Knowledge, practices and reviews. It has no
 runtime observer: inspecting a running Hale binary is `hale iris`'s job.

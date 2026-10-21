@@ -302,7 +302,7 @@ mod tests {
             assert!(!content.is_empty(), "{} is empty", path);
             assert!(seen.insert(path), "{} listed twice", path);
         }
-        for seed in [hale_dna::HOST_SEED, hale_dna::HOST_VERB_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED, hale_dna::HEAD_API.seed, hale_dna::HEAD_SERVICE.seed, hale_dna::HEAD_OIDC.seed, hale_dna::HEAD_REFLEXES.seed] {
+        for seed in [hale_dna::HOST_SEED, hale_dna::HOST_VERB_SEED, hale_dna::UI_SEED, hale_dna::CORE_SEED, hale_dna::HEAD_API.seed, hale_dna::HEAD_SERVICE.seed, hale_dna::HEAD_FACE.seed, hale_dna::HEAD_OIDC.seed, hale_dna::HEAD_REFLEXES.seed] {
             let dir = format!("{seed}/");
             assert!(all_files().any(|(p, _)| p.starts_with(&dir)), "hale dna builds {seed} from this cache");
         }

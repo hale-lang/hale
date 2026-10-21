@@ -107,13 +107,13 @@ const test = base.extend({
       await git(['-c', 'user.name=Face startup test', '-c', 'user.email=face@example.invalid', 'commit', '-q', '-m', 'Capture generated source']);
       const state = async () => ({ refs: await git(['show-ref']), status: await git(['status', '--porcelain']), source: await readFile(path.join(root, 'dna/org/main.hl'), 'utf8') });
       const start = async ({ build = false, drafts = false, extraEnv = {} } = {}) => {
-        const [chosenPort, apiPort, commandsPort] = await ports(3), origin = `http://127.0.0.1:${chosenPort}`;
+        const [chosenPort, apiPort, commandsPort, headPort] = await ports(4), origin = `http://127.0.0.1:${chosenPort}`;
         // The head's API child listens on its own port and outlives the head
         // by design: each launch gets a port of its own, and the teardown
         // stops every child the head recorded.
         // and its api binding's commands one of their own (GH #1135)
-        const options = [root, '--port', String(chosenPort), '--api-port', String(apiPort), '--commands-port', String(commandsPort), ...(drafts ? ['--source-drafts'] : [])];
-        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN;
+        const options = [root, '--port', String(chosenPort), '--head-port', String(headPort), '--api-port', String(apiPort), '--commands-port', String(commandsPort), ...(drafts ? ['--source-drafts'] : [])];
+        const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN; delete childEnv.HALE_FACE_BIN;
         // The head keeps a registry and receipts under the state directory:
         // every launch here gets its own, never the operator's.
         childEnv.XDG_STATE_HOME = path.join(scratch, 'state'); childEnv.XDG_CONFIG_HOME = path.join(scratch, 'config');
@@ -122,9 +122,11 @@ const test = base.extend({
         // the API also supplies a built head when the environment names one,
         // and otherwise takes the build budget for the head it will build.
         const prebuiltHead = process.env.HALE_NATIVE_HEAD_BIN || '';
-        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) { await prebuiltHeadReady(); options.push('--head', prebuiltHead); } }
+        // the standard face stands in front of the head (the page and /app/ come from it)
+        const prebuiltFace = process.env.HALE_NATIVE_FACE_BIN || '';
+        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) { await prebuiltHeadReady(); options.push('--head', prebuiltHead); } if (prebuiltFace) options.push('--face', prebuiltFace); }
         else { childEnv.TMPDIR = path.join(scratch, 'build temporary'); await mkdir(childEnv.TMPDIR); }
-        const builds = build || !prebuiltHead;
+        const builds = build || !prebuiltHead || !prebuiltFace;
         // Bound the real compiler/API tree without holding the native build lock
         // for the HTTP process lifetime. No application body is run or observed.
         const bounded = boundedNative(launcher, options, { build: builds, lock: false });

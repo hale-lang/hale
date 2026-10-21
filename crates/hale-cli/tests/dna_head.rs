@@ -41,7 +41,7 @@ fn the_materialized_head_checks_without_a_checkout() {
         assert!(root.join(f.path).is_file(), "{} is served from the materialized tree", f.path);
     }
     let mut failed = Vec::new();
-    for s in [&hale_dna::HEAD_API, &hale_dna::HEAD_SERVICE, &hale_dna::HEAD_OIDC, &hale_dna::HEAD_REFLEXES] {
+    for s in [&hale_dna::HEAD_API, &hale_dna::HEAD_SERVICE, &hale_dna::HEAD_FACE, &hale_dna::HEAD_OIDC, &hale_dna::HEAD_REFLEXES] {
         let (ok, out) = check(&root.join(s.seed));
         if !ok {
             failed.push(format!("--- {}\n{out}", s.seed));
@@ -61,7 +61,7 @@ fn head_help_prints_its_usage() {
     assert!(out.status.success(), "--help exits 0");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("usage: hale dna head [project]"), "{text}");
-    for flag in ["--port", "--api-port", "--oidc-port", "--commands-port", "--source-drafts", "dna/face/start.sh", "hale habitat migrate"] {
+    for flag in ["--port", "--head-port", "--api-port", "--oidc-port", "--commands-port", "--source-drafts", "dna/face/start.sh", "hale habitat migrate"] {
         assert!(text.contains(flag), "the usage names {flag}:\n{text}");
     }
     // a flag the verb does not take is refused before anything is built

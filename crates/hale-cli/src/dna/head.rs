@@ -1,6 +1,7 @@
 //! `hale dna head` — the head as a toolchain verb.
 //!
-//! The head (the project service serving the browser face, its
+//! The head (the standard face serving the browser, the project service
+//! behind it, its
 //! per-project API child, the stub OpenID provider and the reflexes) is
 //! launched by `dna/face/start.sh`, which builds its four seeds from a
 //! checkout. A person with an installed toolchain has none, so the
@@ -30,10 +31,11 @@ use super::{memory_derive, MemoryPlan};
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    "usage: hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]\n\
+    "usage: hale dna head [project] [--port P] [--head-port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]\n\
      \n\
-     Start the head: the project service serving the browser face at\n\
-     http://127.0.0.1:<port>/ (8792), its per-project API child (--api-port,\n\
+     Start the head: the standard face serving the browser at\n\
+     http://127.0.0.1:<port>/ (8792), the project service behind it (--head-port,\n\
+     8796; it serves surfaces only), its per-project API child (--api-port,\n\
      8793; its commands on --commands-port, 8795), the stub OpenID provider you\n\
      sign in through (--oidc-port, 8794) and, with a project, the reflexes.\n\
      Without a project the browser opens on Projects, where one is created,\n\
@@ -66,7 +68,7 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
                 print!("{}", usage_text());
                 return ExitCode::SUCCESS;
             }
-            "--port" | "--api-port" | "--oidc-port" | "--commands-port" => match it.next() {
+            "--port" | "--head-port" | "--api-port" | "--oidc-port" | "--commands-port" => match it.next() {
                 Some(v) => {
                     passed.push(a.clone());
                     passed.push(v.clone());
@@ -87,6 +89,23 @@ pub(crate) fn head_cmd(args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
                 project = Some(p.to_string());
+            }
+        }
+    }
+    // the genome names its faces (`[dna.faces.<name>]`); one that names
+    // none has the standard face, and its row's url is the port the face
+    // listens on unless --port says otherwise
+    if let Some(p) = project.as_deref() {
+        let manifest = std::fs::read_to_string(Path::new(p).join("hale.toml")).ok();
+        match super::face::faces_of(manifest.as_deref()).and_then(|faces| super::face::startable(&faces).map(|f| f.port())) {
+            Ok(Some(port)) if !passed.iter().any(|a| a == "--port") => {
+                passed.push("--port".to_string());
+                passed.push(port.to_string());
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("hale dna head: {e}");
+                return ExitCode::from(2);
             }
         }
     }
@@ -118,6 +137,9 @@ fn launch(project: Option<&str>, passed: &[String]) -> Result<Never, String> {
     }
     if !set("HALE_HEAD_BIN") {
         wanted.push(("HALE_HEAD_BIN", &hale_dna::HEAD_SERVICE));
+    }
+    if !set("HALE_FACE_BIN") {
+        wanted.push(("HALE_FACE_BIN", &hale_dna::HEAD_FACE));
     }
     if !trusted_local && !set("HALE_OIDC_BIN") {
         wanted.push(("HALE_OIDC_BIN", &hale_dna::HEAD_OIDC));

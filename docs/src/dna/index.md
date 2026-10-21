@@ -36,7 +36,7 @@ one chapter that covers it.
 | **record** | long-term memory: every decision, in order, never rewound, as one signed row per event in memory | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the record](./memory.md) |
 | **memory** | working memory: the ledger of the day's work, claims, the graph, protected evidence; Postgres, a role per client | `dna/core/memory_spine.hl`, `dna/host/memory.hl` | [Memory and the record](./memory.md) |
 | **nerves** | carry facts between parts after their row has landed: NATS JetStream, one stream per organization, one user per part | `dna/core/nerves.hl`, `dna/host/nerves.hl`; the server is the organism's `nerves-<id>` allocation in the local habitat | [The nerves](./nerves.md) |
-| **face** | where the organism shows itself to people and takes their intent: a browser surface the head serves | `dna/face/` | [The head and the face](./head.md) |
+| **face** | where the organism shows itself to people and takes their intent: a browser surface the standard face serves in front of the head | `dna/face/` | [The head and the face](./head.md) |
 | **head** | the edge API: sessions, principals, commands answered with a receipt; it never performs work | `dna/api/` | [The head and the face](./head.md) |
 | **body** | the hosts the organism runs on, and the lease that says which body runs the record | `dna/core/infrastructure.hl`, `dna/host/infra.hl` | [The heart and the body](./heart.md) |
 | **spine** | the program every node runs: it relays the record's requests, projects the record into memory, admits and settles work, runs the workflows | `dna/host/host.hl` over the organization in `dna/org/main.hl` | [The spine](./spine.md) |

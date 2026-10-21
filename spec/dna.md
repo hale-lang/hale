@@ -5073,10 +5073,11 @@ The live half is memory's, projected from the record by the spine
   of its name. A `ui/` at the root holding no manifest is **no seed**
   (ruling 11b, 2026-10-12): when the repository references it — a link
   in a tracked markdown document outside it resolves into it, or the
-  compose file names `./ui` (a volume or a build) — the head serves it as
+  compose file names `./ui` (a volume or a build) — the standard face serves it as
   the application's static assets under `/app/` (`/app/` its
   `index.html`, `/app/<path>` the file `ui/<path>`, nothing outside it,
-  for the attached project: `ops::application_asset`; a file's bytes are
+  for the attached project, which the face asks the head's read for:
+  `ops::application_asset`; the head serves none; a file's bytes are
   written as they are, with their length and the extension's content
   type, so an image or a font arrives whole), and the graft says so
   on a `note` line; when nothing references it the graft says once that it
@@ -6222,19 +6223,19 @@ is the same non-blocking verdict from the terminal. Iris stays the
 observer: attached to the organization's process it renders the org
 as the live topology it is.
 
-The head (`dna/api/project_service`), which serves the face, is the
+The head (`dna/api/project_service`), which the face fronts, is the
 surface's counterpart for the operator's machine. `hale dna head
-[project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P]
-[--source-drafts]` starts it from an installed toolchain: the toolchain
+[project] [--port P] [--head-port P] [--api-port P] [--oidc-port P]
+[--commands-port P] [--source-drafts]` starts it from an installed toolchain: the toolchain
 embeds the head's seeds (`dna/api`, `dna/api/practice_review`,
-`dna/api/project_service`, `dna/oidc`, `dna/oidc/serve`, `dna/reflexes`),
+`dna/api/project_service`, `dna/face/standard`, `dna/oidc`, `dna/oidc/serve`, `dna/reflexes`),
 the face's assets (`dna/face/web`) and the launcher (`dna/face/start.sh`)
 beside the host's sources — not in the embedded DNA digest, which names
 what `vendor/dna` is materialized from — materializes them into the
-toolchain cache, whose key covers them, builds the four seeds there
+toolchain cache, whose key covers them, builds the five seeds there
 side by side under the cache's build lock once per key, and execs the
 materialized launcher with every binary handed in (`HALE_API_BIN`,
-`HALE_HEAD_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
+`HALE_HEAD_BIN`, `HALE_FACE_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
 the running toolchain. With a project and no
 `HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN alone,
 onto the launcher's environment and never its output, when memory is
@@ -6247,7 +6248,7 @@ reflexes' store and nerves with `hale dna senses url` and `hale dna
 nerves urls`, which bring nothing up either. From a checkout,
 `dna/face/start.sh [project]` is the same launcher, building each seed it is not handed from the checkout into
 temporary storage on every start. The head is
-one loopback process that serves the browser shell, keeps a registry one loopback process that serves the browser shell, keeps a registry
+one loopback process that serves surfaces only, keeps a registry
 of projects and a journal of receipts under a state directory, and
 proxies the Record's read and command routes to a per-project API
 child it starts and replaces. Its own operations — create, init,
@@ -6261,6 +6262,48 @@ retry and conflicts on a changed one. A run that passes its deadline
 is `outcome_unknown` when the verb reaches beyond this machine, never
 `failed`; the head appends nothing to any record itself. It is
 trusted-local and refuses an `oidc` project.
+
+**Faces (Phase 3).** A face is a role an application fills: the browser's
+door to the organism. A genome names its faces in its manifest, beside
+`needs`: one table `[dna.faces.<name>]` per face (`admin`, `product`; a
+lower-case name), with `application` (what fills the role; `standard`, the
+toolchain's own, when left out), `consumes` (the surfaces it calls, by
+name), `acts_as` (the roles it acts under) and `url` (`http://127.0.0.1:<port>`).
+A genome that names none has one unnamed face, satisfied by the **standard
+face** (`dna/face/standard`), which the toolchain ships and grafts as it
+grafts the habitat genome and the packs: its sources and the browser's
+assets are part of the head's files, built into the toolchain cache beside
+the head's seeds. Nothing is a part, an application row, an exposure or a
+knowledge row: the record keeps one application (the heart) and an
+exposure serves what a face consumes, so a face is the genome's own
+declaration of how its body is reached, read where `needs` and `fleet` are.
+A row with a key a face row does not take, a url that is not a loopback
+URL, a name that is not lower case is refused by name; `hale dna head
+<project>` starts the declared face on its url's port unless `--port`
+says otherwise, and refuses a face that names another application, or more
+than one face, until those land.
+
+The head serves surfaces only. The standard face stands in front of it,
+on the port the browser opens (8792; `--port`), the head on the loopback
+behind it (`--head-port`, 8796; it learns the face's as
+`HALE_DNA_PUBLIC_PORT`, its origin for sign-in, host checks and
+commands). The face serves `GET /` and the shell's assets from
+`dna/face/web` and `GET /app/…` from the attached project's `ui/`, and
+passes every other request to the head as the browser sent it: method,
+path and query, headers (cookie, origin, host) and body, the answer
+written back as it came, an event stream held open until either end closes.
+`/` is the head's gate: the head answers it `204` when the person may
+open the shell (a session under OIDC, the launch-token cookie under a
+fixture's trusted-local session), and the face then serves the shell; any
+other answer (the sign-in redirect, the launch token's cookie and
+redirect to `/`, a refusal) is passed on unchanged. `/app/…` asks the
+head's read (`GET /api/hale/v1/head`) as the same session which project is
+attached, and serves its `ui/` (`ops::application_asset`), or the
+head's refusal. The head has no static file and no `/app/`: those paths
+are no route of it. The head's browser routes are not yet rows of a
+surface, so the face reaches them as the browser does; its generated
+client (`api::client`, `spec/api.md` § Calling a surface) over the head's
+surfaces arrives with the record index the face will serve.
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a
@@ -6418,5 +6461,7 @@ otherwise.
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
 | `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |
+| `HALE_FACE_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt standard face (`dna/face/standard`) to start in front of the head, as `--face` does. `hale dna head` hands in the one it built. |
+| `HALE_DNA_PUBLIC_PORT=<port>` | unset (the head's own) | The port the browser reaches the head on, when the standard face stands in front of it (`dna/face/start.sh` sets it to the face's): the origin the head signs in under, answers as and checks a command against. |
 | `HALE_OIDC_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt stub OpenID provider (`dna/oidc/serve`) to start. `hale dna head` hands in the one it built. |
 | `HALE_REFLEXES_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt reflexes binary (`dna/reflexes`) to start beside an attached project. `hale dna head` hands in the one it built. |

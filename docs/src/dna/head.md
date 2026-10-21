@@ -30,12 +30,12 @@ With the toolchain installed, and a project made by `hale habitat graft`:
 hale dna head /absolute/path/to/project
 ```
 
-The toolchain carries the head's sources, the face's assets and the
-launcher, as it carries the host's: the first `hale dna head` builds the
-project head, the project's API child, the stub OpenID provider and the
-reflexes into the toolchain cache, side by side (a few minutes), and every
-later one starts them at once, until the toolchain changes. It prints the
-face's loopback URL. With no project it starts detached, and the
+The toolchain carries the head's sources, the standard face's sources and
+assets and the launcher, as it carries the host's: the first `hale dna
+head` builds the project head, the standard face, the project's API child,
+the stub OpenID provider and the reflexes into the toolchain cache, side by
+side (a few minutes), and every later one starts them at once, until the
+toolchain changes. It prints the face's loopback URL. With no project it starts detached, and the
 browser's Projects workspace creates, initializes or attaches one.
 
 With a project, the head reads the record and Knowledge from memory under
@@ -379,11 +379,33 @@ again over an event stream (`GET /api/hale/v1/head/events`), when a
 receipt is journaled, a run or child starts or ends, or the organism
 lands a row.
 
+**The face and the head.** The head serves surfaces only. What the
+browser opens is the **standard face**, an application the toolchain ships:
+it serves the shell and the project's own pages, and passes every other
+request to the head, which listens behind it on the loopback
+(`--head-port`, 8796). Open the face's URL, not the head's; the head has no
+page of its own, and `/app.js` or `/app/` on it is a 404.
+
+A genome names its faces in `hale.toml`, beside `needs`, and a genome that
+names none has the standard face:
+
+```toml
+[dna.faces.admin]
+application = "standard"      # the default: the toolchain's own
+consumes = ["HeadCommands"]   # the surfaces it calls
+acts_as = ["owner"]           # the roles it acts under
+url = "http://127.0.0.1:8792" # where it is reached; --port wins
+```
+
+`hale dna head <project>` starts the declared face on its url's port. A
+face filled by another application, and several faces under one
+navigation, are not built yet, and the verb says so by name.
+
 **The application's page.** A repository whose browser page is buildless —
 a `ui/` holding no `package.json` or other manifest — has no seed for it.
 When the repository references that directory (a README link to it, or
-the compose file mounting `./ui`), `hale habitat graft` says once that the head
-serves it, and the head answers it under `/app/` for the attached project:
+the compose file mounting `./ui`), `hale habitat graft` says once that the face
+serves it, and the face answers it under `/app/` for the attached project:
 `/app/` is `ui/index.html`, `/app/seq.js` is `ui/seq.js`, and nothing
 outside `ui/` is reachable. A `ui/` nothing references is said once and
 ignored; one with a manifest is a seed like any other.

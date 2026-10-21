@@ -1026,7 +1026,7 @@ jobs:
           HALE_WARM_SKIP_IRIS: "1"
         run: |
           scripts/warm-and-build.sh ./target/release/hale --check \
-            dna/api dna/api/practice_review dna/api/project_service
+            dna/api dna/api/practice_review dna/api/project_service dna/face/standard
 
       # Only when neither entry was there (`cache-matched-key` is empty on
       # a miss); after the warm, as in the cli job. The builds beside the
@@ -1058,6 +1058,7 @@ jobs:
           # configured API child (the composed practice_review,
           # hale_dna::HEAD_API) and exec this compiler's `hale dna` verbs detached.
           HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" \
+            HALE_FACE_BIN="$PWD/target/seeds/standard/standard" \
             HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" \
             ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
@@ -1193,6 +1194,7 @@ jobs:
           path: |
             target/seeds/api
             target/seeds/project_service
+            target/seeds/standard
             target/seeds/knowledge
           key: face-builds-${{ runner.os }}-${{ steps.compiler.outputs.image }}-${{ steps.compiler.outputs.id }}-x86-64-v3-${{ hashFiles('dna/**', 'iris/**') }}
 
@@ -1221,10 +1223,10 @@ jobs:
           set -euo pipefail
           hit=${{ steps.face-builds.outputs.cache-hit == 'true' }}
           seeds=()
-          [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
+          [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/face/standard dna/api/tests/knowledge)
           # the native command lanes start the composed head (GH #1029)
           [ -x target/seeds/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
-          built=(target/seeds/api/api target/seeds/project_service/project_service
+          built=(target/seeds/api/api target/seeds/project_service/project_service target/seeds/standard/standard
             target/seeds/knowledge/knowledge target/seeds/practice_review/practice_review)
           scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
           for b in "${built[@]}"; do
@@ -1245,6 +1247,7 @@ jobs:
           path: |
             target/seeds/api
             target/seeds/project_service
+            target/seeds/standard
             target/seeds/knowledge
           key: ${{ steps.face-builds.outputs.cache-primary-key }}
 
@@ -1313,6 +1316,7 @@ jobs:
             HALE_API_BIN="$GITHUB_WORKSPACE/target/seeds/api/api" \
             HALE_NATIVE_COMMAND_API="$GITHUB_WORKSPACE/target/seeds/practice_review/practice_review" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/target/seeds/project_service/project_service" \
+            HALE_NATIVE_FACE_BIN="$GITHUB_WORKSPACE/target/seeds/standard/standard" \
             env "${knowledge[@]}" npm test -- "${select[@]}" || result=$?
           exit "${result:-0}"
 
