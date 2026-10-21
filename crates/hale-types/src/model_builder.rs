@@ -3698,6 +3698,7 @@ pub fn derive_application_model_over(
             server_error: h.is_some_and(|h| h.server_error),
             pools: h.map(|h| h.pools.clone()).unwrap_or_default(),
             requires: row.requires.iter().map(|(r, _)| r.clone()).collect(),
+            route: row.canonical_route(),
             provenance,
         });
     }

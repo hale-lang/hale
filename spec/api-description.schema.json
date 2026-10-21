@@ -153,7 +153,8 @@
         "request": { "$ref": "#/$defs/type_ref" },
         "response": { "$ref": "#/$defs/type_ref" },
         "error": { "$ref": "#/$defs/error" },
-        "requires": { "$ref": "#/$defs/requires" }
+        "requires": { "$ref": "#/$defs/requires" },
+        "route": { "type": "string", "$comment": "present for a row that declares a route (http::Rest): METHOD /path/:param STATUS; part of the digest" }
       }
     },
     "stream": {

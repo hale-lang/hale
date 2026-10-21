@@ -939,24 +939,63 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
     let refusal = |what: &str| {
         J::Obj(vec![("description".to_string(), s(what)), content(o(vec![("$ref", s(&format!("{REFS}{REFUSAL}")))]))])
     };
-    let mut paths = Vec::new();
+    let mut paths: Vec<(String, Vec<(String, J)>)> = Vec::new();
     for row in members {
         let Handled::Fn(h) = &row.handler else { continue };
+        // a row with a route is served there (`http::Rest`); one without is
+        // the member's `POST /call/<member>`
+        let route = row.route.as_ref().and_then(|r| crate::rest_routes::parse(r).ok());
+        let mut parameters = vec![o(vec![
+            ("name", s("Hale-Surface-Digest")),
+            ("in", s("header")),
+            ("required", J::Bool(false)),
+            ("schema", o(vec![("type", s("string")), ("const", s(&digest_text(digest)))])),
+        ])];
+        let fields = h.request.as_ref().map(|r| schemas.request_fields(&r.te)).unwrap_or_default();
+        let json_of = |k: char| match k {
+            'i' => "integer",
+            'f' => "number",
+            'b' => "boolean",
+            _ => "string",
+        };
+        let mut bound_in_path: Vec<String> = Vec::new();
+        if let Some(r) = &route {
+            for name in r.params() {
+                bound_in_path.push(name.to_string());
+                let kind = fields.iter().find(|(n, _)| n == name).map_or('s', |(_, k)| *k);
+                parameters.insert(
+                    0,
+                    o(vec![
+                        ("name", s(name)),
+                        ("in", s("path")),
+                        ("required", J::Bool(true)),
+                        ("schema", o(vec![("type", s(json_of(kind)))])),
+                    ]),
+                );
+            }
+        }
+        // a method without a body takes the rest of the request's scalar
+        // fields in the query
+        let bodyless = route.as_ref().is_some_and(|r| r.method == "GET" || r.method == "DELETE");
+        if bodyless {
+            for (name, kind) in &fields {
+                if !bound_in_path.contains(name) {
+                    parameters.push(o(vec![
+                        ("name", s(name)),
+                        ("in", s("query")),
+                        ("required", J::Bool(false)),
+                        ("schema", o(vec![("type", s(json_of(*kind)))])),
+                    ]));
+                }
+            }
+        }
         let mut op = vec![
             ("operationId".to_string(), s(&row.member)),
             ("summary".to_string(), s(&format!("rpc {}", row.member))),
             ("description".to_string(), s(&format!("{}; the server still authorizes every request.", requires_text(row)))),
-            (
-                "parameters".to_string(),
-                J::Arr(vec![o(vec![
-                    ("name", s("Hale-Surface-Digest")),
-                    ("in", s("header")),
-                    ("required", J::Bool(false)),
-                    ("schema", o(vec![("type", s("string")), ("const", s(&digest_text(digest)))])),
-                ])]),
-            ),
+            ("parameters".to_string(), J::Arr(parameters)),
         ];
-        if let Some(req) = &h.request {
+        if let (Some(req), false) = (&h.request, bodyless) {
             let schema = field_schema(&book.type_ref(&req.te), REFS);
             op.push(("requestBody".to_string(), J::Obj(vec![("required".to_string(), J::Bool(true)), content(schema)])));
         }
@@ -966,7 +1005,12 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
             ok.push(content(field_schema(&book.type_ref(&t.te), REFS)));
         }
         let ok = J::Obj(ok);
-        responses.push(("200".to_string(), ok));
+        let ok_status = route.as_ref().map_or(200, |r| r.status);
+        responses.push((ok_status.to_string(), ok));
+        if route.is_some() {
+            responses.push(("404".to_string(), refusal("no route serves the path (refusal: not_found)")));
+            responses.push(("405".to_string(), refusal("the path takes other methods, named in Allow (refusal: method_not_allowed)")));
+        }
         for (status, what) in [
             ("400", "refusal: malformed"),
             ("401", "refusal: unauthenticated"),
@@ -1024,8 +1068,34 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
         op.push(("responses".to_string(), J::Obj(responses)));
         op.push(("security".to_string(), J::Arr(vec![o(vec![("bearer", J::Arr(Vec::new()))])])));
         op.push(("x-hale-requires".to_string(), strs(row.requires.iter().map(|(r, _)| r.as_str()))));
-        paths.push((format!("/call/{}", row.member), o(vec![("post", J::Obj(op))])));
+        let (path, method) = match &route {
+            Some(r) => (
+                if r.segs.is_empty() {
+                    "/".to_string()
+                } else {
+                    r.segs
+                        .iter()
+                        .map(|g| match g {
+                            crate::rest_routes::Seg::Lit(l) => format!("/{l}"),
+                            crate::rest_routes::Seg::Param(p) => format!("/{{{p}}}"),
+                        })
+                        .collect()
+                },
+                r.method.to_lowercase(),
+            ),
+            None => (format!("/call/{}", row.member), "post".to_string()),
+        };
+        match paths.iter_mut().find(|(p, _)| *p == path) {
+            Some((_, item)) => item.push((method, J::Obj(op))),
+            None => paths.push((path, vec![(method, J::Obj(op))])),
+        }
     }
+    let served = if rows.rows_of(surface).any(|r| r.route.is_some()) {
+        "POST /call/<member> for a row that declares no route, the declared METHOD /path (http::Rest) for one that does"
+    } else {
+        "POST /call/<member>"
+    };
+    let paths: Vec<(String, J)> = paths.into_iter().map(|(p, item)| (p, J::Obj(item))).collect();
     let mut component_schemas = match book.render(REFS) {
         J::Obj(p) => p,
         _ => Vec::new(),
@@ -1068,7 +1138,7 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
                 (
                     "description",
                     s(&format!(
-                        "The surface {surface} over HTTP (spec/api.md § Outcomes): POST /call/<member>, the body by \
+                        "The surface {surface} over HTTP (spec/api.md § Outcomes): {served}, the body by \
                          the JSON codec. {NOTE_AUTHORIZATION}; {NOTE_LIFECYCLE}."
                     )),
                 ),

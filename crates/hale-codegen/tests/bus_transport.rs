@@ -33,6 +33,8 @@ mod api_http_witness;
 mod api_mcp;
 #[path = "api_pb_codec.rs"]
 mod api_pb_codec;
+#[path = "api_rest.rs"]
+mod api_rest;
 #[path = "api_runtime.rs"]
 mod api_runtime;
 #[path = "api_serve_build.rs"]

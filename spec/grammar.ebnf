@@ -126,7 +126,11 @@ unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
    surface. *)
 api_decl          = "api" , IDENTIFIER , [ requires_clause ] , "{" , { rpc_row } , "}" ;
 rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
-                    [ requires_clause ] , ";" ;
+                    [ route_clause ] , [ requires_clause ] , ";" ;
+(* GH #1530 — `at "METHOD /path/{param}" [status: N]`: where `http::Rest`
+   serves the row (spec/api.md § The REST transport). `at` and `status`
+   are read only here. *)
+route_clause      = "at" , STRING_LIT , [ "status" , ":" , INT_LIT ] ;
 requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [ "," ] ] , "]" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;

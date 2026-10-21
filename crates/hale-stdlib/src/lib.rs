@@ -511,6 +511,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "udp", "Endpoint"], "__StdApiUdpEndpoint"),
     (&["std", "api", "HubRows"], "__StdApiHubRows"),
     (&["std", "api", "http", "Rpc"], "__StdApiHttpRpc"),
+    (&["std", "api", "http", "Rest"], "__StdApiHttpRest"),
     (&["std", "api", "http", "Listener"], "__StdApiHttpListener"),
     (&["std", "api", "mcp", "Rpc"], "__StdApiMcpRpc"),
     // GH #1417 (R7): the HTTP/2 server (io_h2.hl).

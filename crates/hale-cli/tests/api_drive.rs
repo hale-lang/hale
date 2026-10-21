@@ -936,3 +936,60 @@ fn main() { App { }; }
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A route of an `http::Rest` listener is called by its method and path
+/// (spec/api.md § The REST transport): no description is read, the flags are
+/// the query, `--json` is the body, a 2xx is the result and the refusal of a
+/// path no route serves exits 2.
+#[test]
+fn a_route_is_called_by_its_method_and_path() {
+    use std::io::BufRead;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stand-in");
+    let port = l.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for conn in l.incoming() {
+            let Ok(mut c) = conn else { return };
+            let mut r = std::io::BufReader::new(c.try_clone().expect("clone"));
+            let mut head = String::new();
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0u8; len];
+            let _ = r.read_exact(&mut body);
+            let request_line = head.lines().next().unwrap_or("").to_string();
+            log.lock().unwrap().push(format!("{request_line} | {}", String::from_utf8_lossy(&body)));
+            let (status, reply) = if request_line.contains("/missing") {
+                ("404 Not Found", "{\"refusal\":{\"kind\":\"not_found\",\"reason\":\"no route\"}}")
+            } else if request_line.starts_with("POST") {
+                ("201 Created", "{\"id\":7}")
+            } else {
+                ("200 OK", "{\"fine\":true}")
+            };
+            let _ = write!(c, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    let ep = format!("http://127.0.0.1:{port}");
+    let get = run(&["api", "call", &ep, "GET /v1/items/5", "--limit", "3", "--exact", "--bearer", "t"]);
+    assert_eq!((get.code, get.stdout.trim()), (0, "{\"fine\":true}"), "{}", get.stderr);
+    let post = run(&["api", "call", &ep, "POST /v1/items", "--json", "{\"name\":\"x\"}"]);
+    assert_eq!((post.code, post.stdout.trim()), (0, "{\"id\":7}"), "a 201 is the result: {}", post.stderr);
+    let missing = run(&["api", "call", &ep, "GET /missing"]);
+    assert_eq!(missing.code, 2, "{}", missing.stderr);
+    assert!(missing.stderr.contains("not_found"), "{}", missing.stderr);
+    let body_on_get = run(&["api", "call", &ep, "GET /v1/items/5", "--json", "{}"]);
+    assert_eq!(body_on_get.code, 5, "{}", body_on_get.stderr);
+    let lines = seen.lock().unwrap().clone();
+    assert_eq!(lines[0], "GET /v1/items/5?limit=3&exact=true HTTP/1.1 | ", "{lines:?}");
+    assert_eq!(lines[1], "POST /v1/items HTTP/1.1 | {\"name\":\"x\"}", "{lines:?}");
+    assert_eq!(lines.len(), 3, "the GET with a body sent nothing: {lines:?}");
+}

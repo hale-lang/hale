@@ -380,7 +380,7 @@ pub(crate) fn run_describe(rest: &[String]) -> ExitCode {
 /// name there is, and an own flag of that name made it unsettable from a flag.
 const OWN_FLAGS: [&str; 5] = ["json", "bearer", "request-id", "digest", "raw"];
 
-const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--request-id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port";
+const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--request-id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port\n  member: Locus::fn, or 'METHOD /path' for a route of an http::Rest listener (the flags are its query)";
 
 /// A schema in full, compact, for a message that names a field.
 fn schema_text(schema: &Value) -> String {
@@ -633,6 +633,38 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
     };
     let token = bearer_of(token);
 
+    // A route of an `http::Rest` listener is called by its method and path
+    // (`'GET /orders/5'`): no description is read, the flags are the query
+    // and a `--json` payload the body of a method that takes one.
+    if let Some((method, path)) = member.split_once(' ').filter(|(m, p)| matches!(*m, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") && p.starts_with('/')) {
+        let Endpoint::Http(hp) = &ep else {
+            return usage_error("call", "a route (`METHOD /path`) is called on an http:// endpoint");
+        };
+        if given_payload.is_some() && matches!(method, "GET" | "DELETE") {
+            return usage_error("call", &format!("{method} takes no body: give the request's fields as flags, they are the query"));
+        }
+        let mut target = path.to_string();
+        for (i, (k, v)) in flags.iter().enumerate() {
+            target.push(if i == 0 && !path.contains('?') { '?' } else { '&' });
+            target.push_str(&percent_encode(&k.replace('-', "_")));
+            target.push('=');
+            target.push_str(&percent_encode(v.as_deref().unwrap_or("true")));
+        }
+        let mut headers = bearer(token.as_deref());
+        if let Some(d) = &digest {
+            headers.push(("Hale-Surface-Digest", d.to_string()));
+        }
+        let body = given_payload.as_ref().map(Value::to_string);
+        let reply = match http_request(hp, method, &target, &headers, body.as_deref()).and_then(outcome_of_http) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("hale api call: transport failure: {e}");
+                return ExitCode::from(EXIT_TRANSPORT);
+            }
+        };
+        return report(&reply, raw);
+    }
+
     // The description is read once, before the payload is built: it types the
     // flags and names the digest the call is held to.
     let doc = match fetch(&ep, token.as_deref()) {
@@ -678,6 +710,11 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_TRANSPORT);
         }
     };
+    report(&reply, raw)
+}
+
+/// Print an outcome as the verb does and exit by it.
+fn report(reply: &crate::api_client::Reply, raw: bool) -> ExitCode {
     if raw {
         println!("{}", reply.raw.trim());
     }
@@ -705,6 +742,7 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -519,3 +519,69 @@ fn a_program_calls_the_codec_of_a_carried_record() {
               JSON codec carries (spec/api.md § Codecs); it is not one, so there is no codec to call"]
     );
 }
+
+#[test]
+fn law_9_a_route_is_well_formed_and_binds_fields_of_the_request() {
+    // well formed, with a parameter that is a field and a literal beside a capture
+    assert!(with("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\" status: 204; rpc Orders::place at \"POST /orders\" status: 201; }")
+        .is_empty());
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"FETCH /orders\"; }"),
+        vec!["rpc `Orders::cancel`: route \"FETCH /orders\": `FETCH` is no method a route takes: one of GET, POST, PUT, PATCH, DELETE"]
+    );
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"GET /orders/{oder}\"; }"),
+        vec!["rpc `Orders::cancel`: route \"GET /orders/{oder}\": the parameter `{oder}` names no field of its request (`CancelOrder`); did you mean `order`?"]
+    );
+    assert_eq!(
+        with("api Public { rpc Orders::place at \"GET /orders\" status: 404; }"),
+        vec!["rpc `Orders::place`: route \"GET /orders\": `status: 404` is no success status: a route's is 2xx"]
+    );
+    // a parameter the path cannot carry
+    assert_eq!(
+        with("type Box { tags: bounded[Int; 2]; }\nlocus Boxes { fn open(b: Box) -> Box { return b; } }\napi Public { rpc Boxes::open at \"GET /boxes/{tags}\"; }")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn law_10_the_routes_of_a_surface_are_unambiguous() {
+    assert_eq!(
+        with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; rpc Orders::place at \"GET /orders/{order}\"; }"),
+        vec!["rpc `Orders::cancel` and rpc `Orders::place` are ambiguous routes of `Public`: both are served at `GET /orders/{}`"]
+    );
+    // a literal beside a capture is the more specific, and another surface is another route
+    assert!(with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; rpc Orders::place at \"GET /orders/open\"; }")
+        .is_empty());
+    assert!(with("api Public { rpc Orders::cancel at \"GET /orders/{order}\"; }\napi Admin { rpc Orders::place at \"GET /orders/{order}\"; }")
+        .is_empty());
+    // overlapping with neither more specific
+    let errs = with("type Pair { a: Int; b: Int; }\nlocus Pairs { fn one(p: Pair) -> Pair { return p; } fn two(p: Pair) -> Pair { return p; } }\napi Public { rpc Pairs::one at \"GET /p/{a}/x\"; rpc Pairs::two at \"GET /p/y/{b}\"; }");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("neither is the more specific"), "{errs:?}");
+}
+
+/// A route is part of the contract: two surfaces that differ only in a
+/// route have different digests, in the producer (`surface_rows`) and in the
+/// adapter a serve site is built from (`rpc_expand::selection`), and a
+/// surface with no route keeps the digest it had.
+#[test]
+fn a_route_moves_the_surface_digest() {
+    let digests = |api: &str| -> (u64, u64) {
+        let program = hale_syntax::parse_source(&format!("{BASE}\n{api}")).expect("parse");
+        let (_, adapter) = hale_types::rpc_expand::selection(&[&program], "Public", &[], "app");
+        let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+        let rows = snap.demand_surface_rows().ok().expect("rows");
+        (rows.surface("Public").expect("Public").digest, adapter)
+    };
+    let plain = digests("api Public { rpc Orders::cancel; }");
+    let a = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\"; }");
+    let moved = digests("api Public { rpc Orders::cancel at \"POST /orders/{order}/cancel\"; }");
+    let status = digests("api Public { rpc Orders::cancel at \"DELETE /orders/{order}\" status: 204; }");
+    assert_eq!(plain.0, plain.1);
+    assert_eq!(a.0, a.1, "the producer and the adapter agree");
+    assert_ne!(plain.0, a.0);
+    assert_ne!(a.0, moved.0);
+    assert_ne!(a.0, status.0);
+}

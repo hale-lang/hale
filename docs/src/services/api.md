@@ -750,6 +750,65 @@ calls carry none, so the browser stops the page. CORS is the browser's
 guard and not authentication: a call is still admitted by its bearer and
 its roles, whatever origin it came from.
 
+### Serving routes: `http::Rest`
+
+`http::Rpc` serves every row at `POST /call/<member>`. A program that has
+to answer paths a client or a load balancer already knows (`GET /healthz`,
+`POST /v1/chat/completions`, `DELETE /v1/items/42`) says so on the rows
+and serves the same surface with `http::Rest`, the transport routed by
+method and path. It takes the fields `http::Rpc` takes.
+
+```hale,fragment
+type Health { status: String; }
+type ItemKey { id: Int; }
+
+api Gateway {
+    rpc Probe::live at "GET /healthz";
+    rpc Items::get at "GET /v1/items/{id}";
+    rpc Items::remove at "DELETE /v1/items/{id}" status: 204;
+    rpc Items::create at "POST /v1/items" status: 201;
+}
+
+locus Svc {
+    params {
+        bearer: Tokens = Tokens { };
+        grants: Grants = Grants { };
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, roles: self.grants, anonymous: "public" }, as: "web", receivers: { Probe: self.probe, Items: self.items }, bound: 64, on_full: refuse);
+    }
+}
+```
+
+A route is `METHOD /path`, the path's `{id}` a whole segment naming a
+field of the request (`ItemKey.id`), written into it as the field's type.
+The request is built from three places: the path parameters, the query
+(`?limit=3` fills a scalar field `limit`), and the JSON body, whose
+members are laid beside them. `status:` is the success status (`200` when
+it is left out; a `204` has no body). A path no route serves is `404`, a
+path that takes other methods `405` with `Allow`, `OPTIONS` is answered
+from the table, `HEAD` is the `GET` without its body, and `cors:` is
+answered per route. Everything else is `http::Rpc`'s: the bearer, the
+roles a row `requires`, the digest header, the queue, the handler error
+by its class.
+
+The check refuses a route that is malformed, a parameter that names no
+field of the request (with a did-you-mean), and two routes that could
+match one path unless one is the more specific: `GET /items/open` may sit
+beside `GET /items/{id}`, `GET /p/{a}/x` and `GET /p/y/{b}` may not.
+
+A health probe has no token. `anonymous: "public"` gives a request that
+sends no `Authorization` header at all a caller of that name; the role
+source decides what it holds, so a row with `requires: [operator]` still
+refuses it, and a request with a wrong token is still `401`.
+
+A row with no route is served at `POST /call/<member>`, as ever. The OpenAPI
+form (`hale api export --surface Gateway`) lists each routed row at its
+method and path, and `hale api call http://127.0.0.1:8080 'GET
+/v1/items/42'` calls one by it (flags are the query, `--json` the body of a
+`POST`, `PUT` or `PATCH`). A route is part of the row's contract: it is in the member's and the
+surface's digest and in the description, so a client whose digest matches
+never meets a path that moved. A surface without routes keeps its digest;
+`http::Rpc` and the Unix socket serve a routed surface by member.
+
 ### Serving to an MCP host
 
 `mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the
@@ -1059,7 +1118,8 @@ wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,
 3, a connection that broke or never answered 4, a call the verb would not send
 5. `--raw` prints the whole outcome on stdout instead, and the exit code stays.
 The endpoint is `unix:<path>` or `http://host:port`; `grpc://` and `mcp://`
-are refused with that message. The caller over HTTP is `--bearer T` (or
+are refused with that message. Against an `http::Rest` listener the member
+may be a route, `'GET /v1/items/42'`: the flags are then the query. The caller over HTTP is `--bearer T` (or
 `HALE_API_BEARER`); over a socket it is the peer. See *Driving a served
 program* in `spec/api.md` for the full table.
 

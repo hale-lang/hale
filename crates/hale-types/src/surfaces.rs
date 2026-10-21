@@ -113,6 +113,9 @@ pub struct Row {
     /// A signature row: it names its shape and no handler (spec/api.md §
     /// Imported surfaces).
     pub signature: bool,
+    /// The route the row is served at over `http::Rest`, as written
+    /// (`at "METHOD /path" status: N`); not part of the digest.
+    pub route: Option<hale_syntax::ast::RpcRoute>,
     /// The row's position among the bundle's rows as written: a
     /// surface's rows in the order its author wrote them.
     pub written_at: usize,
@@ -255,6 +258,17 @@ pub struct Stream {
 }
 
 impl Row {
+    /// The route as the digest and the description write it: `METHOD
+    /// /path/:param STATUS`, or the text as written when it is malformed
+    /// (law 9 refuses it). `None` for a row with no route.
+    pub fn canonical_route(&self) -> Option<String> {
+        let r = self.route.as_ref()?;
+        Some(match crate::rest_routes::parse(r) {
+            Ok(p) => format!("{} {} {}", p.method, p.pattern(), p.status),
+            Err(_) => r.text.clone(),
+        })
+    }
+
     /// The member's digest (spec/api.md § The contract digest): its row's
     /// line alone, so adding a member leaves every other member's as it is.
     pub fn member_digest(&self) -> u64 {
@@ -269,6 +283,7 @@ impl Row {
             response: h.and_then(|h| h.response.as_ref()).map(|t| t.hash),
             error: h.and_then(|h| h.error.as_ref()).map(|t| t.hash),
             requires: &requires,
+            route: self.canonical_route().as_deref(),
         })
     }
 }
@@ -589,6 +604,7 @@ pub struct SelectedMember {
     pub locus: String,
     pub method: String,
     pub requires: Vec<(String, Span)>,
+    pub route: Option<hale_syntax::ast::RpcRoute>,
     pub span: Span,
     /// The span the surface takes from this member: the block's, or the
     /// `@rpc` attribute's.
@@ -639,6 +655,7 @@ pub fn select_members(
                             locus: r.locus.name.clone(),
                             method: r.method.name.clone(),
                             requires: r.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                            route: r.route.clone(),
                             span: r.span,
                             surface_span: a.span,
                             origin: if signature { MemberOrigin::Signature } else { MemberOrigin::Block },
@@ -661,6 +678,7 @@ pub fn select_members(
                             locus: l.name.name.clone(),
                             method: f.name.name.clone(),
                             requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                            route: None,
                             span: attr.span,
                             surface_span: attr.span,
                             origin: MemberOrigin::Rpc,
@@ -677,6 +695,7 @@ pub fn select_members(
                         locus: String::new(),
                         method: f.name.name.clone(),
                         requires: attr.requires.iter().map(|i| (i.name.clone(), i.span)).collect(),
+                        route: None,
                         span: attr.span,
                         surface_span: attr.span,
                         origin: MemberOrigin::Rpc,
@@ -878,6 +897,7 @@ pub fn surface_rows(
             span: m.span,
             from_attr: m.origin == MemberOrigin::Rpc,
             signature: m.origin == MemberOrigin::Signature,
+            route: m.route,
             written_at: m.written_at,
         });
     }
@@ -896,6 +916,8 @@ pub fn surface_rows(
     });
 
     // ---- the surfaces and their digests ----
+    let routes_of: BTreeMap<(&str, &str, usize), Option<String>> =
+        rows.iter().map(|r| ((r.surface.as_str(), r.member.as_str(), r.written_at), r.canonical_route())).collect();
     let mut surfaces: Vec<Surface> = surface_spans
         .iter()
         .map(|(name, span)| {
@@ -919,6 +941,7 @@ pub fn surface_rows(
                         response: h.and_then(|h| h.response.as_ref()).map(|t| t.hash),
                         error: h.and_then(|h| h.error.as_ref()).map(|t| t.hash),
                         requires: req,
+                        route: routes_of[&(r.surface.as_str(), r.member.as_str(), r.written_at)].as_deref(),
                     }
                 })
                 .collect();
@@ -1545,6 +1568,54 @@ pub fn surface_laws(
                 diags.push(Diag::ty(r.span, message).with_related(h.name_span, "the handler"));
             }
         }
+        // Law 9: a route is well formed and binds its parameters to the
+        // request's scalar fields.
+        if let Some(route) = &r.route {
+            match crate::rest_routes::parse(route) {
+                Err(why) => diags.push(
+                    Diag::ty(route.span, format!("rpc `{m}`: route \"{}\": {why}", route.text))
+                        .with_related(h.name_span, "the handler"),
+                ),
+                Ok(parsed) => {
+                    let request = h.request.as_ref();
+                    let fields: Vec<(String, Option<char>)> = match request.map(|t| shapes.classify(&shapes.dealias(&t.te))) {
+                        Some(crate::topic_identity::TypeClass::Struct { fields, .. }) => {
+                            fields.iter().map(|f| (f.name.name.clone(), crate::rest_routes::field_kind(&shapes, &f.ty))).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    for param in parsed.params() {
+                        let shown = request.map_or("nothing".to_string(), |t| format!("`{}`", t.display));
+                        match fields.iter().find(|(n, _)| n == param) {
+                            Some((_, Some(_))) => {}
+                            Some((_, None)) => diags.push(
+                                Diag::ty(
+                                    route.span,
+                                    format!(
+                                        "rpc `{m}`: route \"{}\": the parameter `{{{param}}}` is a field of {shown} that a path cannot carry: \
+                                         a parameter is an integer, a number, a bool, a string, a time or a payload-free enum",
+                                        route.text
+                                    ),
+                                )
+                                .with_related(h.name_span, "the handler"),
+                            ),
+                            None => diags.push(
+                                Diag::ty(
+                                    route.span,
+                                    format!(
+                                        "rpc `{m}`: route \"{}\": the parameter `{{{param}}}` names no field of its request \
+                                         ({shown}){}",
+                                        route.text,
+                                        did_you_mean(param, fields.iter().map(|(n, _)| n.as_str()))
+                                    ),
+                                )
+                                .with_related(h.name_span, "the handler"),
+                            ),
+                        }
+                    }
+                }
+            }
+        }
         // Law 7: a handler that may violate is `fallible(ClosureViolation)`,
         // whatever it returns.
         let Some(key) = &h.key else { continue };
@@ -1560,6 +1631,41 @@ pub fn surface_laws(
                 )
                 .with_related(h.name_span, "the handler"),
             );
+        }
+    }
+    // Law 10: the routes of one surface are unambiguous: no two rows meet
+    // on a path unless one is the more specific (a literal where the other
+    // has a parameter, and nowhere less).
+    let mut routed: Vec<(&Row, crate::rest_routes::Parsed)> = Vec::new();
+    for r in rows.rows.iter().filter(|r| matches!(r.handler, Handled::Fn(_))) {
+        if let Some(parsed) = r.route.as_ref().and_then(|t| crate::rest_routes::parse(t).ok()) {
+            routed.push((r, parsed));
+        }
+    }
+    routed.sort_by_key(|(r, _)| r.written_at);
+    for (i, (b, pb)) in routed.iter().enumerate() {
+        for (a, pa) in &routed[..i] {
+            if a.surface != b.surface {
+                continue;
+            }
+            let why = match crate::rest_routes::meet(pa, pb) {
+                crate::rest_routes::Meet::Same => Some(format!("both are served at `{}`", pa.shape())),
+                crate::rest_routes::Meet::Ambiguous => Some(format!(
+                    "`{}` and `{}` match the same paths and neither is the more specific: give one a literal where the other has a parameter, or no overlap",
+                    pa.shape(),
+                    pb.shape()
+                )),
+                _ => None,
+            };
+            if let Some(why) = why {
+                diags.push(
+                    Diag::ty(
+                        b.route.as_ref().map_or(b.span, |t| t.span),
+                        format!("rpc `{}` and rpc `{}` are ambiguous routes of `{}`: {why}", a.member, b.member, a.surface),
+                    )
+                    .with_related(a.route.as_ref().map_or(a.span, |t| t.span), "the first route"),
+                );
+            }
         }
     }
     diags
@@ -2388,6 +2494,12 @@ pub struct Schemas<'a> {
 }
 
 impl<'a> Schemas<'a> {
+    /// The scalar fields of a request record, by name and kind (`i`, `f`,
+    /// `b`, `s`): what a route's path and query can carry.
+    pub fn request_fields(&self, te: &TypeExpr) -> Vec<(String, char)> {
+        crate::rest_routes::fields(&self.shapes, Some(te))
+    }
+
     pub fn of(programs: &[&'a Program]) -> Schemas<'a> {
         let slices: Vec<&'a [TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
         Schemas { shapes: Shapes::of_all(&slices) }
