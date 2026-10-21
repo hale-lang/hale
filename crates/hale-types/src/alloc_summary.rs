@@ -3315,7 +3315,8 @@ pub fn summarize_within(
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
-        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
+        let (escape_map, rebound) = collect_escaping_decls(body, ids);
+        let escaping = Escaping { ids, map: escape_map, rebound };
         let field_types = enclosing_locus
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
@@ -7036,7 +7037,9 @@ impl<'a> Walker<'a> {
                             let esc = match receiver.as_ref() {
                                 Expr::Ident(v)
                                     if self.escaping.of_use(v.id) == Some(Escape::Returned)
-                                        && self.escaping.ids.declaration_of(v.id).is_some_and(|d| self.fresh_locals.contains(&d)) =>
+                                        && self.escaping.ids.declaration_of(v.id).is_some_and(|d| {
+                                            self.fresh_locals.contains(&d) && !self.escaping.rebound.contains(&d)
+                                        }) =>
                                 {
                                     Escape::Returned
                                 }
@@ -7740,6 +7743,10 @@ fn is_pos_increment(v: &str, op: &AssignOp, value: &Expr) -> bool {
 struct Escaping<'a> {
     ids: &'a crate::snapshot::Snapshot,
     map: BTreeMap<SiteId, Escape>,
+    /// Bindings some statement of the body writes whole with anything but
+    /// a struct literal: what they hold at a later use may be storage the
+    /// body did not build (a parameter, a field).
+    rebound: BTreeSet<SiteId>,
 }
 
 impl Escaping<'_> {
@@ -7781,8 +7788,9 @@ impl Escaping<'_> {
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
-) -> BTreeMap<SiteId, Escape> {
+) -> (BTreeMap<SiteId, Escape>, BTreeSet<SiteId>) {
     let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
+    let mut rebound: BTreeSet<SiteId> = BTreeSet::new();
     // `let x = y;`: x's statement and the declaration y names.
     let mut aliases: Vec<(SiteId, SiteId)> = Vec::new();
     collect_escaping_in_block(body, &mut |flow| match flow {
@@ -7799,6 +7807,11 @@ fn collect_escaping_decls(
         // GH #1490 (step 3): `out = kept` (or `out.f = kept`) hands the
         // value to the binding `out` names: when that one is returned,
         // so is what `kept` holds.
+        Flow::Rebound(assign_id) => {
+            if let Some(d) = ids.declaration_of(assign_id) {
+                rebound.insert(d);
+            }
+        }
         Flow::AssignAlias { assign_id, from } => {
             if let (Some(at), Some(d)) = (ids.declaration_of(assign_id), ids.declaration_of(from.id)) {
                 aliases.push((at, d));
@@ -7829,7 +7842,7 @@ fn collect_escaping_decls(
             break;
         }
     }
-    out
+    (out, rebound)
 }
 
 /// Record an obligation on a declaration. A declaration keeps its
@@ -7855,6 +7868,7 @@ enum Flow<'e> {
     Escapes(&'e hale_syntax::ast::Ident, Escape),
     Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
     AssignAlias { assign_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+    Rebound(hale_syntax::ast::NodeId),
 }
 
 type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
@@ -7877,8 +7891,13 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
         Stmt::Assign { target, value, .. } if target.head.name == "self" => {
             note_escape(value, Escape::StoredToSelf, out)
         }
-        Stmt::Assign { value: Expr::Ident(from), id, .. } => {
-            out(Flow::AssignAlias { assign_id: *id, from })
+        Stmt::Assign { target, value, id, .. } => {
+            if target.tail.is_empty() && !matches!(value, Expr::Struct { .. }) {
+                out(Flow::Rebound(*id));
+            }
+            if let Expr::Ident(from) = value {
+                out(Flow::AssignAlias { assign_id: *id, from });
+            }
         }
         Stmt::If(if_stmt) => collect_escaping_in_if(if_stmt, out),
         Stmt::Match(m) => {
@@ -8552,7 +8571,14 @@ mod tests {
                  fn main() {{ let a = App {{ }}; }}"
             )
         };
-        for (bind, v) in [("let v = out;", "v"), ("", "out")] {
+        // A fresh local rebound to the parameter, directly or through an
+        // alias, holds retained storage when it is pushed to.
+        for (bind, v) in [
+            ("let v = out;", "v"),
+            ("", "out"),
+            ("let mut v = IntVec { }; v = out;", "v"),
+            ("let kept = out; let mut v = IntVec { }; v = kept;", "v"),
+        ] {
             let leaks = join_leaks(&input(bind, v));
             assert!(!leaks.is_empty(), "a returned parameter's inserts stay flagged ({bind})");
         }
