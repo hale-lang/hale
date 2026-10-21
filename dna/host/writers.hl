@@ -1676,6 +1676,67 @@ fn github_sync(root: String, seed: String, memory: dna::Memory) -> Answer {
 // The same over a projection the caller already holds: the host's tick
 // reads one for the whole of its pass.
 fn github_sync_of(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
+    let own = github_sync_genome(p, root, seed, memory);
+    if !own.ok { return own; }
+    let theirs = codebase_sync(p, root, memory);
+    if !theirs.ok { return theirs; }
+    return answer(own.text + theirs.text);
+}
+
+// The `owner/name` a codebase's repository is on GitHub: from its https or
+// ssh url, or the slug itself; "" when it is neither.
+fn github_slug(repo: String) -> String {
+    let mut r = repo;
+    if std::str::ends_with(r, ".git") { r = r[0..(len(r) - 4)]; }
+    let at = std::str::index_of(r, "github.com");
+    if at >= 0 { r = r[(at + 10)..len(r)]; if std::str::starts_with(r, "/") || std::str::starts_with(r, ":") { r = r[1..len(r)]; } }
+    else if std::str::contains(r, "://") || std::str::starts_with(r, "/") || std::str::starts_with(r, ".") { return ""; }
+    let slash = std::str::index_of(r, "/");
+    if slash <= 0 || slash == len(r) - 1 || std::str::contains(r[(slash + 1)..len(r)], "/") { return ""; }
+    return r;
+}
+
+// Phase 3: what became of the reviews legs opened at the attached
+// codebases' forges, one forge per codebase (the codebase's own
+// repository, not the genome's), recorded as the `task` family's rows
+// (dna/core/codebase_reviews.hl).
+@bounded_by(names)
+fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
+    let k = forge_kind(root);
+    if k != "github" && k != "file" { return answer(""); }
+    let mut out = "";
+    let mut names = dna::codebase_names(p.j);
+    while len(names) > 0 {
+        let nl = std::str::index_of(names, "\n");
+        let c = dna::codebase_of(p.j, names[0..nl]);
+        names = names[(nl + 1)..len(names)];
+        if !c.present { continue; }
+        let receipts = dna::MemoryReceipts { repo: root };
+        let mut rows = "";
+        if k == "github" {
+            let slug = github_slug(c.repo);
+            if len(slug) == 0 { continue; }
+            let gh_forge = GitHubForge { repo: slug, base: c.branch };
+            rows = dna::codebase_intake(p.j, gh_forge, receipts, c.name);
+        } else {
+            let file_forge = FileForge { dir: root + "/.hale/dna/forge" };
+            rows = dna::codebase_intake(p.j, file_forge, receipts, c.name);
+        }
+        while len(rows) > 0 {
+            let rn = std::str::index_of(rows, "\n");
+            let line = rows[0..rn];
+            rows = rows[(rn + 1)..len(rows)];
+            let kind = dna::intake_field(line, 0);
+            let entity = dna::intake_field(line, 1);
+            let body = line[(len(kind) + len(entity) + 2)..len(line)];
+            if !append_as(root, kind, entity, body, "", memory) { return fail("the record refused the append"); }
+            out = out + entity + ": " + kind + " (codebase " + c.name + ")\n";
+        }
+    }
+    return answer(out);
+}
+
+fn github_sync_genome(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
     let k = forge_kind(root);
     if k == "github" {
         let branch = genome_branch(root);

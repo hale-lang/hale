@@ -30,7 +30,8 @@ fn hat_codebase(hat: String) -> dna::Codebase {
         present: true, name: std::json::find_string_field(raw, "name"), repo: std::json::find_string_field(raw, "repo"),
         build: std::json::find_string_field(raw, "build"), test: std::json::find_string_field(raw, "test"),
         branch: if len(branch) > 0 { branch } else { "main" }, by: std::json::find_string_field(raw, "by"),
-        toolchain: dna::toolchain_of(std::json::find_string_field(raw, "toolchain"))
+        toolchain: dna::toolchain_of(std::json::find_string_field(raw, "toolchain")),
+        knowledge: if len(std::json::find_string_field(raw, "knowledge")) > 0 { std::json::find_string_field(raw, "knowledge") } else { "docs/integrations/" }
     };
 }
 
@@ -86,6 +87,8 @@ locus CodebaseWork {
         if !done.ok { return done; }
         let pushed = self.hands.git.push(worktree, self.branch);
         if !pushed.ok { return pushed; }
-        return self.hands.forge.open_review(worktree, title, body);
+        // the review names the commit the leg left the branch at, so what the
+        // team changes before it merges is a diff from there
+        return self.hands.forge.open_review(worktree, title, dna::with_leg_commit(body, done.output));
     }
 }

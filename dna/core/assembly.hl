@@ -613,6 +613,7 @@ locus Dna {
         if !self.reviews.decided(review_id, outcome, reviewer, native_json_string(decision, "comment")) { return; }
         // GH #995: a decision by command is ratified as every decision is,
         // by the practice-ratify execution it admits
+        self.brief_verdict(review_id, outcome, reviewer);
         self.ratify_through(review_id);
         self.revisit_steps(false);
     }
@@ -679,6 +680,7 @@ locus Dna {
         // hears it and the steps after it write the rest
         let kreq = self.knowledge_record.request_of(r.review_id);
         if len(kreq) > 0 {
+            self.brief_verdict(r.review_id, r.outcome, r.decided_by);
             self.ratify_through(r.review_id);
             self.revisit_steps(false);
             return;
@@ -1482,7 +1484,7 @@ locus Dna {
         // a leg's change in an attached codebase is reviewed at that codebase's
         // forge by the leg's hand; the outcome names the review, and the
         // organism's own genome is not touched
-        let in_codebase = std::str::starts_with(s.result_ref, "review:") && task_codebase(self.journal, adm.value.request.task_id).present;
+        let in_codebase = (std::str::starts_with(s.result_ref, "review:") || std::str::starts_with(s.result_ref, "brief:")) && task_codebase(self.journal, adm.value.request.task_id).present;
         if len(overrun) == 0 && !in_codebase && adm.value.request.output_contract == "Patch" && s.disposition == "done" {
             let mut m = self.mutation_of_attempt(s.attempt_id);
             let mut interrupted = "interrupted before its candidate was prepared (the owner restarted)";
@@ -1511,6 +1513,8 @@ locus Dna {
         let x = self.runtime.settle(s.attempt_id, r);
         if !x.ok { self.refuse_submission(s, x.why); return; }
         self.submissions_settled = self.submissions_settled + 1;
+        // a leg's no-impact brief on an integration's move is the organism's to review
+        if in_codebase && std::str::starts_with(s.result_ref, "brief:") && r.disposition == "done" { self.file_brief(adm.value.request.task_id, s.result, s.result_ref); }
         if self.claims.ready() { let released = self.claims.release_claim(claim.key, s.holder); }
     }
     // An attempt's outcome, reported to the runtime of its scope (an edit
@@ -2408,6 +2412,7 @@ locus Dna {
         b.string_field("kind", if i.kind == "judgment" { "judgment" } else if len(i.position) > 0 { "position" } else if planned { p.kind } else { "app" });
         if len(i.position) > 0 { b.string_field("position", i.position); }
         if len(i.codebase) > 0 { b.string_field("codebase", i.codebase); }
+        if len(i.integration) > 0 { b.field("integration", i.integration); }
         b.string_field("class", class);
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
@@ -2761,8 +2766,91 @@ locus Dna {
         let landed = source_replay(self.journal, task, w);
         let a = if len(landed.disposition) > 0 { landed } else { source_check(self.journal, self.verification.receipts, task, w, source_observe(w, self.gateway.repo_path(), resolve_toolchain(""))) };
         if len(a.disposition) == 0 { return step_failed(a.narrative); }
-        if len(a.what) > 0 { self.on_concern(Concern { source: w.position + "/" + w.watch, what: a.what, severity: 1, request: a.reading }); }
+        if len(a.what) > 0 {
+            self.on_concern(Concern { source: w.position + "/" + w.watch, what: a.what, severity: 1, request: a.reading });
+            self.file_source_task(w, a.reading);
+        }
         return StepVerdict { disposition: a.disposition, result: a.result, narrative: a.narrative };
+    }
+
+    // The architecture note of a watched source, read from the attached
+    // codebase's knowledge directory on its default branch and proposed as a
+    // knowledge node bound to the owning position (the Board ratifies it as it
+    // does any knowledge). The node is named by the watch; a note that changed
+    // is another text on that name, so a fresh proposal on the same node, and
+    // one that did not is the proposal already in the record (proposed once
+    // by its digest). The note, "" when the codebase holds none.
+    @bounded_by(self.journal)
+    fn ingest_note(w: SourceWatch, c: Codebase) -> String {
+        let note = codebase_note(c, w.watch);
+        if len(note) == 0 { return ""; }
+        let node = self.propose_knowledge(Idea {
+            id: "source-note:" + w.watch, kind: "concept", name: "integration/" + w.watch,
+            text: cut_at_line(note, SOURCE_BRIEF_MAX), author: "org",
+            provenance: "ingested from " + c.name + " " + codebase_note_path(c, w.watch)
+        }, "position:" + w.position);
+        return note;
+    }
+    // A moved source of a practice that names a codebase becomes a task under
+    // the owning position, naming the codebase: the reading and its diff (the
+    // receipt) and the practice that convened the check are in its brief (the
+    // hat), with the architecture note; a leg holding the position claims it
+    // through the ordinary claim path. One per reading: the task's id is the
+    // reading's, and a check asked again finds the task admitted.
+    fn file_source_task(w: SourceWatch, reading: String) {
+        if len(w.codebase) == 0 || len(reading) == 0 { return; }
+        let c = codebase_of(self.journal, w.codebase);
+        if !c.present {
+            eprintln("hale dna: ", w.name, ": no codebase `", w.codebase, "` is attached; its move is a concern only");
+            return;
+        }
+        let payload = std::json::find_string_field(first_row(self.journal, "reading.recorded", reading).body, "payload");
+        let receipt = std::json::find_string_field(payload, "receipt");
+        let note = self.ingest_note(w, c);
+        let brief = source_brief_json(w, reading, receipt, std::json::find_string_field(payload, "diff"), codebase_note_path(c, w.watch), note);
+        let asked = self.ask(Intent {
+            id: "source-" + w.watch + "-" + id_tail(reading), outcome: source_task_outcome(w, reading), from: w.position + "/" + w.watch,
+            position: "position:" + w.position, codebase: w.codebase, integration: brief
+        });
+    }
+    // A leg's no-impact brief on a source's move: filed as a knowledge
+    // proposal bound to the owning position, which the Board ratifies as it
+    // does any knowledge (a Review in the organism, not on the forge). Its
+    // provenance names the task, which is how the Review's verdict finds it.
+    fn file_brief(task: String, brief: String, brief_ref: String) {
+        let facts = task_integration(self.journal, task);
+        let name = std::json::find_string_field(facts, "integration");
+        if len(name) == 0 { return; }
+        let adm = self.recorded_admission(task);
+        let position = std::json::find_string_field(adm.value.inputs, "position");
+        let reading = std::json::find_string_field(facts, "reading");
+        let digest = self.propose_knowledge(Idea {
+            id: "source-brief:" + task, kind: "idea", name: "integration/" + name + "/brief/" + id_tail(reading),
+            text: cut_at_line(brief, SOURCE_BRIEF_MAX), author: "org",
+            provenance: "brief of task " + task + " by a leg: its no-impact brief on " + name + " (reading " + reading + ", " + brief_ref + ")"
+        }, position);
+    }
+    // A knowledge Review settled: when it was a no-impact brief's (its
+    // proposal's provenance names the task), the task's verdict row follows
+    // (approved is delivered, anything else refused).
+    fn brief_verdict(review_id: String, outcome: String, by: String) {
+        let req = self.knowledge_record.request_of(review_id);
+        if len(req) == 0 { return; }
+        let doc = self.verification.receipts.read(std::json::find_string_field(req, "subject_digest")[7..len(std::json::find_string_field(req, "subject_digest"))]);
+        let said = std::json::find_string_field(doc, "provenance");
+        if !std::str::starts_with(said, "brief of task ") { return; }
+        let rest = said[14..len(said)];
+        let task = rest[0..std::str::index_of(rest, " ")];
+        if len(task) == 0 || codebase_review_decided(self.journal, task) { return; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("task", task);
+        b.string_field("via", "brief");
+        b.string_field("review_id", review_id);
+        b.string_field("by", by);
+        if outcome != "approve" { b.string_field("why", "the brief was not approved (" + outcome + ")"); }
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), if outcome == "approve" { "task.delivered" } else { "task.refused" }, task, b.result());
     }
 
     // ---- optimize-walk ----

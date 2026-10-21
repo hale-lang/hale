@@ -455,7 +455,7 @@ locus Leg {
             let branch = codebase_branch(cb, std::json::find_string_field(hat, "task_id"));
             let pushed = self.hands.git.push(tree.path, branch);
             if !pushed.ok { return "the branch could not be pushed to the codebase: " + pushed.error; }
-            let opened = self.hands.forge.open_review(tree.path, first_line(flag_or(self.a, "--result", "the change")), std::json::find_string_field(hat, "objective"));
+            let opened = self.hands.forge.open_review(tree.path, first_line(flag_or(self.a, "--result", "the change")), dna::with_leg_commit(std::json::find_string_field(hat, "objective"), sha.output));
             if !opened.ok { return "the review could not be opened at the codebase's forge: " + opened.error; }
             self.made_review = opened.output;
         }

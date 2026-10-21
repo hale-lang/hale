@@ -28,6 +28,7 @@ type Intent {
     kind: String = ""; // "" = a change, the leader's to classify; "judgment" = an assessment, a leg's to perform (GH #946)
     codebase: String = ""; // the attached codebase a routed change is made in (`codebase.attached`); "" = the organism's own genome
     position: String = ""; // the position a change is routed to (`position:<name>`): a leg holding it makes it; "" = the leader classifies it
+    integration: String = ""; // phase 3: an integration watch's task, a JSON object (`source_brief_json`): the reading, its diff and the integration's architecture note, carried into the hat
 }
 
 // Executor-neutral unit of work: the METHOD is open, the envelope is

@@ -97,6 +97,45 @@ locus GitHubForge {
         let c = gh("pr\nclose\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--comment\n" + why);
         return c.code == 0;
     }
+    // Phase 3: what became of a codebase's pull request.
+    fn review_state(review: String) -> String {
+        let v = gh("pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--json\nstate,mergeCommit");
+        if v.code != 0 { return "unknown"; }
+        let state = std::json::find_string_field(v.stdout, "state");
+        if state == "MERGED" { return "merged\t" + std::json::find_string_field(std::json::find_field_raw(v.stdout, "mergeCommit"), "oid"); }
+        if state == "CLOSED" { return "closed"; }
+        return if state == "OPEN" { "open" } else { "unknown" };
+    }
+    fn review_body(review: String) -> String {
+        let v = gh("pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--json\nbody");
+        return if v.code == 0 { std::json::find_string_field(v.stdout, "body") } else { "" };
+    }
+    // The pull request's comments and its reviews' words, one line each.
+    @bounded_by(doc)
+    fn review_comments(review: String) -> String {
+        let v = gh("pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--json\ncomments,reviews");
+        if v.code != 0 { return ""; }
+        let doc = v.stdout;
+        let mut out = "";
+        let mut it = std::json::array_first(std::json::find_field_raw(doc, "comments"));
+        while !it.done {
+            let text = std::json::find_string_field(it.element, "body");
+            if len(text) > 0 { out = out + tab_line(std::json::find_string_field(std::json::find_field_raw(it.element, "author"), "login"), std::json::find_string_field(it.element, "id"), text); }
+            it = std::json::array_next(it);
+        }
+        let mut rv = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
+        while !rv.done {
+            let text = std::json::find_string_field(rv.element, "body");
+            if len(text) > 0 { out = out + tab_line(std::json::find_string_field(std::json::find_field_raw(rv.element, "author"), "login"), std::json::find_string_field(rv.element, "id"), text); }
+            rv = std::json::array_next(rv);
+        }
+        return out;
+    }
+}
+
+// A comment as the forge interface lists it: `who\tkey\ttext`, one line.
+fn tab_line(who: String, key: String, text: String) -> String {
+    return std::str::replace(who, "\t", " ") + "\t" + std::str::replace(key, "\t", " ") + "\t" + std::str::replace(std::str::replace(std::str::replace(text, "\r", ""), "\t", " "), "\n", "\\n") + "\n";
 }
 
 // The number at the end of a pull request's url (or a bare number).
@@ -180,6 +219,36 @@ locus FileForge {
     }
     fn close_review(review: String, why: String) -> Bool {
         return write_text(review + ".closed", why + "\n") or false;
+    }
+    // A fixture merges a review by writing the merge commit to `<n>.merged`.
+    fn review_state(review: String) -> String {
+        let merged = std::str::trim(std::io::fs::read_file(review + ".merged") or "");
+        if len(merged) > 0 { return "merged\t" + merged; }
+        if std::io::fs::file_exists(review + ".closed") { return "closed"; }
+        return if std::io::fs::file_exists(review + ".review") { "open" } else { "unknown" };
+    }
+    fn review_body(review: String) -> String {
+        let text = std::io::fs::read_file(review + ".review") or "";
+        let at = std::str::index_of(text, "\n\n");
+        return if at < 0 { "" } else { text[(at + 2)..len(text)] };
+    }
+    // A person's comments are the lines of `<n>.said`, `who text` each.
+    @bounded_by(text)
+    fn review_comments(review: String) -> String {
+        let text = std::io::fs::read_file(review + ".said") or "";
+        let mut out = "";
+        let mut rest = text;
+        let mut k = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            k = k + 1;
+            let a = std::str::index_of(line, " ");
+            if a < 0 { continue; }
+            out = out + tab_line(line[0..a], "said:" + to_string(k), line[(a + 1)..len(line)]);
+        }
+        return out;
     }
 }
 

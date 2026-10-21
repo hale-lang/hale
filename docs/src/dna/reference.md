@@ -518,6 +518,7 @@ kind it does not know keeps walking.
 |---|---|---|
 | `application.attached` / `application.detached` | record | the application the organism oversees, and its removal |
 | `codebase.attached` / `codebase.detached` | record | a foreign codebase attached with no application: repository, build and test commands, default branch; and its removal |
+| `task.delivered` / `task.refused` | ledger | a codebase task's verdict: a merged pull request or an approved brief is delivered, a closed one or an unapproved brief refused; an edited merge also carries the diff as a receipt, and the pull request's comments are receipts on the row |
 | `expression.restart_requested` | record | the organization asks for a change to be expressed |
 | `expression.restarted` / `expression.deployed` | record | what the new expression reports, or what a deployment gateway expressed |
 | `expression.observed` / `expression.crashed` | record | the observation window's outcome |

@@ -1344,7 +1344,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna application remove [project] [--as <who>]");
     eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
     eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
-    eprintln!("       hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--branch <name>] | detach <name>]");
+    eprintln!("       hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--toolchain go|hale|none] [--knowledge <dir>] [--branch <name>] | detach <name>]");
     eprintln!("                                    a foreign codebase attached with no application (`codebase.attached` in the record): a");
     eprintln!("                                    leg works a branch of its repository, verifies with the two commands, and its review opens there");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");

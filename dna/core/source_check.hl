@@ -52,6 +52,7 @@ type SourceWatch {
     position: String = ""; // the position it is bound to, without `position:`
     source: String = ""; // a URL; for openapi, the surface's path in the genome
     kind: String = ""; // changelog | docs | feed | openapi
+    codebase: String = ""; // `codebase=`: the attached codebase whose client of the source a move is a task for; "" (or the pack's `none`) = a concern only
     why: String = "";
 }
 
@@ -87,7 +88,7 @@ fn source_watch(digest: String, doc: String) -> SourceWatch {
     let w = SourceWatch {
         practice: digest, name: name, watch: last_segment(name),
         position: if std::str::starts_with(target, "position:") { target[9..len(target)] } else { "" },
-        source: practice_term(text, "source"), kind: practice_term(text, "kind")
+        source: practice_term(text, "source"), kind: practice_term(text, "kind"), codebase: if practice_term(text, "codebase") == "none" { "" } else { practice_term(text, "codebase") }
     };
     let mut out = w;
     out.why = source_refusal(w);
@@ -99,6 +100,7 @@ fn source_refusal(w: SourceWatch) -> String {
     if len(w.name) == 0 || len(w.watch) == 0 { return "the practice has no name its readings could carry"; }
     if len(w.position) == 0 { return "the practice `" + w.name + "` is bound to no position, which a move would be a concern for"; }
     if !word_in(w.kind, SOURCE_KINDS) { return "its `kind=` is one of " + SOURCE_KINDS + ", not `" + w.kind + "`"; }
+    if len(w.codebase) > 0 && !codebase_name_ok(w.codebase) { return "its `codebase=` names an attached codebase, not `" + w.codebase + "`"; }
     if w.kind == "openapi" {
         if len(w.source) == 0 || std::str::starts_with(w.source, "/") || std::str::contains(w.source, "..") || std::str::contains(w.source, "://") { return "an openapi `source=` is the surface `hale api import` committed, a path inside the genome"; }
         return "";
@@ -511,4 +513,54 @@ fn reading_id(task: String) -> String {
         i = i + 1;
     }
     return out;
+}
+
+// ---- the task a move is ----------------------------------------------------
+
+// The largest note and diff a task's brief carries inline; a longer one is
+// cut at a line (the whole of each is a receipt on the leg's answer).
+const SOURCE_BRIEF_MAX: Int = 8000;
+
+fn cut_at_line(text: String, most: Int) -> String {
+    if len(text) <= most { return text; }
+    let mut cut = most;
+    while cut > 0 && text[(cut - 1)..cut] != "\n" { cut = cut - 1; }
+    return text[0..cut] + "… cut here at " + to_string(cut) + " of " + to_string(len(text)) + " bytes\n";
+}
+
+// What a moved source's task carries into its hat: the practice that
+// convened the check, the reading, its diff (also a receipt under
+// `diff_receipt`), and the architecture note the codebase's knowledge
+// directory holds for the source. `integration` names the watch.
+fn source_brief_json(w: SourceWatch, reading: String, diff_receipt: String, diff: String, note_path: String, note: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("integration", w.watch);
+    b.string_field("practice", w.name);
+    b.string_field("codebase", w.codebase);
+    b.string_field("source", w.kind);
+    b.string_field("reading", reading);
+    b.string_field("diff_receipt", diff_receipt);
+    b.string_field("diff", cut_at_line(diff, SOURCE_BRIEF_MAX));
+    b.string_field("note_path", note_path);
+    b.string_field("note_digest", if len(note) > 0 { source_digest(note) } else { "" });
+    b.string_field("note", cut_at_line(note, SOURCE_BRIEF_MAX));
+    b.end_object();
+    return b.result();
+}
+
+// The part of an id after its last `/`.
+fn id_tail(s: String) -> String {
+    let mut out = s;
+    let mut at = std::str::index_of(out, "/");
+    while at >= 0 {
+        out = out[(at + 1)..len(out)];
+        at = std::str::index_of(out, "/");
+    }
+    return out;
+}
+
+// The task a moved source is for, in words.
+fn source_task_outcome(w: SourceWatch, reading: String) -> String {
+    return "The upstream " + w.watch + " moved (reading " + reading + ", watched by the practice " + w.name + "). Assess its diff against the codebase `" + w.codebase + "`'s client of it, with the architecture note: change the client, or say that nothing needs to change.";
 }

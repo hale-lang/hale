@@ -58,6 +58,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "batch",
     "budget",
     "cases",
+    "codebase_reviews",
     "codebases",
     "completion",
     "concerns",

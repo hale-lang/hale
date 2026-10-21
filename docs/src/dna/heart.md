@@ -510,10 +510,15 @@ repository and the two commands that say whether a change is good:
 
 ```sh
 hale dna codebase attach ledger-svc --repo https://forge.example/acme/ledger-svc.git \
-    --build "make build" --test "make test" [--toolchain go] [--branch main]
+    --build "make build" --test "make test" [--toolchain go] [--branch main] \
+    [--knowledge docs/integrations]
 hale dna codebase list
 hale dna codebase detach ledger-svc
 ```
+
+`--knowledge` is the directory of the default branch where the codebase keeps
+its watched upstreams' architecture notes, `<watch>.md` ([A move becomes a
+task](./senses.md#a-move-becomes-a-task)).
 
 This writes `codebase.attached` (or `codebase.detached`) to the record. No
 application row is written and no broker account is made: the codebase has
