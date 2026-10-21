@@ -2577,7 +2577,11 @@ prints from the rows, without a running program (R1): every surface
 with its digest and all its rows, every exposure with its listener, its
 sources and its receivers, and every hub with its exposure identity,
 its stream digest, its listener, its sources and its stream rows. It is
-a deployment inventory, not an authorization statement for any caller.
+a deployment inventory, not an authorization statement for any caller. A program
+that declares **named faces** (a `dna::Face` param of its main locus,
+`spec/dna.md` § Faces) adds a `faces` array: each face's `name`, `app`, `roles`,
+`consumes` and `port`, as its literal wrote them; a program that declares none
+has no `faces` key.
 
 `hale check --api --exposure NAME --caller PRINCIPAL [--holds ROLE,…]`
 prints one exposure's description for one caller, from the same rows.

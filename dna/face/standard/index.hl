@@ -33,6 +33,7 @@ type RecordIndex {
     contracts: String = "[]";
     links: String = "[]";
     organisms: String = "[]";
+    faces: String = "[]";
 }
 
 api HeadIndex {
@@ -162,6 +163,36 @@ fn contracts_section(array: String) -> String {
     return section("Contracts", to_string(n) + " contracts", table("Contract|Source|Text", rows));
 }
 
+// The host a browser reached the face by, without its port: a named face
+// is served on its own port of the same host.
+fn bare_host(host: String) -> String {
+    if std::str::starts_with(host, "[") {
+        let close = std::str::index_of(host, "]");
+        return if close < 0 { host } else { host[0..(close + 1)] };
+    }
+    let colon = std::str::index_of(host, ":");
+    return if colon < 0 { host } else { host[0..colon] };
+}
+
+// The named faces the record states, each a link to its URL: mounting a
+// face is navigation to it, not a proxy of it.
+fn faces_section(array: String, host: String) -> String {
+    let mut rows = "";
+    let mut n = 0;
+    let at = bare_host(host);
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        let e = it.element;
+        let port = std::json::find_int_field(e, "port");
+        let url = esc("http://" + (if len(at) > 0 { at } else { "127.0.0.1" }) + ":" + to_string(port) + "/");
+        rows = rows + "<tr>" + cell("<a href=\"" + url + "\" rel=\"noopener noreferrer\">" + field(e, "name") + "</a>") + cell("<code>" + field(e, "app") + "</code>") + cell(field(e, "roles")) + cell(field(e, "consumes")) + "</tr>";
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    if n == 0 { return ""; }
+    return section("Faces", to_string(n) + " named", table("Face|Application|Roles|Consumes", rows));
+}
+
 fn links_section(array: String) -> String {
     let mut items = "";
     let mut n = 0;
@@ -178,13 +209,13 @@ fn links_section(array: String) -> String {
 
 // The index as a page: the record at its revision, section by section, or
 // why the head could not be read.
-fn index_page(r: RecordIndex) -> String {
+fn index_page(r: RecordIndex, host: String) -> String {
     let mut body = "";
     if !r.ok {
         body = section("Unavailable", "", "<p>" + esc(if len(r.why) > 0 { r.why } else { "the head did not answer" }) + "</p>");
     } else {
         body = section("Purpose", "the declared purpose", if len(r.purpose) > 0 { "<p class=\"index-purpose\">" + esc(r.purpose) + "</p>" } else { "<p class=\"quiet\">No purpose is declared in the record.</p>" })
-            + organisms_section(r.organisms) + positions_section(r.positions) + codebases_section(r.codebases) + watched_section(r.watched) + contracts_section(r.contracts) + links_section(r.links);
+            + organisms_section(r.organisms) + faces_section(r.faces, host) + positions_section(r.positions) + codebases_section(r.codebases) + watched_section(r.watched) + contracts_section(r.contracts) + links_section(r.links);
     }
     return "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"dark\"><title>Hale · the index</title><link rel=\"stylesheet\" href=\"/styles.css\"></head>\n<body><main class=\"record-index\"><header><p class=\"eyebrow\">HALE / DNA ORGANISM</p><h1>Index</h1><p class=\"quiet\">" + (if r.ok { "The record at revision " + to_string(r.revision) + ". " } else { "" }) + "<a href=\"/\">Open the shell</a></p></header>\n" + body + "</main></body></html>\n";
 }

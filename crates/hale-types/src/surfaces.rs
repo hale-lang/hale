@@ -80,6 +80,85 @@ pub struct SurfaceRows {
     pub hubs: Vec<Hub>,
     /// The entry's name: the inventory's `app`.
     pub app: Option<String>,
+    /// The named faces the entry's main locus declares (`dna::Face`
+    /// params), in declaration order.
+    pub faces: Vec<Face>,
+}
+
+/// A named face: a `dna::Face` param of the main locus (spec/dna.md §
+/// Faces). Read as written: the application's seed path, the roles it
+/// acts under, the surfaces it consumes and the port it is served on.
+#[derive(Debug, Clone)]
+pub struct Face {
+    /// The param's name: the face's (`admin`, `product`).
+    pub name: String,
+    pub app: String,
+    pub roles: Vec<String>,
+    pub consumes: Vec<String>,
+    pub port: i64,
+    pub span: Span,
+}
+
+/// The declaration of the DNA core's `Face` (`dna/core/face.hl`), as the
+/// cross-seed rename mangles it.
+const FACE_DECL_SUFFIX: &str = "___face__Face";
+
+/// The text of the DNA core's `face` module: what the toolchain embeds, and
+/// what `vendor/dna` is materialized from (`hale dna upgrade`).
+const CORE_FACE_SOURCE: &str = include_str!("../../../dna/core/face.hl");
+
+/// Whether a path names the DNA core's `Face`, by what it resolves to and
+/// not by how the import spells it: the path's mangled name (the bundle's
+/// import renames) is a type declared in a source file that is the core's
+/// own `face` module, byte for byte (the load records each file's digest),
+/// so a user library's `face.hl` is not it, however it is named or
+/// accompanied.
+fn is_face_path(
+    path: &hale_syntax::ast::QualifiedName,
+    renames: &[(Vec<String>, String)],
+    declared_in_core: &BTreeSet<&str>,
+) -> bool {
+    let segs: Vec<String> = path.segments.iter().map(|s| s.name.clone()).collect();
+    match renames.iter().find(|(k, _)| *k == segs) {
+        Some((_, m)) => m.ends_with(FACE_DECL_SUFFIX) && declared_in_core.contains(m.as_str()),
+        None => false,
+    }
+}
+
+/// The faces a locus declares: its params of type `dna::Face`, built by
+/// the literal `dna::Face { app: "…", roles: "a b", consumes: "S T",
+/// port: N }` (the lists are space-separated names).
+pub fn locus_faces(l: &LocusDecl, renames: &[(Vec<String>, String)], core_types: &BTreeSet<&str>) -> Vec<Face> {
+    use hale_syntax::ast::Literal;
+    let text = |e: &Expr| match e {
+        Expr::Literal(Literal::String(s), _) => Some(s.clone()),
+        _ => None,
+    };
+    let list = |e: &Expr| text(e).map(|t| t.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
+    let mut out = Vec::new();
+    for m in &l.members {
+        let LocusMember::Params(pb) = m else { continue };
+        for p in &pb.params {
+            let literal = match &p.init {
+                ParamInit::Value(e @ Expr::Struct { path, .. }) if is_face_path(path, renames, core_types) => e,
+                _ => continue,
+            };
+            let Expr::Struct { inits, .. } = literal else { continue };
+            let field = |n: &str| inits.iter().find(|i| i.name.name == n).map(|i| &i.value);
+            out.push(Face {
+                name: p.name.name.clone(),
+                app: field("app").and_then(text).unwrap_or_default(),
+                roles: field("roles").map(list).unwrap_or_default(),
+                consumes: field("consumes").map(list).unwrap_or_default(),
+                port: match field("port") {
+                    Some(Expr::Literal(Literal::Int(n), _)) => *n,
+                    _ => 0,
+                },
+                span: p.name.span,
+            });
+        }
+    }
+    out
 }
 
 /// A surface: an `api` block (two blocks of one name are one surface),
@@ -1112,7 +1191,26 @@ pub fn surface_rows(
         }
     }
     let app = entry.entry().map(|m| m.name.clone());
-    SurfaceRows { surfaces, rows, serves, hubs, app }
+    // the types declared in a source file that is the core's own `face` module
+    let core_digest = format!("{:016x}", crate::topology::fnv1a64(CORE_FACE_SOURCE.as_bytes()));
+    let type_names: BTreeSet<&str> = programs
+        .iter()
+        .flat_map(|p| flat_decls(&p.items))
+        .filter_map(|d| match d {
+            TopDecl::Type(t) => Some((t.name.name.as_str(), t.span.start.0)),
+            _ => None,
+        })
+        .filter(|(_, at)| {
+            bundle.sources.iter().any(|f| *at >= f.base && *at < f.base + f.len && f.digest == core_digest)
+        })
+        .map(|(n, _)| n)
+        .collect();
+    let faces = app
+        .as_deref()
+        .and_then(|a| loci.get(a))
+        .map(|l| locus_faces(l, &bundle.import_renames, &type_names))
+        .unwrap_or_default();
+    SurfaceRows { surfaces, rows, serves, hubs, app, faces }
 }
 
 /// The socket transport a serve site names (`"unix::Rpc"`, `"http::Rpc"`, `"grpc::Rpc"`,
@@ -1389,14 +1487,41 @@ pub fn server_error_notes(rows: &SurfaceRows) -> Vec<(String, String, String)> {
 /// Law 6 is a statement of the row, not a refusal
 /// ([`server_error_notes`]). The serve sites' laws are R2's: a serve
 /// site is named, not checked.
+/// The laws of a named face: it names an application and a port of its
+/// own, acts only under declared roles and consumes only surfaces the
+/// program declares.
+fn face_laws(rows: &SurfaceRows, roles: &crate::roles::RoleRows) -> Vec<Diag> {
+    let declared: BTreeSet<&str> = roles.roles.iter().map(|r| r.name.name.as_str()).collect();
+    let mut diags = Vec::new();
+    let mut ports: BTreeMap<i64, &str> = BTreeMap::new();
+    for f in &rows.faces {
+        if f.app.is_empty() {
+            diags.push(Diag::ty(f.span, format!("face `{}`: name the application that fills it: `app: \"path/to/seed\"`", f.name)));
+        }
+        if !(1..=65535).contains(&f.port) {
+            diags.push(Diag::ty(f.span, format!("face `{}`: name the port it is served on, a literal 1..65535: `port: 8801`", f.name)));
+        } else if let Some(other) = ports.insert(f.port, f.name.as_str()) {
+            diags.push(Diag::ty(f.span, format!("face `{}` is served on port {}, which face `{other}` holds: a face has a port of its own", f.name, f.port)));
+        }
+        for r in f.roles.iter().filter(|r| !declared.contains(r.as_str())) {
+            diags.push(Diag::ty(f.span, format!("face `{}` acts under role `{r}`, which the program does not declare (`role {r};`)", f.name)));
+        }
+        for c in f.consumes.iter().filter(|c| !rows.surfaces.iter().any(|s| &s.name == *c)) {
+            diags.push(Diag::ty(f.span, format!("face `{}` consumes `{c}`, which is no surface of the program: a face consumes the surfaces the program declares", f.name)));
+        }
+    }
+    diags
+}
+
 pub fn surface_laws(
     bundle: &Bundle<'_>,
     rows: &SurfaceRows,
     roles: &crate::roles::RoleRows,
     summary: &crate::alloc_summary::AllocSummary,
 ) -> Vec<Diag> {
+    let face_diags = face_laws(rows, roles);
     if rows.rows.is_empty() {
-        return Vec::new();
+        return face_diags;
     }
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let slices: Vec<&[TopDecl]> = programs.iter().map(|p| p.items.as_slice()).collect();
@@ -1408,7 +1533,7 @@ pub fn surface_laws(
     let mut written: Vec<&Row> = rows.rows.iter().collect();
     written.sort_by_key(|r| r.written_at);
     let mut first_of: BTreeMap<(&str, &str), Span> = BTreeMap::new();
-    let mut diags = Vec::new();
+    let mut diags = face_diags;
     // Law 8: a surface is served or imported, never both: its rows all
     // name handlers, or all name shapes; an imported surface's (`from`)
     // all name shapes.

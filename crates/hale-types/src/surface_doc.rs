@@ -658,12 +658,32 @@ fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -
             ])
         })
         .collect();
-    o(vec![
+    let mut fields = vec![
         ("inventory", J::Int(1)),
         ("app", s(rows.app.as_deref().unwrap_or(""))),
         ("surfaces", J::Arr(surfaces)),
         ("exposures", J::Arr(exposures)),
         ("hubs", J::Arr(hubs)),
+    ];
+    // Named faces (spec/dna.md § Faces): present only when the program
+    // declares some, so an inventory without them is byte for byte as before.
+    if only.is_none() && !rows.faces.is_empty() {
+        let faces = rows
+            .faces
+            .iter()
+            .map(|f| {
+                o(vec![
+                    ("name", s(&f.name)),
+                    ("app", s(&f.app)),
+                    ("roles", strs(f.roles.iter().map(String::as_str))),
+                    ("consumes", strs(f.consumes.iter().map(String::as_str))),
+                    ("port", J::Int(f.port)),
+                ])
+            })
+            .collect();
+        fields.push(("faces", J::Arr(faces)));
+    }
+    fields.extend(vec![
         ("schemas", book.render(DOC_REFS)),
         (
             "notes",
@@ -673,7 +693,8 @@ fn inventory_of(rows: &SurfaceRows, schemas: &Schemas<'_>, only: Option<&str>) -
                 ("lifecycle", s(NOTE_LIFECYCLE)),
             ]),
         ),
-    ])
+    ]);
+    o(fields)
 }
 
 /// The principal `--caller` names: a JSON object as the exposure would

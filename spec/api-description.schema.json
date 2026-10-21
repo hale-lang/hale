@@ -71,6 +71,7 @@
         "surfaces": { "type": "array", "items": { "$ref": "#/$defs/surface" } },
         "exposures": { "type": "array", "items": { "$ref": "#/$defs/exposure" } },
         "hubs": { "type": "array", "items": { "$ref": "#/$defs/hub" } },
+        "faces": { "type": "array", "items": { "$ref": "#/$defs/face" } },
         "schemas": { "$ref": "#/$defs/schemas" },
         "notes": {
           "type": "object",
@@ -114,6 +115,19 @@
         "instance": { "type": "string" },
         "binding": { "enum": ["explicit", "inferred"] },
         "pool": { "type": "string" }
+      }
+    },
+    "face": {
+      "$comment": "A named face (spec/dna.md, Faces): a dna::Face param of the main locus. Present in an inventory only when the program declares one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "app", "roles", "consumes", "port"],
+      "properties": {
+        "name": { "$ref": "#/$defs/identifier" },
+        "app": { "type": "string", "minLength": 1 },
+        "roles": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "consumes": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
     "hub": {

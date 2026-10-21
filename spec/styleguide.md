@@ -167,6 +167,11 @@ fn main() {
   param like any other, and lets the runtime answer `/healthz` and
   `/readyz`; never a hand-written health route, which answers from the
   very pool it is meant to judge. A CLI or a one-shot job declares none.
+- An organism that fronts itself with more than the standard face names
+  each as a param of its main locus, `admin: dna::Face = dna::Face {
+  app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };`
+  (lists are space-separated names); the compiler reads the literal into
+  the description. Never a manifest table or a hand-started process.
 
 ### 2.2 Namespace locus — empty params, methods only
 

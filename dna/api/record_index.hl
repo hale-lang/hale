@@ -31,6 +31,55 @@ type RecordIndex {
     contracts: String = "[]";
     links: String = "[]";
     organisms: String = "[]";
+    faces: String = "[]";
+}
+
+// The named faces: each `application:face/<name>` node the graph states,
+// with the application, port and roles on its row, and the contracts whose
+// `meets` edge holds it as a consumer (a surface's contract is `api:<Surface>`).
+@bounded_by(graph)
+fn index_faces(graph: String, cap: Int) -> String {
+    let faces = std::json::Builder { };
+    faces.begin_array();
+    let mut n = 0;
+    let mut rest = graph;
+    while len(rest) > 0 && n < cap {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 || !std::str::starts_with(line, "application:face/") { continue; }
+        let id = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let mut consumes = "";
+        let mut scan = graph;
+        while len(scan) > 0 {
+            let e = std::str::index_of(scan, "\n");
+            let row = if e < 0 { scan } else { scan[0..e] };
+            scan = if e < 0 { "" } else { scan[(e + 1)..len(scan)] };
+            if std::str::starts_with(row, "meets:contract:") && std::str::contains(row, "\"role\": \"consumer\", \"node\": \"" + id + "\"") {
+                let contract = row[15..std::str::index_of(row, "\t")];
+                consumes = consumes + (if len(consumes) > 0 { "\n" } else { "" }) + (if std::str::starts_with(contract, "api:") { contract[4..len(contract)] } else { contract });
+            }
+        }
+        let mut roles = "";
+        let mut it = std::json::array_first(std::json::find_field_raw(body, "roles"));
+        while !it.done {
+            let r = std::str::trim(it.element);
+            if len(r) >= 3 && std::str::starts_with(r, "\"") { roles = roles + (if len(roles) > 0 { "\n" } else { "" }) + std::json::unescape_string(r[1..(len(r) - 1)]); }
+            it = std::json::array_next(it);
+        }
+        faces.begin_object();
+        faces.string_field("name", id[17..len(id)]);
+        faces.string_field("app", std::json::find_string_field(body, "face"));
+        faces.int_field("port", std::json::find_int_field(body, "port"));
+        faces.string_field("roles", index_joined(roles + "\n"));
+        faces.string_field("consumes", index_joined(consumes + "\n"));
+        faces.end_object();
+        n = n + 1;
+    }
+    faces.end_array();
+    return faces.result();
 }
 
 const INDEX_WATCHED: String = "standard/upstream-watched/";
@@ -340,5 +389,5 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     }
     watched.end_array();
     links.end_array();
-    return RecordIndex { ok: true, revision: j.revision(), purpose: purpose, positions: positions.result(), codebases: codebases.result(), watched: watched.result(), contracts: contracts.result(), links: links.result(), organisms: index_organisms(j, cap) };
+    return RecordIndex { ok: true, revision: j.revision(), purpose: purpose, positions: positions.result(), codebases: codebases.result(), watched: watched.result(), contracts: contracts.result(), links: links.result(), organisms: index_organisms(j, cap), faces: index_faces(graph, cap) };
 }

@@ -6268,7 +6268,47 @@ door to the organism. This slice has one, the **standard face**
 (`dna/face/standard`), which the toolchain ships and grafts as it grafts
 the habitat genome and the packs: its sources and the browser's assets are
 part of the head's files, built into the toolchain cache beside the head's
-seeds. How a genome names several faces is not declared yet.
+seeds. A genome names others as below.
+
+**Named faces.** An organism names a face by a param of its `main locus`
+of type `dna::Face` (`dna/core/face.hl`, in the embedded core), recognised by the type it resolves to (whatever alias imports the core; a look-alike `Face` is no face) as
+`std::observe::Probes` is and built by its literal, never a manifest table:
+
+```text
+admin: dna::Face = dna::Face { app: "faces/admin", roles: "operator", consumes: "Orders", port: 8801 };
+```
+
+The param's name is the face's; `app` is the seed of the application
+that fills it (relative to the application's seed), `roles` the roles it acts
+under and `consumes` the surfaces it calls (space-separated names), `port`
+the loopback port it is served on, a literal 1..65535. The compiler reads the
+literal into `hale check --api`: the inventory carries a `faces` array
+(`name`, `app`, `roles`, `consumes`, `port`), present only when the program
+declares one, so an inventory without faces is as before. The check refuses a
+face with no `app`, no port or a port another face holds, a role the program
+does not declare, or a surface it does not declare.
+
+The record states a face from that description, composing the graph's
+vocabulary and adding none: an `application:face/<name>` node (the application
+and port on its row), and the face as a `consumer` on the `meets` edge of the
+contract of each surface it consumes, the one edge the contract has (beside the
+seed that serves it). A face is a consumer, never a part: no position is
+proposed for it. The head's `Commands::index` row answers them as a `faces`
+section (`name`, `app`, `port`, `roles`, `consumes`), and the standard face
+lists them in `/index`, each a link to `http://<host>:<port>/` on the host the
+browser reached the face by. Mounting is navigation to the face's URL, not a
+reverse proxy.
+
+`hale dna dev` and `hale dna run` build each declared face's seed and start it
+as `<binary> <port>` with `HALE_DNA_FACE=<name>` and
+`HALE_DNA_FACE_PORT=<port>`, beside the application and holding none of the
+organism's credentials (as the application holds none); the pids are
+`.hale/dna/face-<name>.pid`, listed in `.hale/dna/faces`, and the body's stop
+and fence stop them with it. A face that does not build is said, and the
+organism does not wait on it. An organism that names none is served by the
+standard face alone, unchanged. In both kinds of face the contract is the
+surfaces: headers carry only identity and the digest. A face is not restarted
+by an apply in this slice.
 
 The head serves surfaces only. The standard face stands in front of it,
 on the port the browser opens (8792; `--port`), the head on the loopback
@@ -6504,6 +6544,8 @@ otherwise.
 | `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
+| `HALE_DNA_FACE=<name>` | set by the host | The name of the named face (`dna::Face` param of the organism's main) an application is started as. |
+| `HALE_DNA_FACE_PORT=<port>` | set by the host | The loopback port a named face serves on, the `port` of its literal (also its one argument). |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
 | `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
 | `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built, and the compose projects run from under them. Without it, `dna::scratch_done` and the sweep take every compose project whose working directory is under a root they remove down with it (`docker compose -p <project> down -v`, found by the `com.docker.compose.project.working_dir` label on containers, or by name in the root's `.dna-compose-projects`), and confirm it by the project's label on containers and volumes. Neither ever takes down the developer's local habitat, nor the habitat `XDG_DATA_HOME` names outside the root (GH #1653). A teardown that fails or leaves anything fails the fixture (or the slice), and keeps the root, its registry entry, the slice's ledger and the projects it names for another attempt. |

@@ -1201,6 +1201,7 @@ main locus Host {
     fn stop_started() {
         if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
         if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
+        kill_faces(self.dna_dir);
         if self.compose.active {
             let gone = self.compose.down();
             self.say(if len(gone) == 0 { "the repository's compose services are down (compose project " + self.compose.project + ")" } else { "compose down (project " + self.compose.project + ") failed: " + gone });
@@ -1883,6 +1884,9 @@ main locus Host {
         // the expression carries no organism now: the host records that it restarted
         let a = append_as(self.root, "expression.restarted", id, expression, "", self.memory);
         self.say("expression restarted (pid " + to_string(self.app.pid) + ") as " + expression);
+        // the named faces are the application's too: one whose app changed is rebuilt (the build cache answers an unchanged one)
+        kill_faces(self.dna_dir);
+        if !self.repository { self.start_faces(); }
         self.write_status();
         if self.observer.pid > 0 {
             stop_proc(self.observer);
@@ -2128,6 +2132,7 @@ main locus Host {
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");
         }
+        if (self.verb == "dev" || self.verb == "run") && !self.repository { self.start_faces(); }
         if self.verb == "run" && len(self.fleet) > 0 { self.say("the fleet `" + self.fleet + "` (" + self.root + "/" + self.plan + ") is the expression; `hale node <name>` runs its nodes"); }
         // the node is up on its genome: a row naming the sha it runs
         self.genome_row("node.started", "");
@@ -2137,6 +2142,34 @@ main locus Host {
         if self.iris && bound {
             let baseline = self.dna_dir + "/baseline.topology";
             self.launch_iris(if std::io::fs::file_exists(baseline) { baseline } else { "" });
+        }
+    }
+    // The named faces the application declares (`dna::Face` params of its
+    // main, in the description `hale check --api` prints): each face's
+    // application is built and started on the port it names, `<binary>
+    // <port>`, with HALE_DNA_FACE and HALE_DNA_FACE_PORT, holding none of the
+    // organism's credentials. A face that does not build is said and left; the
+    // organism does not wait on it. The standard face is the head's, not
+    // started here.
+    fn start_faces() {
+        std::io::fs::unlink(self.dna_dir + "/faces") or discard;
+        let d = dna::run_tool(self.hale + "\ncheck\n--api\n" + self.seed_dir());
+        if d.code != 0 { return; }
+        let mut it = std::json::array_first(std::json::find_field_raw(d.stdout, "faces"));
+        while !it.done {
+            let name = std::json::find_string_field(it.element, "name");
+            let app = std::json::find_string_field(it.element, "app");
+            let port = std::json::find_int_field(it.element, "port");
+            it = std::json::array_next(it);
+            if len(name) == 0 || len(app) == 0 || port < 1 { continue; }
+            let bin = self.build_seed(self.seed_dir() + "/" + app);
+            if len(bin) == 0 { self.say("face " + name + ": " + app + " did not build; it is not started"); continue; }
+            // a build can outlive the lease: reprove it before this start, as the application's does
+            if !self.body_assert("the face " + name) { self.stop_body(3); }
+            let p = start_application(self.dna_dir, "face-" + name, self.seed_dir() + "/" + app, self.child_envs("", "") + "\nHALE_DNA_FACE=" + name + "\nHALE_DNA_FACE_PORT=" + to_string(port), bin + "\n" + to_string(port));
+            if p.pid <= 0 { self.say("face " + name + ": cannot start " + bin); continue; }
+            let fw = write_text(self.dna_dir + "/faces", (std::io::fs::read_file(self.dna_dir + "/faces") or "") + name + "\n") or false;
+            self.say("face " + name + " (pid " + to_string(p.pid) + ") on port " + to_string(port));
         }
     }
     // Ruling 11 (2026-10-12): a repository's application is its compose
@@ -2311,6 +2344,19 @@ fn fence_mandate(dir: String, host_pid: Int) -> Bool {
     return len(m) > 0 && (if nl < 0 { m } else { m[0..nl] }) == to_string(host_pid);
 }
 
+// The named faces a body started (`faces`, one name a line), each with
+// every process it started.
+fn kill_faces(dir: String) {
+    let mut rest = std::io::fs::read_file(dir + "/faces") or "";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) > 0 { kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/face-" + name + ".pid") or "")); }
+    }
+    std::io::fs::unlink(dir + "/faces") or discard;
+}
+
 // Say why, then kill what executes under the lease — unless the mandate
 // has passed to another host in the meantime, whose processes these are.
 fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
@@ -2320,6 +2366,7 @@ fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
     // body's mark, anywhere else (a tool whose organism already died)
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
+    kill_faces(dir);
     dna::kill_marked(mark);
     // the repository's compose services this body brought up (ruling 11):
     // they live in docker, outside every tree and mark above
