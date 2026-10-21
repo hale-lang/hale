@@ -920,6 +920,9 @@ pub fn resolve_imports(
                 // importer's same-named group cannot capture it.
                 seed_binding,
             );
+            // GH #1530: a state class names a record by the written name;
+            // resolve it through the seed's one rename map.
+            hale_types::repo::rename_imported_classes(&mut pf.program, &seed_renames, &seed_heads, effects);
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());
             }

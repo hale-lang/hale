@@ -233,3 +233,43 @@ fn an_imported_contract_names_the_librarys_own_record() {
         assert!(msgs.is_empty(), "root_repo={root_repo}: {msgs:?}");
     }
 }
+
+#[test]
+fn a_record_and_its_repo_in_different_library_files() {
+    let types = HEAD;
+    let repos = GOOD.replace("fn main() { let i = Items { }; }\n", "");
+    let main = "import \"./store\" as r;\nfn main() { let remote = r::Items { }; }\n";
+    let msgs: Vec<String> = check_files(&[
+        ("main.hl", main),
+        ("store/types.hl", types),
+        ("store/repos.hl", &repos),
+    ])
+    .into_iter()
+    .map(|d| d.message)
+    .collect();
+    assert!(msgs.is_empty(), "{msgs:?}");
+}
+
+#[test]
+fn an_imported_group_claim_names_the_librarys_own_record() {
+    let claim = "group repo_group = { Items };\nclaims { c: forbid reaches(repo_group, effects(writes(Item))); }\n";
+    // the claim holds against the library's own `put` with or without an
+    // unrelated `Item` repository in the root; the witness is at `put`
+    let lib = lib_with(claim);
+    for root_repo in [false, true] {
+        let main = if root_repo {
+            format!("import \"./store\" as r;\n{HEAD}{}\nfn main() {{ let remote = r::Items {{ }}; }}\n", GOOD.replace("fn main() { let i = Items { }; }\n", ""))
+        } else {
+            "import \"./store\" as r;\nfn main() { let remote = r::Items { }; }\n".to_string()
+        };
+        let msgs: Vec<String> = check_files(&[("main.hl", &main), ("store/store.hl", &lib)])
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(has(&msgs, "Items::put"), "root_repo={root_repo}: {msgs:?}");
+        assert!(
+            !has(&msgs, "never declared"),
+            "root_repo={root_repo}: {msgs:?}"
+        );
+    }
+}

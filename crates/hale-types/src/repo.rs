@@ -107,72 +107,6 @@ pub fn expand(programs: &mut [&mut Program]) {
             return;
         }
     }
-    // A state class names a record by the name its module wrote
-    // (`reads(Item)`); the import mangles the record and not the class
-    // text. Resolve each reference in its declaring module's scope, so the
-    // class is keyed by the mangled record: two imported records of one
-    // written name keep two classes, and a contract anywhere in a library
-    // (`@effects(none: { writes(Item) })`) names the library's own.
-    let names: Vec<String> = programs[0].effect_names.clone();
-    let repos: BTreeSet<String> = {
-        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
-        repo_types(&ro)
-    };
-    let mut resolve = |classes: &mut Vec<EffectClass>, prefix: &str| {
-        for c in classes.iter_mut() {
-            let EffectClass::User(i) = c else { continue };
-            let Some(name) = names.get(*i as usize) else {
-                continue;
-            };
-            let Some((word, rest)) = name.split_once('(') else {
-                continue;
-            };
-            let target = format!("{prefix}{}", rest.trim_end_matches(')'));
-            if CLASSES.contains(&word) && repos.contains(&target) {
-                if let Some(j) = names.iter().position(|n| *n == format!("{word}({target})")) {
-                    *c = EffectClass::User(j as u16);
-                }
-            }
-        }
-    };
-    let mut fix = |f: &mut FnDecl, prefix: &str| {
-        for a in &mut f.effects {
-            match a {
-                EffectAssert::Forbid(cs)
-                | EffectAssert::Carries(cs)
-                | EffectAssert::Causes(cs)
-                | EffectAssert::Only(cs) => resolve(cs, prefix),
-                _ => {}
-            }
-        }
-    };
-    for p in programs.iter_mut() {
-        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| match d {
-            TopDecl::Locus(l) => {
-                let prefix = module_prefix(&l.name.name);
-                for m in &mut l.members {
-                    if let LocusMember::Fn(f) = m {
-                        fix(f, &prefix);
-                    }
-                }
-            }
-            TopDecl::Fn(f) => {
-                let prefix = module_prefix(&f.name.name);
-                fix(f, &prefix);
-            }
-            _ => {}
-        });
-    }
-}
-
-/// The mangling prefix of an imported declaration's name
-/// (`__lib_store___store__` of `__lib_store___store__Items`), empty for a
-/// declaration of the root seed.
-fn module_prefix(name: &str) -> String {
-    match name.strip_prefix("__").and_then(|r| r.rfind("__")) {
-        Some(i) => name[..i + 4].to_string(),
-        None => String::new(),
-    }
 }
 
 /// The key field of a record: the one tagged `db:"NAME,key"`.
@@ -435,52 +369,107 @@ fn stray_markers(f: &FnDecl, diags: &mut Vec<Diag>) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn intern(effects: &mut hale_syntax::ast::EffectClasses, name: String) -> u16 {
+    if let Some(i) = effects.names.iter().position(|n| *n == name) {
+        return i as u16;
+    }
+    effects.names.push(name);
+    effects.defs.push(None);
+    (effects.names.len() - 1) as u16
+}
 
-    /// Two imported records of one written name (`Item`, mangled apart)
-    /// keep two classes: each repo's `reads(Item)` is the class of its own
-    /// record after the expansion.
-    #[test]
-    fn two_imported_records_of_one_written_name_keep_two_classes() {
-        let src = r#"
-type __a__Item { id: Int `db:"id,key"`; }
-type __b__Item { id: Int `db:"id,key"`; }
-@repo(__a__Item)
-locus __a__Items {
-    @effects(is: { reads(Item) })
-    fn get(id: Int) -> Int { return id; }
-}
-@repo(__b__Item)
-locus __b__Items {
-    @effects(is: { reads(Item) })
-    fn get(id: Int) -> Int { return id; }
-}
-fn main() { }
-"#;
-        let mut p = hale_syntax::parse_source(src).expect("parses");
-        expand(&mut [&mut p]);
-        let class_of = |locus: &str| -> String {
-            for d in flat_decls(&p.items) {
-                let TopDecl::Locus(l) = d else { continue };
-                if l.name.name != locus {
-                    continue;
+/// Rename the state classes an imported seed's file references, as the
+/// import renames its records. A class names a record by the name its
+/// seed wrote (`reads(Item)`); `renames` is the seed's one rename map
+/// (written name to mangled name) and `types` the seed's record and
+/// type names, so the class argument resolves to the record's identity
+/// whichever file of the seed declares it or refers to it, in a method's
+/// contract, a locus claim or a top-level claim. The class is then
+/// `reads(<mangled record>)`: two imported records of one written name
+/// keep two classes. Called by the import loader, with the load's one
+/// class table, after the file is mangled.
+pub fn rename_imported_classes(
+    prog: &mut Program,
+    renames: &std::collections::HashMap<String, String>,
+    types: &std::collections::HashSet<String>,
+    effects: &mut hale_syntax::ast::EffectClasses,
+) {
+    use hale_syntax::ast::{ClaimForm, ClaimSet, ClaimsBlock};
+    // the class a reference becomes, with its text
+    let mut retarget = |c: &mut EffectClass, text: Option<&mut String>| {
+        let EffectClass::User(i) = *c else { return };
+        let Some(name) = effects.names.get(i as usize).cloned() else {
+            return;
+        };
+        let Some((word, rest)) = name.split_once('(') else {
+            return;
+        };
+        let written = rest.trim_end_matches(')');
+        if !CLASSES.contains(&word) || !types.contains(written) {
+            return;
+        }
+        let Some(target) = renames.get(written) else {
+            return;
+        };
+        let new = format!("{word}({target})");
+        *c = EffectClass::User(intern(effects, new.clone()));
+        if let Some(t) = text {
+            *t = new;
+        }
+    };
+    let mut fix_fn =
+        |f: &mut FnDecl, retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>)| {
+            for a in &mut f.effects {
+                match a {
+                    EffectAssert::Forbid(cs)
+                    | EffectAssert::Carries(cs)
+                    | EffectAssert::Causes(cs)
+                    | EffectAssert::Only(cs) => cs.iter_mut().for_each(|c| retarget(c, None)),
+                    _ => {}
                 }
-                for m in &l.members {
-                    let LocusMember::Fn(f) = m else { continue };
-                    for a in &f.effects {
-                        if let EffectAssert::Carries(cs) = a {
-                            if let EffectClass::User(i) = cs[0] {
-                                return p.effect_names[i as usize].clone();
-                            }
-                        }
+            }
+        };
+    let fix_claims =
+        |cb: &mut ClaimsBlock, retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>)| {
+            for e in &mut cb.entries {
+                fix_claim(&mut e.form, retarget);
+            }
+        };
+    fn fix_claim(
+        form: &mut hale_syntax::ast::ClaimForm,
+        retarget: &mut dyn FnMut(&mut EffectClass, Option<&mut String>),
+    ) {
+        match form {
+            ClaimForm::ForbidReaches { src, dst, .. } => {
+                for set in [src, dst] {
+                    if let ClaimSet::Effects { class, name, .. } = set {
+                        retarget(class, Some(name));
                     }
                 }
             }
-            panic!("no class on {locus}");
-        };
-        assert_eq!(class_of("__a__Items"), "reads(__a__Item)");
-        assert_eq!(class_of("__b__Items"), "reads(__b__Item)");
+            ClaimForm::Bound {
+                class, class_name, ..
+            } => retarget(class, Some(class_name)),
+            _ => {}
+        }
     }
+    hale_syntax::ast::for_each_decl_mut(&mut prog.items, &mut |d| match d {
+        TopDecl::Locus(l) => {
+            for m in &mut l.members {
+                match m {
+                    LocusMember::Fn(f) => fix_fn(f, &mut retarget),
+                    LocusMember::Claims(cb) => fix_claims(cb, &mut retarget),
+                    _ => {}
+                }
+            }
+        }
+        TopDecl::Fn(f) => fix_fn(f, &mut retarget),
+        TopDecl::Claims(cb) => fix_claims(cb, &mut retarget),
+        TopDecl::Constitution(cd) => {
+            for e in &mut cd.entries {
+                fix_claim(&mut e.form, &mut retarget);
+            }
+        }
+        _ => {}
+    });
 }
