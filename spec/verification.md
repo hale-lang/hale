@@ -2062,13 +2062,11 @@ assume the others in a build:
   `i + 1` is never a concatenation. So `out = out + piece(i)` and `out =
   wrap(out) + sep` are the accumulator `out = out + "x"` is, judged by the
   same rules (the returned-accumulator rule below included), and so is
-  `self.buf = self.buf + chunk`. `out += x` is `out = out + x`, an
-  interpolation (`f"{out}{x}"`) lowers to the same chain, and an insert
-  (`push`, `add`, `insert`) into a local growing-form collection the fn
-  returns is a returned value like the concatenation: each takes the
-  escape of the binding it extends, which includes a list handed on by
-  `out = kept` (returned, or stored to a field of
-  `self` and flagged as before). Before, an operand counted only as a
+  `self.buf = self.buf + chunk`. `out += x` is `out = out + x`, and an
+  interpolation (`f"{out}{x}"`) lowers to the same chain: each takes the
+  escape of the binding it extends (returned, or stored to a field of
+  `self` and flagged as before). An insert into a returned collection is
+  judged as it was, stored to its locus. Before, an operand counted only as a
   literal or a name declared `String`, and a declared `String` never
   matched (the type is a primitive), so a chain with no literal in it was
   no site at all: an under-report, now closed. `@budget` and the hot-path

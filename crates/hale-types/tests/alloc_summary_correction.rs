@@ -13,19 +13,6 @@
 //! summary (`Snapshot::demand_alloc_summary`): the program's own rows,
 //! judged over the stdlib's analysis copy and the renames.
 //!
-//! GH #1490 (step 3) moves the verdict counts of the five DNA targets
-//! below by one shape: `out = kept` (or `out.f = kept`) hands the value
-//! a loop built to the binding `out` names, and when that binding is
-//! returned the value is a returned accumulator, charged once to the
-//! frame that receives it. The same six sites in `dna/core` fns reached
-//! by `dna/api`, `dna/host`, `dna/operations` and
-//! `dna/organization_runtime` move `once-per-invocation ->
-//! per-iteration-reclaim` (+6 each: 190 -> 196, 39 -> 45, 12 -> 18,
-//! 12 -> 18); in `dna/host/verb` the same alias, reaching fns whose
-//! result lands in a `run` frame, moves 13 sites `once-per-invocation ->
-//! ACCUMULATES-UNBOUNDED` and 11 fewer `per-iteration-reclaim ->
-//! ACCUMULATES-UNBOUNDED`. No leak site is added or removed.
-//!
 //! The old answer is the same bundle summarized alone, with the stdlib
 //! bodies and the renames cleared, which is what the old summary saw.
 //! Per target the tests pin the leak sites the advisory adds (none is
@@ -611,7 +598,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
-            ("once-per-invocation -> per-iteration-reclaim", 196),
+            ("once-per-invocation -> per-iteration-reclaim", 190),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 27),
         ],
         &[
@@ -708,9 +695,9 @@ fn verdict_changes() {
             "__lib_dna__operations___task_policy__FixedTaskAuthority::authorize",
         ],
         &[
-            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 61),
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 48),
             ("once-per-invocation -> per-iteration-reclaim", 32),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1767),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1778),
         ],
         &[
             "__lib_dna__core___batch__PlannedOn::read StructLit(\"__lib_dna__core___journal__Event\") @1032417..1032533 InvokedUnboundedly",
@@ -1728,7 +1715,7 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 1),
-            ("once-per-invocation -> per-iteration-reclaim", 45),
+            ("once-per-invocation -> per-iteration-reclaim", 39),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 1),
         ],
         &[
@@ -1758,7 +1745,7 @@ fn verdict_changes() {
             "__lib_dna__core___record__MemRecord::signer",
         ],
         &[
-            ("once-per-invocation -> per-iteration-reclaim", 18),
+            ("once-per-invocation -> per-iteration-reclaim", 12),
         ],
         &[
         ],
@@ -1785,7 +1772,7 @@ fn verdict_changes() {
             "__lib_dna__core___record__MemRecord::signer",
         ],
         &[
-            ("once-per-invocation -> per-iteration-reclaim", 18),
+            ("once-per-invocation -> per-iteration-reclaim", 12),
         ],
         &[
         ],

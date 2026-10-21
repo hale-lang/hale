@@ -3315,8 +3315,7 @@ pub fn summarize_within(
                 ids: &crate::snapshot::Snapshot,
                 (hot, mode, decl_index): (bool, bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
-        let (escape_map, rebound) = collect_escaping_decls(body, ids);
-        let escaping = Escaping { ids, map: escape_map, rebound };
+        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
@@ -3336,7 +3335,6 @@ pub fn summarize_within(
             skipped: Vec::new(),
             loops: Vec::new(),
             escaping: &escaping,
-            fresh_locals: BTreeSet::new(),
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
             starts: BTreeSet::new(),
@@ -5585,10 +5583,6 @@ struct Walker<'a> {
     skipped: Vec<Expr>,
     loops: Vec<LoopInfo>,
     escaping: &'a Escaping<'a>,
-    /// GH #1490 (step 3): the `let`s whose value is a struct literal built
-    /// in this body: storage made for the value, not a parameter's or a
-    /// field's.
-    fresh_locals: BTreeSet<SiteId>,
     enclosing_locus: Option<String>,
     known: &'a Known,
     /// The loci this body instantiates, by their declared names.
@@ -6106,10 +6100,10 @@ impl<'a> Walker<'a> {
     /// persists into the collection (reclaim at the owner's dissolve), so
     /// in an unbounded context it accumulates — same verdict path as a
     /// `StoredToSelf` value alloc.
-    fn push_collection_insert(&mut self, form: String, depth: u32, escape: Escape, span: Span) {
+    fn push_collection_insert(&mut self, form: String, depth: u32, span: Span) {
         self.sites.push(AllocSite {
             kind: AllocKind::CollectionInsert(form),
-            escape,
+            escape: Escape::StoredToSelf,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             in_infinite_loop: self.infinite_stack.iter().any(|i| *i),
@@ -6538,11 +6532,6 @@ impl<'a> Walker<'a> {
                 };
                 let taint = self.taint_of(value);
                 let esc = self.escaping.of_let(*id);
-                if matches!(value, Expr::Struct { .. }) {
-                    if let Some(d) = self.escaping.ids.site_id(*id) {
-                        self.fresh_locals.insert(d);
-                    }
-                }
                 self.walk_let_value(value, *span, depth, esc);
                 let bound = self.bound_value(value);
                 self.bind(&name.name, bound);
@@ -7031,21 +7020,7 @@ impl<'a> Walker<'a> {
                             .growing_form_of_receiver(receiver)
                             .filter(|f| is_growing_insert(f, &name.name))
                         {
-                            // GH #1490 (step 3): an insert into a local
-                            // collection the fn returns is the returned
-                            // accumulator, charged to its receiver.
-                            let esc = match receiver.as_ref() {
-                                Expr::Ident(v)
-                                    if self.escaping.of_use(v.id) == Some(Escape::Returned)
-                                        && self.escaping.ids.declaration_of(v.id).is_some_and(|d| {
-                                            self.fresh_locals.contains(&d) && !self.escaping.rebound.contains(&d)
-                                        }) =>
-                                {
-                                    Escape::Returned
-                                }
-                                _ => Escape::StoredToSelf,
-                            };
-                            self.push_collection_insert(form, depth, esc, *span);
+                            self.push_collection_insert(form, depth, *span);
                         }
                     }
                 }
@@ -7743,10 +7718,6 @@ fn is_pos_increment(v: &str, op: &AssignOp, value: &Expr) -> bool {
 struct Escaping<'a> {
     ids: &'a crate::snapshot::Snapshot,
     map: BTreeMap<SiteId, Escape>,
-    /// Bindings some statement of the body writes whole with anything but
-    /// a struct literal: what they hold at a later use may be storage the
-    /// body did not build (a parameter, a field).
-    rebound: BTreeSet<SiteId>,
 }
 
 impl Escaping<'_> {
@@ -7756,13 +7727,6 @@ impl Escaping<'_> {
             .site_id(let_id)
             .and_then(|s| self.map.get(&s).copied())
             .unwrap_or(Escape::Local)
-    }
-
-    /// How the binding the identifier use `use_id` names escapes: a
-    /// `v.push(x)` on a returned local lands in the collection the
-    /// function returns.
-    fn of_use(&self, use_id: hale_syntax::ast::NodeId) -> Option<Escape> {
-        self.ids.declaration_of(use_id).and_then(|d| self.map.get(&d).copied())
     }
 
     /// How the value of the `=` whose statement is `assign_id` escapes:
@@ -7788,9 +7752,8 @@ impl Escaping<'_> {
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
-) -> (BTreeMap<SiteId, Escape>, BTreeSet<SiteId>) {
+) -> BTreeMap<SiteId, Escape> {
     let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
-    let mut rebound: BTreeSet<SiteId> = BTreeSet::new();
     // `let x = y;`: x's statement and the declaration y names.
     let mut aliases: Vec<(SiteId, SiteId)> = Vec::new();
     collect_escaping_in_block(body, &mut |flow| match flow {
@@ -7801,19 +7764,6 @@ fn collect_escaping_decls(
         }
         Flow::Alias { let_id, from } => {
             if let (Some(at), Some(d)) = (ids.site_id(let_id), ids.declaration_of(from.id)) {
-                aliases.push((at, d));
-            }
-        }
-        // GH #1490 (step 3): `out = kept` (or `out.f = kept`) hands the
-        // value to the binding `out` names: when that one is returned,
-        // so is what `kept` holds.
-        Flow::Rebound(assign_id) => {
-            if let Some(d) = ids.declaration_of(assign_id) {
-                rebound.insert(d);
-            }
-        }
-        Flow::AssignAlias { assign_id, from } => {
-            if let (Some(at), Some(d)) = (ids.declaration_of(assign_id), ids.declaration_of(from.id)) {
                 aliases.push((at, d));
             }
         }
@@ -7842,7 +7792,7 @@ fn collect_escaping_decls(
             break;
         }
     }
-    (out, rebound)
+    out
 }
 
 /// Record an obligation on a declaration. A declaration keeps its
@@ -7867,8 +7817,6 @@ fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
 enum Flow<'e> {
     Escapes(&'e hale_syntax::ast::Ident, Escape),
     Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
-    AssignAlias { assign_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
-    Rebound(hale_syntax::ast::NodeId),
 }
 
 type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
@@ -7890,14 +7838,6 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
         Stmt::Assign { target, value, .. } if target.head.name == "self" => {
             note_escape(value, Escape::StoredToSelf, out)
-        }
-        Stmt::Assign { target, value, id, .. } => {
-            if target.tail.is_empty() && !matches!(value, Expr::Struct { .. }) {
-                out(Flow::Rebound(*id));
-            }
-            if let Expr::Ident(from) = value {
-                out(Flow::AssignAlias { assign_id: *id, from });
-            }
         }
         Stmt::If(if_stmt) => collect_escaping_in_if(if_stmt, out),
         Stmt::Match(m) => {
@@ -8530,69 +8470,9 @@ mod tests {
         assert!(!leaks.is_empty(), "`self.label += sep` in a loop must be flagged");
     }
 
-    #[test]
-    fn a_returned_collection_push_is_one_value_per_call() {
-        let src = |ret: &str, consumer: &str| {
-            format!(
-                "@form(vec) locus IntVec {{ capacity {{ heap items of Int; }} }}
-                 locus App {{
-                     params {{ n: Int = 1000; sink: IntVec = IntVec {{ }}; }}
-                     fn join_n(k: Int) -> IntVec {{
-                         let out = IntVec {{ }};
-                         let mut i = 0;
-                         while i < k {{ out.push(i); i = i + 1; }}
-                         {ret}
-                     }}
-                     {consumer}
-                 }}
-                 fn main() {{ let a = App {{ }}; }}"
-            )
-        };
-        let method = "fn record(i: Int) { let v = self.join_n(20); }
-                      run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
-        let leaks = join_leaks(&src("return out;", method));
-        assert!(leaks.is_empty(), "a returned vec built in a loop, consumed in a method: {leaks:?}");
-        // A returned input is not fresh: the inserts go through the
-        // caller's handle into storage it keeps.
-        let input = |bind: &str, v: &str| {
-            format!(
-                "@form(vec) locus IntVec {{ capacity {{ heap items of Int; }} }}
-                 locus App {{
-                     params {{ n: Int = 1000; sink: IntVec = IntVec {{ }}; }}
-                     fn join_n(out: IntVec, k: Int) -> IntVec {{
-                         {bind}
-                         let mut i = 0;
-                         while i < k {{ {v}.push(i); i = i + 1; }}
-                         return {v};
-                     }}
-                     fn record(i: Int) {{ let got = self.join_n(self.sink, 20); }}
-                     run() {{ let mut i = 0; while i < self.n {{ self.record(i); i = i + 1; }} }}
-                 }}
-                 fn main() {{ let a = App {{ }}; }}"
-            )
-        };
-        // A fresh local rebound to the parameter, directly or through an
-        // alias, holds retained storage when it is pushed to.
-        for (bind, v) in [
-            ("let v = out;", "v"),
-            ("", "out"),
-            ("let mut v = IntVec { }; v = out;", "v"),
-            ("let kept = out; let mut v = IntVec { }; v = kept;", "v"),
-        ] {
-            let leaks = join_leaks(&input(bind, v));
-            assert!(!leaks.is_empty(), "a returned parameter's inserts stay flagged ({bind})");
-        }
-        // Not returned: the inserts stay the locus's.
-        let kept = "fn record(i: Int) { self.join_n(20); }
-                    run() { let mut i = 0; while i < self.n { self.record(i); i = i + 1; } }";
-        let leaks = join_leaks(&src("self.sink.push(0); return self.sink;", kept));
-        assert!(!leaks.is_empty(), "inserts into a field stay flagged");
-    }
-
-    /// Shapes taken from decorated fns of a downstream-handoff DNA tree,
-    /// identifiers renamed: a rebuilt-list accumulator handed to the
-    /// returned binding (`out = kept`), an inferred-String local grown
-    /// by a call result, and the same handed on to a field of `self`.
+    /// A shape taken from a decorated fn of a downstream-handoff DNA
+    /// tree, identifiers renamed: an inferred-String local grown by a
+    /// call result.
     fn dna_shaped(body: &str) -> String {
         format!(
             "fn tag(s: String) -> String {{ return s; }}
@@ -8606,30 +8486,6 @@ mod tests {
              }}
              fn main() {{ let a = App {{ }}; }}"
         )
-    }
-
-    #[test]
-    fn an_accumulator_handed_to_the_returned_binding_is_returned() {
-        let handed = "let mut out = \"\";
-             let mut r = 0;
-             while r < k {
-                 let mut kept = \"\";
-                 let mut i = 0;
-                 while i < k { kept = kept + tag(text) + \"\\n\"; i = i + 1; }
-                 out = kept;
-                 r = r + 1;
-             }
-             return out;";
-        let leaks = join_leaks(&dna_shaped(handed));
-        assert!(leaks.is_empty(), "kept handed to the returned `out`: {leaks:?}");
-        // The same list handed to a field of `self` stays reported.
-        let stored = "let mut kept = \"\";
-             let mut i = 0;
-             while i < k { kept = kept + tag(text) + \"\\n\"; i = i + 1; }
-             self.live = kept;
-             return kept;";
-        let leaks = join_leaks(&dna_shaped(stored));
-        assert!(!leaks.is_empty(), "kept stored to a field stays flagged");
     }
 
     #[test]
