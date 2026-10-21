@@ -22,6 +22,26 @@ shows itself to people.
 | the Board and Reviews | the queue, the Review, its verdicts and signers | `hale dna board`, `hale dna review`, `dna/core/review.hl` |
 | the forge mirror | Reviews as pull requests | `hale dna github sync`, `dna/host/forge_github.hl` |
 
+## The habitat's face
+
+The habitat is an organism, so it has the same face. `hale habitat up`
+starts the standard face over the habitat's own head beside its body, and
+`hale habitat status` prints its address on the `face` line:
+
+```sh
+$ hale habitat status
+...
+face    http://127.0.0.1:8864/ (up, systemd user unit ...-face.service)
+```
+
+Its index lists what the habitat keeps: under **Organisms**, each organism
+grafted from it with its name, its state (`up` while its face answers,
+`grafted` otherwise), the address of its face and the address of its head.
+Each organism gets its own block of loopback ports when it is grafted, kept in
+its `dna.head.url`, and `hale dna head <organism>` serves there, so the
+address in the list is the one to open. `hale habitat down` stops the face
+with the body.
+
 ## Start the head
 
 With the toolchain installed, and a project made by `hale habitat graft`:
