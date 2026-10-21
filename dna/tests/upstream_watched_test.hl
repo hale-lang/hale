@@ -198,6 +198,17 @@ main locus App {
     }
     // The occurrence the schedule was declared at.
     fn from(name: String) -> Int { return std::json::find_int_field(self.last_body("schedule.declared", watched(name)), "from"); }
+    // The Board's ratification of the last batch proposed; whether the
+    // family it is was ratified.
+    fn ratify_last() -> Bool {
+        let review = std::json::find_string_field(self.last_body("batch.proposed", ""), "review_id");
+        let digest = std::json::find_string_field(self.last_body("batch.proposed", ""), "digest");
+        let v = self.d.journal.append(self.d.journal.revision(), "review.settled", review, "approve by ada");
+        self.d.ratify_through(review);
+        let mut waited = 0;
+        while self.rows("library.family.ratified", digest) == 0 && waited < 300 { std::time::sleep(100ms); waited = waited + 1; }
+        return v.ok && self.rows("library.family.ratified", digest) > 0;
+    }
     // The standard pack's template adopted for one upstream, and the
     // Board's ratification of it; the schedule it declares.
     fn adopt(name: String, position: String, source: String, kind: String) {
@@ -223,6 +234,9 @@ main locus App {
         // a practice's terms are its words `<key>=<value>`
         let text = "Watched. source=https://example.invalid/a?b=c kind=feed every=1d step=source-check";
         std::test::assert(dna::practice_term(text, "source") == "https://example.invalid/a?b=c" && dna::practice_term(text, "every") == "1d" && len(dna::practice_term(text, "cron")) == 0, "a practice's terms are read from its text");
+        let as_practice = dna::knowledge_document(dna::Idea { kind: "practice", text: text, name: "x/watched" }, "position:app/dev");
+        let as_idea = dna::knowledge_document(dna::Idea { kind: "idea", text: text, name: "x/watched" }, "position:app/dev");
+        std::test::assert(dna::practice_schedule(dna::digest_of(as_practice), as_practice).definition == "source-check" && len(dna::practice_schedule(dna::digest_of(as_idea), as_idea).definition) == 0, "the same terms schedule a practice's step, and an idea's nothing");
     }
     run() {
         self.normalized();
@@ -241,6 +255,14 @@ main locus App {
         self.adopt("status", "app/dev", "file://" + self.upstream + "/status.html", "docs");
         self.adopt("bad", "app/dev", "https://example.invalid/feed", "rss");
         std::test::assert_eq_int(self.rows("schedule.declared", "standard/upstream-watched/"), 4, "four practices, four schedules");
+        // an idea whose text shows the same terms, an example, is knowledge
+        // and runs nothing once ratified
+        let batch = self.scratch + "/example.batch";
+        std::io::fs::write_file(batch, "idea notes/watch-example for app/dev | Example: source=file://" + self.upstream + "/changelog.html kind=changelog every=1h step=source-check\n") or discard;
+        let noted = dna_cli(self.repo, "apply\n" + batch + "\n--as\nada");
+        std::test::assert(noted.code == 0, "the idea is proposed: " + noted.stdout + noted.stderr);
+        std::test::assert(self.ratify_last(), "and ratified");
+        std::test::assert_eq_int(self.rows("schedule.declared", "notes/") + self.rows("schedule.refused", "notes/"), 0, "an idea's terms schedule nothing");
         let again = dna_cli(self.repo, "pack\napply\nstandard\n--set\nintegration=changelog\n--set\nposition=app/dev\n--set\nsource=file://" + self.upstream + "/changelog.html\n--set\nkind=changelog\n--set\nevery=1h\n--as\nada");
         std::test::assert(again.code != 0 && std::str::contains(again.stdout + again.stderr, "every step is in force already"), "a practice adopted again unchanged proposes nothing: " + again.stdout + again.stderr);
         let every = 3600000;
@@ -323,6 +345,18 @@ main locus App {
         std::test::assert_eq_int(self.rows("reading.recorded", "sources/changelog."), 1, "the unmoved changelog lands nothing");
         std::test::assert_eq_int(self.rows("reading.recorded", "sources/status.unreachable/"), 1, "and a fourth failure no second unreachable reading");
         std::test::assert_eq_int(self.rows("reading.recorded", "sources/bad."), 0, "a practice whose terms cannot stand lands nothing");
+
+        // ---- a restart between a reading and its outcome: the occurrence
+        // landed its move to B, the source moved on to C, and the step is
+        // asked again; it answers the move it committed, never one to C
+        let w = dna::source_watch(practice, doc);
+        let receipts = dna::MemoryReceipts { repo: self.repo };
+        let first = dna::source_check(self.d.journal, receipts, "replayed", w, dna::SourceSeen { ok: true, text: "Changelog\nv1.4.0: B\n" });
+        std::test::assert(first.disposition == "done" && len(first.reading) > 0, "the occurrence lands its move to B: " + first.narrative);
+        let retried = dna::source_check(self.d.journal, receipts, "replayed", w, dna::SourceSeen { ok: true, text: "Changelog\nv1.5.0: C\n" });
+        std::test::assert(retried.result == first.result && retried.reading == first.reading && retried.what == first.what, "asked again with the source at C, it answers B, its reading and its receipt: " + retried.narrative);
+        std::test::assert_eq_int(self.rows("reading.recorded", "sources/changelog.changed/replayed"), 1, "and lands nothing more");
+        std::test::assert(!std::str::contains(std::json::find_string_field(std::json::find_string_field(self.last_body("reading.recorded", "sources/changelog.changed/replayed"), "payload"), "diff"), "v1.5.0"), "C is no part of the committed move");
 
         dna::scratch_done(self.scratch);
     }

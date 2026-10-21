@@ -173,8 +173,8 @@ fn practice_args(digest: String, name: String, args: String) -> String {
 }
 
 // The schedule the practice `doc` (its receipt, under `digest`) declares
-// once ratified: its receipt's `schedule`, or the cadence and step its text
-// names, convened by the position it is bound to. No id and no definition
+// once ratified: its receipt's `schedule`, or, for a practice, the cadence
+// and step its text names, convened by the position it is bound to. No id and no definition
 // when it declares none.
 fn practice_schedule(digest: String, doc: String) -> Schedule {
     let name = std::json::find_string_field(doc, "name");
@@ -189,6 +189,9 @@ fn practice_schedule(digest: String, doc: String) -> Schedule {
             convener: std::json::find_string_field(sched, "convener")
         };
     }
+    // only a practice runs anything: an idea or a mandate whose text shows
+    // terms (an example, say) schedules nothing
+    if std::json::find_string_field(doc, "kind") != "practice" { return Schedule { }; }
     let text = std::json::find_string_field(doc, "text");
     let step = practice_term(text, "step");
     let every = practice_term(text, "every");

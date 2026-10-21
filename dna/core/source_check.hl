@@ -392,6 +392,11 @@ fn source_history(j: Journal, name: String, task: String) -> SourceHistory {
 // journal is the organism's; the receipts keep the snapshots and diffs.
 @bounded_by(j)
 fn source_check(j: Journal, receipts: Receipts, task: String, w: SourceWatch, seen: SourceSeen) -> SourceAnswer {
+    // a reading this occurrence landed is its observation, committed: asked
+    // again (a restart before its outcome), it answers what that reading
+    // saw, never what the source says now
+    let landed = source_replay(j, task, w);
+    if len(landed.disposition) > 0 { return landed; }
     let h = source_history(j, w.name, task);
     if !seen.ok {
         let streak = h.streak + 1;
@@ -415,6 +420,30 @@ fn source_check(j: Journal, receipts: Receipts, task: String, w: SourceWatch, se
     if len(reading) == 0 { return SourceAnswer { narrative: "the reading of " + w.watch + " was not taken" }; }
     return SourceAnswer { disposition: "done", result: digest, reading: reading, what: source_concern_what(w, reading, "sha256:" + diff_digest),
         narrative: w.watch + " moved " + short_digest(from) + " -> " + short_digest(hex_digest) + ": reading " + reading };
+}
+
+// What occurrence `task` of `w` already landed, as its answer: a move's
+// reading (the snapshot it moved to, and the concern's words with its
+// receipt), or the unreachable reading of a streak; no disposition when it
+// landed none.
+@bounded_by(j)
+fn source_replay(j: Journal, task: String, w: SourceWatch) -> SourceAnswer {
+    let id = reading_id(task);
+    let changed = SOURCE_APP + "/" + w.watch + ".changed/" + id;
+    let moved = first_row(j, "reading.recorded", changed);
+    if len(moved.kind) > 0 {
+        let payload = std::json::find_string_field(moved.body, "payload");
+        let to = std::json::find_string_field(payload, "to");
+        return SourceAnswer { disposition: "done", result: to, reading: changed, what: source_concern_what(w, changed, std::json::find_string_field(payload, "receipt")),
+            narrative: w.watch + " moved to " + short_digest(if std::str::starts_with(to, "sha256:") { to[7..len(to)] } else { to }) + ": reading " + changed + " (landed already)" };
+    }
+    let unreachable = SOURCE_APP + "/" + w.watch + ".unreachable/" + id;
+    let failed = first_row(j, "reading.recorded", unreachable);
+    if len(failed.kind) > 0 {
+        return SourceAnswer { disposition: "failed", result: "unreached", reading: unreachable,
+            narrative: w.watch + " unreached: " + std::json::find_string_field(std::json::find_string_field(failed.body, "payload"), "why") + "; reading " + unreachable + " (landed already)" };
+    }
+    return SourceAnswer { };
 }
 
 // The reading `<watch>.changed`, its payload naming the diff's receipt and

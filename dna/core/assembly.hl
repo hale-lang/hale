@@ -2752,11 +2752,14 @@ locus Dna {
         let digest = std::json::find_string_field(x, "practice");
         let doc = if digest_well_formed(digest) { self.verification.receipts.read(digest[7..len(digest)]) } else { "" };
         if len(doc) == 0 || digest_of(doc) != digest { return StepVerdict { disposition: "failed", result: "refused", narrative: "source-check names no practice the record keeps (`" + digest + "`)" }; }
+        if std::json::find_string_field(doc, "kind") != "practice" { return StepVerdict { disposition: "failed", result: "refused", narrative: "source-check runs for a practice, and `" + digest + "` is " + std::json::find_string_field(doc, "kind") + " knowledge" }; }
         // a practice retired, or never ratified, watches nothing
         if !self.knowledge_record.ratified(digest) || len(self.knowledge_record.retired_by(digest)) > 0 { return step_done("", "the practice " + std::json::find_string_field(doc, "name") + " is not in force; nothing was checked"); }
         let w = source_watch(digest, doc);
         if len(w.why) > 0 { return StepVerdict { disposition: "failed", result: "refused", narrative: w.name + ": " + w.why }; }
-        let a = source_check(self.journal, self.verification.receipts, task, w, source_observe(w, self.gateway.repo_path(), resolve_toolchain("")));
+        // a reading already landed answers without reading the source again
+        let landed = source_replay(self.journal, task, w);
+        let a = if len(landed.disposition) > 0 { landed } else { source_check(self.journal, self.verification.receipts, task, w, source_observe(w, self.gateway.repo_path(), resolve_toolchain(""))) };
         if len(a.disposition) == 0 { return step_failed(a.narrative); }
         if len(a.what) > 0 { self.on_concern(Concern { source: w.position + "/" + w.watch, what: a.what, severity: 1, request: a.reading }); }
         return StepVerdict { disposition: a.disposition, result: a.result, narrative: a.narrative };
