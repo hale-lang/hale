@@ -28,6 +28,7 @@ const CHECKED: &[&str] = &[
     "examples/intake-control",
     "examples/intake-control/sqlite",
     "service",
+    "standard",
     "tests/memory",
     "tests/organization",
     "tests/record",
