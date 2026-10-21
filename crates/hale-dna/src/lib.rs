@@ -318,8 +318,9 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
 
 /// The head (`hale dna head`): what `dna/face/start.sh` builds and serves,
 /// so a person with an installed toolchain and no checkout can start the
-/// face. The four seeds the launcher builds — the per-project API
+/// face. The five seeds the launcher builds — the per-project API
 /// (`dna/api/practice_review`), the project service (`dna/api/project_service`),
+/// the standard face (`dna/face/standard`),
 /// the stub OpenID provider (`dna/oidc/serve`) and the reflexes
 /// (`dna/reflexes`) — with the seeds they import that no list above
 /// carries (`dna/api`, `dna/oidc`), the browser's assets (`dna/face/web`),
@@ -367,6 +368,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/oidc/stub.hl",
     "dna/oidc/serve/main.hl",
     "dna/reflexes/main.hl",
+    "dna/face/standard/main.hl",
     "dna/face/web/app.js",
     "dna/face/web/application.js",
     "dna/face/web/definition-draft.js",
@@ -391,6 +393,7 @@ pub const HEAD_DIRS: &[(&str, &[&str])] = &[
     ("dna/oidc", &["hl"]),
     ("dna/oidc/serve", &["hl"]),
     ("dna/reflexes", &["hl"]),
+    ("dna/face/standard", &["hl"]),
     ("dna/face/web", &["*"]),
 ];
 
@@ -408,6 +411,9 @@ pub struct HeadSeed {
 pub const HEAD_API: HeadSeed = HeadSeed { seed: "dna/api/practice_review", bin: "dna/api/practice_review/practice_review" };
 /// The project service: the head itself.
 pub const HEAD_SERVICE: HeadSeed = HeadSeed { seed: "dna/api/project_service", bin: "dna/api/project_service/project_service" };
+/// The standard face: the application that serves the browser's shell and
+/// the project's `ui/` in front of the head, which serves surfaces only.
+pub const HEAD_FACE: HeadSeed = HeadSeed { seed: "dna/face/standard", bin: "dna/face/standard/standard" };
 /// The stub OpenID provider the head signs a person in through (GH #989).
 pub const HEAD_OIDC: HeadSeed = HeadSeed { seed: "dna/oidc/serve", bin: "dna/oidc/serve/serve" };
 /// The reflexes, started beside an attached project (GH #988).

@@ -3,7 +3,7 @@
 // its command route exactly as the API guards its own; an attach of the
 // fixture Record answers a terminal receipt, writes the registry and the
 // two synthesized policies, and starts an API child the head proxies
-// to (`/app.js` is the head's, the child has no webroot; a proxied POST
+// to (the head serves surfaces only, `/app.js` is no route of it; a proxied POST
 // reaches the child's own guard, a foreign Origin is refused here); a
 // sync runs detached and settles on the next request, an identical
 // retry replays, a changed argument conflicts; forge settings land in
@@ -127,9 +127,7 @@ locus HeadCases {
         let practices = self.f.validate(self.f.http("GET", APPLICATIONS + "/" + self.f.identity + "/dna/practices", "", ""), "PracticesResponse", 200);
         self.f.json.eq(self.f.json.raw(practices, "source"), "record_id", self.f.identity);
         let asset = self.f.http("GET", "/app.js", "", "");
-        std::test::assert_eq_int(asset.status, 200, "the head serves the shell");
-        std::test::assert_eq_str(asset.body, fixture::SHELL_JS, "the head's own app.js");
-        std::test::assert(std::str::contains(dna::response_header(asset.headers, "Content-Security-Policy"), "script-src 'self'"), "the shell's CSP");
+        std::test::assert_eq_int(asset.status, 404, "the head serves surfaces only: no static file");
         let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.child_port("api")) + "/app.js", "", "");
         std::test::assert_eq_int(child_asset.status, 404, "the child has no webroot");
         // a proxied POST with the head's Origin reaches the child's api binding

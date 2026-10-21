@@ -638,7 +638,7 @@ made part of this provider by this call.
 ## Head: project service
 
 `dna/api/project_service` is the head (GH #965): the one process the
-browser talks to. It serves the shell, owns the operator-machine state — a
+browser talks to. It serves surfaces only (the standard face serves the shell in front of it), owns the operator-machine state — a
 project registry, a receipt journal, run and child files under
 `${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}` —
 and reverse-proxies every `/api/hale/v1/applications…` request to the attached
@@ -719,7 +719,8 @@ and it proxies no `/auth/*`. Restarting a head over the same state directory
 answers every earlier `request_id` with the same terminal receipt and
 re-attaches the last activated project. `tests/journal_test.hl`,
 `tests/operations_test.hl` and `tests/head_api_test.hl` run under
-`HALE_HEAD_BIN` and `HALE_HEAD_API_BIN` (a build of `dna/api/practice_review`,
+`HALE_HEAD_BIN` and `HALE_HEAD_API_BIN` (`head_assets_test.hl` and `head_face_test.hl`
+also `HALE_FACE_BIN`, a build of `dna/face/standard`) (a build of `dna/api/practice_review`,
 the child a head is configured to run); each makes its own scratch root.
 ## Raising work
 
@@ -937,7 +938,8 @@ hale build dna/api -o target/seeds/api/api
 HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/tests
 hale check dna/api/practice_review && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 hale check dna/api/project_service && hale build dna/api/project_service -o target/seeds/project_service/project_service
-HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" hale test dna/api/project_service/tests
+hale check dna/face/standard && hale build dna/face/standard -o target/seeds/standard/standard
+HALE_BIN="$(command -v hale)" HALE_FACE_BIN="$PWD/target/seeds/standard/standard" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" hale test dna/api/project_service/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```

@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Launch the face: the project service (the head) serving the browser
-# shell, owning the project registry and proxying each attached project's
-# native API. The shell owns only argument/build/process wiring, never domain
-# operations.
+# Launch the face: the standard face (dna/face/standard) serving the
+# browser shell and the project's ui/ on the public port, in front of the
+# project service (the head), which serves surfaces only: it owns the
+# project registry and proxies each attached project's native API. The shell
+# owns only argument/build/process wiring, never domain operations.
 set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
+Usage: dna/face/start.sh [PROJECT] [--port PORT] [--head-port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
-Starts the face at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
+Starts the standard face at http://127.0.0.1:8792 (or the chosen port), the
+head behind it on the loopback. PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the
 browser's Projects workspace creates, initializes or attaches one.
-Without --head/HALE_HEAD_BIN and --api/HALE_API_BIN, builds the checkout's
+Without --head/HALE_HEAD_BIN, --face/HALE_FACE_BIN and --api/HALE_API_BIN, builds the checkout's
 project service and its per-project native API (dna/api/practice_review) in
 temporary storage using HALE_BIN (default: hale); the stub OpenID provider and
 the reflexes likewise, without HALE_OIDC_BIN and HALE_REFLEXES_BIN. With an
@@ -25,7 +27,10 @@ purpose and are re-adopted by the next head.
                      attached project. It must accept PROJECT PORT, as
                      dna/api/practice_review does.
   --head BINARY      Use an already built project service.
-  --port PORT        Loopback port of the head, 1..65535 (default: 8792).
+  --face BINARY      Use an already built standard face.
+  --port PORT        Loopback port of the face, the one a browser opens, 1..65535
+                     (default: 8792).
+  --head-port PORT   Loopback port of the head behind the face, 1..65535 (default: 8796).
   --api-port PORT    Loopback port of the API child, 1..65535 (default: 8793).
   --commands-port PORT
                      Loopback port of the API child's commands, its api binding's HTTP transport, 1..65535 (default: 8795).
@@ -69,12 +74,14 @@ oidc_port=8794
 commands_port=8795
 api=${HALE_API_BIN:-}
 head=${HALE_HEAD_BIN:-}
+face_bin=${HALE_FACE_BIN:-}
+head_port=8796
 oidc=${HALE_OIDC_BIN:-}
 reflexes_bin=${HALE_REFLEXES_BIN:-}
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --port|--api|--head|--api-port|--oidc-port|--commands-port)
+    --port|--head-port|--api|--head|--face|--api-port|--oidc-port|--commands-port)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --port) port=$2 ;;
@@ -83,6 +90,8 @@ while (($#)); do
         --commands-port) commands_port=$2 ;;
         --api) api=$2 ;;
         --head) head=$2 ;;
+        --face) face_bin=$2 ;;
+        --head-port) head_port=$2 ;;
       esac
       shift 2 ;;
     --source-drafts) export HALE_DNA_ORG_DRAFTS=1; shift ;;
@@ -95,10 +104,11 @@ done
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((api_port <= 65535)) || fail 'api-port must be 1..65535'
 [[ "$oidc_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((oidc_port <= 65535)) || fail 'oidc-port must be 1..65535'
 [[ "$commands_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((commands_port <= 65535)) || fail 'commands-port must be 1..65535'
-((port != api_port && port != oidc_port && api_port != oidc_port)) || fail 'the head, the API child and the provider need different ports'
+[[ "$head_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((head_port <= 65535)) || fail 'head-port must be 1..65535'
+((port != api_port && port != oidc_port && api_port != oidc_port && head_port != port && head_port != api_port && head_port != oidc_port)) || fail 'the face, the head, the API child and the provider need different ports'
 # the API child's api binding serves its HTTP transport there (GH #1135),
 # and a port it cannot hold stops it at start
-((commands_port != port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
+((commands_port != port && commands_port != head_port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
 face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
@@ -123,6 +133,7 @@ fi
 build_dir=
 builds=()
 child=
+face_child=
 provider=
 reflexes=
 cleanup() {
@@ -138,6 +149,10 @@ cleanup() {
   if [[ -n "$child" ]]; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
+  fi
+  if [[ -n "$face_child" ]]; then
+    kill -TERM "$face_child" 2>/dev/null || true
+    wait "$face_child" 2>/dev/null || true
   fi
   if [[ -n "$provider" ]]; then
     kill -TERM "$provider" 2>/dev/null || true
@@ -218,6 +233,7 @@ fi
 seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
+if [[ -z "$face_bin" ]]; then seeds+=(dna/face/standard); else face_bin=$(absolute_executable "$face_bin" face); fi
 if ((oidc_local)); then
   if [[ -z "$oidc" ]]; then seeds+=(dna/oidc/serve); else oidc=$(absolute_executable "$oidc" 'OpenID provider'); fi
 fi
@@ -235,6 +251,7 @@ if ((${#seeds[@]})); then
   build_seeds
   [[ -n "$api" ]] || api=$build_dir/bin/practice_review
   [[ -n "$head" ]] || head=$build_dir/bin/project_service
+  [[ -n "$face_bin" ]] || face_bin=$build_dir/bin/standard
   [[ -n "$oidc" ]] || oidc=$build_dir/bin/serve
   [[ -n "$reflexes_bin" ]] || reflexes_bin=$build_dir/bin/reflexes
 fi
@@ -298,8 +315,18 @@ printf 'face: starting http://127.0.0.1:%s/\n' "$port"
 if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi
 if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads memory as the head (the DSN stays on the server)\n'; fi
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
-env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
+env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" HALE_DNA_PUBLIC_PORT="$port" "$head" "$head_port" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
-if wait "$child"; then result=0; else result=$?; fi
-child=
+env -u LOTUS_OBS "$face_bin" "$port" "$face/web" "$head_port" &
+face_child=$!
+# either one ending ends the launch: a face with no head, or a head with no face, is no door
+# (polled with kill -0: the system Bash of macOS is 3.2, which has no `wait -n`)
+while kill -0 "$child" 2>/dev/null && kill -0 "$face_child" 2>/dev/null; do sleep 0.2; done
+if ! kill -0 "$child" 2>/dev/null; then
+  if wait "$child"; then result=0; else result=$?; fi
+  child=
+else
+  if wait "$face_child"; then result=0; else result=$?; fi
+  face_child=
+fi
 exit "$result"

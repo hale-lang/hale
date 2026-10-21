@@ -1375,7 +1375,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
-    eprintln!("       hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
+    eprintln!("       hale dna head [project] [--port P] [--head-port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]");
     eprintln!("                                    the head: the project service serving the browser face (8792), its API child, the stub");
     eprintln!("                                    OpenID provider and, with a project, the reflexes — built once into the toolchain cache,");
     eprintln!("                                    no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's");

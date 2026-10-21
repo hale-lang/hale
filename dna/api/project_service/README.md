@@ -1,7 +1,8 @@
 # The head: project service
 
 `dna/api/project_service` is the head: the one process the face talks to
-(GH #965). It serves the face, owns the operator-machine state
+(GH #965). It serves surfaces only (the standard face, `dna/face/standard`,
+serves the shell and the project's `ui/` in front of it); it owns the operator-machine state
 under a state directory — a project registry, a receipt journal, one
 directory per run, the pid files of its children — and reverse-proxies
 every `/api/hale/v1/applications…` request to the attached project's
@@ -18,7 +19,7 @@ appends nothing to any Record itself.
 hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 hale build dna/api/project_service -o target/seeds/project_service/project_service
 HALE_BIN="$(command -v hale)" \
-  ./target/seeds/project_service/project_service 8792 dna/face/web \
+  ./target/seeds/project_service/project_service 8796 \
   target/seeds/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 

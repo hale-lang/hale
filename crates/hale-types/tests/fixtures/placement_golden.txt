@@ -8786,6 +8786,7 @@ dynamic	__lib_dna__core___memory_record__MemoryRecord	on main	in api/project_ser
 -- S3HeadCases@main1	S3HeadCases
 row	~	S3HeadCases	main	default
 row	~.f	__lib_dna__api__project_service__tests__fixture___main__HeadFixture	main	inherited
+row	~.f.face	__StdProcessChild	main	inherited
 row	~.f.head	__StdProcessChild	main	inherited
 row	~.f.journal	__lib_dna__core___memory_record__RecordJournal	main	inherited
 row	~.f.journal.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
@@ -8805,6 +8806,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 -- HeadCases@main1	HeadCases
 row	~	HeadCases	main	default
 row	~.f	__lib_dna__api__project_service__tests__fixture___main__HeadFixture	main	inherited
+row	~.f.face	__StdProcessChild	main	inherited
 row	~.f.head	__StdProcessChild	main	inherited
 row	~.f.journal	__lib_dna__core___memory_record__RecordJournal	main	inherited
 row	~.f.journal.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
@@ -8834,7 +8836,15 @@ dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unkn
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/project_service/tests/head_assets_test.hl
-shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #aa8c06f7
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
+shared	dynamic	sites in core #8e1938c5
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/api/project_service/tests/head_face_test.hl
+row	__StdIoTcpStream@main2	__StdIoTcpStream	main	default
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
 shared	dynamic	sites in core #8e1938c5
 shared	dynamic	sites in core/pond/pq #39e83e0a
@@ -8861,7 +8871,7 @@ row	~.client.stash_meta.data_lens	__lib_dna__core__pond__realtime__nats___log__N
 row	~.client.stash_meta.starts	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.client.stash_meta.subj_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
 row	~.client.stash_sids	__lib_dna__core__pond__realtime__nats___log__NatsInts	main	inherited
-shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #aa8c06f7
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 -- dynamic	sites in api/project_service/tests
 dynamic	EventStream	on main
 dynamic	__StdIoTcpStream	on main|unknown (no caller)
@@ -8873,7 +8883,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/project_service/tests/head_service_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
-shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #aa8c06f7
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 shared	__lib_dna__core___memory_record__MemoryReceipts@main3	__lib_dna__core___memory_record__MemoryReceipts #deee0984
 shared	__lib_dna__core___memory_record__MemoryRecord@main4	__lib_dna__core___memory_record__MemoryRecord #c4e304a1
 shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
@@ -15403,15 +15413,13 @@ domain	pool:io
 domain	pinned:HeadMain@literal1.watch
 domain	pool:senses
 hole	HeadMain@literal1.slots	reuse `slots`
-hole	HeadMain@literal1.srv.handler.web	reuse `web`
 hole	HeadMain@literal1.srv.handler.slots	reuse `slots`
 hole	HeadMain@literal1.srv.handler.auth	reuse `auth`
 hole	HeadMain@literal1.watch.slots	reuse `slots`
 row	HeadMain@literal1	HeadMain	main	default
 row	HeadMain@literal1.slots	PushSlots	main	inherited
-row	Startup@main5	Startup	main	default
+row	Startup@main4	Startup	main	default
 row	__lib_dna__api___http__Http@main1	__lib_dna__api___http__Http	main	default
-row	__lib_dna__api___web__WebAssets@main2	__lib_dna__api___web__WebAssets	main	default
 dynamic	__StdSecretCredential	on main	in ui
 shared	HeadMain@literal1.senses	__lib_dna__core___senses__Senses #7cd25e64
 -- HeadMain@literal1.srv	__StdHttpServer
@@ -15423,7 +15431,6 @@ row	~.conns.handler.handler	Head	pool:io	inherited
 row	~.handler	Head	pool:io	inherited
 row	~.handler.auth	__lib_dna__ui___main__Ui	pool:io	inherited
 row	~.handler.slots	PushSlots	pool:io	inherited
-row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- HeadMain@literal1.watch	NervesWatch
 row	~	NervesWatch	pinned:~	entry	off owner
@@ -15444,8 +15451,8 @@ row	~.client.stash_meta.starts	__lib_dna__core__pond__realtime__nats___log__Nats
 row	~.client.stash_meta.subj_lens	__lib_dna__core__pond__realtime__nats___log__NatsInts	pinned:~	inherited
 row	~.client.stash_sids	__lib_dna__core__pond__realtime__nats___log__NatsInts	pinned:~	inherited
 row	~.slots	PushSlots	pinned:~	inherited
+shared	__lib_dna__ui___main__Ui@main2	__lib_dna__ui___main__Ui #66e35d7b
 shared	__lib_dna__ui___main__Ui@main3	__lib_dna__ui___main__Ui #66e35d7b
-shared	__lib_dna__ui___main__Ui@main4	__lib_dna__ui___main__Ui #66e35d7b
 -- dynamic	sites in api
 dynamic	__StdBytesBytesBuilder	on main|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|pool:io|unknown (no caller)|unknown (no instance)
@@ -15627,6 +15634,33 @@ shared	dynamic	sites in core/pond/pq #28427cdd
 shared	dynamic	sites in operations #ace193f7
 shared	dynamic	sites in organization_source #f59342ac
 shared	dynamic	sites in the stdlib #d1d49800
+
+== dna/face/standard
+root	FaceMain	the entry
+domain	pool:io
+hole	FaceMain@literal1.srv.handler.web	reuse `web`
+row	FaceMain@literal1	FaceMain	main	default
+row	__lib_dna__api__web__web__WebAssets@main1	__lib_dna__api__web__web__WebAssets	main	default
+-- FaceMain@literal1.srv	__StdHttpServer
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Face	pool:io	inherited
+row	~.handler	Face	pool:io	inherited
+row	~.handler.web	__lib_dna__api__web__web__WebAssets	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- dynamic	sites in face/standard
+dynamic	__StdBytesBytesBuilder	on pool:io
+dynamic	__StdHttpResponder	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+dynamic	__StdJsonBuilder	on pool:io
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on pool:io|unknown (no caller)
+dynamic	__StdIterLines	on pool:io
 
 == dna/face/tests/organization
 root	Org	the entry
@@ -17917,8 +17951,9 @@ row	~.knowledge.roles.rows	__lib_dna__core___journal__EventRows	pool:commands	in
 row	~.knowledge.roles.seats	__lib_dna__core___roles__HoldsReader	pool:commands	inherited
 row	~.knowledge.wire	__lib_dna__api___commands__CommandWire	pool:commands	inherited
 
-== shared __lib_dna__api__project_service__tests__fixture___main__HeadFixture #aa8c06f7
+== shared __lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 row	~	__lib_dna__api__project_service__tests__fixture___main__HeadFixture	main	default
+row	~.face	__StdProcessChild	main	inherited
 row	~.head	__StdProcessChild	main	inherited
 row	~.journal	__lib_dna__core___memory_record__RecordJournal	main	inherited
 row	~.journal.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
