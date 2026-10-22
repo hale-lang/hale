@@ -32,6 +32,7 @@ Unlike an application organism that supervises a user-written application heart,
   - The habitat allocates the infrastructure roles declared in the child's `hale.toml` (`[dna] needs`: `memory` and `nerves` always, `senses` unless omitted, plus an optional tenant `database` for a Hale heart passed as `HALE_DNA_DATABASE_DSN`) and records those allocations in the habitat's own record.
   - The habitat decides the `scope` on `application.attached` and issues per-client database, broker, and vault credentials.
   - The habitat proposes the `standard` practices pack to the child's Board.
+  - On its own backends, the habitat gives the child a user and a repository at its own Forgejo, the local profile's forge. The forge is a gate, not a store: code goes out through it as branches and verdicts come back through it. GitHub is the allocation when a Board names it (`hale habitat forge <organism> github --repo <owner/name>`).
 - **Deployment and Reflexes:** For habitat-scoped applications, the habitat elaborates placement declarations into container manifests or Compose configurations, applies them using habitat-held credentials, monitors child readiness, capacity, metrics, and logs, and restarts or rescales child bodies via reflexes.
 
 ---

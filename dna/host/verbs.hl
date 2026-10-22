@@ -814,7 +814,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
     if len(gates) > 0 {
         out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ")
-            + " at the candidate, as the forge reports it (`hale dna github sync`)\n";
+            + " at the candidate, as the forge reports it (`hale dna forge sync`)\n";
     }
     // what it still awaits, as its last signature said
     let mut awaiting = "";

@@ -1065,6 +1065,7 @@ fn dna_fixture_set_is_complete() {
             "faces_named_test.hl",
             "first_run_test.hl",
             "fleet_topology_test.hl",
+            "forge_forgejo_test.hl",
             "forge_gates_test.hl",
             "genome_pull_test.hl",
             "grant_layering_test.hl",
@@ -1410,6 +1411,89 @@ fn only_the_reference_infrastructure_spells_its_tools() {
         }
     }
     assert!(offenders.is_empty(), "a tool of the body's infrastructure is spelled outside dna/host/infra.hl:\n{}", offenders.join("\n"));
+}
+
+/// Phase 4 ruling: the forge is a gate, and which forge stands in it is an
+/// allocation. No practice, workflow or standard names a forge by kind —
+/// "open a review" is the verb, and the allocation answers it. Every pack's
+/// text (the practices, positions and workflows it proposes) is read for a
+/// forge's name; a `#` line is the pack's own commentary.
+#[test]
+fn no_practice_or_workflow_names_a_forge_kind() {
+    const KINDS: [&str; 7] = ["github", "gitlab", "forgejo", "gitea", "bitbucket", "pull request", "gh pr"];
+    let root = repo_root();
+    let mut packs = Vec::new();
+    let mut dirs = vec![root.join("dna")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "node_modules" && n != "target") {
+                    dirs.push(p);
+                }
+            } else if p.extension().is_some_and(|x| x == "pack") {
+                packs.push(p);
+            }
+        }
+    }
+    assert!(packs.iter().any(|p| p.ends_with("dna/nursery/packs/standard.pack")), "the standard pack is read: {packs:?}");
+    let mut offenders = Vec::new();
+    for p in &packs {
+        let text = std::fs::read_to_string(p).unwrap();
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            let lower = t.to_lowercase();
+            let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+            if KINDS.iter().any(|k| if k.contains(' ') { lower.contains(k) } else { words.contains(k) }) || words.contains(&"gh") {
+                offenders.push(format!("{}:{}: {t}", p.strip_prefix(&root).unwrap_or(p).display(), i + 1));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "a practice or workflow names a forge by kind (say the verb, `open a review`; the allocation answers it):\n{}", offenders.join("\n"));
+
+    // a leg's hands: the forge a leg's review opens at is the allocation's
+    // (`AllocatedForge`), never a kind the hands' construction names — the
+    // `Hands` default, and every `Hands { forge: … }` outside the fixtures
+    // and the project scaffold the toolchain writes
+    let kinds = ["GhForge", "GitHubForge", "ForgejoForge", "FileForge", "MemForge", "NoForge", "ForgeBridge"];
+    let mut sources: Vec<PathBuf> = Vec::new();
+    let mut dirs = vec![root.join("dna")];
+    while let Some(d) = dirs.pop() {
+        if d.ends_with("dna/tests") || d.ends_with("node_modules") {
+            continue;
+        }
+        for e in std::fs::read_dir(&d).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "hl") {
+                sources.push(p);
+            }
+        }
+    }
+    sources.push(root.join("crates/hale-cli/src/dna.rs"));
+    let hands = std::fs::read_to_string(root.join("dna/core/legs/hands.hl")).unwrap();
+    assert!(hands.contains("forge: ForgeHand = AllocatedForge { };"), "the Hands' forge is the allocation's (`AllocatedForge`)");
+    let mut hard = Vec::new();
+    for p in &sources {
+        let text = std::fs::read_to_string(p).unwrap_or_default();
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            let named = |rest: &str| kinds.iter().any(|k| rest.trim_start().starts_with(k));
+            let default = t.strip_prefix("forge: ForgeHand = ").is_some_and(named);
+            let built = t.split("Hands { forge: ").skip(1).any(named);
+            if default || built {
+                hard.push(format!("{}:{}: {t}", p.strip_prefix(&root).unwrap_or(p).display(), i + 1));
+            }
+        }
+    }
+    assert!(hard.is_empty(), "a leg's hands name a forge by kind (its forge is the allocation's, `AllocatedForge`):\n{}", hard.join("\n"));
 }
 
 /// GH #648: the code-review host is an implementation behind `Forge`;

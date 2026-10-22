@@ -1,0 +1,503 @@
+// dna/tests/forge_forgejo_test.hl — the local profile's forge is the
+// habitat's own Forgejo (phase 4 ruling).
+//
+// `hale habitat up` brings Forgejo up with memory and the nerves, healthy,
+// its administrator's password drawn into the vault and named in the
+// habitat's forge allocation by its slot. A graft makes the organism a
+// Forgejo user of its own, its token in a vault slot of its own, and a
+// repository for its codebase holding its code. The SDLC flow then runs
+// against that Forgejo through `hale dna forge sync`, as it does against
+// the memory forge and GitHub: a leg's hands open its review at the forge
+// the organism's allocation names, and that review merged comes back as
+// `task.delivered`, one closed unmerged as `task.refused`, and the words
+// people left on a review as receipts on the verdict row. The habitat is
+// this test file's own; without docker compose nothing here is exercised.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+// The record rows of `kind` the record at `dir` holds, a line each.
+@bounded_by(dir)
+fn rows_of(dir: String, kind: String) -> String {
+    let rows = in_dir(dir, toolchain() + "\ndna\nrecord-rows\n.").stdout + "\n";
+    let mut out = "";
+    let mut rest = rows;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::json::find_string_field(line, "kind") == kind { out = out + line + "\n"; }
+    }
+    return out;
+}
+
+// `git` in `dir`, as a leg commits (its pushes are the git hand's).
+fn leg_git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool(
+        "sh\n-c\ncd \"$0\" && exec git -c user.name=leg -c user.email=leg@hale-dna \"$@\"\n" + dir
+            + "\n" + args,
+    );
+}
+
+// The `n`-th line of `s` (from 0), "" past the last.
+fn nth_line(s: String, n: Int) -> String {
+    let mut rest = s;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// A one-step admission of `task` naming the codebase `codebase`.
+fn admission(task: String, codebase: String) -> String {
+    let cat = dna::WorkflowCatalog { };
+    let d = cat.define("one-step", 1, "record", "");
+    let l = cat.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "answer the move" }, 1);
+    let x = cat.expand(task, "one-step", 1, dna::AdmissionLimits { });
+    return dna::encode_admission(dna::AdmittedWorkflow {
+        task_id: task, definition: "one-step", revision: 1, request: "r-" + task,
+        inputs: "{\"codebase\": \"" + codebase + "\"}",
+        recipe: cat.encode_bound(), limits: dna::AdmissionLimits { },
+        works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+    });
+}
+
+// A leg's answer for `task`: done, its review at the forge.
+fn outcome(review: String) -> String {
+    return "{\"disposition\": \"done\", \"result\": \"Patch\", \"result_ref\": \"review:" + review
+        + "\"}";
+}
+
+// A Mutation up to its Review, offline: the organism's own driver.
+const DRIVER: String = "import \"vendor/dna\" as dna;
+
+fn main() {
+    let cur = std::io::fs::read_file(\"main.hl\") or \"\";
+    let core = dna::Dna {
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: \".\" } },
+        gateway: dna::MutationGateway {
+            leases: dna::MemoryLeases { repo: \".\" },
+            workspaces: dna::IsolatedWorktrees { repo: \".\", root: \".hale/dna/worktrees\" },
+            repo: dna::LocalGit { repo: \".\" }
+        },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: \".\" }, scratch: \".hale/dna/scratch\", repo: \".\", seed: \".\" },
+        editor: dna::SourceEditor {
+            name: \"editor\",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: \"quick\", answer: cur + \"// documented for the pull request\\n\" },
+                deep: dna::FakeModel { name: \"deep\", answer: \"docs_coverage +\" }
+            }
+        },
+        review_policy: dna::OrgPolicy { },
+        board: dna::Board { who: \"board\" },
+        boundary: dna::AutonomyBoundary { child: \"shop\", grant: dna::Grant { child: \"shop\", classes: \"docs refactor\", max_magnitude: 4, review: \"pre\" } }
+    };
+    println(core.mutate(\"t0\", \"docs\", \"document the entrypoint in main.hl\", \"main.hl\", 1));
+}
+";
+
+// A canned `gh`: it logs what it is asked and answers `pr create` with a
+// pull request's url, only as the vault's forge token.
+const FAKE_GH: String = "#!/bin/sh
+dir=\"$(dirname \"$0\")\"
+[ \"$GH_TOKEN\" = \"fake-forge-token\" ] || { echo \"fake gh: not the vault's forge token\" >&2; exit 4; }
+echo \"$@\" >> \"$dir/gh.log\"
+case \"$1 $2\" in
+  \"pr create\") echo \"https://github.com/o/r/pull/7\" ;;
+  \"pr view\") echo '{\"state\":\"OPEN\",\"headRefOid\":\"\",\"reviews\":[]}' ;;
+  *) echo \"fake gh: $*\" >&2; exit 1 ;;
+esac
+";
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("forge_forgejo_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "forge_forgejo_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("forgejo");
+    dna::reap_on_exit(scratch);
+
+    // ---- up: the habitat's Forgejo is up and healthy, its administrator's
+    // password in the vault, the habitat's forge allocation naming its slot
+    let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body");
+    std::test::assert(
+        born.code == 0
+            && std::str::contains(
+                born.stdout,
+                "roles   the habitat's forge (forgejo at " + dna::forgejo_address()
+                    + "; its administrator in the vault slot " + dna::FORGEJO_ADMIN_VAULT + ")",
+            ),
+        "up brings the habitat's Forgejo up: " + born.stdout + born.stderr,
+    );
+    std::test::assert(
+        std::secret::Credential { vault: dna::FORGEJO_ADMIN_VAULT }.ready(),
+        "the administrator's password is the vault's",
+    );
+    let healthy = dna::run_tool(
+        "curl\n-sf\n-o\n/dev/null\n-w\n%{http_code}\n" + dna::forgejo_address() + "/api/healthz",
+    );
+    std::test::assert_eq_str(healthy.stdout, "200", "Forgejo answers healthy");
+    let genome = dna::local_habitat_dir() + "/genome";
+    let own = rows_of(genome, "habitat.allocated");
+    std::test::assert(
+        std::str::contains(own, "\\\"provider\\\": \\\"forgejo\\\"")
+            && std::str::contains(
+                own,
+                "\\\"key_vault\\\": \\\"" + dna::FORGEJO_ADMIN_VAULT + "\\\"",
+            )
+            && !std::str::contains(
+                own,
+                std::io::fs::read_file(
+                    std::secret::vault_local_dir() + "/" + dna::FORGEJO_ADMIN_VAULT,
+                )
+                or "never",
+            ),
+        "the allocation names the slot, never the password: " + own,
+    );
+
+    // ---- a graft: the organism's Forgejo user, its token slot, and its
+    // codebase's repository holding its code
+    let g = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nshop\n--no-library\n--no-pack");
+    let app = scratch + "/shop";
+    let key = dna::allocation_key(app);
+    let slot = dna::forgejo_vault(key);
+    // the organism's own account, named for it and its key: two organisms
+    // never share one, however alike their names
+    let user = "shop-" + key;
+    let slug = user + "/shop";
+    std::test::assert(
+        dna::forgejo_user_for("shop", key) == user
+            && dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa")
+            != dna::forgejo_user_for("shop_api", "bbbbbbbbbbbb")
+            && dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa")
+            == dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa"),
+        "an organism's Forgejo account is its own",
+    );
+    std::test::assert(
+        g.code == 0
+            && std::str::contains(
+                g.stdout,
+                "its forge (forgejo " + slug + ", its token in the vault slot " + slot + ")",
+            ),
+        "the graft allocates the organism its Forgejo: " + g.stdout + g.stderr,
+    );
+    std::test::assert(
+        std::secret::Credential { vault: slot }.ready(),
+        "the organism's token is the vault's",
+    );
+    let forge = dna::ForgejoForge {
+        address: dna::forgejo_address(),
+        repo: slug,
+        base: "main",
+        token_slot: slot,
+    };
+    let me = forge.call("GET", "/user", "");
+    std::test::assert_eq_str(
+        std::json::find_string_field(me.body, "login"),
+        user,
+        "the token is the organism's own user: " + me.why,
+    );
+    let made = forge.call("GET", "/repos/" + slug, "");
+    std::test::assert(
+        made.ok && std::json::find_string_field(made.body, "default_branch") == "main",
+        "its codebase's repository is made there: " + made.body + made.why,
+    );
+    // the organism's code goes out through the gate at its first sync
+    let c = dna::run_tool(
+        "sh\n-c\ncd \"$1\" && git add -A && git -c user.name=board -c user.email=board@hale-dna commit -q -m 'the organism'\nsh\n"
+            + app,
+    );
+    std::test::assert_eq_int(c.code, 0, "the organism's code is committed: " + c.stderr);
+    let first = in_dir(app, toolchain() + "\ndna\nforge\nsync");
+    // Forgejo indexes a push's branches after it answers the push
+    let mut repo = forge.call("GET", "/repos/" + slug + "/branches/main", "");
+    let mut tries = 0;
+    while !repo.ok && tries < 60 {
+        std::time::sleep(500ms);
+        repo = forge.call("GET", "/repos/" + slug + "/branches/main", "");
+        tries = tries + 1;
+    }
+    let head = dna::trim_nl(dna::run_tool("git\n-C\n" + app + "\nrev-parse\nHEAD").stdout);
+    std::test::assert(
+        first.code == 0
+            && repo.ok
+            && std::json::find_string_field(std::json::find_field_raw(repo.body, "commit"), "id")
+            == head,
+        "its repository holds its code after a sync: " + first.stdout + first.stderr + repo.body
+            + repo.why,
+    );
+
+    // ---- the SDLC flow, through forge sync: two legs' changes, each a
+    // branch of the codebase's repository and a pull request there
+    let url = dna::forgejo_address() + "/" + slug + ".git";
+    let work = scratch + "/work";
+    let cloned = dna::run_tool("git\nclone\n-q\n" + url + "\n" + work);
+    std::test::assert_eq_int(cloned.code, 0, "the codebase clones: " + cloned.stderr);
+    let mut refs = "";
+    let mut shas = "";
+    let mut i = 1;
+    while i <= 2 {
+        let branch = "leg/t" + to_string(i);
+        let b = leg_git(work, "checkout\n-q\n-b\n" + branch + "\nmain");
+        std::io::fs::write_file(
+            work + "/LEG" + to_string(i) + ".md",
+            "the leg's change\n",
+        ) or discard;
+        let c = leg_git(work, "add\n-A");
+        let m = leg_git(work, "commit\n-q\n-m\nthe leg's change");
+        let sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
+        // a leg's hands, as `hale dna work` hands them: the git hand pushes
+        // the branch as the organism's own Forgejo user, and "open a
+        // review" is the verb the organism's forge allocation answers
+        let hands = legs::Hands {
+            git: legs::ScratchGit { root: app },
+            forge: legs::AllocatedForge { root: app },
+        };
+        let p = hands.git.push(work, branch);
+        std::test::assert(p.ok, "the git hand pushes the leg's branch: " + p.error);
+        let opened = hands.forge.open_review(
+            work,
+            "the leg's change " + to_string(i),
+            dna::with_leg_commit("answers the move", sha),
+        );
+        std::test::assert(
+            opened.ok
+                && std::str::starts_with(
+                    opened.output,
+                    dna::forgejo_address() + "/" + slug + "/pulls/",
+                ),
+            "the leg's review opens at the allocated Forgejo: " + opened.output + opened.error,
+        );
+        std::test::assert_eq_str(
+            hands.forge.verdict(opened.output).output,
+            "pending",
+            "and its verdict is read there",
+        );
+        refs = refs + opened.output + "\n";
+        shas = shas + sha + "\n";
+        i = i + 1;
+    }
+    let r1 = nth_line(refs, 0);
+    let r2 = nth_line(refs, 1);
+    // a gate's run is its context's current status: a pass before a failed
+    // rerun at the same commit, or before one still running, is not reported
+    let leg1 = nth_line(shas, 0);
+    let s1 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"success\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/1\"}",
+    );
+    let s2 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"failure\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/2\"}",
+    );
+    std::test::assert(s1.ok && s2.ok, "the statuses are posted: " + s1.why + s2.why);
+    std::test::assert_eq_str(
+        forge.checks(r1, leg1),
+        "ci/build\tfailure\t" + leg1 + "\thttp://ci.invalid/2\n",
+        "the rerun's failure is the run, never the pass before it",
+    );
+    let s3 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"pending\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/3\"}",
+    );
+    std::test::assert_eq_str(
+        forge.checks(r1, leg1),
+        "ci/build\t\t" + leg1 + "\thttp://ci.invalid/3\n",
+        "a rerun still going concludes nothing",
+    );
+    std::test::assert(
+        forge.comment(r1, "keep the memo short")
+            && forge.review_state(r1) == "open"
+            && dna::leg_commit_in(forge.review_body(r1)) == nth_line(shas, 0),
+        "a person's word on the first, which is open and names the leg's commit",
+    );
+    let merged = forge.call(
+        "POST",
+        "/repos/" + slug + "/pulls/" + dna::forgejo_number(r1) + "/merge",
+        "{\"Do\": \"merge\"}",
+    );
+    std::test::assert(merged.ok, "the team merges the first: " + merged.why);
+    std::test::assert(forge.close_review(r2, "not this way"), "and closes the second");
+    let merge_commit = dna::trim_nl(forge.review_state(r1)[7..len(forge.review_state(r1))]);
+
+    // the record: the codebase attached, two tasks naming it, each answered
+    // with its review
+    let j = dna::RoutedJournal {
+        record: dna::RecordJournal { repo: app },
+        ledger: dna::MemoryLedger { repo: app, dsn_env: dna::HEAD_DSN_ENV },
+    };
+    let attached = j.append(
+        j.revision(),
+        "codebase.attached",
+        "shop",
+        dna::codebase_body(
+            dna::Codebase { present: true, name: "shop", repo: url, branch: "main", by: "board" },
+        ),
+    );
+    std::test::assert(attached.ok, "the codebase is attached: " + attached.error);
+    i = 1;
+    while i <= 2 {
+        let task = "t" + to_string(i);
+        let a = j.append(j.revision(), "workflow.admitted", task, admission(task, "shop"));
+        let o = j.append(
+            j.revision(),
+            "attempt.outcome",
+            task + "/wf1/s0/w0/a0",
+            outcome(nth_line(refs, i - 1)),
+        );
+        std::test::assert(a.ok && o.ok, "the task and its answer land: " + a.error + o.error);
+        i = i + 1;
+    }
+    let synced = in_dir(app, toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        synced.code == 0
+            && std::str::contains(synced.stdout, "t1: task.delivered (codebase shop)")
+            && std::str::contains(synced.stdout, "t2: task.refused (codebase shop)"),
+        "forge sync reads the forge's word on both: " + synced.stdout + synced.stderr,
+    );
+    let moved = j.refresh();
+    let mut delivered = "";
+    let mut refused = "";
+    let mut k = 0;
+    while k < j.revision() {
+        let e = j.read(k);
+        if e.kind == "task.delivered" && e.entity == "t1" { delivered = e.body; }
+        if e.kind == "task.refused" && e.entity == "t2" { refused = e.body; }
+        k = k + 1;
+    }
+    std::test::assert(
+        std::json::find_string_field(delivered, "merge_commit") == merge_commit
+            && std::json::find_string_field(delivered, "leg_commit") == nth_line(shas, 0)
+            && std::json::find_string_field(delivered, "review") == r1,
+        "merged, the task is delivered: " + delivered,
+    );
+    let receipts = dna::MemoryReceipts { repo: app };
+    let said = std::json::find_string_field(delivered, "comment_receipts");
+    std::test::assert(
+        len(said) > 0
+            && std::str::contains(receipts.read(dna::nth_word(said, 0)), "keep the memo short"),
+        "the word on the review is a receipt on the verdict row: " + delivered,
+    );
+    std::test::assert(
+        std::json::find_string_field(refused, "why") == "closed without merging"
+            && std::str::contains(
+                receipts.read(
+                    dna::nth_word(std::json::find_string_field(refused, "comment_receipts"), 0),
+                ),
+                "not this way",
+            ),
+        "closed unmerged, it is refused, its closing word a receipt: " + refused,
+    );
+    let again = in_dir(app, toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        again.code == 0 && !std::str::contains(again.stdout, "task."),
+        "a decided review is not read again: " + again.stdout + again.stderr,
+    );
+
+    // ---- the gate swapped: an open Review's pull request at Forgejo, then
+    // the allocation moved to GitHub and the remote with it. After a sync
+    // the review is open at the new forge too, and nothing migrated: the
+    // Forgejo pull request is as it was
+    std::io::fs::mkdir(app + "/mutate") or discard;
+    std::io::fs::write_file(app + "/mutate/main.hl", DRIVER) or discard;
+    let driven = in_dir(app, toolchain() + "\nrun\nmutate");
+    std::test::assert(
+        driven.code == 0 && std::str::contains(driven.stdout, "m1: review"),
+        "a Mutation is up to its Review: " + driven.stdout + driven.stderr,
+    );
+    let out1 = in_dir(app, toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        out1.code == 0
+            && std::str::contains(
+                out1.stdout,
+                "m1: review opened at the forge (" + dna::forgejo_address() + "/" + slug
+                    + "/pulls/",
+            ),
+        "the pending Review is a pull request at Forgejo: " + out1.stdout + out1.stderr,
+    );
+    let at = std::str::index_of(out1.stdout, dna::forgejo_address() + "/" + slug + "/pulls/");
+    let rest = out1.stdout[at..len(out1.stdout)];
+    let r3 = rest[0..std::str::index_of(rest, ")")];
+    let pulled = forge.call("GET", "/repos/" + slug + "/pulls/" + dna::forgejo_number(r3), "");
+    std::test::assert(
+        forge.review_state(r3) == "open"
+            && std::json::find_string_field(std::json::find_field_raw(pulled.body, "head"), "ref")
+            == "dna/m1",
+        "its candidate is the branch dna/m1 there: " + pulled.body,
+    );
+    let bare = scratch + "/origin.git";
+    let b0 = dna::run_tool("git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+    let b1 = dna::run_tool("git\n-C\n" + app + "\nremote\nadd\norigin\n" + bare);
+    let b2 = dna::run_tool("git\n-C\n" + app + "\npush\n-q\norigin\nmain");
+    std::test::assert(b0.code == 0 && b1.code == 0 && b2.code == 0, "the new remote: " + b2.stderr);
+    let moved_to = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\nforge\nshop\ngithub\n--repo\no/r\n--key-vault\nforge-token",
+    );
+    std::test::assert(
+        moved_to.code == 0 && std::str::contains(moved_to.stdout, "shop's forge: github o/r"),
+        "the Board allocates GitHub: " + moved_to.stdout + moved_to.stderr,
+    );
+    let bin = scratch + "/bin";
+    std::io::fs::mkdir(bin) or discard;
+    std::io::fs::write_file(bin + "/gh", FAKE_GH) or discard;
+    let x = dna::run_tool("chmod\n+x\n" + bin + "/gh");
+    let tok = std::secret::vault_local_dir() + "/forge-token";
+    std::io::fs::write_file(tok, "fake-forge-token") or discard;
+    let xm = dna::run_tool("chmod\n600\n" + tok);
+    let out2 = in_dir(
+        app,
+        "env\nPATH=" + bin + ":" + std::env::var("PATH") + "\n" + toolchain()
+            + "\ndna\nforge\nsync",
+    );
+    let log = std::io::fs::read_file(bin + "/gh.log") or "";
+    std::test::assert(
+        out2.code == 0
+            && std::str::contains(
+                out2.stdout,
+                "m1: review opened at the forge (https://github.com/o/r/pull/7)",
+            )
+            && std::str::contains(log, "pr create --repo o/r --base main --head dna/m1"),
+        "after the sync the review is open at GitHub: " + out2.stdout + out2.stderr + log,
+    );
+    std::test::assert_eq_str(
+        forge.review_state(r3),
+        "open",
+        "and the Forgejo pull request is as it was: nothing migrated",
+    );
+    std::test::assert(
+        dna::run_tool("git\n-C\n" + bare + "\nrev-parse\n--verify\nrefs/heads/dna/m1").code == 0,
+        "the candidate went out through the new remote as dna/m1",
+    );
+
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    dna::scratch_done(scratch);
+}

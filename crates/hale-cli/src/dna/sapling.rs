@@ -529,3 +529,267 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+// ---- forge and identity: roles the habitat allocates (phase 4) -------------
+
+/// The `habitat.allocated` body of a role no compose service holds.
+fn role_body(organism: &str, role: &str, provider: &str, host: &str, address: &str, repo: &str, key_vault: &str) -> serde_json::Value {
+    let vault: Vec<&str> = if key_vault.is_empty() { Vec::new() } else { vec![key_vault] };
+    serde_json::json!({ "organism": organism, "role": role, "service": "", "provider": provider, "host": host, "address": address, "repo": repo, "key_vault": key_vault, "vault": vault })
+}
+
+/// The forge allocated to the organism keyed `key`, kept beside its
+/// allocations for the host to read (`dna::forge_allocated`).
+fn forge_cache(key: &str, provider: &str, repo: &str, key_vault: &str, address: &str) -> Result<(), String> {
+    let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join("forge.json");
+    std::fs::write(&path, format!("{}\n", serde_json::json!({ "provider": provider, "repo": repo, "key_vault": key_vault, "address": address }))).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// What a grafted organism's roles still need, from the latest
+/// `habitat.allocated` bodies and the forge cache as it stands: the rows its
+/// record lacks (each recorded once, when absent, so a later Board
+/// allocation stands) and the cache when it is missing or says other than
+/// the forge row. A graft that stopped part way finishes here on its retry.
+/// `fresh` is the forge row to record when the record holds none.
+fn roles_needed(allocated: &BTreeMap<String, serde_json::Value>, cache: Option<serde_json::Value>, child: &str, fresh: Option<&serde_json::Value>, issuer: &str) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
+    let key = &child[..12];
+    let mut rows = Vec::new();
+    let forge_body = match allocated.get(&format!("{key}/forge")) {
+        Some(b) => b.clone(),
+        None => {
+            let b = fresh.cloned().unwrap_or_else(|| role_body(child, "forge", "none", "", "", "", ""));
+            rows.push(serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/forge"), "body": b.to_string() }));
+            b
+        }
+    };
+    if !allocated.contains_key(&format!("{key}/identity")) {
+        rows.push(serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/identity"), "body": role_body(child, "identity", "oidc-stub", "local", issuer, "", "").to_string() }));
+    }
+    let field = |k: &str| forge_body[k].as_str().unwrap_or("").to_string();
+    let wanted = serde_json::json!({ "provider": field("provider"), "repo": field("repo"), "key_vault": field("key_vault"), "address": field("address") });
+    (rows, if cache.as_ref() == Some(&wanted) { None } else { Some(wanted) })
+}
+
+/// The forge row a newly grafted organism is given: with `forgejo`, its
+/// user, token slot and repository at the habitat's Forgejo, made by the
+/// host (`habitat-forge-provision`); any other forge, as the provider alone.
+/// `root` is where the organism's code lives (`-` when the habitat does not
+/// know, and nothing is pushed).
+fn forge_body_for(child: &str, name: &str, root: &str, forge: &str) -> Result<serde_json::Value, String> {
+    if forge != "forgejo" {
+        return Ok(role_body(child, "forge", forge, "", "", "", ""));
+    }
+    let said = host_run("habitat-forge-provision", &genome_dir(), &[name.to_string(), child[..12].to_string(), root.to_string()])?;
+    let field = |k: &str| said.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").to_string();
+    Ok(role_body(child, "forge", "forgejo", "local", &field("address"), &field("repo"), &field("key_vault")))
+}
+
+/// A grafted organism's forge and identity: the forge the graft's `--forge`
+/// or the habitat's policy names (the habitat's Forgejo on its own
+/// backends, none on an operator's), the identity the
+/// habitat's own sign-in at the organism's issuer. Run on every graft, the
+/// first and each retry: what is already allocated stays as it is.
+pub(super) fn allocate_roles(child: &str, root: &Path) -> Result<Vec<String>, String> {
+    let key = &child[..12];
+    let rows = rows_of(&genome_dir());
+    let policy = latest(&rows, "habitat.policy");
+    let forge = GRAFT_FORGE.get().cloned().or_else(|| policy.get("forge").and_then(|p| p["provider"].as_str().map(str::to_string))).unwrap_or_else(|| "none".to_string());
+    if !["none", "github", "file", "forgejo"].contains(&forge.as_str()) {
+        return Err(format!("`--forge {forge}`: a forge is forgejo, github, file or none"));
+    }
+    let issuer = Command::new("git").arg("-C").arg(root).args(["config", "--get", "dna.oidc.issuer"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "http://127.0.0.1:8794".to_string());
+    let path = PathBuf::from(local_habitat_dir()).join("allocations").join(key).join("forge.json");
+    let cache = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let allocated = latest(&rows, "habitat.allocated");
+    let fresh = if allocated.contains_key(&format!("{key}/forge")) { None } else { Some(forge_body_for(child, &root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), &root.display().to_string(), &forge)?) };
+    let (missing, rewrite) = roles_needed(&allocated, cache, child, fresh.as_ref(), &issuer);
+    if missing.is_empty() && rewrite.is_none() {
+        return Ok(Vec::new());
+    }
+    record(&missing)?;
+    if let Some(c) = rewrite {
+        let field = |k: &str| c[k].as_str().unwrap_or("").to_string();
+        forge_cache(key, &field("provider"), &field("repo"), &field("key_vault"), &field("address"))?;
+    }
+    let allocated = latest(&rows_of(&genome_dir()), "habitat.allocated");
+    let fb = allocated.get(&format!("{key}/forge")).cloned().unwrap_or_default();
+    let provider = fb["provider"].as_str().unwrap_or(&forge).to_string();
+    let provider = match (fb["repo"].as_str().unwrap_or(""), fb["key_vault"].as_str().unwrap_or("")) {
+        ("", _) => provider,
+        (repo, "") => format!("{provider} {repo}"),
+        (repo, slot) => format!("{provider} {repo}, its token in the vault slot {slot}"),
+    };
+    let at = allocated.get(&format!("{key}/identity")).and_then(|b| b["address"].as_str()).unwrap_or(&issuer).to_string();
+    Ok(vec![format!("{:<8}its forge ({provider}) and identity (oidc-stub at {at})", "roles")])
+}
+
+/// `hale habitat forge` arguments, consumed by position: each option takes
+/// the word after it, whatever that word is, and the two words left are the
+/// organism and the provider (`None`: not that shape).
+struct ForgeArgs {
+    organism: String,
+    provider: String,
+    repo: String,
+    key_vault: String,
+    no_head: bool,
+}
+
+fn forge_args(args: &[String]) -> Option<ForgeArgs> {
+    let (mut repo, mut key_vault, mut no_head) = (String::new(), String::new(), false);
+    let mut words = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => repo = it.next()?.clone(),
+            "--key-vault" => key_vault = it.next()?.clone(),
+            "--no-head" => no_head = true,
+            w if w.starts_with("--") => return None,
+            w => words.push(w.to_string()),
+        }
+    }
+    let [organism, provider] = <[String; 2]>::try_from(words).ok()?;
+    Some(ForgeArgs { organism, provider, repo, key_vault, no_head })
+}
+
+/// `hale habitat forge <organism> <provider> [--repo r] [--key-vault s]
+/// [--no-head]`: the organism's forge allocated, through the head's
+/// `Commands::allocate_forge` while it answers, else (or with `--no-head`)
+/// as the act itself.
+pub(super) fn forge_cmd(args: &[String]) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let usage = "usage: hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]";
+    let Some(ForgeArgs { organism, provider, repo, key_vault, no_head }) = forge_args(args) else {
+        eprintln!("{usage}");
+        return ExitCode::from(2);
+    };
+    if !no_head && head_socket().is_some_and(|p| p.exists()) {
+        return match head_call("Commands::allocate_forge", serde_json::json!({ "organism": organism, "provider": provider, "repo": repo, "key_vault": key_vault })) {
+            Ok(v) if v["ok"] == serde_json::json!(true) => {
+                println!("{}", v["why"].as_str().unwrap_or(""));
+                ExitCode::SUCCESS
+            }
+            Ok(v) => {
+                eprintln!("hale habitat forge: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+                ExitCode::from(1)
+            }
+            Err(e) => {
+                eprintln!("hale habitat forge: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
+    match allocate_forge(&organism, &provider, &repo, &key_vault) {
+        Ok(line) => {
+            println!("{line}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("hale habitat forge: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// The forge `provider` allocated to the organism the habitat grafted as
+/// `organism` (`habitat`: the habitat's own): its row, and its cache.
+fn allocate_forge(organism: &str, provider: &str, repo: &str, key_vault: &str) -> Result<String, String> {
+    if !["none", "github", "file", "forgejo"].contains(&provider) {
+        return Err(format!("`{provider}`: a forge is forgejo, github, file or none"));
+    }
+    let slot = if key_vault.is_empty() && provider == "github" { "forge-token" } else { key_vault };
+    if provider == "github" {
+        let ok = repo.split_once('/').is_some_and(|(o, n)| !o.is_empty() && !n.is_empty() && !n.contains('/'));
+        if !ok {
+            return Err("a github forge names its repository, --repo <owner/name>".to_string());
+        }
+    }
+    if !slot.is_empty() && !slot.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err(format!("`--key-vault {slot}` names no vault slot"));
+    }
+    let genome = genome_dir();
+    let rows = rows_of(&genome);
+    let child = if organism == "habitat" {
+        manifest_pin(&genome.join("hale.toml")).ok().flatten().ok_or("the habitat is not born")?
+    } else {
+        let grafted = latest(&rows, "habitat.grafted");
+        grafted.iter().find(|(_, b)| b["name"] == organism).map(|(_, b)| b["child"].as_str().unwrap_or("").to_string()).filter(|c| c.len() >= 12).ok_or_else(|| format!("the habitat grafted no organism `{organism}`"))?
+    };
+    let key = &child[..12];
+    // the habitat's Forgejo: the organism's user, token and repository
+    // there (its code pushed when the habitat knows where it lives)
+    let body = if provider == "forgejo" {
+        let root = latest(&rows, "habitat.allocated").values().find_map(|b| (b["organism"] == child.as_str() && !b["root"].as_str().unwrap_or("").is_empty()).then(|| b["root"].as_str().unwrap_or("").to_string())).unwrap_or_else(|| "-".to_string());
+        forge_body_for(&child, organism, &root, "forgejo")?
+    } else {
+        role_body(&child, "forge", provider, "", "", repo, slot)
+    };
+    let field = |k: &str| body[k].as_str().unwrap_or("").to_string();
+    let (repo, slot) = (field("repo"), field("key_vault"));
+    let (repo, slot) = (repo.as_str(), slot.as_str());
+    record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/forge"), "body": body.to_string() })])?;
+    forge_cache(key, provider, repo, slot, &field("address"))?;
+    Ok(format!("{:<8}{organism}'s forge: {provider}{}{}", "forge", if repo.is_empty() { String::new() } else { format!(" {repo}") }, if slot.is_empty() { String::new() } else { format!(" (its token in the vault slot {slot})") }))
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    const CHILD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn args(line: &str) -> Vec<String> {
+        line.split(' ').map(str::to_string).collect()
+    }
+
+    /// An option's value is the word after it, never a word equal to it
+    /// elsewhere: a slot named like the organism or the provider leaves both.
+    #[test]
+    fn forge_options_are_consumed_by_position() {
+        let a = forge_args(&args("alpha github --repo owner/project --key-vault alpha")).unwrap();
+        assert_eq!((a.organism.as_str(), a.provider.as_str(), a.repo.as_str(), a.key_vault.as_str()), ("alpha", "github", "owner/project", "alpha"));
+        let b = forge_args(&args("alpha github --key-vault github --repo o/r --no-head")).unwrap();
+        assert_eq!((b.organism.as_str(), b.provider.as_str(), b.key_vault.as_str(), b.no_head), ("alpha", "github", "github", true));
+        let c = forge_args(&args("--repo o/r alpha github")).unwrap();
+        assert_eq!((c.organism.as_str(), c.provider.as_str(), c.key_vault.as_str()), ("alpha", "github", ""));
+        assert!(forge_args(&args("alpha github --repo")).is_none(), "an option without its value");
+        assert!(forge_args(&args("alpha")).is_none() && forge_args(&args("alpha github extra")).is_none());
+        assert!(forge_args(&args("alpha github --other x")).is_none());
+    }
+
+    /// A graft that stopped part way finishes on its retry: absent rows are
+    /// recorded, a missing cache is written from the forge row as it stands
+    /// (a Board allocation kept), and a whole allocation needs nothing.
+    #[test]
+    fn roles_resume_without_overwriting() {
+        let key = &CHILD[..12];
+        let (rows, cache) = roles_needed(&BTreeMap::new(), None, CHILD, None, "http://i");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(cache.unwrap()["provider"], "none");
+
+        let mut allocated = BTreeMap::new();
+        allocated.insert(format!("{key}/forge"), role_body(CHILD, "forge", "github", "", "", "o/r", "slot"));
+        let (rows, cache) = roles_needed(&allocated, None, CHILD, None, "http://i");
+        assert_eq!(rows.len(), 1, "the identity alone");
+        assert_eq!(rows[0]["entity"], format!("{key}/identity"));
+        assert_eq!(cache.unwrap(), serde_json::json!({ "provider": "github", "repo": "o/r", "key_vault": "slot", "address": "" }), "the cache follows the row");
+
+        allocated.insert(format!("{key}/identity"), role_body(CHILD, "identity", "oidc-stub", "local", "http://old", "", ""));
+        let stale = serde_json::json!({ "provider": "none", "repo": "", "key_vault": "" });
+        let (rows, cache) = roles_needed(&allocated, Some(stale), CHILD, None, "http://new");
+        assert!(rows.is_empty(), "nothing recorded again");
+        assert_eq!(cache.unwrap()["provider"], "github");
+
+        let whole = serde_json::json!({ "provider": "github", "repo": "o/r", "key_vault": "slot", "address": "" });
+        let fresh = role_body(CHILD, "forge", "file", "", "", "", "");
+        assert_eq!(roles_needed(&allocated, Some(whole), CHILD, Some(&fresh), "http://new"), (Vec::new(), None));
+
+        // a fresh Forgejo allocation is recorded as the host made it, and
+        // its cache carries where the forge answers
+        let fj = role_body(CHILD, "forge", "forgejo", "local", "http://127.0.0.1:16001", "shop/shop", "forgejo-0123456789ab");
+        let (rows, cache) = roles_needed(&BTreeMap::new(), None, CHILD, Some(&fj), "http://i");
+        assert!(rows[0]["body"].as_str().unwrap().contains("\"repo\":\"shop/shop\""), "{}", rows[0]);
+        assert_eq!(cache.unwrap(), serde_json::json!({ "provider": "forgejo", "repo": "shop/shop", "key_vault": "forgejo-0123456789ab", "address": "http://127.0.0.1:16001" }));
+    }
+}

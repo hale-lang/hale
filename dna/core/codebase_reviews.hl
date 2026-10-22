@@ -5,7 +5,7 @@
 // codebase's forge: its attempt settles done with `result_ref:
 // review:<ref>`. The forge decides the rest, and the organism learns it
 // through the `Forge` interface (dna/core/forge.hl), the host's
-// `github_sync` being the real path:
+// `forge_sync` being the real path:
 //
 //   merged            task.delivered   {task, review, codebase, leg_commit,
 //                                       merge_commit, edited, edit_receipt,

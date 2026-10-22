@@ -667,7 +667,9 @@ fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) 
     };
     b.field("body", std::json::find_field_raw(children, "body"));
     b.begin_object_field("forge");
-    b.string_field("github", record.setting("github"));
+    // the forge the habitat allocated, read back; never a setting
+    let forge = dna::forge_allocated(r.root);
+    b.string_field("github", if forge.provider == "github" { forge.repo } else { "" });
     b.field("board", logins_json(record.setting("github.board")));
     b.end_object();
     b.field("recent", receipts_json(cfg, r.application_id, 10, false));
