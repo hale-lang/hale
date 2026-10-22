@@ -118,6 +118,23 @@ locus Streams {
             s.send("o\n\ndata: three\n\n") or discard;
             return std::http::Response { status: 200, body: "", takeover_raw: true };
         }
+        if req.path == "/late-head" {
+            // the request taken, 1.5 s with no head, then the head and two
+            // events; framed by the close
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            std::time::sleep(1500ms);
+            s.send(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                    + "data: one\n\ndata: two\n\n",
+            ) or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/no-head" {
+            // the request taken and no head ever: the connection closes late
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            std::time::sleep(2s);
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
         if req.path == "/quiet-chunks" {
             let w = std::http::BodyWriter { conn_fd: req.conn_fd };
             w.chunk("a") or discard;
@@ -439,6 +456,102 @@ main locus App {
         kind = "";
         k.chunk_within(200) or { kind = err.kind; b"" };
         std::test::assert_eq_str(kind, "end", "the end, read within bounds");
+
+        // ---- a deferred opening: no head yet is `false`, not a wait
+        let d = std::http::SseReader {
+            req: request_to(base + "/late-head"),
+            timeout_ms: 0,
+            deferred: true,
+        };
+        std::test::assert_eq_int(d.body.status, 0, "nothing on the wire at birth");
+        let mut opening = 0;
+        let mut open = false;
+        while !open && opening < 50 {
+            open = d.open_within(200) or {
+                kind = err.kind;
+                true
+            };
+            if !open {
+                opening = opening + 1;
+            }
+        }
+        std::test::assert(opening >= 3, "the opening read as not yet: " + to_string(opening));
+        std::test::assert_eq_int(d.body.status, 200, "the head, once it came");
+        std::test::assert(d.open_within(200) or false, "open stays open");
+        std::test::assert_eq_str(
+            (d.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "one",
+            "the first event, whole",
+        );
+        std::test::assert_eq_str(
+            (d.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "two",
+            "the second",
+        );
+        kind = "";
+        d.event_within(200) or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "then the end");
+
+        // ---- the same with `event_within` alone: the opening is its first step
+        let e = std::http::SseReader {
+            req: request_to(base + "/late-head"),
+            timeout_ms: 0,
+            deferred: true,
+        };
+        let mut first_idles = 0;
+        let mut first = "";
+        while first == "" && first_idles < 50 {
+            kind = "";
+            let ev = e.event_within(200) or {
+                kind = err.kind;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                first_idles = first_idles + 1;
+            } else {
+                std::test::assert_eq_str(kind, "", "only idle while the head is awaited");
+                first = ev.data;
+            }
+        }
+        std::test::assert(first_idles >= 3, "idle while opening: " + to_string(first_idles));
+        std::test::assert_eq_str(first, "one", "the first event after the opening");
+        std::test::assert_eq_str(
+            (e.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "two",
+            "and the next",
+        );
+
+        // ---- the whole deadline still ends an opening with no head
+        let t2 = std::time::monotonic_ns();
+        let n = std::http::SseReader {
+            req: request_to(base + "/no-head"),
+            timeout_ms: 700,
+            deferred: true,
+        };
+        let mut nots = 0;
+        kind = "";
+        detail = "";
+        let mut ended = false;
+        while !ended && nots < 50 {
+            let o = n.open_within(200) or {
+                kind = err.kind;
+                detail = err.detail;
+                ended = true;
+                false
+            };
+            if !o && !ended {
+                nots = nots + 1;
+            }
+            std::test::assert(!o, "no head ever comes");
+        }
+        let n_took = (std::time::monotonic_ns() - t2) / 1000000;
+        std::test::assert(nots >= 1, "not yet while the deadline was ahead");
+        std::test::assert_eq_str(kind, "recv_failed", "the deadline ends the opening");
+        std::test::assert(
+            std::str::contains(detail, "timeout: no complete response within 700 ms"),
+            "the deadline's detail: " + detail,
+        );
+        std::test::assert(n_took < 1500, "ended at its deadline: " + to_string(n_took));
 
         std::io::tcp::stop(self.srv.listener);
     }

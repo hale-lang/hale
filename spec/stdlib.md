@@ -884,6 +884,27 @@ locus Relay {
   do. It is the read a relay uses when it must also answer something
   else while it waits (a cancel, a new assignment): on `idle` it serves
   that, then reads again.
+- **A deferred opening** (2026-10-22). A reader's birth makes the
+  exchange up to the end of the head, under the whole deadline, so an
+  upstream that takes the request and never sends a head holds the
+  caller for all of it. `deferred: Bool = false` on both readers; with
+  `deferred: true` birth does nothing on the wire (the deadline still
+  runs from birth), and `open_within(ms: Int) -> Bool fallible(HttpError)`
+  (on both readers; `SseReader`'s is its body's) advances the opening:
+  `true` once the head is read (`status` and `headers` set, then at once
+  on every later call), `false` when `ms` passed first, the exchange still
+  opening and what arrived of the head kept. It fails as a non-deferred
+  birth would: `connect_failed`, `send_failed`, `recv_failed` (the
+  deadline), `bad_response`, `too_large`, `unsupported_scheme`. The wait
+  for the head is what `ms` bounds; the dial (and, for https, the
+  handshake) and the request's write are one step bounded by the
+  exchange's deadline, as a non-deferred birth's are, since the runtime's
+  dial is one call that cannot be resumed. A read of a reader not open
+  yet opens it first: `chunk()` and `event()` to the end of the opening,
+  `chunk_within(ms)` and `event_within(ms)` within their own window,
+  failing `idle` when the head has not come, so a caller may loop on
+  `event_within` alone and never call `open_within`. A non-deferred
+  reader is unchanged.
 - **Deadline.** `timeout_ms` bounds the exchange whole, as the
   `Client`'s bounds a call: the dial (and, for https, the handshake)
   through `connect_within`, the request's writes, the head, and every
