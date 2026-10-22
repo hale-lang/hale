@@ -1080,6 +1080,15 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
     program that gives a fallback, so a REST, RPC or MCP exposure without
     one calls no `std::http` handler from its connections and its
     program's analyses are unchanged.
+  - **held below the main locus:** the listener is the main locus's and
+    reads the fallback off the holder as built, as it reads the address
+    (§ Serving): `fallback: self.front` is `self.<holder>.front`, and
+    `fallback: self`, a holder that is its own handler, is
+    `self.<holder>`. A fallback that reads the holder puts the listener
+    after the holder in the main locus's birth whatever its address
+    reads. A fallback that cannot be read that way (a method of the
+    holder, `self.make()`) is refused at the serve site; it is never
+    served as an exposure with no fallback.
 
   No `fallback` (the default) leaves everything as it was: a path no
   route serves is `404`.

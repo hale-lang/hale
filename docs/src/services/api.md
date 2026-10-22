@@ -866,6 +866,11 @@ Three things to know:
   handler on another pool is refused as a cross-pool alias. On a `where
   async_io` pool each connection is a coroutine, so a long stream holds
   only its own.
+- **In a locus below main, it is read off that locus.** An exposure a
+  locus your main holds serves keeps its fallback: a field of that locus
+  (`fallback: self.front`), or the locus itself when it is its own handler
+  (`fallback: self`). A method call there (`fallback: self.make()`) is
+  refused at the serve site; hold the handler as a param instead.
 
 Without a `fallback`, a path no row serves is `404`, as before.
 

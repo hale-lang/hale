@@ -1,0 +1,130 @@
+// tests/hale/rest_fallback_nested_test.hl — an `http::Rest` exposure held
+// below the main locus keeps its `fallback:`. Its listener is the main
+// locus's and reads the fallback off the holder as built: here a field of
+// the holder, with a constant address, so the listener is born after the
+// holder for the fallback, as it would be for an address that read it.
+
+type Health { status: String; }
+
+api Shop {
+    rpc Probe::live at "GET /healthz";
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-user" { return std::api::Principal { mode: "bearer", name: "user" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Probe {
+    fn live() -> Health { return Health { status: "live" }; }
+}
+
+locus Front {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: "front " + req.path };
+    }
+}
+
+// a holder whose exposure falls back to a field of its own, its address a constant
+locus Holder {
+    params {
+        tokens: Tokens = Tokens { };
+        probe: Probe = Probe { };
+        front: Front = Front { };
+        web: api::Exposure = api::serve(
+            Shop,
+            http::Rest {
+                bind: "127.0.0.1:0",
+                codec: json,
+                principals: self.tokens,
+                fallback: self.front,
+            },
+            as: "web",
+            bound: 8,
+            on_full: refuse
+        );
+    }
+}
+
+fn get(url: String) -> std::http::ClientResponse {
+    let u = std::http::parse_url(url) or std::http::Url { };
+    let req = std::http::ClientRequest {
+        method: "GET",
+        url: u,
+        headers: "Authorization: Bearer t-user",
+        body: b"",
+    };
+    return std::http::request(req) or std::http::ClientResponse {
+        status: -1,
+        headers: "",
+        body: b"",
+    };
+}
+
+fn text(r: std::http::ClientResponse) -> String {
+    return std::str::from_bytes(r.body);
+}
+
+type Done { ok: Bool; }
+type Go { address: String; }
+
+locus Driver {
+    params {
+        web: String = "";
+    }
+    bus {
+        publish "nested.done" of type Done;
+        subscribe "nested.go" as on_go of type Go;
+    }
+    // the address once the listener has bound it: main reads it off the
+    // holder and sends it
+    fn on_go(g: Go) {
+        self.web = g.address;
+        let live = get("http://" + self.web + "/healthz");
+        std::test::assert_eq_int(live.status, 200, "the row answers: " + text(live));
+        std::test::assert_eq_str(
+            text(get("http://" + self.web + "/x")),
+            "front /x",
+            "the holder's field",
+        );
+        "nested.done" <- Done { ok: true };
+    }
+}
+
+main locus App {
+    params {
+        holder: Holder = Holder { };
+        driver: Driver = Driver { };
+        finished: Bool = false;
+    }
+    bus {
+        subscribe "nested.done" as on_done of type Done;
+        publish "nested.go" of type Go;
+    }
+    placement {
+        holder: cooperative(pool = edge) where async_io;
+        driver: cooperative(pool = client) where async_io;
+    }
+    run() {
+        let mut i = 0;
+        while std::str::ends_with(self.holder.web.address, ":0") && i < 3000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        "nested.go" <- Go { address: std::str::clone(self.holder.web.address) };
+        i = 0;
+        while !self.finished && i < 3000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert(self.finished, "the client ran to its end");
+    }
+    fn on_done(d: Done) {
+        self.finished = d.ok;
+    }
+}
+
+fn main() { App { }; }

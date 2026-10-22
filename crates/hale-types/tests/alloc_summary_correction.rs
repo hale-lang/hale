@@ -289,7 +289,7 @@ const CALL_LINES_ONLY: [(&str, usize); 25] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 16] = [
+const VERDICT_TARGETS: [&str; 19] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
@@ -305,6 +305,9 @@ const VERDICT_TARGETS: [&str; 16] = [
     "tests/hale/http_client_stream_test.hl",
     "tests/hale/http_request_cap_test.hl",
     "tests/hale/http_stream_test.hl",
+    "tests/hale/rest_fallback_nested_test.hl",
+    "tests/hale/rest_fallback_self_test.hl",
+    "tests/hale/rest_fallback_test.hl",
     "tests/hale/router_middleware_test.hl",
 ];
 
@@ -2005,6 +2008,62 @@ fn verdict_changes() {
             ("once-per-invocation -> per-iteration-reclaim", 4),
         ],
         &[
+        ],
+    );
+    // an `http::Rest` fallback's call of the program's handler
+    pinned(
+        "tests/hale/rest_fallback_nested_test.hl",
+        0,
+        &[
+            "Front::handle",
+            "Tokens::principal",
+            "Tokens::refused",
+        ],
+        &[
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
+            ("once-per-invocation -> per-iteration-reclaim", 2),
+        ],
+        &[
+            "Front::handle StringConcat @965..984 InvokedUnboundedly",
+            "Front::handle StructLit(\"std::http::Response\") @924..986 InvokedUnboundedly",
+        ],
+    );
+    // an `http::Rest` fallback's call of the program's handler
+    pinned(
+        "tests/hale/rest_fallback_self_test.hl",
+        0,
+        &[
+            "OwnHolder::handle",
+            "Tokens::principal",
+            "Tokens::refused",
+        ],
+        &[
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
+            ("once-per-invocation -> per-iteration-reclaim", 2),
+        ],
+        &[
+            "OwnHolder::handle StringConcat @1334..1351 InvokedUnboundedly",
+            "OwnHolder::handle StructLit(\"std::http::Response\") @1293..1353 InvokedUnboundedly",
+        ],
+    );
+    // an `http::Rest` fallback's call of the program's handler
+    pinned(
+        "tests/hale/rest_fallback_test.hl",
+        3,
+        &[
+            "Front::handle",
+            "Tokens::principal",
+            "Tokens::refused",
+        ],
+        &[
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 4),
+            ("once-per-invocation -> per-iteration-reclaim", 2),
+        ],
+        &[
+            "Front::handle StringConcat @1839..1964 InvokedUnboundedly",
+            "Front::handle StringConcat @2047..2073 InvokedUnboundedly",
+            "Front::handle StructLit(\"std::http::Response\") @1766..1979 InvokedUnboundedly",
+            "Front::handle StructLit(\"std::http::Response\") @2006..2075 InvokedUnboundedly",
         ],
     );
 }

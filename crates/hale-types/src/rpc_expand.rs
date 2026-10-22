@@ -656,7 +656,7 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 /// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 9] = [
+    let windows: [(u32, &'static str, &'static str); 10] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
         (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
@@ -1728,8 +1728,14 @@ pub fn expand(
         // pool that param's row names when a listener can run there, else
         // the transport's shared pool
         for (chain, addr) in &site.chains {
-            // the fallback as this main locus reaches it, as the address is
-            let fallback = plan.fallback.as_ref().and_then(|f| address_for_main(chain, f).ok());
+            // the fallback as this main locus reaches it, as the address is;
+            // one that cannot be read there is refused by the serve-site laws
+            // (`surfaces`), never served as no fallback
+            let fallback = match plan.fallback.as_ref().map(|f| fallback_for_main(chain, f)) {
+                Some(Ok(f)) => Some(f),
+                Some(Err(_)) => continue,
+                None => None,
+            };
             let Some((lp, default_entry)) = listener_for(addr.clone(), fallback) else { continue };
             let field = field_of(&lp);
             let root = chain.fields[0].1.clone();
@@ -1744,7 +1750,9 @@ pub fn expand(
                 // param the server sits under when the address reads nothing
                 // of the server (no run of a child born before it can hold
                 // it back), just after it when it reads the server as built
-                if reads_holder(addr) {
+                // the fallback is read off the server too: a listener whose
+                // fallback reads it is born after it, whatever its address
+                if reads_holder(addr) || plan.fallback.as_ref().is_some_and(reads_holder) {
                     insert_param_after(main, lp.clone(), &root);
                 } else {
                     insert_param_before(main, lp.clone(), &root);
@@ -3003,6 +3011,20 @@ pub(crate) fn reads_holder(e: &Expr) -> bool {
 /// default, or an override at a construction of the main locus). A method
 /// of `self` or `self` itself cannot be read there; the error names it.
 pub(crate) fn address_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
+    rebase_for_main(chain, e, false)
+}
+
+/// An `http::Rest` exposure's `fallback:`, written in its holder, as the
+/// main locus reaches it, as its address is (`address_for_main`): the
+/// listener reads it off the holder as built. `self` itself is the holder
+/// (a holder that is its own handler), read down the chain
+/// (`self.server`); a method of the holder cannot be read there, and the
+/// error names it.
+pub(crate) fn fallback_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
+    rebase_for_main(chain, e, true)
+}
+
+fn rebase_for_main(chain: &Chain, e: &Expr, whole_self: bool) -> Result<Expr, String> {
     const MAIN_SELF: &str = "__rpc_main_self";
     let mut out = fresh(e);
     let mut err: Option<String> = None;
@@ -3023,6 +3045,14 @@ pub(crate) fn address_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> 
                     base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
                 }
                 *receiver = Box::new(base);
+            }
+            Expr::KwSelf(sp) if whole_self => {
+                let sp = *sp;
+                let mut base = Expr::Ident(Ident::new(MAIN_SELF, sp));
+                for (_, f) in &chain.fields {
+                    base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
+                }
+                *x = base;
             }
             Expr::KwSelf(_) => err = Some("`self` itself".to_string()),
             _ => {}
@@ -3051,6 +3081,30 @@ pub(crate) fn has_listener(l: &LocusDecl, transport: Option<&Expr>) -> bool {
 /// The address a site's listener binds, as written in its holder.
 pub(crate) fn listener_address(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
     unix_path_of(l, transport).or_else(|| http_bind_of(l, transport))
+}
+
+/// An `http::Rest` transport's `fallback:`, written at the serve site or
+/// in the param that holds the transport.
+pub(crate) fn rest_fallback_of(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    let lit: &Expr = match transport? {
+        e @ Expr::Struct { .. } => e,
+        e => {
+            let f = crate::surfaces::self_field(e)?;
+            l.members.iter().find_map(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().find_map(|p| match &p.init {
+                    ParamInit::Value(v) if p.name.name == f => Some(v),
+                    _ => None,
+                }),
+                _ => None,
+            })?
+        }
+    };
+    match lit {
+        Expr::Struct { path, inits, .. } if is_http_rest(path) => {
+            inits.iter().find(|i| i.name.name == "fallback").map(|i| fresh(&i.value))
+        }
+        _ => None,
+    }
 }
 
 // ---- the literals that build a serving locus (a construction site) ----
