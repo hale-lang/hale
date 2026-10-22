@@ -516,6 +516,10 @@ never used in its place.
 - **A command refused `forbidden`**: the caller holds no position the
   topic's gate names, or is a service.
 - **`commands_unavailable`**: the head was given no commands port.
+- **A read or command answered 503 as the head stops**
+  (`head_api_unavailable`, `commands_unavailable`): a head stopped while it
+  waited on its API child answers what it was waiting on at once and exits,
+  rather than holding its stop; ask again once the next head is up.
 - **A verdict refused**: the reason is one of the three checks above;
   `hale dna review <id>` shows it under `refused a verdict:`.
 - **`no forge token`**: `hale dna secret set FORGE_TOKEN`.

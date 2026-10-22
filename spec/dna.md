@@ -1470,7 +1470,12 @@ sync.
   The core imports no NATS, because a program holding pond's
   connection drains on SIGTERM: an API that imports the core keeps the
   default action. The head holds its own connection and drains: its
-  watcher stops and the server stops accepting, at once.
+  watcher stops and the server stops accepting, at once. A request it
+  is still relaying (a read proxied to its API child, a command relayed
+  to its commands port) ends at the drain as well: the relay waits a
+  slice at a time and, once the drain has begun, answers 503, retryable
+  (`head_api_unavailable`, `commands_unavailable`), instead of waiting
+  out the relay's deadline past the drain's grace.
 - **One transport: the nerves** (GH #986). Every fact between the
   organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
