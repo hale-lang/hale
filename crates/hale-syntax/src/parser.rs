@@ -1360,6 +1360,13 @@ impl Parser {
                 }
                 self.parse_target_decl().map(TopDecl::Target)
             }
+            // Phase 4 (C2): `fleet locus NAME { … }`. `fleet` is a word
+            // only in front of `locus`; everywhere else it is a name.
+            TokenKind::Ident(s)
+                if s == "fleet" && matches!(self.peek_at(1), TokenKind::Locus) =>
+            {
+                self.parse_fleet_decl().map(TopDecl::Fleet)
+            }
             // GH #382 phase 1: `group NAME = { member, ... };` —
             // declared claim vocabulary. Contextual keyword, same
             // pattern as `topic` / `target`.
@@ -3912,6 +3919,154 @@ impl Parser {
             span: kw.span.merge(close.span),
             id: NodeId::NONE,
         })
+    }
+
+    /// Phase 4 (C2): `fleet locus NAME { params { … } placement { … }
+    /// bindings { … } claims { … } }`. Each block at most once, in any
+    /// order; nothing else, since a fleet never runs: no `fn`, no
+    /// lifecycle, no `bus`.
+    fn parse_fleet_decl(&mut self) -> Result<FleetDecl, Diag> {
+        let kw = self.peek_token().clone();
+        self.bump(); // `fleet`
+        self.expect(TokenKind::Locus, "locus")?;
+        let name = self.expect_decl_name("fleet name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut params: Option<ParamsBlock> = None;
+        let mut placement: Option<Vec<FleetPlacement>> = None;
+        let mut bindings: Option<BindingsBlock> = None;
+        let mut claims: Option<ClaimsBlock> = None;
+        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
+            let tok = self.peek_token().clone();
+            let word = match &tok.kind {
+                TokenKind::Ident(w) => w.clone(),
+                _ => String::new(),
+            };
+            let twice = |what: &str| {
+                Diag::parse(
+                    tok.span,
+                    format!("fleet locus `{}` has a second `{what}` block; write each block once", name.name),
+                )
+            };
+            match word.as_str() {
+                "params" => {
+                    if params.is_some() {
+                        return Err(twice("params"));
+                    }
+                    params = Some(self.parse_params_block()?);
+                }
+                "placement" => {
+                    if placement.is_some() {
+                        return Err(twice("placement"));
+                    }
+                    placement = Some(self.parse_fleet_placement()?);
+                }
+                "bindings" => {
+                    if bindings.is_some() {
+                        return Err(twice("bindings"));
+                    }
+                    bindings = Some(self.parse_bindings_block()?);
+                }
+                "claims" => {
+                    if claims.is_some() {
+                        return Err(twice("claims"));
+                    }
+                    claims = Some(self.parse_claims_block()?);
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        tok.span,
+                        format!(
+                            "a fleet locus holds `params`, `placement`, `bindings` and `claims`: \
+                             it is checked as one graph and never runs, so `{}` has no place in \
+                             fleet locus `{}`",
+                            if word.is_empty() { "this" } else { word.as_str() },
+                            name.name
+                        ),
+                    ));
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        let Some(params) = params else {
+            return Err(Diag::parse(
+                name.span,
+                format!(
+                    "fleet locus `{}` has no `params` block: a fleet's params are its instances, \
+                     each another seed's `main locus` (`oms: oms::Oms;`)",
+                    name.name
+                ),
+            ));
+        };
+        let written = params
+            .params
+            .iter()
+            .filter_map(|p| match &p.ty {
+                Some(TypeExpr::Named { path, .. }) if path.segments.len() == 2 => Some((
+                    p.name.name.clone(),
+                    path.segments[0].name.clone(),
+                    path.segments[1].name.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        Ok(FleetDecl {
+            name,
+            params,
+            placement: placement.unwrap_or_default(),
+            bindings,
+            claims,
+            span: kw.span.merge(close.span),
+            written,
+        })
+    }
+
+    /// `placement { oms: host("box-a"); gw: replicas(2); }` inside a
+    /// fleet locus: one default per instance, a host by name or a
+    /// replica count.
+    fn parse_fleet_placement(&mut self) -> Result<Vec<FleetPlacement>, Diag> {
+        self.bump(); // `placement`
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut out = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
+            let instance = self.expect_ident("instance name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let head = self.peek_token().clone();
+            let spec = match &head.kind {
+                TokenKind::Ident(w) if w == "host" => {
+                    self.bump();
+                    self.expect(TokenKind::LParen, "(")?;
+                    let t = self.peek_token().clone();
+                    let TokenKind::StringLit(h) = &t.kind else {
+                        return Err(Diag::parse(t.span, "`host(…)` names its host as a string: `host(\"box-a\")`"));
+                    };
+                    let h = h.clone();
+                    self.bump();
+                    self.expect(TokenKind::RParen, ")")?;
+                    FleetPlacementSpec::Host(h)
+                }
+                TokenKind::Ident(w) if w == "replicas" => {
+                    self.bump();
+                    self.expect(TokenKind::LParen, "(")?;
+                    let t = self.peek_token().clone();
+                    let TokenKind::IntLit(n) = t.kind else {
+                        return Err(Diag::parse(t.span, "`replicas(…)` takes a count: `replicas(2)`"));
+                    };
+                    self.bump();
+                    self.expect(TokenKind::RParen, ")")?;
+                    FleetPlacementSpec::Replicas(n.max(0) as u64)
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        head.span,
+                        "a fleet placement is `host(\"<name>\")` or `replicas(<n>)`",
+                    ));
+                }
+            };
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            out.push(FleetPlacement { span: instance.span.merge(semi.span), instance, spec });
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        Ok(out)
     }
 
     /// Phase 2a: one item in a locus header's post-`:` list —

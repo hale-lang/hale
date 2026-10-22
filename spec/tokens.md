@@ -518,6 +518,22 @@ everywhere else:
 transport are named (`as:`, `receivers:`, `bound:`, `on_full:`); no
 other call takes named arguments (spec/api.md § Serving).
 
+### Fleet words (phase 4)
+
+```
+fleet           host
+```
+
+Both are **contextual keywords** (spec/verification.md § Fleet
+composition), ordinary names everywhere else:
+
+- **`fleet`** — at top level, directly before `locus`: `fleet locus
+  Prod { … }` declares a deployment of other seeds' mains. A fleet is
+  a locus KIND, beside `main`.
+- **`host`** — at the head of a placement entry inside a fleet locus:
+  `orders: host("box-a");`. A fleet's other placement, `replicas(n)`,
+  reuses the placement word.
+
 ## Operators
 
 ### Arithmetic

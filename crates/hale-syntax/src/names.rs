@@ -210,7 +210,63 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
                 }
             }
         }
+        TopDecl::Fleet(fl) => {
+            let FleetDecl { name: n, params, placement, bindings, claims, span: _, written: _ } = fl;
+            name(n, f);
+            params_block(params, f);
+            for p in placement {
+                let FleetPlacement { instance, spec, span: _ } = p;
+                name(instance, f);
+                match spec {
+                    FleetPlacementSpec::Host(h) => text(h, f),
+                    FleetPlacementSpec::Replicas(_) => {}
+                }
+            }
+            if let Some(bb) = bindings {
+                bindings_block(bb, f);
+            }
+            if let Some(cb) = claims {
+                claims_block(cb, f);
+            }
+        }
     }
+}
+
+fn bindings_block<'a>(bb: &'a BindingsBlock, f: &mut Visit<'_, 'a>) {
+        let BindingsBlock { entries, hubs, span: _ } = bb;
+        for h in hubs {
+            let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
+            name(topic, f);
+            name(instance, f);
+            names(requires, f);
+            opt_name(on_full, f);
+        }
+        for e in entries {
+            let BindingEntry { topic, transport, constraints: _, codec, span: _, id: _ } = e;
+            name(topic, f);
+            match transport {
+                TransportSpec::Unix { path, role: _, span: _ } => text(path, f),
+                TransportSpec::Adapter { locus: l, inits, span: _ } => {
+                    name(l, f);
+                    struct_inits(inits, f);
+                }
+                TransportSpec::ShmRing {
+                    name: n,
+                    slot_count: _,
+                    overflow: _,
+                    layout,
+                    buffer_size: _,
+                    span: _,
+                } => {
+                    f(Spelled::Name(n));
+                    opt_name(layout, f);
+                }
+            }
+            if let Some(CodecSpec { locus: l, inits, span: _ }) = codec {
+                name(l, f);
+                struct_inits(inits, f);
+            }
+        }
 }
 
 fn ring_attrs<'a>(attrs: &'a [RingAttr], f: &mut Visit<'_, 'a>) {
@@ -423,42 +479,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                 }
             }
         }
-        LocusMember::Bindings(bb) => {
-            let BindingsBlock { entries, hubs, span: _ } = bb;
-            for h in hubs {
-                let HubBinding { topic, instance, requires, bound: _, on_full, span: _ } = h;
-                name(topic, f);
-                name(instance, f);
-                names(requires, f);
-                opt_name(on_full, f);
-            }
-            for e in entries {
-                let BindingEntry { topic, transport, constraints: _, codec, span: _, id: _ } = e;
-                name(topic, f);
-                match transport {
-                    TransportSpec::Unix { path, role: _, span: _ } => text(path, f),
-                    TransportSpec::Adapter { locus: l, inits, span: _ } => {
-                        name(l, f);
-                        struct_inits(inits, f);
-                    }
-                    TransportSpec::ShmRing {
-                        name: n,
-                        slot_count: _,
-                        overflow: _,
-                        layout,
-                        buffer_size: _,
-                        span: _,
-                    } => {
-                        f(Spelled::Name(n));
-                        opt_name(layout, f);
-                    }
-                }
-                if let Some(CodecSpec { locus: l, inits, span: _ }) = codec {
-                    name(l, f);
-                    struct_inits(inits, f);
-                }
-            }
-        }
+        LocusMember::Bindings(bb) => bindings_block(bb, f),
         LocusMember::Placement(pb) => {
             let PlacementBlock { entries, span: _ } = pb;
             for e in entries {

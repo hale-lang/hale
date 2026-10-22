@@ -3769,6 +3769,34 @@ It makes the author spell around a restriction the parser does not
 need. *Admitting the words as names in declaration positions only.*
 A local named `epoch` that cannot be read back is not a name.
 
+### F.44 — A fleet is a locus kind, and its routes are derived
+
+**Problem.** A deployment of several programs was a plan JSON naming
+artifacts and routes by hand (GH #408): a second format beside the
+source, routes that restated what each program's topics and bindings
+already said, and nothing `hale check` read.
+
+**Decision.** `fleet locus NAME { params placement bindings claims }`
+declares the deployment in source, a locus KIND beside `main`. It is a
+locus kind, not a typed param, because a fleet is checked as one graph
+(the routes between its instances, the claims across them) and never
+runs itself; a param is a thing a running program holds. Its params
+are other seeds' `main` loci through the seed's imports, its placement
+a default host or replica count per instance (the habitat's allocation
+rows bind instances to hosts), its bindings the subjects that wire the
+instances. A route is derived, never written: from every instance whose
+artifact publishes a bound subject to every instance that subscribes
+it, each through its own main's binding. The seeds are composed as
+artifacts, never merged as source, so the fleet is never a super-main.
+The `deployment` family's rows are the derivation
+(spec/verification.md § Fleet composition).
+
+**Considered and rejected.** *A fleet as a typed param of a main*
+(the feature-as-param rule): a param is held by a running program, and
+a fleet has none. *Routes written in the fleet*: they restate the
+instances' own topics and bindings, and the restatement is where a
+plan and its programs drifted apart.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

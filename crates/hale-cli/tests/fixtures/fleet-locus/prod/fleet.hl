@@ -1,0 +1,25 @@
+// A fleet of two seeds' mains wired by one topic. It is checked as one
+// graph and never runs: `hale fleet check prod` derives the route from
+// the instances' artifacts and judges the claims across them.
+import "../desk" as desk;
+import "../venue" as venue;
+import "../shared" as t;
+
+fleet locus Prod {
+    params {
+        orders: desk::Orders;
+        gw: venue::Gateway;
+    }
+    placement {
+        orders: host("box-a");
+        gw: replicas(2);
+    }
+    bindings {
+        t::OrderRequest: unix("/tmp/hale-fleet-locus-orders.sock");
+    }
+    claims {
+        one_desk: count publishers(topic t::OrderRequest) == 1;
+        gw_hears: require subscribes(some gw, topic t::OrderRequest);
+        no_return: forbid reaches(gw, orders);
+    }
+}

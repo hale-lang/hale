@@ -560,6 +560,11 @@ dynamic	__StdIoTcpConnections	on pinned:App@literal1.metrics
 dynamic	__StdIoTcpStream	on pinned:App@literal1.metrics
 dynamic	__StdObserveScrapePage	on pinned:App@literal1.metrics
 
+== crates/hale-cli/tests/fixtures/fleet-locus/venue-unbound/main.hl#d8b294c6
+root	Gateway	the entry
+row	Gateway@literal1	Gateway	main	default
+row	Gateway@literal1.venue	Venue	main	default
+
 == crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl#ebe49800
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `c::Box`|unresolved declaration `c::Holder`	in the seed
 

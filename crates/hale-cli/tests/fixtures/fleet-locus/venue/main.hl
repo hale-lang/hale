@@ -1,0 +1,27 @@
+// The subscribing service, bound to the same subject.
+import "../shared" as t;
+
+locus Venue {
+    params {
+        seen: Int = 0;
+    }
+    bus {
+        subscribe t::OrderRequest as take;
+    }
+    fn take(o: t::Order) {
+        self.seen = self.seen + o.id;
+    }
+}
+
+main locus Gateway {
+    params {
+        venue: Venue = Venue { };
+    }
+    bindings {
+        t::OrderRequest: unix("/tmp/hale-fleet-locus-orders.sock");
+    }
+}
+
+fn main() {
+    Gateway { };
+}

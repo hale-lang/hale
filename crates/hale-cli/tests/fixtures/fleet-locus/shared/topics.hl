@@ -1,0 +1,15 @@
+// The wire contract both services import: a fleet joins its instances
+// on these subjects, never on a local topic name.
+type Order {
+    id: Int;
+}
+
+topic OrderRequest {
+    payload: Order;
+    subject: "svc.order.request";
+}
+
+topic Fill {
+    payload: Order;
+    subject: "svc.fill";
+}

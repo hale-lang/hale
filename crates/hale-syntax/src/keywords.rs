@@ -52,6 +52,8 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "mode", "bindings", "birth_check", "placement",
     "cooperative", "pinned", "pool", "core", "cores", "heap",
     "topology", "node", "l3", "reserve", "replicas",
+    // Phase 4 (C2): `fleet locus NAME { … }` and its placement's `host("…")`.
+    "fleet", "host",
     "schedule", "fixed_cell", "shared_slab", "spillover", "summary_only", "cap",
     "payload", "subject",
     "captures", "inline", "tick", "duration", "explicit", "approx", "within",

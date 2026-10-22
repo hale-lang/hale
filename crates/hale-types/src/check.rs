@@ -1441,6 +1441,9 @@ pub fn check_bundle_rules(
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
     check_main_and_bindings(bundle, inputs, &mut diags);
+    // Phase 4 (C2): a fleet seed's laws (its instances are imported
+    // mains, its bindings name subjects, its claims name instances).
+    diags.extend(crate::fleet::fleet_laws(bundle, top, inputs.entry));
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -11443,6 +11446,11 @@ impl<'a> Checker<'a> {
                 // collected them; the structural impl-check fires
                 // at the use site (call expression where the
                 // expected type is an interface).
+            }
+            TopDecl::Fleet(_) => {
+                // Phase 4 (C2): judged whole by the fleet laws
+                // (`fleet::fleet_laws`) at the bundle level: its params
+                // name other seeds' mains, which only the bundle sees.
             }
             TopDecl::Group(_) => {
                 // GH #382: claim vocabulary. Membership resolution
