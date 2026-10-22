@@ -1,0 +1,442 @@
+// dna/core/ssh_provider.hl — the `ssh` provider: a machine on the LAN,
+// reached by the name it was added under (phase 4).
+//
+// A host is the name it was added under, resolved by the LAN's DNS, with
+// plain SSH on its port (22 unless given) as its user. The habitat reaches
+// it with its own ed25519 keypair, made into the habitat's vault the first
+// time one is needed: the private key is the vault's file, handed to `ssh`
+// by path and never read, printed or recorded; the public key is what
+// `host add` prints, with the line the target's `~/.ssh/authorized_keys`
+// takes. Host keys are checked strictly: the one first seen when the host
+// was added is kept in its row and is the only one trusted after it, so a
+// changed key refuses. What a host offers is probed over SSH: docker
+// compose, the user's systemd, the OS and the architecture. A host that has
+// not authorized the habitat's key yet is `pending-key`, and a later probe
+// moves it on. A render is applied by copying its files to a directory of
+// the allocation's on the host and running compose there; an allocation is
+// observed the same way.
+
+// The vault slot of the habitat's SSH key: one per habitat, named for its
+// record.
+fn habitat_key_slot(root: String) -> String {
+    return "ssh-habitat-" + allocation_key(root);
+}
+
+// Where the habitat keeps what SSH reads beside the key: the known host
+// keys, written from the host rows (mode 700, git-ignored).
+fn habitat_ssh_dir(root: String) -> String {
+    return root + "/.hale/dna/ssh";
+}
+
+// The habitat's key in its vault, made the first time: "" once the vault
+// holds it, else why not. Made by `ssh-keygen` into a private directory and
+// moved into the local vault whole: no part of it passes through this
+// process. A vault at HALE_VAULT_ADDR is provisioned out of band.
+fn habitat_key_ensure(root: String) -> String {
+    let key = allocation_key(root);
+    if len(key) == 0 { return "the habitat has no record identity yet"; }
+    let slot = habitat_key_slot(root);
+    if !std::secret::vault_name_is_safe(slot) { return "the vault name " + slot + " is not safe"; }
+    if std::secret::Credential { vault: slot }.ready() { return ""; }
+    if len(std::env::var("HALE_VAULT_ADDR")) > 0 {
+        return "the habitat's SSH key is not in the vault at HALE_VAULT_ADDR (" + slot
+            + "): a vault there is provisioned out of band";
+    }
+    let made = run_tool(
+        "sh\n-c\numask 077 && mkdir -p \"$1\" && t=$(mktemp -d) && ssh-keygen -q -t ed25519 -N '' -C \"$3\" -f \"$t/k\" && mv \"$t/k\" \"$1/$2\"; s=$?; rm -rf \"$t\"; exit $s\nsh\n"
+            + std::secret::vault_local_dir() + "\n" + slot + "\nhabitat-" + key,
+    );
+    if made.code != 0 {
+        return "the habitat's SSH key could not be made: " + trim_nl(made.stderr);
+    }
+    if !std::secret::Credential { vault: slot }.ready() {
+        return "the vault did not keep the habitat's SSH key (" + slot + ")";
+    }
+    return "";
+}
+
+// The file `ssh` reads the habitat's key from: the local vault's own file,
+// or, for a vault at HALE_VAULT_ADDR, a private copy written on the sealed
+// side for this one call (`temporary`), which `key_file_done` removes.
+type KeyFile {
+    path: String = "";
+    temporary: Bool = false;
+    why: String = "";
+}
+
+fn habitat_key_file(root: String) -> KeyFile {
+    let slot = habitat_key_slot(root);
+    if len(std::env::var("HALE_VAULT_ADDR")) == 0 {
+        let path = std::secret::vault_local_dir() + "/" + slot;
+        if !std::io::fs::file_exists(path) {
+            return KeyFile {
+                why: "the habitat has no SSH key yet (`hale habitat host add` makes it)",
+            };
+        }
+        return KeyFile { path: path };
+    }
+    let dir = habitat_ssh_dir(root);
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 {
+        return KeyFile { why: "cannot make " + dir };
+    }
+    let path = dir + "/key-" + to_string(std::process::pid());
+    std::io::fs::unlink(path) or discard;
+    if !std::secret::Credential { vault: slot }.write_private(path) {
+        return KeyFile { why: "the vault did not hand over the habitat's SSH key (" + slot + ")" };
+    }
+    return KeyFile { path: path, temporary: true };
+}
+
+fn key_file_done(k: KeyFile) {
+    if k.temporary { std::io::fs::unlink(k.path) or discard; }
+}
+
+// The habitat's public key, `ssh-ed25519 <key> habitat-<key12>`: what
+// `host add` prints. "" when there is none.
+fn habitat_public_key(root: String) -> String {
+    let k = habitat_key_file(root);
+    if len(k.why) > 0 { return ""; }
+    let r = run_tool("ssh-keygen\n-y\n-f\n" + k.path);
+    key_file_done(k);
+    if r.code != 0 { return ""; }
+    let public = trim_nl(r.stdout);
+    let sp = std::str::index_of(public, " ");
+    if sp < 0 { return ""; }
+    // the type and the key; the comment is the habitat's
+    let rest = public[(sp + 1)..len(public)];
+    let sp2 = std::str::index_of(rest, " ");
+    let typed = if sp2 < 0 { public } else { public[0..(sp + 1 + sp2)] };
+    return typed + " habitat-" + allocation_key(root);
+}
+
+// The host key `address` answers with on `port`: `<type> <base64>`, the
+// ed25519 one; "" when nothing answered. `ssh-keyscan` asks the first
+// address a name resolves to, so a name whose first address does not
+// answer (an IPv6 one, say) is asked at each of its addresses in turn, as
+// `ssh` itself connects.
+fn ssh_host_key(address: String, port: Int) -> String {
+    let first = ssh_keyscan(address, port);
+    if len(first) > 0 { return first; }
+    let resolved = run_tool("getent\nahosts\n" + address);
+    let mut rest = resolved.stdout;
+    let mut tried = "";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let sp = std::str::index_of(line, " ");
+        let ip = if sp < 0 { line } else { line[0..sp] };
+        if len(ip) == 0 || std::str::contains(tried, " " + ip + " ") { continue; }
+        tried = tried + " " + ip + " ";
+        let key = ssh_keyscan(ip, port);
+        if len(key) > 0 { return key; }
+    }
+    return "";
+}
+
+fn ssh_keyscan(address: String, port: Int) -> String {
+    let r = run_tool(
+        "ssh-keyscan\n-T\n10\n-t\ned25519\n-p\n" + to_string(port) + "\n" + address,
+    );
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 || std::str::starts_with(line, "#") { continue; }
+        let sp = std::str::index_of(line, " ");
+        if sp > 0 { return trim_nl(line[(sp + 1)..len(line)]); }
+    }
+    return "";
+}
+
+// The fingerprint of a host key (`SHA256:…`), as `ssh-keygen -l` gives it.
+fn ssh_fingerprint(host_key: String) -> String {
+    let r = run_tool(
+        "sh\n-c\nprintf 'host %s\\n' \"$1\" | ssh-keygen -l -f -\nsh\n" + host_key,
+    );
+    let line = trim_nl(r.stdout);
+    let sp = std::str::index_of(line, " ");
+    if r.code != 0 || sp < 0 { return ""; }
+    let rest = line[(sp + 1)..len(line)];
+    let sp2 = std::str::index_of(rest, " ");
+    return if sp2 < 0 { rest } else { rest[0..sp2] };
+}
+
+// `ssh`'s arguments for `h`, newline-separated, with the remote command to
+// go after them: the habitat's key alone, strict host-key checking against
+// the one key its row trusts (a known-hosts file written from the row, the
+// host's name its alias whatever its port), no prompt, no user config.
+// "" when the known-hosts file cannot be written.
+fn ssh_argv(root: String, h: Host, key: String) -> String {
+    let dir = habitat_ssh_dir(root);
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return ""; }
+    let known = dir + "/known_hosts-" + h.name;
+    let mut wrote = true;
+    std::io::fs::write_file(known, h.name + " " + h.host_key + "\n") or { wrote = false; };
+    if !wrote { return ""; }
+    return "ssh\n-F\n/dev/null\n-i\n" + key + "\n-o\nIdentitiesOnly=yes\n-o\nBatchMode=yes"
+        + "\n-o\nConnectTimeout=10\n-o\nStrictHostKeyChecking=yes\n-o\nUserKnownHostsFile=" + known
+        + "\n-o\nGlobalKnownHostsFile=/dev/null\n-o\nHostKeyAlias=" + h.name
+        + "\n-o\nLogLevel=ERROR\n-p\n" + to_string(h.port) + "\n" + h.user + "@" + h.address;
+}
+
+// What a run over SSH came to: "" when it ran, else `pending-key` (the
+// habitat's key is not authorized there), `host-key-changed` (the host
+// answered with a key its row does not trust) or `unreachable`.
+fn ssh_failure(r: RunResult) -> String {
+    if r.code != 255 { return ""; }
+    if std::str::contains(r.stderr, "Host key verification failed")
+        || std::str::contains(r.stderr, "REMOTE HOST IDENTIFICATION HAS CHANGED")
+    {
+        return "host-key-changed";
+    }
+    if std::str::contains(r.stderr, "Permission denied") { return "pending-key"; }
+    return "unreachable";
+}
+
+// `command` run on `h` as its user, with the file `stdin_file` on its input
+// when one is named.
+fn ssh_run(root: String, h: Host, command: String, stdin_file: String) -> RunResult {
+    let k = habitat_key_file(root);
+    if len(k.why) > 0 { return RunResult { code: -1, stderr: k.why }; }
+    let argv = ssh_argv(root, h, k.path);
+    if len(argv) == 0 {
+        key_file_done(k);
+        return RunResult { code: -1, stderr: "cannot write the host's known key" };
+    }
+    let r = if len(stdin_file) > 0 {
+        run_tool(
+            "sh\n-c\nf=\"$1\"; shift; exec \"$@\" < \"$f\"\nsh\n" + stdin_file + "\n" + argv + "\n"
+                + command,
+        )
+    } else {
+        run_tool(argv + "\n" + command)
+    };
+    key_file_done(k);
+    return r;
+}
+
+// `h` probed over SSH: `ready` with what it offers, its OS and its
+// architecture; `pending-key` while the habitat's key is not authorized
+// there; and, when the host answered with a key its row does not trust or
+// did not answer, the state it had with `why` saying so.
+fn ssh_probe(root: String, h: Host) -> Host {
+    let mut p = h;
+    let r = ssh_run(
+        root,
+        h,
+        "uname -s; uname -m; if docker compose version >/dev/null 2>&1; then echo compose; fi; if systemctl --user show-environment >/dev/null 2>&1; then echo systemd-user; fi",
+        "",
+    );
+    let failed = ssh_failure(r);
+    if failed == "pending-key" {
+        p.state = "pending-key";
+        p.reachable = false;
+        p.why = "the habitat's key is not authorized on " + h.name + " yet";
+        return p;
+    }
+    if failed == "host-key-changed" {
+        p.reachable = false;
+        p.why = "host-key-changed: " + h.name
+            + " answered with a host key other than the one first seen there (" + h.fingerprint
+            + "); refused";
+        return p;
+    }
+    if r.code != 0 {
+        p.reachable = false;
+        p.why = "unreachable: " + trim_nl(r.stderr);
+        return p;
+    }
+    let mut lines = r.stdout;
+    let mut n = 0;
+    let mut offers = "";
+    while len(lines) > 0 {
+        let nl = std::str::index_of(lines, "\n");
+        let line = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
+        lines = if nl < 0 { "" } else { lines[(nl + 1)..len(lines)] };
+        if n == 0 { p.os = line; }
+        else if n == 1 { p.arch = line; }
+        else if len(line) > 0 { offers = offers + (if len(offers) > 0 { " " } else { "" }) + line; }
+        n = n + 1;
+    }
+    p.offers = offers;
+    p.state = "ready";
+    p.reachable = true;
+    p.why = "";
+    return p;
+}
+
+// Where an allocation's render lives on an `ssh` host, under its user's
+// home: `.hale/habitat/<project>/<the render directory's name>`.
+fn ssh_render_dir(render: Render) -> String {
+    let dir = render.dir;
+    let mut at = len(dir);
+    while at > 0 && dir[(at - 1)..at] != "/" { at = at - 1; }
+    return ".hale/habitat/" + render.project + "/" + dir[at..len(dir)];
+}
+
+// `docker compose` on an `ssh` host for `render`, as one shell line run in
+// its directory there.
+fn ssh_compose(render: Render, then: String) -> String {
+    let remote = ssh_render_dir(render);
+    let mut files = "";
+    let mut rest = render.files;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let f = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(f) > 0 { files = files + " -f '" + f + "'"; }
+    }
+    return "cd '" + remote + "' && COMPOSE_IGNORE_ORPHANS=1 docker compose -p '" + render.project
+        + "'"
+        + files + " " + then;
+}
+
+// The `ssh` provider: the hosts the habitat's record holds as `ssh` rows
+// (`hale habitat host add`), each reached over SSH with the habitat's key.
+locus SshProvider {
+    params {
+        // the habitat's genome: its record holds the hosts
+        root: String = ".";
+    }
+    fn kind() -> String { return "ssh"; }
+    fn offers(host: String) -> Host {
+        let h = recorded_host(self.root, host);
+        if h.provider != "ssh" || h.state == "removed" {
+            return Host {
+                name: host,
+                provider: "ssh",
+                why: "no host `" + host + "` was added (`hale habitat host add " + host + "`)",
+            };
+        }
+        return ssh_probe(self.root, h);
+    }
+    fn allocate(role: String, instance: String) -> Allocation {
+        let service = compose_service(role, instance);
+        if len(service) == 0 {
+            return Allocation {
+                role: role,
+                instance: instance,
+                provider: "ssh",
+                why: "the ssh provider runs a role as a compose service, and `" + role
+                    + "` is none",
+            };
+        }
+        return Allocation {
+            role: role,
+            instance: instance,
+            provider: "ssh",
+            project: local_habitat_project(),
+            service: service,
+            needs: "compose",
+        };
+    }
+    fn place(a: Allocation, host: Host) -> Allocation {
+        let mut p = a;
+        if host.provider != "ssh" {
+            p.why = "host `" + host.name + "` is not an ssh host";
+            return p;
+        }
+        if host.state != "ready" {
+            p.why = "host `" + host.name + "` is " + host.state + ": " + host.why;
+            return p;
+        }
+        // a probe that just failed (unreachable, a changed host key) keeps
+        // the host's last state, so `ready` alone is no proof it is placeable
+        if !host.reachable {
+            p.why = "host `" + host.name + "` did not answer its probe: " + host.why;
+            return p;
+        }
+        if len(a.needs) > 0 && !has_word(host.offers, a.needs) {
+            p.why = "host `" + host.name + "` does not offer " + a.needs + " (it offers: "
+                + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")";
+            return p;
+        }
+        p.host = host.name;
+        p.placed = true;
+        return p;
+    }
+    fn apply(host: String, render: Render) -> RenderApplied {
+        let h = recorded_host(self.root, host);
+        if h.provider != "ssh" || h.state != "ready" {
+            return RenderApplied { why: "host `" + host + "` is not a ready ssh host" };
+        }
+        if len(render.project) == 0 || len(render.dir) == 0 {
+            return RenderApplied { why: "nothing to apply: the render names no project" };
+        }
+        let remote = ssh_render_dir(render);
+        let made = ssh_run(self.root, h, "mkdir -p '" + remote + "'", "");
+        if made.code != 0 {
+            return RenderApplied {
+                why: "the render's directory on " + host + ": " + trim_nl(made.stderr),
+            };
+        }
+        let mut rest = render.files;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let f = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(f) == 0 { continue; }
+            let copied = ssh_run(
+                self.root,
+                h,
+                "cat > '" + remote + "/" + f + "'",
+                render.dir + "/" + f,
+            );
+            if copied.code != 0 {
+                return RenderApplied {
+                    why: "copying " + f + " to " + host + ": " + trim_nl(copied.stderr),
+                };
+            }
+        }
+        let up = ssh_run(self.root, h, ssh_compose(render, compose_up_args(render, " ")), "");
+        if up.code != 0 {
+            return RenderApplied {
+                why: "docker compose up on " + host + " failed: " + trim_nl(up.stderr),
+            };
+        }
+        return RenderApplied { ok: true };
+    }
+    fn withdraw(host: String, render: Render) -> RenderApplied {
+        let h = recorded_host(self.root, host);
+        if h.provider != "ssh" || h.state != "ready" {
+            return RenderApplied { why: "host `" + host + "` is not a ready ssh host" };
+        }
+        let down = ssh_run(self.root, h, ssh_compose(render, compose_down_args(render, " ")), "");
+        if down.code != 0 {
+            return RenderApplied {
+                why: "docker compose down on " + host + " failed: " + trim_nl(down.stderr),
+            };
+        }
+        return RenderApplied { ok: true };
+    }
+    fn observe(a: Allocation) -> AllocationState {
+        if a.provider != "ssh" {
+            return AllocationState { detail: "the " + a.provider + " provider's, not ssh's" };
+        }
+        let h = recorded_host(self.root, a.host);
+        if h.provider != "ssh" {
+            return AllocationState { detail: "host `" + a.host + "` is not an ssh host" };
+        }
+        let service = if len(a.service) > 0 {
+            a.service
+        } else {
+            compose_service(a.role, a.instance)
+        };
+        let ps = ssh_run(
+            self.root,
+            h,
+            "docker ps -a --filter label=com.docker.compose.project='" + a.project
+                + "' --filter label=com.docker.compose.service='" + service
+                + "' --format '{{.State}} {{.Status}}'",
+            "",
+        );
+        let failed = ssh_failure(ps);
+        if len(failed) > 0 { return AllocationState { detail: failed + " (" + a.host + ")" }; }
+        if ps.code != 0 {
+            return AllocationState { detail: "docker on " + a.host + ": " + trim_nl(ps.stderr) };
+        }
+        return container_state(service, trim_nl(ps.stdout));
+    }
+}

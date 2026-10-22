@@ -35,6 +35,7 @@ habitat's allocations on its hosts: every provider implements the core's
 | `allocate(role, instance)` | a role (`memory`, `nerves`, `senses`, `database`, `broker`, `head`, `face`) of an instance (an organism's record key) allocated, on no host yet: the service that holds it and the offer its host must make |
 | `place(allocation, host)` | the allocation placed on the host, or refused, naming the offer the host lacks |
 | `apply(host, render)` | a render applied on the host; until a fleet's render exists, a render is what `hale deploy render --backend compose` writes (a compose project, its directory, its files and the services to bring up) |
+| `withdraw(host, render)` | what the render brought up on the host taken down again: the services it names, or its project's own when it names none |
 | `observe(allocation)` | `up`, `degraded` (running, not well) or `down`, and what was seen |
 
 **Placement is the record's.** Every allocation is a row naming its role,
@@ -59,6 +60,38 @@ service by its container's state (`running` is up, `running` and
 unhealthy or `restarting` is degraded, anything else or no container is
 down) and the head and the face by whether their address accepts a
 connection. A provider in memory (`MemProvider`) stands in for it in tests.
+
+The **`ssh` provider** places on the machines of the LAN, each a host
+added by the name it was added under (`hale habitat host add <name>`),
+resolved by the LAN's DNS and reached over plain SSH on its port (22
+unless `--port`) as its user (`--user`, else the habitat's own): no DNS
+and no TLS of the habitat's. It reaches every host with **the habitat's
+own ed25519 keypair**, made into its vault the first time one is needed
+(the slot `ssh-habitat-<id>`, `<id>` the habitat's record key; `ssh-keygen`
+writes it into the local vault whole, and a vault at `HALE_VAULT_ADDR` is
+provisioned out of band). The private key never leaves the vault: `ssh`
+reads it by the vault file's path (a vault at `HALE_VAULT_ADDR` hands
+`ssh` a private copy written on the sealed side, removed after the call),
+and it appears in no output, log, row or error. `host add` prints the
+public key, `ssh-ed25519 <key> habitat-<id>`, and the one line the host's
+`~/.ssh/authorized_keys` takes, a step taken on that machine. **Host keys
+are checked strictly**: the ed25519 key the host answers with when it is
+added is kept in its row and shown with its fingerprint (trust on first
+use), every connection trusts that key alone (a known-hosts file written
+from the row, the host's name its alias, `StrictHostKeyChecking=yes`),
+and a host that answers with another key is refused
+(`host_key_changed`). What a host offers is probed over SSH: `compose`
+when docker compose answers there, `systemd-user` when the user's systemd
+does, and its OS and architecture. A host that does not accept the
+habitat's key yet is `pending-key`, and `hale habitat host probe <name>`
+moves it to `ready` once it does. The provider applies a render by copying
+its files to `~/.hale/habitat/<project>/<render directory>` on the host
+and running `docker compose -p <project> -f <file>… up -d --wait` there;
+it withdraws one with `docker compose rm -s -f <service>…` (or `down` for
+a render naming no service) and observes a service by `docker ps` there,
+as the compose provider does here. It allocates the roles that run as
+compose services (memory, the nerves, the senses' store, a heart's
+database and broker); the habitat's head and face stay on `local`.
 
 `up` records the habitat's placement once its record is up
 (`habitat-place`): the host the compose provider produces, the `local`
@@ -124,7 +157,10 @@ a command that runs from a fresh fetch.
 
 ## Verbs
 
-`hale habitat <verb>`; each verb prints its usage with `--help`.
+`hale habitat <verb>`; each verb prints its usage with `--help`. The host
+verbs are clients of the habitat head's Board commands
+(`Commands::add_host`, `::probe_host`, `::remove_host`, `spec/dna.md`):
+they call the head's socket, so the habitat's body must be up.
 
 | Verb | Behaviour |
 |---|---|
@@ -136,6 +172,9 @@ a command that runs from a fresh fetch.
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
 | `graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name (above). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
+| `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
+| `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
+| `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -214,7 +253,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | Row | When | Body |
 |---|---|---|
 | `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism; for the habitat's own `head` and `face`, at `up` whenever their placement changes | `organism`, `role`, `service`, `project`, `provider`, `host`, `vault` (slots held by name, never a value), and for the head and the face their `address` (`""` while none is assigned) |
-| `habitat.host <name>` | at `up`, whenever the host or its offers change | `name`, `provider`, `offers` (space-separated) |
+| `habitat.host <name>` | at `up` for `local`, and at `host add`, `host probe` and `host remove` for an `ssh` host, whenever what it says changes | `name`, `provider`, `offers` (space-separated), `state` (`ready`, `pending-key` or `removed`), `address`, `port`, `user`, `host_key` (the public host key first seen, `<type> <base64>`), `fingerprint`, `os`, `arch` |
 | `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |

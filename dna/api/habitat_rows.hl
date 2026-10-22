@@ -2,8 +2,9 @@
 // nurseries and saplings as the head's surface reads them (phase 4).
 //
 // Three rows of `HeadCommands`, reads like `Commands::index`: `hosts` (each
-// `habitat.host` row: the machine, the provider that produced it and what
-// it offers), `allocations` (each `habitat.allocated` row: the role, the
+// `habitat.host` row but a removed host's: the machine, the provider that
+// produced it, its state, what it offers, how it is reached and the host
+// key first seen there), `allocations` (each `habitat.allocated` row: the role, the
 // instance, the provider and the host it is placed on, with what that
 // provider observes of it now: `up`, `degraded` or `down`) and `policy`
 // (each `habitat.policy` row: the provider a role is allocated by). The
@@ -89,13 +90,12 @@ fn habitat_hosts(root: String, limit: Int) -> HostRows {
         let e = j.read(i);
         i = i + 1;
         if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let h = dna::host_of_row(e.body);
+        if h.state == "removed" { continue; }
         n = n + 1;
-        let body = e.body;
-        out.begin_object();
-        out.string_field("name", std::json::find_string_field(body, "name"));
-        out.string_field("provider", std::json::find_string_field(body, "provider"));
-        out.string_field("offers", std::json::find_string_field(body, "offers"));
-        out.end_object();
+        // the host as its row states it (never the habitat's key: no row
+        // holds one)
+        out.value(dna::host_row_body(h));
     }
     out.end_array();
     return HostRows { ok: true, revision: j.revision(), hosts: out.result() };
@@ -132,6 +132,7 @@ fn habitat_policy(root: String, limit: Int) -> PolicyRows {
 fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     let j = habitat_journal(root);
     let compose = dna::ComposeProvider { };
+    let ssh = dna::SshProvider { root: root };
     let out = std::json::Builder { };
     out.begin_array();
     let latest = habitat_latest(j, "habitat.allocated");
@@ -158,6 +159,8 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         };
         let seen = if a.provider == "compose" {
             compose.observe(a)
+        } else if a.provider == "ssh" {
+            ssh.observe(a)
         } else {
             dna::AllocationState {
                 state: "",

@@ -38,16 +38,6 @@ fn row_line(kind: String, entity: String, body: String) -> String {
     return b.result() + "\n";
 }
 
-fn host_body(h: dna::Host) -> String {
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("name", h.name);
-    b.string_field("provider", h.provider);
-    b.string_field("offers", h.offers);
-    b.end_object();
-    return b.result();
-}
-
 fn policy_body(role: String, provider: String, profile: String, backends: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -91,7 +81,7 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
 
     // the host the provider produces, with what it offers
     let host = provider.offers("local");
-    let hb = host_body(host);
+    let hb = dna::host_row_body(host);
     if latest_body(j, "habitat.host", host.name) != hb {
         rows = rows + row_line("habitat.host", host.name, hb);
     }

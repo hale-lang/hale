@@ -71,6 +71,22 @@ fn main() {
         !refused.placed && std::str::contains(refused.why, "does not offer compose"),
         "a host that does not offer what it needs is refused: " + refused.why,
     );
+    // an ssh host last seen ready whose probe just failed keeps its state,
+    // but is not placeable: the probe's reason is the refusal
+    let ssh = dna::SshProvider { root: "" };
+    let stale = dna::Host {
+        name: "box-a",
+        provider: "ssh",
+        offers: "compose",
+        state: "ready",
+        reachable: false,
+        why: "host-key-changed",
+    };
+    let gated = ssh.place(dna::Allocation { role: "probe", needs: "compose" }, stale);
+    std::test::assert(
+        !gated.placed && std::str::contains(gated.why, "host-key-changed"),
+        "a host whose probe failed is refused with the probe's reason: " + gated.why,
+    );
     std::test::assert_eq_str(
         place_all(bare, "head face nerves", "0123456789ab", "local"),
         "head@local face@local nerves!",
@@ -107,6 +123,11 @@ fn main() {
         "a render is applied on the host and kept: " + applied.why,
     );
     std::test::assert_eq_str(p.observe(placed).state, "up", "applied: up");
+    let gone = p.withdraw("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(gone.ok && p.withdrawn == 1, "a render is withdrawn: " + gone.why);
+    std::test::assert_eq_str(p.observe(placed).state, "down", "withdrawn: down");
+    let back = p.apply("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(back.ok, "and applied again: " + back.why);
     p.degraded = "0123456789ab/memory";
     std::test::assert_eq_str(p.observe(placed).state, "degraded", "running, not well");
     p.down = "0123456789ab/memory";

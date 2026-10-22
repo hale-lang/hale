@@ -1115,6 +1115,19 @@ locus CommandAdmission {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
         return habitat_sapling_ratify(self.root, n.name);
     }
+    // The habitat's hosts (habitat_hosts.hl): the Board's acts.
+    fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
+        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
+        return habitat_host_add(self.root, a);
+    }
+    fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
+        return habitat_host_probe(self.root, n.name);
+    }
+    fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
+        return habitat_host_remove(self.root, n.name);
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -1200,6 +1213,15 @@ locus Commands {
     }
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         return self.admission.ratify_sapling(n, ctx);
+    }
+    fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
+        return self.admission.add_host(a, ctx);
+    }
+    fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        return self.admission.probe_host(n, ctx);
+    }
+    fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
+        return self.admission.remove_host(n, ctx);
     }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
@@ -1292,6 +1314,11 @@ api HeadCommands {
     rpc Commands::saplings;
     rpc Commands::add_nursery requires: [owner];
     rpc Commands::ratify_sapling requires: [owner];
+    // The habitat's hosts (habitat_hosts.hl): a machine added over SSH,
+    // probed again, removed. The Board's.
+    rpc Commands::add_host requires: [owner];
+    rpc Commands::probe_host requires: [owner];
+    rpc Commands::remove_host requires: [owner];
 }
 
 // A seat as a structure command names it: `position:<name>` from a name

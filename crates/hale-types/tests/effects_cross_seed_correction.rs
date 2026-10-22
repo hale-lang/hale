@@ -195,19 +195,21 @@ fn api() {
     // is row 18 now.
     pinned(
         "api",
-        452,
-        454,
+        478,
+        480,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_18  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_18  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
+        habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}
         ",
     );
@@ -230,8 +232,8 @@ fn host() {
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        547,
-        553,
+        546,
+        552,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
