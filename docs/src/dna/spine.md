@@ -1,172 +1,100 @@
-# The spine
+# The Spine
 
-The spine is the one surface every other part calls: a person asks,
-a leg claims and settles, a head reads, and every answer the spine
-gives is a row. It is not one process. It is the program every node
-runs: the host that `hale dna run` or `hale dna dev` starts, and the
-organization (`dna/org`) the host starts beside it. It runs on the
-body, with memory's full spine role and the body lease. A node holds
-nothing: its state is the stores and its code is the genome, so a
-node that can no longer prove its lease, or whose nerves fail, stops
-rather than act, and a fresh one picks up from the stores. The spine
-never holds a device's session: a browser reaches it through [the
-head](./head.md), and a clone through rows in the record.
+The **spine** is the workflow execution engine, budget coordinator, and record projector that runs on every DNA node. It consists of the host supervisor started by `hale dna dev` or `hale dna run` (`dna/host/host.hl`) paired with the compiled organization binary (`dna/org/main.hl`), operating under PostgreSQL's `spine` role and the active body lease. Spine nodes hold no persistent state in process memory: if a node loses its database lease or NATS connection, it terminates immediately and a replacement node reconstructs all active workflows from PostgreSQL.
 
-## A node
+```sh
+hale dna dev                    # run the spine and application together locally
+hale dna definitions            # inspect the workflow catalog and store bindings
+hale dna body                   # check which host currently holds the spine lease
+```
 
-Run one on your own machine with `hale dna dev`, which runs on the
-organism's memory and nerves in the local habitat (brought up and
-migrated by birth and `hale habitat migrate`, never by `dev`) and runs
-the application under the same host. `hale dna run` runs a node on its
-own and takes memory and the nerves from its environment (see
-[Memory](./memory.md#working-memory) and
-[The nerves](./nerves.md#migrate-and-drop)).
+## A Node
 
-On every tick, once a second, each node:
+Run a spine node locally with `hale dna dev` (which uses the local habitat's PostgreSQL and NATS allocations and supervises your application in the same process tree) or on a dedicated server with `hale dna run` (which reads `HALE_DNA_MEMORY_DSN_SPINE`, `HALE_DNA_NATS_URL_SPINE`, and `HALE_DNA_NATS_ORG` from the environment; see [Memory](./memory.md#working-memory) and [The Nerves](./nerves.md#migrate-and-drop)).
 
-1. asserts the body lease, and stops if it is no longer its own;
-2. relays onto the nerves every request row the record has not
-   answered yet ([The nerves](./nerves.md#relaying-after-the-row-lands)),
-   first, so an answer never waits behind the rest;
-3. reads the record and its ledger again, and deletes the branch of
-   every candidate the record says was dropped;
-4. projects the record into memory's graph, and erases the protected
-   bodies the record says were redacted;
-5. checks the forge for a new genome ([below](#the-genome-pull));
-6. asserts the lease again, since the steps before may have outlasted it;
-7. tells the heads every row it landed, and answers the restart
-   requests the record holds.
+On every 1-second tick, each spine node executes seven steps in order:
 
-A record admits one body per owner at a time ([below](#the-body-lease-and-the-fence)),
-and over a shared record every owner's body is a node of the same
-spine. Nothing coordinates them; the stores keep them from doing
-anything twice: the projection moves a row at a time by
-compare-and-swap, and an erasure is by digest. The record is memory's,
-so every row a node projects is one every clone already reads.
+1. **Asserts the body lease** in PostgreSQL, terminating immediately if the lease is no longer held by this node.
+2. **Relays unanswered request rows** from `record_rows` onto NATS JetStream ([The Nerves](./nerves.md#relaying-after-the-row-lands)) before doing any other work so user commands never queue behind background maintenance.
+3. **Reads new record and ledger rows** and deletes local Git branches (`dna/candidate/<mutation>`) for any candidates marked `candidate.dropped`.
+4. **Projects new record rows into the PostgreSQL graph** and erases encrypted bodies of any protected receipts marked `receipt.redacted`.
+5. **Polls the Git remote for genome updates** ([below](#the-genome-pull)).
+6. **Re-asserts the body lease** before acting on external outputs, ensuring previous steps did not outlast the lease TTL.
+7. **Publishes `head.row.landed` notifications** to connected heads and processes any pending `expression.restart_requested` rows.
 
-### Claims by id
+Each record admits one active body at a time (or one body per organization owner on a shared record; see [The Body Lease and the Fence](#the-body-lease-and-the-fence)). Across a shared record, multiple owner nodes operate on the same PostgreSQL schema without inter-node locks: graph projection advances one row at a time via compare-and-swap, and receipt erasure is idempotent by content digest.
 
-Every act a node takes that must not happen twice is claimed in
-memory first, by id, with an expiry: one row of memory's `claims`
-table per key, taken with one conditional write. Of two nodes racing
-for a key, one lands and the other finds it taken. The expiry is the
-database's clock, so nodes whose clocks disagree still agree on when a
-claim ends. A node that dies holding a claim leaves it to expire, and
-the next node finishes the act. The record shows each claim a node
-acted on:
+### Distributed Claims (`claims` Table)
+
+Any node operation that must not execute concurrently across nodes acquires a time-bounded lock in PostgreSQL's `claims` table using a conditional insert keyed by claim ID. Lease expiration is evaluated against the PostgreSQL server clock so clock skew between hosts never causes split-brain execution. If a node crashes while holding a claim, the row expires and the next node resumes the operation.
+
+Claim acquisitions and releases are logged in the ledger:
 
 ```text
 claim.taken plan/i7 {"holder": …, "token": 1, "until": …}
 claim.released plan/i7 {"holder": …}
 ```
 
-A node names itself in its claims by the body's holder,
-`user@host:<clone>` (`HALE_DNA_NODE`, which the host sets).
+Nodes identify themselves in claims using `user@host:<clone>` (passed to child processes as `HALE_DNA_NODE`).
 
-### The genome pull
+### The Genome Pull
 
-Nodes take a new genome by pulling it; nothing pushes it to them.
-Every five minutes (`HALE_DNA_GENOME_POLL`, in seconds; `0` never) a
-node fetches the forge's default branch. When it moved, the node
-stops cleanly, gives the body lease back and exits with code 75; its
-unit starts it again, and at start it builds the new genome. A genome
-that does not build is a `node.build_failed` row: the node goes back
-to the last genome that built and keeps serving it. `hale dna status`
-says what each node runs on its `genome:` line.
+Spine nodes update their code by polling the forge rather than receiving push deployments. Every 5 minutes (`HALE_DNA_GENOME_POLL` in seconds; set `0` to disable), the node fetches the remote repository's default branch:
+- If the default branch advanced, the node releases its body lease and exits cleanly with code `75`.
+- The supervising systemd unit restarts the node, which compiles the updated genome before re-acquiring the lease.
+- If the new genome fails to compile, the node records `node.build_failed`, checks out the last known-good revision, and continues serving. `hale dna status` displays each node's active commit on the `genome:` line.
 
-## The API: ask, claim, settle, read
+## Core Operations: Ask, Claim, Settle, and Read
 
-| call | who makes it | what the spine does |
-|---|---|---|
-| **ask** | a person (`hale dna task create`, the face), the Leader's optimize proposal | admits the ask as a workflow execution, or refuses it, as rows |
-| **claim** | a leg, through the head (`hale dna work next`) | hands it one outstanding attempt under a lease |
-| **settle** | a leg, through the head (`hale dna work submit`) | checks the lease and records the attempt's outcome |
-| **read** | a head, a leg | the record, memory's graph, and one Work's hat |
+All interactions with the spine flow through four operations:
 
-An ask is a row first (`intent.requested`), written by whoever asked,
-from any clone; a node relays it to the organization. The
-organization admits an intent once by its id, so a relay repeated
-after a lost answer is the same execution. Before it admits one, it
-checks in order:
+| Operation | Caller | Spine Action |
+| --- | --- | --- |
+| **Ask** | CLI (`hale dna task create`), web face, or Leader optimize pass | Validates admission gates and admits a workflow execution (or records `intent.refused`) |
+| **Claim** | Worker leg via head API (`hale dna work next`) | Grants a time-bounded lease on one pending workflow attempt |
+| **Settle** | Worker leg via head API (`hale dna work submit`) | Verifies the attempt lease and records the attempt's outcome |
+| **Read** | Head API, CLI, or worker leg | Queries `record_rows`, the `ledger`, the organizational `graph`, or a work unit's `hat` |
 
-- the Board's gate: an empty ask is refused;
-- the owner: over a shared record, only the organization that owns
-  the position the ask is for admits it;
-- the budget: on an exhausted window the ask is refused
-  ([below](#the-budget-the-one-gate));
-- the plan claim `plan/<intent>`, when the Leader plans
-  ([below](#the-leader-and-planning)).
+When an `intent.requested` row is relayed to `dna/org`, the spine deduplicates it by intent ID and evaluates four admission gates in order:
+1. **Board gate**: Rejects empty intent descriptions.
+2. **Owner gate**: On a shared record, verifies that this node's organization owns the target position.
+3. **Budget gate**: Rejects the intent if the current spend window is exhausted ([below](#the-budget-the-one-gate)).
+4. **Planning claim (`plan/<intent>`)**: Acquires the planning claim when Leader planning is enabled ([below](#the-leader-and-planning)).
 
-Then it writes `intent.offered` and admits the ask as a workflow
-execution (`workflow.admitted`, with `task.born` as its one-line
-summary). A refusal is an `intent.refused` row with the reason. What
-happens next, step by step, is [One task, end to end](./workflow.md).
-A schedule's occurrence is not an ask: it is admitted as an execution
-directly, under its own key ([Schedules](./schedules.md)).
+Once admitted, the spine writes `intent.offered`, `workflow.admitted`, and `task.born` (or `intent.refused` with the rejection reason). Scheduled workflows bypass the intent gate and are admitted directly under their schedule occurrence key (see [Schedules](./schedules.md)).
 
-A claim and a settlement are a leg's, and go through the head's API
-under the leg's lease: `dna.attempt.claim`, `dna.attempt.renew`,
-`dna.attempt.allowance`, `dna.attempt.outcome`, `dna.attempt.release`.
-The head writes the leg's rows into the ledger, and a node relays the
-outcome and the allowance ask to the organization, which settles them.
-The verbs a leg runs are [Legs, hands and voice](./legs.md); the API
-and its transport are [The head and the face](./head.md).
+Worker legs claim, renew, request budget allowances, and submit outcomes through the head's RPC endpoints (`dna.attempt.claim`, `dna.attempt.renew`, `dna.attempt.allowance`, `dna.attempt.outcome`, `dna.attempt.release`). See [Legs, Hands, and Voice](./legs.md) and [The Head and the Face](./head.md).
 
-## The Leader and planning
+## The Leader and Planning
 
-The generated organization says `planned: true`, so the Leader reads
-every ask before it is admitted. The Leader is the organism's
-architect: it proposes, and the Board decides. Its brief is its
-charter (`dna/org/charter.hl`), the purpose (`dna/org/purpose.hl`),
-the law as the genome holds it, and the practices the Board has
-ratified for `org`.
+By default, `dna/org/main.hl` sets `planned: true`, routing every incoming ask through the **Leader** before workflow admission. The Leader acts as the organization's planner and bounded reviewer, reading:
+- `dna/org/charter.hl` (the Leader's architectural brief)
+- `dna/org/purpose.hl` (the repository's declared purpose)
+- `dna/org/law.hl` (compile-time architectural claims)
+- All Board-ratified practices bound to `org`
 
-Planning is a model call, so it is spend, and it is claimed first.
-The node whose claim on `plan/<intent>` lands asks the Leader; a node
-that finds the claim taken answers `planning elsewhere: <holder> holds
-plan/<intent>` and writes nothing, and the ask comes back to it with
-the next relay until it is answered or the claim expires (300
-seconds). While the Leader's word is out, the ask is in planning, and
-an ask offered again meanwhile is not asked of the Leader twice.
+Because planning invokes an LLM and consumes budget, the node first acquires the `plan/<intent>` claim (300-second TTL). If another node already holds `plan/<intent>`, the losing node logs `planning elsewhere: <holder> holds plan/<intent>` and waits for the next relay or claim expiration.
 
-The Leader answers what the ask is: its kind (`organism`,
-`appendage`, `product` or `person`), the class of change, the target,
-and for a person's job, whom and under what obligation. The admission
-binds that word; a plan never widens what you asked. Then:
+The Leader classifies the request (`organism`, `appendage`, `product`, or `person`), determines the change class and target path, and selects the assignee and obligation for human tasks. The spine then binds the plan (which may narrow, but never widen, the original ask) to a workflow definition:
 
-| the ask | admitted as |
-|---|---|
-| a person's job | `ask-person`: one human leaf, a case handed to the person the Leader named |
-| anything else | `ask-edit`: one edit leaf, a candidate prepared for Review |
-| `hale dna task create --judgment` | `ask-judge`: one judgment leaf, a leg's; no plan is asked |
-| `hale dna task create --to position:<name>` | `ask-position`: one Patch leaf for the leg that holds that position; no plan is asked |
+| Request Shape | Admitted Workflow Definition | Execution Plan |
+| --- | --- | --- |
+| Classified by Leader as human work (`person`) | `ask-person` | Single human leaf creating a handed `case` for the named assignee |
+| Classified by Leader as code/config work | `ask-edit` | Single edit leaf producing a verified candidate Mutation for Review |
+| `hale dna task create --judgment` | `ask-judge` | Single judgment leaf dispatched to a worker leg (skips Leader planning) |
+| `hale dna task create --to position:<name>` | `ask-position` | Single patch leaf dispatched to the leg holding `<name>` (skips Leader planning) |
 
-A Leader answer that names no kind and no class leaves the defaults
-standing: an `application` change at the ask's own target. Without a
-Leader every ask is an application change.
+If the Leader returns no classification or no Leader model is configured, the ask defaults to an `application` change under `ask-edit` at the ask's target. Beyond planning, the Leader also decides Reviews that fall within its `AutonomyBoundary` grant ([Shaping and Governing](./shaping.md)) and executes periodic optimization walks ([Schedules](./schedules.md)).
 
-The Leader also decides the Reviews inside the grant the Board gave
-it ([Shaping and governing it](./shaping.md)), and on a cadence it
-walks the machinery in the optimize pass ([Schedules](./schedules.md)).
+## The Workflow Engine
 
-## The workflow engine
+### Workflow Definitions (`dna/org/own_workflows.hl`)
 
-Everything the organism does for you is one execution of a workflow,
-run by one engine and written into the record as it happens.
+A workflow definition is a static DAG of ordered steps validated before execution begins. Every step declares the **single store it writes** (`record`, `forge`, `genome`, `heart`, `graph`, `nerves`, `memory`, `vault`, or `host`). Each step contains one or more members:
+- **Leaf**: A single unit of work specifying an `objective`, required capability tags (`requires`), and maximum retry attempts.
+- **Child**: A nested workflow definition executed as a sub-workflow of the parent step.
 
-### Definitions
-
-A definition is data, bound whole before anything runs. It is ordered
-steps, and each step names the **one store it writes**: `record`,
-`forge`, `genome`, `heart`, `graph`, `nerves`, `memory`, `vault` or
-`host`, one word per step. A step is where a fact is written; reading
-something, or waiting for another writer, belongs to the step whose
-fact it serves. A step's members are **leaves** (one unit of work: an
-objective, the capability words it requires, how many attempts it may
-take) or **children** (another definition, run as an execution of its
-own under this step).
-
-Your own definitions go in `dna/org/own_workflows.hl`:
+Define custom workflows in `dna/org/own_workflows.hl`:
 
 ```hale
 import "vendor/dna" as dna;
@@ -196,33 +124,23 @@ fn own_workflows(catalog: dna::WorkflowCatalog) -> String {
 }
 ```
 
-`close-month` has two steps, each writing the record. `reconcile` may
-be tried twice; `post` runs only once step 0 has completed. `occurs`
-says how the definition behaves when a schedule points at it: `skip`
-(the default) lets an open execution finish and records the skipped
-occurrence, `overlap` runs the next one beside it, and `period` is the
-input a schedule's `--args` must name ([Schedules](./schedules.md)).
+In this example:
+- `close-month` revision `1` has two sequential steps (`"record record"`), both writing to `record`.
+- Step `0` (`reconcile`) requires `"analysis"` and permits up to `2` attempts.
+- Step `1` (`post`) requires `"human"` (`1` attempt) and activates only after step `0` settles.
+- `catalog.occurs("close-month", 1, "skip", "period")` configures scheduled concurrency (`skip` skips new occurrences while an execution is still open; `overlap` runs occurrences concurrently) and requires scheduled triggers to supply `"period"` in `--args` ([Schedules](./schedules.md)).
 
-A definition binds whole or is refused at admission, with nothing
-started: a name that does not exist, a child that would recurse, a
-member key outside `[a-z0-9-]+`, a step that names no store or two, a
-step on a part the organization cannot write yet, or a tree past the
-limits (depth 8, 32 steps, 32 members to a step, 8 attempts to a leaf,
-256 units of work).
+A workflow definition is rejected at admission—before any step starts—if it:
+- References an unknown child workflow or introduces a cycle.
+- Uses member keys outside `[a-z0-9-]+`.
+- Declares zero or multiple stores for a step, or targets a store (`heart`, `vault`, `host`) that workflows are not permitted to write.
+- Exceeds engine structural bounds: max depth `8`, max `32` steps per workflow, max `32` members per step, max `8` attempts per leaf, or max `256` total work units.
 
-### The catalog
+### The Workflow Catalog & `hale dna definitions`
 
-`hale habitat graft` writes `dna/org/workflows.hl`, which returns DNA's
-baseline plus your own. `hale dna upgrade` rewrites it to the current
-shape and never touches `dna/org/own_workflows.hl`. The baseline is
-the vendored toolchain's, so an upgrade supersedes a definition by
-revision: a task born under a revision finishes under it, and the
-next one binds the newest.
+`hale habitat graft` generates `dna/org/workflows.hl`, which combines the built-in DNA workflow catalog with `own_workflows`. Running `hale dna upgrade` updates `dna/org/workflows.hl` to the current toolchain revision while leaving `dna/org/own_workflows.hl` untouched. Because workflow executions bind the definition's revision number (`@1`, `@2`, …) at admission, in-flight tasks finish under the revision they started with while new tasks bind the upgraded revision.
 
-`hale dna definitions` lists the catalog, with each step's store and
-what an admission would refuse a definition for (`--json` for the
-catalog's own document). It leads with, and fails on, a definition of
-your own that the catalog refused. On a new project:
+Run `hale dna definitions` (or `hale dna definitions --json`) to inspect all registered definitions, their step stores, and any admission refusal reasons:
 
 ```text
 $ hale dna definitions
@@ -242,89 +160,57 @@ change-deliver@1  a change delivered: reviewed at the forge, applied, deployed, 
 …
 ```
 
-The baseline:
+| Baseline Definition | Steps & Target Stores | Admission Status |
+| --- | --- | --- |
+| `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | 1 leaf (`record`) | Admitted for user and Leader tasks |
+| `practice-ratify` | `ratify` · `hat` (`record`) | Admitted for Board proposal ratifications |
+| `concern-escalate` | `raise` (`record`) | Admitted when a concern is raised |
+| `optimize-walk` | `walk` (`record`) | Admitted on the scheduled optimize pass |
+| `ask-triage` | `offered` · `classify` · `plan` (`record`) | Refused: `offered` is handled inline prior to workflow admission |
+| `change-deliver` | `candidate` (`record`) · `review` (`forge`) · `verdict` (`record`) · `apply` (`genome`) · `deploy` (`heart`) · `settle` (`record`) | Refused: step 4 writes `heart` |
+| `deploy-observe` | `deploy` (`heart`) · `settle` (`record`) | Refused: step 0 writes `heart` |
+| `secret-rotate` | `rotate` (`vault`) · `recorded` (`record`) | Refused: step 0 writes `vault` |
+| `body-provision` | `provision` · `start` (`host`) · `lease` (`memory`) · `observed` (`record`) | Refused: hosts are provisioned via `hale dna body provision` |
 
-| id | steps (store) | admitted today |
-|---|---|---|
-| `ask-edit`, `ask-person`, `ask-judge`, `ask-position` | one leaf (record) | every ask, as planned above |
-| `practice-ratify` | ratify · hat (record) | every proposal the Board decides |
-| `concern-escalate` | raise (record) | every concern |
-| `optimize-walk` | walk (record) | the optimize pass |
-| `ask-triage` | offered · classify · plan (record) | refused: the organization performs no step `offered` |
-| `change-deliver` | candidate (record) · review (forge) · verdict (record) · apply (genome) · deploy (heart) · settle (record) | refused: it writes the heart |
-| `deploy-observe` | deploy (heart) · settle (record) | refused: it writes the heart |
-| `secret-rotate` | rotate (vault) · recorded (record) | refused: it writes the vault |
-| `body-provision` | provision · start (host) · lease (memory) · observed (record) | refused: a person provisions a host with `hale dna body provision` |
+### Execution Hierarchy & Attempt Dispatch
 
-### How an execution runs
+Every entity created by the workflow engine has a deterministic ID visible in `hale dna history`:
 
-Every part of an execution has an id you will see in `hale dna
-history`, and they are the record's, so a restart finds the same
-ones:
+| ID Format | Entity |
+| --- | --- |
+| `t1` | Root workflow task |
+| `t1.s0.b` | Child workflow task (`<parent>.<step>.<member-key>`) |
+| `t1/wf1/s0` | Workflow step (`wf1` = workflow definition revision) |
+| `t1/wf1/s0/a` | Leaf unit of work (`a` = member key) |
+| `t1/wf1/s0/a/a0`, `t1/wf1/s0/a/a1` | Attempt `0` and retry attempt `1` |
 
-| id | what it is |
-|---|---|
-| `t1` | the root task |
-| `t1.s0.b` | a child task: the parent, the step, the member key |
-| `t1/wf1/s0` | a step (`wf1`: the definition's revision) |
-| `t1/wf1/s0/a` | a unit of work |
-| `t1/wf1/s0/a/a0`, then `/a1` | an attempt, and its retry |
+When a step activates:
+1. The engine writes `step.registered` listing every member of the step before dispatching any work.
+2. Each leaf admits an attempt (`attempt.admitted`), which is routed according to its `requires` capability:
+   - `organism`: Executed directly by the spine.
+   - `edit`: Executed by the sandbox editor as a candidate Mutation.
+   - `human` or `person`: Handed to a human assignee on the Board queue as a `case`.
+   - `judgment`: Routed to an agent leg (`hale dna work`), falling back to a person.
+   - `analysis`: Routed to a service performer, falling back to an agent leg.
+3. When the assigned performer submits a result, the engine records `attempt.outcome` and `work.settled` (ignoring duplicate replies or replies from any actor other than the assigned performer).
+4. Once every registered member of the step has settled, the step writes `step.completed` and activates the next step. When the final step completes, the execution writes `workflow.settled`.
 
-A step registers its whole set of members (`step.registered`) before
-anything in it is dispatched. Each leaf admits an attempt
-(`attempt.admitted`), the attempt is claimed once, and it is
-delivered to a performer of the kind its `requires` selects:
+### Retries, Failure Propagation, and Crash Recovery
 
-- `organism`: the organization performs the step itself;
-- `edit`: the editor, as a Mutation prepared for Review;
-- `human` or `person`: a person, as a case handed on the Board's
-  queue;
-- otherwise capability first: `judgment` to an agent, then a person;
-  `analysis` to a service, then an agent. The generated organization
-  hands the agent kind to [the legs](./legs.md).
-
-The performer's answer is the attempt's outcome (`attempt.outcome`),
-the leaf settles on it (`work.settled`), and the step completes only
-when every member it registered has settled. The next step activates
-behind that completion, and when the last one completes the execution
-settles (`workflow.settled`). A performer may answer later, in any
-order; a reply that repeats one already recorded changes nothing, and
-a reply from anyone but the performer the attempt was admitted to is
-nobody's.
-
-### Failure and retry
-
-A leaf that fails with attempts left is tried again under the next
-attempt id. One that fails its last attempt fails its step, the step
-fails its execution, and a child's failure fails the step that invoked
-it, up to the root. Nothing later activates. A member still out under
-a failed step keeps its responsibility: its outcome is recorded when
-it comes, and the execution above it settles failed only after it has.
-Cancelling a root fences everything below it; the engine carries it
-as a message (`WorkflowCancelRequested`), and no `hale dna` verb sends
-it.
-
-The record is the execution. An organization restarted over it
-rebuilds only what is unfinished, under the original ids: nothing is
-admitted again, and an attempt whose outcome is recorded never runs
-again. An attempt whose claim a dead process left open is reconciled
-before anything is delivered again: a performer that can say it acted
-answers from its own record, one that truthfully did not act is
-delivered the attempt again (`effect.redelivered`), and one that
-cannot say leaves it waiting for a person:
+- **Retries & failure bubbling**: If a leaf attempt fails and retries remain, the engine admits the next attempt (`a1`, `a2`, …). When a leaf exhausts its final attempt, its enclosing step fails, which fails the parent workflow up to the root and prevents any subsequent steps from activating. Any sibling attempts still running under a failed step are allowed to report their outcomes before the parent workflow settles as failed.
+- **Cancellation**: Sending an internal `WorkflowCancelRequested` message fences the root execution and all descendant steps/attempts (no `hale dna` CLI command emits this message).
+- **Crash recovery**: On startup, the spine reconstructs only unfinished executions from PostgreSQL under their original IDs. Settled attempts never re-run. If an attempt's claim was left open by a crashed performer:
+  - Performers that track their own idempotency return their recorded outcome.
+  - Performers that verify no side effect occurred receive the attempt again (`effect.redelivered`).
+  - Performers that cannot determine whether an external effect ran pause the attempt until a human resolves it:
 
 ```sh
 hale dna effect resolve attempt:t1/wf1/s0/a/a0 --outcome failed
 ```
 
-A transition is exactly once in the record: one claim, one outcome,
-one settlement. Whether an external effect happened once is its
-performer's to say.
+## The Budget: The One Gate
 
-## The budget: the one gate
-
-The organization's spend is one policy in the model catalog,
-`dna/org/models.hl`:
+Model spend across the entire organization is governed by a single policy in `dna/org/models.hl`:
 
 ```hale,fragment
 fn org_budget() -> dna::BudgetPolicy {
@@ -332,87 +218,45 @@ fn org_budget() -> dna::BudgetPolicy {
 }
 ```
 
-An allowance in micro-dollars per `day`, `week`, or `none` (one
-allowance for the record's lifetime); `0` is unmetered. The
-organization owns the one `Budget`, which accounts every `model.called`
-row at its time and is rebuilt from the record at start, so a restart
-loses nothing.
+`allowance_micros` specifies the maximum spend in micro-dollars (`25000000` = $25.00 USD) per `window` (`"day"`, `"week"`, or `"none"` for a lifetime cap; `0` disables metering). On startup, the spine reconstructs current window spend from all `model.called` rows in the ledger.
 
-Every model-backed spend passes one gate, `Budget.admit`: the
-editor's attempt and the Leader's Review before their calls, a leg's
-attempt when the leg asks for its allowance, an ask, and the optimize
-pass. On an exhausted window it refuses, and the refusal is a row;
-an ask's reads:
+Every model-backed operation must pass `Budget.admit` before calling a model:
+- Leader intent planning and delegated Review verdicts
+- Sandbox editor attempts
+- Worker leg allowance requests (`hale dna work allowance`)
+- Scheduled optimize passes
+
+When the window allowance is exhausted, `Budget.admit` rejects new requests, writes `budget.exhausted` once for the window, and notifies the Board (pending Reviews fall back to human Board members):
 
 ```text
 refused: budget exhausted (spent 25000000 of 25000000 micro-dollars this day in 41 call(s))
 ```
 
-`budget.exhausted` is written once for the window and the Board is
-told; a pending Review waits for the Board, which needs no model. The
-next window starts clean.
+When budget remains, `Budget.admit` grants the smaller of the work unit's cost ceiling and the remaining window balance. Worker legs request an allowance before their first model call and stop calling models once the next call's known price would exceed their grant. Because grants are not pre-reserved across concurrent legs, parallel workers can collectively overshoot the window cap by at most their individual grants plus one call; any attempt that exceeds its own granted allowance is settled as failed with an overrun diagnostic while still recording all `model.called` rows.
 
-Otherwise the gate admits the smaller of the work's own cost ceiling
-and what the window has left. A leg asks for its allowance before its
-first model call (`hale dna work allowance`) and makes no call whose
-known price is past what is left of it. Nothing is reserved, so legs
-admitted against one remainder can together pass the window's
-allowance, by at most what they were granted plus one call each; the
-organization settles an attempt that spent past its grant as failed,
-naming the overrun, and journals its calls all the same.
+See [Legs, Hands, and Voice](./legs.md) for model catalog configuration and [Shaping and Governing](./shaping.md) for delegated monetary budgets.
 
-The model catalog and its keys are [Legs, hands and
-voice](./legs.md). Money a grant delegates is a separate budget
-([Shaping and governing it](./shaping.md)).
+## The Body Lease and the Fence
 
-## The body lease and the fence
+Each record permits only one active host body at a time (or one per owner on a shared record). Before compiling or launching any child processes, `hale dna dev` / `hale dna run` acquires the `body` claim (`owner/<owner>` on shared records) in PostgreSQL with a 30-second TTL. If another checkout holds a live lease, PostgreSQL rejects the claim and the second host exits with code `3`. Because the holder identity is `user@host:<clone>`, a restarting process on the same checkout reclaims its own lease immediately.
 
-A record admits one body at a time, one per owner over a shared
-record. Before the host builds or runs anything it takes the body
-lease in memory, so a host on another clone is refused by memory
-itself and exits 3. The holder is
-`user@host:<clone>`, so the same clone restarting takes its lease
-straight back.
+Lease safety is enforced at three layers:
+1. **Host tick checks**: The host verifies it still holds the lease at the start of every 1-second tick and immediately before spawning any child process.
+2. **The body fence process**: Alongside the host runs a lightweight watchdog process (**body fence**) that renews the lease every 10 seconds with bounded timeouts independently of the host. If the lease is taken over by another holder, cannot be renewed within 5 seconds of expiration, or the parent host process exits, the fence immediately kills `dna/org`, the running application, and all descendant processes.
+3. **Database epoch fencing (`fenced`)**: Each lease acquisition increments an epoch token passed to `dna/org`. PostgreSQL rejects any write carrying an expired or superseded epoch token with `fenced`.
 
-The lease lives 30 seconds. The host asserts it at the top of every
-tick, before it relays, restarts or applies anything, and again the
-moment before it starts a process. Beside the host runs the **body
-fence**, a small process that renews the lease every ten seconds with
-every call bounded, and never waits on the host. When the lease is
-someone else's, when the fence cannot prove it within five seconds of
-its expiry, or when the host is gone, the fence kills the organization
-and the expression with every process they started. A body that cannot
-reach memory executes nothing past the lease.
-
-The lease is a row of memory's `claims` table
-(`body`, or `owner/<owner>` over a shared record). Its token is an
-epoch the host hands its organization, and memory refuses an append
-under a lease that was taken over, released or expired: `fenced`,
-whatever the organization still believes.
+Manage the body lease from the CLI:
 
 ```sh
-hale dna body                    # who runs this record
-hale dna body claim --force      # take it from a body that is gone, as a row in your name
-hale dna body release            # give it up
+hale dna body                    # display current lease holder and expiration
+hale dna body claim --force      # forcibly take over the lease from a dead host
+hale dna body release            # release this checkout's active lease
 ```
 
-A body on a server, and how you provision one, is [The heart and the
-body](./heart.md).
+See [The Heart and the Body](./heart.md) for remote server provisioning (`hale dna body provision`).
 
-## Where reflexes run
+## Reflex Routing & Core Loci
 
-Not in the spine. The reflexes are a program of their own beside the
-senses, and a firing reaches the organism as an application event.
-The spine records it as a reading row before anything acts on it; the
-fleet node the firing names restarts the instance and records what it
-did;
-and a second firing for the same target within the window becomes a
-concern the organization raises, for a workflow to answer. The spine
-records and routes; it never plans on a reading. See [Senses and
-reflexes](./senses.md).
+The automated health daemon (`dna/reflexes`) runs outside the spine as a separate process querying Prometheus. When `dna/reflexes` publishes an `instance.down` event on NATS, the spine records it as a `reading.recorded` row, the target fleet node restarts the crashed instance, and a second firing for the same target within the observation window is escalated by the spine into a `concern` workflow. See [Senses and Reflexes](./senses.md).
 
-## The pieces in dna/core
-
-The organization's substrate, `dna::Dna`, is assembled from family
-loci in `dna/core`, each keeping one family of rows; they are listed
-in [DNA, the building block](./dna.md).
+Internally, the `dna::Dna` locus is composed from domain-specific family loci in `dna/core/`, documented in [DNA, the Building Block](./dna.md).

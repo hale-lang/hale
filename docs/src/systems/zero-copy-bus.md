@@ -1,26 +1,6 @@
-# Zero-copy & the high-frequency bus
+# Zero-Copy & High-Frequency Bus
 
-> **Coming from Rust / C++?** This is the shared-memory ring
-> buffer you'd otherwise build by hand with `mmap` and atomics.
-> For same-machine routes north of ~100k msg/s — market data, tick
-> streams — the per-message copy at the locus boundary shows up in
-> the latency budget. A `shm_ring` binding writes the payload
-> straight into a POSIX shared-memory slot the subscriber reads
-> from. No kernel memcpy at the boundary. And it's still the same
-> `subscribe`/`publish` code.
-
-## The default copies; sometimes you can't afford it
-
-Every ordinary bus delivery copies the payload for the subscriber
-(into storage the delivery owns until its handler returns) — that's
-what keeps lifetimes independent and the memory model sound (see [Memory & lifetime](./memory.md)).
-For the vast majority of topics that copy is free in the noise.
-For the hottest same-host routes it isn't, and you opt into a
-zero-copy path explicitly.
-
-## A `shm_ring` binding
-
-In `main`'s [`bindings { }`](../services/multi-binary.md) block:
+For high-throughput, same-machine message routes (100k+ messages/sec), copying payloads across locus boundaries can dominate latency. Binding a topic to `shm_ring` maps a POSIX shared-memory ring buffer (`/dev/shm`) into both publisher and subscriber processes so payloads are written and read directly in place without changing locus `publish` or `subscribe` code.
 
 ```hale
 type Update { px: Int; qty: Int; }
@@ -31,31 +11,55 @@ main locus App {
         L2Updates: shm_ring("/l2-updates",
                             slot_count:  1024,
                             on_overflow: fail)
-                  where intra_machine, zero_copy;
+                   where intra_machine, zero_copy;
     }
 }
 
 fn main() { App { }; }
 ```
 
-Publisher and subscriber `mmap` the same `/dev/shm` object and
-coordinate through the ring's slot indices. The publisher writes
-its payload directly into a slot; the subscriber reads from the
-same memory. No copy crosses the boundary.
+## Shared-Memory Ring Bindings (`shm_ring`)
 
-The `subscribe L2Updates as on_update;` handler is the *same line
-of source* it would be over a Unix socket — the substrate picks
-the zero-copy lowering from the binding, not from the locus code.
+Ordinary bus deliveries copy the payload into delivery-scoped storage to keep sender and receiver lifetimes independent (see [Memory & Lifetime](./memory.md)). When you bind a topic to `shm_ring` inside `main`'s `bindings { }` block, the publisher and subscriber `mmap` the same `/dev/shm` segment and coordinate via atomic slot cursors. The publisher writes its payload directly into a ring slot, and the subscriber reads from that slot without a kernel or user-space `memcpy`.
 
-## Per-record vs. batch: the handler's param picks the mode
+### Checked `where` Contracts
 
-By default the substrate calls your handler once per record:
+The `where` clause on a binding is statically verified by `hale check`:
+
+| Constraint | Valid Combinations | Rejected Combinations |
+|---|---|---|
+| Route Scope | `intra_process`, `intra_machine`, `cross_machine` | Combining `zero_copy` with `cross_machine` (network transports always serialize). |
+| Transport Capability | `shm_ring(...) where zero_copy` | Combining `zero_copy` with `unix(...)` or custom adapter loci (which copy or serialize bytes). |
+
+### Flat-Shapeable Payload Rules
+
+Because pointers cannot be dereferenced across separate processes sharing an `mmap` segment, a `zero_copy` topic requires a **flat-shapeable** payload:
+
+- **Allowed types**: Fixed-layout primitives (`Int`, `Float`, `Bool`, `Decimal`, `Time`, `Duration`), inline fixed-size scalar arrays (`[Int; 8]`, `[Float; 4]`, `[Bool; N]`, `[Decimal; N]`, `[Duration; N]`), and nested `type` structs composed exclusively of flat-shapeable fields.
+- **Rejected types**: `String`, `Bytes`, `StringView`, `BytesView`, unbounded arrays, and arrays of structs or `Time`. For variable-length or heterogeneous messages on a shared-memory ring, use a [raw `BytesView` payload](#mixed-record-types-bytesview-payloads) over a declared `ring_layout`.
+
+### Overflow Policies (`on_overflow`)
+
+Every `shm_ring` binding must declare an explicit `on_overflow` policy:
+
+| Policy | Behavior When Ring Is Full | Typical Use |
+|---|---|---|
+| `block` | Publisher spins until the consumer frees a slot. During in-process shutdown, the reader continues draining until worker pools join; any publish still blocked after the reader stops raises `BusWaitAborted`. | Lossless control-plane or audit streams. |
+| `drop` | Publisher overwrites the oldest slot; slow consumers skip overwritten items. | Real-time market data or telemetry where stale ticks are worthless. |
+| `fail` | Process aborts immediately with a backpressure diagnostic. | Strict latency SLAs where ring saturation indicates a fatal sizing or consumer stall. |
+
+## Per-Record vs. Batch Handlers (`Drain<T>`)
+
+By default, the runtime invokes a subscriber's handler once per message:
 
 ```hale
+type Update { px: Int; qty: Int; }
+topic L2Updates { payload: Update; }
+
 locus Book {
     params { total: Int = 0; }
     bus { subscribe L2Updates as on_update; }
-    fn on_update(u: Update) {   // per-record
+    fn on_update(u: Update) {
         self.total = self.total + u.px;
     }
 }
@@ -63,12 +67,7 @@ locus Book {
 fn main() { Book { }; }
 ```
 
-On a high-rate cross-process feed that per-record call — plus the
-per-call handler scratch — is exactly the overhead that loses to a
-bare consumer loop in C or Go. Hale's fix is the **drain** handler:
-change the parameter type to `Drain<T>` and the substrate calls the
-handler **once per available batch**, handing you a handle you
-consume with a tight inline loop.
+On high-rate feeds, per-record handler call overhead and scratch setup can become a bottleneck. Changing the handler parameter type from `T` to `Drain<T>` switches the subscription to **batch mode** without changing the `subscribe` declaration:
 
 ```hale,fragment
 type Tick { px: Int; qty: Int; }
@@ -76,90 +75,38 @@ topic Quotes { payload: Tick; }
 
 locus Agg {
     params { total: Int = 0; }
-    bus { subscribe Quotes as on_quotes; }   // SAME subscribe line
-    fn on_quotes(feed: Drain<Tick>) {         // param type → batch mode
-        for t in feed {                       // zero-copy inline loop
-            self.total = self.total + t.px;   // no per-record call
+    bus { subscribe Quotes as on_quotes; }
+    fn on_quotes(feed: Drain<Tick>) {
+        for t in feed {
+            self.total = self.total + t.px;
         }
     }
 }
 ```
 
-There is no new keyword — the `subscribe` clause is unchanged; the
-parameter type alone selects the dispatch mode. Inside `for t in
-feed`, each `t` is read straight through the ring slot (so `t.px`
-reads the mapped shared memory in place, never a copy), and the
-consumer cursor advances once per batch instead of once per record.
+In batch mode:
+- The runtime invokes `on_quotes` once per available batch of ring slots.
+- `for t in feed` compiles to a tight inline loop that reads `t.px` directly from the mapped shared-memory slot without copying.
+- The ring's consumer cursor advances once at the end of the batch rather than once per record.
+- `Drain<T>` is valid only as a batch handler's parameter type and `for`-loop iterable; it is not a general value type and is not yet supported on foreign (`layout:`) rings.
 
-`Drain<T>` is only spellable as a batch handler's parameter and as
-the thing you iterate; it is not a general value type. Batch
-handlers on a foreign (`layout:`) ring aren't supported yet — use a
-per-record handler there.
+## Foreign Shared-Memory Rings (`ring_layout`)
 
-## The `where` clause is a checked contract
-
-`where intra_machine, zero_copy` is two things at once: your
-assertion about the route, and a contract the compiler validates.
-
-- **Scope** — `intra_process`, `intra_machine`, or
-  `cross_machine` (pick one). `zero_copy` with `cross_machine` is
-  rejected: the network always serializes.
-- **Behavior** — `zero_copy` is rejected on transports that can't
-  honor it (`unix(...)` memcpies through the socket buffer; user
-  adapters serialize through `send(subject, bytes)`).
-
-## Zero-copy needs a flat payload
-
-A payload you can drop into a shared slot must be **flat-shapeable**:
-every leaf is a fixed-layout primitive (`Int`, `Float`, `Bool`,
-`Decimal`, `Time`, `Duration`), a fixed-size array of `Int`,
-`Float`, `Bool`, `Decimal` or `Duration` (`[Int; 8]`, laid out
-inline), or a struct whose fields are all flat-shapeable. `String`,
-`Bytes`, views, unbounded arrays and arrays of anything else (a
-struct, `Time`) carry heap pointers that don't translate to a
-shared slot, so the compiler rejects them on a zero-copy topic.
-Carry bounded data in
-a scalar array on these routes, and variable-length records as a
-[raw `BytesView` frame](#mixed-record-types-a-raw-bytesview-payload).
-
-## Overflow is your decision
-
-A `shm_ring` binding must declare `on_overflow:` — slot
-exhaustion needs a policy the substrate can't guess:
-
-- **`block`** — the publisher spins until a slot frees.
-  Right for control-plane data that must not be lost. When the
-  reader is in the same program, it keeps reading while the program
-  tears down until the pools' jobs are joined, so a job publishing
-  as `main` returns finishes and is delivered; a publish still
-  waiting once the reader has stopped fails with `BusWaitAborted`,
-  never silently.
-- **`drop`** — overwrite the next slot; slow consumers miss
-  messages. Right for stale-is-worthless feeds.
-- **`fail`** — panic with a clear diagnostic. Process-level
-  visibility into back-pressure.
-
-## Reading someone else's ring
-
-A `shm_ring` binding speaks Hale's *own* ring format. But sometimes
-the ring already exists — written by another program in another
-language, with its own binary layout. Instead of hand-writing FFI
-or forking the runtime, you *declare* that layout and point a
-binding at it:
+When interfacing with an existing shared-memory ring produced or consumed by a non-Hale process (such as a C++ feed handler), declare its binary header, cursor, and record framing with a top-level `ring_layout` block and reference it via `layout:` on the `shm_ring` binding:
 
 ```hale
 type Tick { px: Int; qty: Int; }
 topic Ticks { payload: Tick; }
 
 ring_layout ForeignRing {
-    magic 0x52494E47464D5431;        // expected header magic at offset 0
-    version 1 at 8 : u32;            // header field `version`, must equal 1
-    buffer_size at 12 : u32;         // ring capacity, read from the header
-    data_at 128;                     // first record starts here
-    cursor published {               // the producer's published byte cursor
+    magic 0x52494E47464D5431;        // expected 64-bit header magic at byte 0
+    version 1 at 8 : u32;            // header version field at offset 8 must equal 1
+    buffer_size at 12 : u32;         // ring data capacity read from header offset 12
+    data_at 128;                     // byte offset where payload records begin
+    cursor published {               // producer's published byte cursor
         at 64; repr atomic_u64; load acquire; unit bytes;
     }
-    framing byte_records {           // records are [u32 length][payload]
+    framing byte_records {           // records framed as [u32 length][payload]
         len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF;
     }
     overflow lap_detect;
@@ -182,42 +129,23 @@ main locus App {
 fn main() { App { }; }
 ```
 
-A subscriber on `Ticks` now reads that foreign ring directly: the
-runtime attaches it read-only, checks the magic and version, and
-walks the length-prefixed records, handing each payload to your
-`on_tick` handler with no copy. Your handler code is identical to
-any other `shm_ring` subscriber — the layout only changes how the
-substrate finds and frames the bytes.
+### Consuming and Producing Foreign Rings
 
-A binding with no `layout:` keeps Hale's native ring, so nothing
-you wrote before changes.
-
-The same binding works the other way too. If a locus in your
-program *publishes* the topic, it becomes the ring's producer: Hale
-creates the segment, writes the header the layout describes, and
-frames each `Ticks <- Tick { ... }` as a length-prefixed record
-another program (or another language) can read. Give the binding a
-`buffer_size:` to size the ring:
+A `ring_layout` binding works in both directions:
+- **As a subscriber**: The runtime attaches to the segment read-only, validates `magic` and `version`, and walks records starting from the point of attachment (historical records prior to attach are not replayed; if the consumer falls more than a full buffer behind, it resyncs to the latest cursor rather than reading a torn record).
+- **As a publisher**: If a locus in your program publishes `Ticks`, Hale creates the shared-memory segment, writes the declared header, and frames each published message according to the layout. Pass `buffer_size:` on the binding to specify the ring capacity:
 
 ```hale,fragment
 Ticks: shm_ring("/foreign.ticks", on_overflow: drop,
                 layout: ForeignRing, buffer_size: 65536) where zero_copy;
 ```
 
-So the same declared layout lets Hale sit on either side of a
-foreign ring — consume what another process writes, or produce what
-another process reads — with the locus body unchanged. Two caveats
-at this version: a subscriber sees records published after it
-attaches (no replay of history), and if it falls more than a full
-buffer behind it resyncs rather than read a torn record.
+> [!NOTE]
+> Fixed-stride rings use `framing slots` instead of length-prefixed `framing byte_records`. Omitting `layout:` uses Hale's native ring format.
 
-### Mixed record types: a raw `BytesView` payload
+### Mixed Record Types (`BytesView` Payloads)
 
-The examples above bind a fixed payload struct — every record on the
-ring is the same shape. Real feeds are often heterogeneous: a header
-plus one of several record types, selected by a discriminator, with
-varying length. Bind such a topic to a **`BytesView`** payload and the
-subscriber receives a bounded view over each record to decode itself:
+External feeds often multiplex multiple record shapes of varying lengths onto a single ring using a discriminator byte. To handle heterogeneous frames, declare the topic payload as `BytesView` and bind it to a `layout:` ring (without `where zero_copy`, as each frame is copied into a scratch buffer for safe bounds-checked parsing):
 
 ```hale
 topic Recs { payload: BytesView; }
@@ -227,95 +155,69 @@ locus Reader {
     fn on_rec(v: BytesView) {
         let kind = std::bytes::read_u8(v, 0) or 0;
         match kind {
-            1 -> { /* decode an L1 record with std::bytes::read_* */ },
-            2 -> { /* decode an L2 record */ },
+            1 -> { /* decode L1 record via std::bytes::read_* */ },
+            2 -> { /* decode L2 record */ },
             _ -> { },
         }
     }
 }
 ```
 
-No fixed size is assumed (a differently-sized valid record isn't
-dropped), and you decode with the `std::bytes::read_*` pack readers and
-a discriminator branch. The topic is bound like `Ticks` above, to a
-`layout:` ring — it has to be: a `BytesView` topic subscribed or sent
-with no such binding, or bound to a ring with no `layout:`, is a
-compile error, since nothing else carries a raw frame — but without
-`where zero_copy`: each record is copied
-into a scratch blob for the pack readers, so raw-frame mode is not
-zero-copy. This is the path for reading real external
-mixed-record rings; the typed-struct binding stays the fast path for a
-homogeneous ring.
+> [!IMPORTANT]
+> A `BytesView` topic must be bound to a `shm_ring` with a `layout:` declaration; subscribing or publishing to an unbound `BytesView` topic (or one without `layout:`) is a compile error.
 
-Producing such a ring is symmetric — build a record with a
-`BytesBuilder` and send the bytes:
+To publish variable-length frames from a buffer, construct a `BytesBuilder` and publish its view (`Recs <- b.view();`), which prefixes the frame with its actual byte length:
 
 ```hale,fragment
 locus Feed {
     bus { publish Recs; }
     fn emit_l2(level: L2) {
         let b = std::bytes::BytesBuilder { initial_cap: 64 };
-        b.append_u8(2);                // discriminator
+        b.append_u8(2);
         b.append_u32_le(level.price);
         b.append_u32_le(level.qty);
-        Recs <- b.view();              // framed at its own length
+        Recs <- b.view();
     }
 }
 ```
 
-`Recs <- bytes` frames `[len_prefix len][bytes]` where `len` is the
-value's actual byte length, so each record carries its own size.
+### In-Place Slot Writing (`Topic.write`)
 
-### Writing in place (zero-copy)
-
-That builds the record in a temporary buffer, then copies it into the
-ring. To skip the copy on a hot producer path, write the fields
-*directly* into the reserved slot:
+To avoid building a temporary `BytesBuilder` and copying it into the ring on a hot producer path, use `Topic.write(max) { w => ... }` to reserve up to `max` bytes directly in the ring slot and write fields in place:
 
 ```hale,fragment
 locus FastFeed {
     bus { publish Recs; }
     fn emit_l2(level: L2) {
-        Recs.write(24) { w =>           // reserve up to 24 bytes
-            std::bytes::write_u8(w, 0, 2)              or raise;
+        Recs.write(24) { w =>
+            std::bytes::write_u8(w, 0, 2)               or raise;
             std::bytes::write_u32_le(w, 1, level.price) or raise;
             std::bytes::write_u32_le(w, 5, level.qty)   or raise;
-            9                            // bytes written -> the record length
+            9 // commits 9 bytes as the record's actual length
         };
     }
 }
 ```
 
-`Topic.write(max) { w => ... }` reserves up to `max` bytes, hands the
-body a writable view `w` over the slot, and commits the byte count the
-body's tail yields. The `std::bytes::write_*` family mirrors the readers
-(bounds-checked, `fallible(IndexError)`), and each writer returns the
-offset past its write, so `let next = std::bytes::write_u8(w, 0, 2) or
-raise;` hands the next field its offset. The reserve and commit are
-scoped to the block, so the view can't escape and the commit can't be
-forgotten.
+The `std::bytes::write_*` functions are bounds-checked (`fallible(IndexError)`) and return the byte offset immediately past the written value. The slot reservation and commit are lexically scoped to the closure block, preventing `w` from escaping or remaining uncommitted.
 
-### Naming the fields (`repr:` tags)
+### Wire-Layout Field Tags (`repr:"..."`)
 
-Hand-writing `read_u32_le(b, 12)` per field is error-prone — the offsets
-are implicit and drift as the record changes. Tag a struct's fields with
-their wire representation and the offsets are computed for you, with typed
-accessors generated from the layout:
+Instead of maintaining manual byte offsets in `std::bytes::read_*` and `write_*` calls, tag struct fields with `repr:"..."` metadata to generate bounds-checked, zero-overhead accessors automatically:
 
 ```hale
 type L2 {
-    kind:  Int `repr:"u8"`;       // 1 byte  @ 0
-    price: Int `repr:"u32_le"`;   // 4 bytes @ 1
-    qty:   Int `repr:"u32_le"`;   // 4 bytes @ 5
+    kind:  Int `repr:"u8"`;       // 1 byte  @ offset 0
+    price: Int `repr:"u32_le"`;   // 4 bytes @ offset 1
+    qty:   Int `repr:"u32_le"`;   // 4 bytes @ offset 5
 }
 ```
 
-Now the consumer reads fields by name and the producer writes them by
-name — both compose with everything above:
+For padded foreign layouts, pin a field's byte offset explicitly using `at=<offset>` (for example, `` `repr:"u32_le,at=4"` ``). The compiler synthesizes `Type::field(v)` readers and `Type::set_field(w, val)` writers that desugar directly to the underlying `std::bytes` primitives at the computed offsets:
 
 ```hale,fragment
 fn on_rec(v: BytesView) {
-    let p = L2::price(v) or raise;       // read u32_le @ 1
+    let p = L2::price(v) or raise;
     ...
 }
 
@@ -329,48 +231,15 @@ fn emit(level: L2) {
 }
 ```
 
-`Type::field(v)` and `Type::set_field(w, x)` desugar to the matching
-`std::bytes::read_*` / `write_*` call at the field's computed offset — so
-they're exactly as cheap (and as bounds-checked) as writing the primitive
-by hand. Offsets run in declaration order over the tagged fields; pin one
-for a padded foreign format with `repr:"u32_le,at=4"`. The tag itself is
-general `key:"value"` metadata — `repr:` is the binary-pack consumer;
-other keys (e.g. `json:`) are free for later tools.
+### Per-Record Headers & Wire Timestamps (`std::shm`)
 
-### Per-record headers and wire timestamps
-
-Real external feeds often prefix each record with a small fixed
-header — a sequence number, a producer-side wire-arrival timestamp —
-before the variable payload. Declare it in the `ring_layout` with
-`record_header_bytes` (and `pad_field_*` when the producer marks its
-wrap padding with a header field),
-and the subscriber reads those header fields *for the record it's
-currently handling* through `std::shm`:
+When a foreign ring prefixes each record with a fixed metadata header (configured via `record_header_bytes` and optional `pad_field_*` wrap markers in `ring_layout`), handlers can inspect the current record's sequence number and producer wire timestamp via `std::shm`:
 
 ```hale
 fn on_rec(v: BytesView) {
-    let seq = std::shm::last_record_seq();        // header sequence no.
-    let wire_ns = std::shm::last_record_kernel_ns(); // producer wire time
-    // ... decode v as before ...
+    let seq = std::shm::last_record_seq();
+    let wire_ns = std::shm::last_record_kernel_ns();
 }
 ```
 
-These read like the errno-style timestamp getters on a socket recv:
-call them inside the handler, and they describe the record being
-delivered. Each returns `0` when the layout declares no such field.
-The layout's `recheck post_copy` guard re-validates the header after
-the copy, so a record torn by a producer lapping the ring is never
-surfaced with a half-written header. (A native fixed-stride ring uses
-`framing slots` instead of length-prefixed `byte_records` — same
-`layout:` machinery, a different framing kind.)
-
-## The same shape, one tier down
-
-Notice this is the same move as everything else at this level: an
-operational requirement (zero-copy delivery) declared at the
-deployment seam, validated by the compiler, consumed by codegen
-to pick a lowering — while the locus body stays the synchronous,
-portable code you wrote three tiers ago. You reach under the hood
-without rewriting the program.
-
-Next: calling into native libraries — [Binding C](./binding-c.md).
+Both functions return `0` if the active `ring_layout` does not declare the corresponding header field. Adding `recheck post_copy` to the `ring_layout` re-validates the record header after copying payload bytes, ensuring a producer lapping the ring cannot surface a torn header to the handler.

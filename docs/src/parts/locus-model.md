@@ -1,14 +1,21 @@
-# The locus model
+# Part II: Concurrency, Services & APIs
 
-In the last part a locus was state plus methods: something you construct and call. This part lets it **run over time**, and that is where Hale stops looking like a scripting language.
+Part II covers building concurrent, long-running services, API servers, and multi-binary distributed systems using the **locus model**.
 
-A running locus has a lifecycle the runtime drives: `birth()`, `run()`, `drain()` and `dissolve()`, in that order, with shutdown cascading through the tree. Loci talk over a typed **bus**. A `topic` names a payload type, one locus publishes and another subscribes, and the compiler checks every edge. Each locus is **placed** on a pool (`cooperative(…)`, `pinned(…)` and the rest), and handlers never share a mutable value across threads, so there is no data race to write. A locus that constructs another is its **parent**: it owns the child's memory and decides what happens when the child fails. A **perspective** is a seam you can re-point while the program runs.
+## Core Concepts
 
-None of these needs a new program when the system grows. A topic that was an in-process queue becomes a Unix socket or a broker with one line in `main`'s `bindings { }` ([Across binaries](../services/multi-binary.md)). Everything a program already declares on its bus is its API once `bindings { api: … }` hands it out ([The API binding](../services/api.md)).
+- **Lifecycle (`birth` $\to$ `run` $\to$ `drain` $\to$ `dissolve`):** Every running locus follows a deterministic four-phase lifecycle managed by the runtime, with teardown cascading depth-first through child subtrees.
+- **Typed Message Bus (`topic` & `bus`):** Loci communicate asynchronously by publishing and subscribing to typed `topic` declarations. Keyed topics (`keyed_by`) route traffic directly to the owning child or worker replica.
+- **Thread Placement (`placement { }`):** Loci are single-threaded inside their own methods. Concurrency is configured in `main locus` by assigning children to `cooperative(pool = ...)` (with optional `where async_io` epoll/kqueue coroutines) or `pinned(core = N, replicas = K)`.
+- **Supervision (`closure` & `on_failure`):** Loci declare state invariants (`closure`) and parents define recovery policies (`restart`, `restart_in_place`, `bubble`).
+- **Seams & Repositories (`seam` & `@repo(T)`):** Linear typed pipelines (`seam`) route union message sets (`type Inbound = A | B;`) with compile-time exhaustiveness checks, while `@repo(T)` standardizes keyed CRUD persistence and state effects.
+- **Typed API Surfaces (`api` & `@rpc`):** Declare an `api` contract once and serve it over HTTP RPC, REST (`http::Rest`), Unix sockets (`unix::Rpc`), gRPC (`grpc::Rpc`), MCP (`mcp::Rpc`), or WebSockets (`ws::Hub`), or consume external OpenAPI/MCP specs with `hale api import`.
+- **Multi-Binary Fleets (`bindings` & `fleet locus`):** Rebind topics across processes (`unix`, `shm_ring`, broker adapters) and verify multi-binary topologies in source with `fleet locus` and `hale deploy render`.
 
-The part closes with [The model](../the-model.md): the typed description of what the program *is*, derived once from the source. It lists every locus and who owns it, every topic and who reaches it, and what the compiler could not determine, recorded as data. Every checker and tool reads that one description rather than working it out again.
+## Chapters in Part II
 
-**What the next part adds.** Because the compiler holds that whole graph, you can state what must hold over it, and have the build refuse a program that breaks it. [Saying what must hold](./what-must-hold.md) covers:
-- effect contracts on functions;
-- claims over the assembled graph;
-- constitutions that carry one set of claims to every program deployed to a place.
+| Topic | Chapters |
+|---|---|
+| **Lifecycle, Bus & Concurrency** | [Locus Lifecycle](../services/lifecycle.md) · [The Typed Message Bus](../services/bus.md) · [Concurrency & Thread Placement](../services/concurrency.md) · [Ownership, Children & Flow Reclamation](../services/parents-children.md) · [Supervision & Structural Failure](../services/failure.md) |
+| **Boundaries & Data Access** | [Interfaces, Contracts & Perspectives](../services/perspectives.md) · [Seams & Typed Pipelines](../services/seams.md) · [Repositories (`@repo`)](../services/repositories.md) · [Service Composition Patterns](../services/patterns.md) |
+| **APIs & Distributed Systems** | [Tutorial: Build a Typed API](../services/build-an-api.md) · [API Surfaces, RPC, REST, MCP & gRPC](../services/api.md) · [API Wire Schemas & Compatibility](../services/api-messages.md) · [Multi-Binary Systems, Fleets & Deployment](../services/multi-binary.md) · [The Application Model](../the-model.md) |

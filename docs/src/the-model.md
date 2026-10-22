@@ -1,245 +1,133 @@
-# The model
+# The Application Model
 
-Most compilers have an IR that describes *how the program runs* —
-blocks, instructions, registers. Hale has one of those too. This is
-about the other one: a typed description of what the program **is**,
-derived once per snapshot by the frontend and read by everything
-downstream (the graph registry names what still derives its own).
-
-## Derive a fact once
-
-A semantic fact about a program — who calls whom, which handlers a
-publish reaches, which locus owns which instance — has exactly one
-right answer. So it gets derived in exactly one place, and every
-consumer projects or queries that value.
-
-That is the whole principle. In-process, it means `hale check`'s
-verdict on a law and the verdict recorded in the topology artifact
-are the same computation — not two computations held in agreement
-by a test. `DispatchPlan`, which decides how a bus subject
-dispatches, is derived from the same model that answered the
-verification questions.
-
-Out of process it is necessarily weaker, and worth being precise
-about. The fleet tier, reasoning across binaries, cannot hold an
-`ApplicationModel` — it decodes a deliberately smaller
-`ComponentModel` from admitted artifact JSON. What it shares with
-the single-binary checker is the *reachability engine* and the
-*admitted contract*, not the value. That's the boundary, and it's
-where the wire form would earn its keep.
-
-Eight concepts stay distinct: source, plan, model, the lowered law
-(`ClaimIr`), evidence, artifact, lowering plan, execution evidence.
-Keeping them un-conflated is what lets each one be simple.
-
-The principle was first enforced for the model's consumers: artifact
-and fleet code cannot walk source for a modeled fact. It now covers
-every semantic fact the compiler acts on, in every crate, through the
-**graph registry** (F.40): one entry per family — ownership, the bus
-graph, dispatch, placement, effects, allocation, lifecycle order and
-the rest — naming its authoritative producer, the legacy producers
-still permitted while it migrates, its consumers and its tests. A
-build fails when the tree grows a derivation-shaped function, a new
-reference to a guarded producer, or a bare Debug rendering the
-registry does not name. The rendered index is
-[`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md);
-the contract is `spec/model.md` § *The graph registry*.
-
-## Facts, and an account of what is missing
-
-The interesting design choice isn't the entity tables. It's that a
-model records **what it could not determine**, as data:
-
-```rust
-Hole {
-    at:    Function(cache_lookup),
-    kind:  IndirectCall,
-    hides: CALLS | EFFECTS | COSTS,
-    reason: "call through `f`",
-}
-```
-
-A graph that stores only what it found cannot distinguish *there is
-no such edge* from *I could not see*. Those are opposite answers to
-every question worth asking. "Does this handler reach a syscall?" —
-if the walk met a function pointer and stopped, the honest answer
-is not "no".
-
-So Hale's verdicts have four values rather than two:
-
-| | |
-|---|---|
-| `holds` | proved |
-| `violated` | disproved, and here is the counterexample |
-| `uncertified` | well-formed, not provable here — the graph has an unknown |
-| `invalid` | the statement itself is malformed |
-
-`uncertified` fails the build, exactly like `violated`. The
-difference is what you do about it: one is a bug in your program,
-the other is a limit of what the compiler can see, and those are
-different repairs.
-
-The dual of a hole is a **capability** — a positive statement that
-some family of facts *is* complete. Positive on purpose: absence of
-recorded unknowns is not evidence of completeness, so a model that
-never noticed a gap does not get to claim exactness by default.
-Whether the model is adequate for a given question is then
-answerable directly, rather than inferred from the absence of
-warnings.
-
-## What that makes sayable
-
-Holding the whole arrangement in one typed value makes properties
-checkable that a per-function analysis cannot express.
-
-**Effects that travel over the bus.** A call graph stops at a
-publish. Hale's message graph is declared over a closed topic set,
-so the compiler continues across it: *this handler, by publishing
-`orders`, can transitively cause a filesystem write in the audit
-subscriber.* You state the causal set, and omitting one is the
-error. A system whose message graph isn't declared cannot ask the
-question at all.
-
-**Influence arriving.** The backward direction is the more useful
-one. A locus that subscribes only to `SumLookup` looks isolated
-from `Recalled` in every declaration it carries — but if some third
-locus subscribes to `Recalled` and republishes onto `SumLookup`,
-the influence arrives anyway, and nothing in the depending locus's
-source mentions it. `@effects(depends: {…})` is the complete set of
-subjects that can reach you, and the diagnostic names the path.
-
-**Amplification.** `@budget(fanout = 8)` bounds the subscriber
-deliveries one call can cause — transitively, per message, over
-runtime registrations. Publishing once to a 200-subscriber subject
-is a fan-out of 200. That is a property of the arrangement, and no
-per-function count reveals it.
-
-Each of these is a statement about the whole system. They are
-checkable because something holds the whole system.
-
-## Counting things correctly
-
-Bounds like `fanout` are quantitative, and quantitative analysis
-over a graph is easy to get *approximately* right in ways that
-matter. Two distinctions do most of the work.
-
-**A set is not a quantity.** Reachability asks *can this happen*;
-a budget asks *how many times*. A handler that calls one publishing
-helper twice publishes twice — the reachable set says once. One
-`subscribe` declaration on a locus arranged with `replicas = 3` is
-three runtime registrations. And a message carries one key, so a
-keyed publish reaches the subscriptions that key selects, not the
-union of every subscription it might ever reach.
-
-This is why call and publish rows in the model are **site-grained**:
-two calls to one callee are two rows, because the callee runs
-twice. Collapsing them into a set computes reachability where the
-language means executions.
-
-**Aggregate last.** Fan-out takes a maximum — over the key values a
-site can produce, and over the conformers of one interface
-dispatch. Taking that maximum early and continuing gives a
-different number:
-
-```text
-max(immediate) + union(downstream)    ≠   max(immediate + downstream)
-Σ over sites of max over alternatives ≠   max over alternatives of Σ
-```
-
-The left-hand forms pick one key for the immediate count and then
-follow *every* key's downstream branch, or let two conformers both
-contribute when one dispatch runs one. So a whole **scenario** —
-one key, one conformer — is costed end to end, and only then
-compared. A call through a function value is the exception for
-now: it can reach each function of its type the program passes
-around as a value, and the model records each as a call site of its
-own, so a count over them adds where only one runs — an
-over-count, never an under-count.
-
-Neither point is exotic. Both are the kind of thing that reads as
-obviously correct in one form and is quietly wrong in another,
-which is precisely why the semantics live in a written contract
-rather than in whichever walk happened to be written first.
-
-## The arrangement
-
-The instance tables — which locus instances exist, who owns each,
-the thread each runs on, the CPUs a thread may use — are not the
-model's own walk. They are the **placement table's** rows, projected:
-the compiler decides where every instance runs once, and the model
-reads that decision rather than deriving a second one.
-
-So the arrangement holds the instances of the main locus the build
-deploys, each where it runs:
+Alongside its code-generation IR (basic blocks, instructions, and registers), the Hale compiler frontend derives an **`ApplicationModel`**: a canonical relational graph of what the program *is*—its loci, ownership tree, call sites, bus pub/sub edges, thread placements, effect classes, and quantitative costs. Every static analysis pass, `claims { }` verifier, bus dispatch planner (`DispatchPlan`), and topology artifact exporter queries this single model rather than re-walking the AST.
 
 ```hale
 type Held = Holder;
 
 main locus App {
     params {
-        h: Held = Holder { };          // App.h, realizing Holder
-        r: Router = RouterV1 { };      // App.r, realizing RouterV1
+        h: Held = Holder { };          // arranged as App.h (realizing Holder)
+        r: Router = RouterV1 { };      // arranged as App.r (realizing RouterV1)
         workers: Worker = Worker { };
     }
     placement {
-        h: pinned;                     // App.h and all below it: pinned:App.h
+        h: pinned;                     // App.h and its subtree run on pinned:App.h
         workers: pinned(cores = 0..4, replicas = 4);
     }
 }
 ```
 
-An aliased field is arranged as the locus the alias names, and an
-interface-typed one as the locus that was actually built. A replica
-carries its own index (`App.workers[2]`), and the instances under it
-carry it in their path. `affined_to` gives each pinned replica, and
-each pool, the CPUs it may run on — a set of cores is something a
-thread *has*, never a thread itself.
+Inspect the derived model for any seed or file using the CLI:
 
-Some instances are deliberately not arranged, and the gap is stated
-rather than hidden. An instance of a standard-library locus (a
-`std::io::udp::Reader` field) is placed by the compiler but not
-arranged, since the model's declarations are the program's own. An
-imported library's `main locus` is never the root. A locus `fn main`
-builds besides the root is a birth outside the arrangement, recorded
-as a hole. The placement table, not the arrangement, answers every
-placement question the checker asks.
+```sh
+hale model dump app.hl
+```
 
-A served surface or a hub keeps the placement of its generated adapters in the
-model's dispatch report, including the adapters' I/O pool. Initializer
-expressions copied from a binding remain params defaults even though
-their diagnostic locations point back to the binding. Connection peers
-created as requests arrive still carry dynamic-placement holes.
+## Single Canonical Derivation (`I7`)
 
-An instance's id is its position in path order, so adding a field
-renumbers what sorts after it. Join instances across builds by path,
-never by id. None of this is in the shape hash: rearranging instances
-never changes a program's `shape_hash` or its observation ids.
+A semantic fact about a program—which functions a method calls, which handlers a bus publish reaches, or which supervisor owns a child instance—has one authoritative producer in the compiler:
 
-## What it doesn't do
+- **Shared in-process truth**: `hale check`'s verdict on a `claims { }` law, the lowered `DispatchPlan` used by codegen, and the verdict written to the topology artifact all read the same `ApplicationModel` tables in memory.
+- **Eight distinct artifacts**: The compiler keeps eight representations strictly separate:
+  1. **Source** (`.hl` files)
+  2. **Plan** (resolved AST and types)
+  3. **Model** (`ApplicationModel` relational tables)
+  4. **Lowered law** (`ClaimIr`)
+  5. **Evidence** (witness paths and counterexamples)
+  6. **Artifact** (`ComponentModel` topology JSON)
+  7. **Lowering plan** (`DispatchPlan`)
+  8. **Execution evidence** (runtime telemetry and replay traces)
+- **The Graph Registry (`spec/registry.md`)**: Every semantic fact family (ownership, bus graph, dispatch, placement, effects, allocation, and lifecycle order) is registered in `spec/registry.md` with its single authoritative producer, permitted legacy producers, consumers, and tests. Compiler CI fails if any crate introduces an unregistered derivation walk, adds a caller to a legacy producer, or formats model rows via raw `Debug` output.
 
-The model lives **inside the compiler process**. There is one way
-to build one — deriving it from checked source — and no way to load
-one from anywhere else.
+## Explicit Horizons: `Hole`s, Capabilities, and Verdicts (`I8`)
 
-The topology artifact is a *projection*: it carries the model half
-under a shape hash, plus typed law, capability and adequacy
-sections, and it is what every out-of-process consumer reads. It is
-lossy by construction, and a model cannot be rebuilt from it.
-Giving the IR a reversible wire form is real work rather than a
-weekend: every table would have to serialise, provenance would have
-to survive, and admission would have to be impossible to trick into
-producing a model that no program denotes.
+A static graph that only records discovered edges cannot distinguish *"no edge exists"* from *"the analysis could not see past an indirect call."* To prevent unresolvable code from silently passing negative claims (`forbid reaches(...)` or `@effects(none: { ... })`), `ApplicationModel` records every analysis boundary as a typed **`Hole`** row:
 
-For now: in-process consumers query the model; everyone else reads
-the artifact and checks the digests that tie it to the compiler
-that produced it.
+```rust
+Hole {
+    at:     Function(cache_lookup),
+    kind:   IndirectCall,
+    hides:  CALLS | EFFECTS | COSTS,
+    reason: "call through `f`",
+}
+```
 
----
+Conversely, the model records positive **`Capability`** rows to certify which fact families are closed and complete, rather than inferring completeness from the absence of warnings.
 
-The contract — sorts, relations, the hole and capability laws, the
-identity rules, and the discipline a new judgment family follows —
-is in
-[`spec/model.md`](https://github.com/hale-lang/hale/blob/main/spec/model.md).
+### The Four Verification Verdicts
 
-For what an individual row holds, field by field, the API reference
-is at [`/api/hale_model`](api/hale_model/index.html).
+Because the model tracks both edges and `Hole`s, every claim or contract check produces one of four verdicts:
+
+| Verdict | Build Outcome | Meaning & Action |
+|---|---|---|
+| `holds` | Pass | The property is proved over a complete, hole-free subgraph. |
+| `violated` | **Error** | Disproved; the compiler prints a concrete witness counterexample path. Fix the program edge or update the law. |
+| `uncertified` | **Error** | The statement is well-formed, but traversal encountered a `Hole` hiding `CALLS`, `EFFECTS`, or `COSTS`. Replace the opaque construct (e.g., function pointer or out-of-arrangement birth) so static analysis can close the graph. |
+| `invalid` | **Error** | The claim itself is malformed (such as referencing an unknown identifier or an empty group without `may_be_empty`). |
+
+## Whole-Program Properties
+
+Holding the entire assembled program in `ApplicationModel` enables checks that per-function analysis cannot express:
+
+| Property | Annotation / Claim | How `ApplicationModel` Verifies It |
+|---|---|---|
+| **Cross-bus transitive effects** | `@effects(none: { fs })`, `forbid reaches(A, effects(syscall))` | Follows edges across `Topic <- payload;` into every matching subscriber handler in the closed topic graph. |
+| **Backward causal influence** | `@effects(depends: { TopicA, TopicB })` | Walks the message and call graph backward to verify the complete set of upstream topics that can transitively trigger or influence a locus. |
+| **Fan-out amplification** | `@budget(fanout = 8)` | Counts the maximum transitive subscriber deliveries caused by a single call across runtime replica registrations and routing keys. |
+
+## Quantitative Graph Semantics
+
+Quantitative checks such as `@budget(fanout = N)` require counting executions rather than set reachability. `ApplicationModel` enforces two rules to keep quantitative counts exact:
+
+### 1. Site-Grained Rows vs. Reachability Sets
+
+Call and publish tables store one row **per syntactic call or publish site**, not one row per `(caller, callee)` pair:
+
+- If a handler calls a publishing helper twice, the model records two call rows and counts two publishes.
+- If a locus subscribing to `Quote` is placed with `pinned(..., replicas = 3)`, the model records three runtime subscriber registrations.
+- If a publish targets a `keyed_by` topic with a known key, the model counts only the subscriptions matching that key rather than the union of all subscribers on the topic.
+
+### 2. End-to-End Scenario Aggregation
+
+When computing worst-case maxima over branching keys or polymorphic interface conformers, the analyzer evaluates each coherent **scenario** (a single routing key or single concrete interface conformer) end-to-end before taking the maximum:
+
+```text
+max(immediate) + union(downstream)    !=   max(immediate + downstream)
+sum over sites of max over branches   !=   max over branches of sum
+```
+
+Aggregating early (left-hand side) would combine the immediate cost of one routing key with the downstream cost of a different key, or sum two mutually exclusive interface conformers as if a single dispatch invoked both. Evaluating complete scenarios first (right-hand side) keeps bounds tight.
+
+> [!NOTE]
+> **Function Pointer Conservatism**
+> Calls through function-pointer values (`fn(T) -> U`) can target any function of matching signature passed as a value in the program. The model currently records each candidate as a call site at that position, resulting in a conservative over-count (never an under-count).
+
+## Instance Arrangement & Placement Projection
+
+The model's instance tables—recording which locus instances exist, their parent-child ownership tree, their assigned thread domain, and their CPU core affinity (`affined_to`)—are projected directly from the compiler's placement table:
+
+- **Type aliases and interfaces**: Aliased fields (`h: Held = Holder { }`) resolve to the concrete locus (`Holder`), and interface-typed fields (`r: Router = RouterV1 { }`) resolve to the concrete implementation constructed in the initializer (`RouterV1`).
+- **Replica paths**: Replicated fields expand to indexed instance paths (`App.workers[0]` .. `App.workers[3]`), and any children nested beneath a replica include the replica index in their path.
+- **CPU affinity (`affined_to`)**: Core sets (`cores = 0..4`, NUMA nodes, L3 domains) are recorded as an `affined_to` attribute on each pinned replica thread or cooperative pool worker.
+- **Arrangement boundaries**:
+  - **Standard-library loci**: Fields of stdlib types (such as `std::io::udp::Reader`) are placed by the compiler in the thread table, but omitted from user declaration arrangement tables.
+  - **Imported `main locus` declarations**: An imported library's `main locus` is never treated as the program's root arrangement.
+  - **Out-of-arrangement births**: Any locus instantiated directly inside `fn main()` outside the root `main locus` is recorded as a dynamic birth `Hole`.
+  - **API surfaces and hubs**: Generated transport adapters for [`api::serve`](./services/api.md) and hubs appear in the model's `dispatch_plan` report with their I/O pool placement, while dynamically accepted client connections carry dynamic-placement holes.
+
+> [!IMPORTANT]
+> **Instance Identity Across Builds (`path` vs. `id`)**
+> Numeric instance IDs are assigned in lexicographic path order, so adding or renaming a field renumbers subsequent IDs. Always join or diff instances across builds by their canonical **instance path** (e.g., `App.workers[2]`), never by numeric ID. Instance ordering does not affect the program's `shape_hash` or runtime observation IDs.
+
+## In-Process `ApplicationModel` vs. Out-of-Process Artifacts
+
+`ApplicationModel` exists only in memory inside the compiler process and is constructed exclusively by checking source code.
+
+Out-of-process tools—such as `hale fleet check` when composing multiple binaries—read the **topology artifact**, which serializes a compact `ComponentModel` projection under a cryptographic `shape_hash` alongside lowered laws, capabilities, and adequacy summaries. The artifact is intentionally a one-way projection: out-of-process consumers run the shared reachability engine over `ComponentModel` and verify artifact digests rather than reconstructing a full compiler `ApplicationModel`.
+
+### Further Reading
+
+- Formal specification of sorts, relations, holes, capabilities, and identity rules: [`spec/model.md`](https://github.com/hale-lang/hale/blob/main/spec/model.md)
+- Authoritative producer/consumer registry: [`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md)
+- Rust crate API reference: [`/api/hale_model`](api/hale_model/index.html)

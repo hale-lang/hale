@@ -1,296 +1,102 @@
-# Libraries (pond)
+# Package Management & `pond` Catalog
 
-The standard library covers the substrate — I/O, time, strings,
-JSON, HTTP, crypto, the bus. Everything else — web stacks,
-databases, observability — lives in **pond**, the contributed
-library catalog: <https://github.com/hale-lang/pond>.
+Hale's built-in standard library (`std::*`) covers core I/O, networking, HTTP, JSON, cryptography, logging, metrics, and the message bus. Ecosystem libraries—database drivers, migrations, NATS adapters, WebSockets, TUI frameworks, and LLM agent toolkits—live in **[`pond`](https://github.com/hale-lang/pond)**, the official contributed library repository.
 
-*Many lotus grow in a pond.* Pond is one repository you vendor
-into your project; each library is a directory of `.hl` loci in
-it, and you import only the ones you use.
+---
 
-## Using one
+## 1. Vendoring Dependencies (`hale.toml` & `hale fetch`)
 
-Declare it in `hale.toml`, fetch it, import it:
+Declare git dependencies in `hale.toml` pinned to a commit SHA:
 
 ```toml
 [deps]
-pond = { git = "https://github.com/hale-lang/pond", rev = "<commit>" }
+pond = { git = "https://github.com/hale-lang/pond", rev = "<commit-sha>" }
 ```
 
-Pin a commit. Pond's one published tag, `v0.8.0`, predates most of
-the catalog, and pond tracks the compiler closely, so a commit
-known to build with your `hale` is the safe pin.
+> [!TIP]
+> Always pin `pond` to a recent commit SHA rather than the legacy `v0.8.0` tag; `pond` tracks the compiler closely.
+
+Run `hale fetch` to clone each dependency into `vendor/<name>/` and record the exact commit in `hale.lock`:
 
 ```sh
 hale fetch
 ```
 
-The import line below is an excerpt of a program with pond
-vendored; on its own it resolves nothing:
+- **No hidden transitive resolution:** Every external repository your project uses is listed explicitly in `[deps]` and locked in `hale.lock`.
+- **Importing sub-libraries with native link flags:** When a `pond` library depends on another `pond` library that carries `[ffi]` link settings in its own `hale.toml` (for example, `pond/jobs` uses `pond/sqlite`), import both in your program so the compiler picks up `sqlite`'s link flags.
+
+---
+
+## 2. Importing Libraries (`import ... as ...;`)
+
+Import a vendored or local seed directory using `import "<path>" as <alias>;`:
 
 ```hale,fragment
 import "vendor/pond/sqlite" as sqlite;
-```
-
-Everything the library declares is then reachable as
-`sqlite::Name`, and a qualified literal — `sqlite::Db { path:
-"app.db" }` — is typechecked against the library's own declaration:
-misspell a field and `hale check` says so, the same as for a
-type you declared yourself.
-
-So is a qualified type written as an *annotation*. `let c:
-sqlite::Db = "dev";` is a type error naming `sqlite::Db`,
-and so is the same type in a parameter, a return, a struct field,
-a `params` field or a `capacity` slot — the library's declaration
-is the type, and `c.pth` is a misspelled field rather than
-something the checker shrugs at. Import the same library under two
-aliases and you still have one type: what `a::Row` builds fits
-where `b::Row` is wanted.
-
-The one thing to know is *what* you hand it: run `hale check` on the
-seed (`hale check .`) rather than on a single file. One file of a
-multi-file seed is checked the way `hale build` builds that file —
-alone — so an `import` line that lives in a sibling is not there, and
-the path is refused as unresolved, by the check and the build alike.
-
-`hale fetch` clones each dependency into `vendor/<name>/` and
-pins the resolved commit in `hale.lock`. Hale resolves no
-transitive dependencies, so every repository your program pulls in
-is a `[deps]` entry of your own and a row of your lockfile. Inside
-pond, when one library uses another (`jobs` keeps its queue in
-`sqlite`), import that one in your program too: pond asks for it,
-and a library's `hale.toml` link settings are picked up only from
-your program's own imports.
-
-## The alias is not a value
-
-The name after `as` is a namespace, not a binding, so it can be
-the same as a fn you declare. With a library at `../core` that
-declares `greet`, this is a file of the program:
-
-```hale,fragment
-import "../core" as core;
-
-fn core(args: String) -> String { return "[" + args + "]"; }
-
-fn go() -> String {
-    return core::greet("mid") + " " + core("x");
-}
-```
-
-`core::greet` goes through the import; `core("x")` calls your fn.
-Paths take the alias, bare names take the value — and it reads the
-same way when someone else imports *your* seed.
-
-Types are the exception: `Name::Thing` is also how you write an
-enum variant, so if you name an alias after one of your own types
-the type wins and the alias becomes unreachable in path position.
-Aliases are lower-case by convention, which keeps them out of the
-way of type names.
-
-An alias also belongs to the seed that declares it: a library you
-vendor may call something `u` while your own program calls a
-different library `u`, and each `u::f()` means the one its own seed
-imported. It follows that a seed can only use the aliases it
-declares itself — `u::f()` written in a seed with no `import … as
-u;` is a check error that names the seed which does declare `u`,
-rather than quietly borrowing that seed's import.
-
-## One library, however you spell it
-
-A library is a directory, and `main.hl` is that directory's entry
-file rather than a library of its own — so `import "../lib/main"`
-and `import "../lib"` name the same library. Both spellings see
-every file of the seed, and both resolve to one set of symbols, so
-a value your app builds as `lib::Config` is the same type the
-library's own signatures mean by it. Spell it whichever way in
-whichever file; there is one library either way.
-
-Any *other* single file is its own small library: `import
-"../lib/helper"` brings in `helper.hl` and nothing else.
-
-What you cannot do is have it both ways in one program. If some
-file of your app imports `"../lib"` — the whole directory — then
-`"../lib/helper"` is not a library of its own any more, it is a
-file of that one, and the second import is refused where you wrote
-it:
-
-```text
-/tmp/app/other.hl:1:8: type error: `../lib/helper` is already part of the library imported as `a` at /tmp/app/main.hl:1; a single file of a directory-imported library is not a library of its own — reach its declarations as `a::<name>` and drop this import
-    import "../lib/helper" as h;
-           ^^^^^^^^^^^^^^^
-```
-
-Those two imports really are different libraries — one file against
-the whole seed — and a file can only be compiled into one of them,
-so the compiler asks you which. The fix is in the message: drop the
-file import and spell the names you wanted through the alias the
-directory already has.
-
-## A library's own `main locus`
-
-A library directory can be a program of its own: a `main.hl` that
-declares a `main locus` and a `fn main`. Importing it does not make
-that locus yours. The `main locus` that arrives through an `import`
-belongs to the library, not to your entry: it does not count
-against the rule that a program has at most one, its `bindings { }`
-stay inert (nothing is bound, and no socket path is touched), and
-its `run()` is never started by your program. So an app can import a
-seed for its functions and types and still declare its own. With a
-library at `../lib` that declares `greeting`, a program can read:
-
-```hale,fragment
-import "../lib" as lib;
 
 main locus App {
-    run() { println(lib::greeting()); }
+    run() {
+        let db = sqlite::Db { path: "app.db" };
+    }
 }
-
-fn main() { App { }; }
 ```
 
-Two `main locus` declarations in *your own* files are still an error:
-``more than one `main` locus declared``.
+### Resolution & Scoping Rules
 
-## When the path names nothing
-
-A path that resolves to none of those places fails the check where
-you wrote it:
-
-```text
-/tmp/app/main.hl:1:8: type error: could not resolve import `../nowhere` (tried /tmp/app/../nowhere.hl, /tmp/app/../nowhere/, and workspace-root/../nowhere/)
-    import "../nowhere" as nowhere;
-           ^^^^^^^^^^^^
-```
-
-The three paths in the message are the three places the compiler
-looked, in order, so a typo and a library you have not vendored yet
-look different at a glance. The caret is under the string itself —
-the thing to change — and the file it names is the file holding the
-`import`, which for a two-hop failure is the library's file rather
-than yours.
-
-`build`, `run` and `test` print that same line, and `hale check
---json` carries it as one record with the file, line and column in
-it, so an editor opens the `import` rather than the top of the
-program.
-
-If the path *does* resolve but there is nothing to compile there —
-a vendored directory with no `.hl` files in it, a checkout that
-did not finish — the report names that directory instead. The
-import was found; reading what it named is what failed.
-
-## When the name after the alias names nothing
-
-An `import` that resolves does not make every `alias::Name` you go
-on to write real. The compiler answers the path itself, where you
-wrote it:
-
-```text
-/tmp/app/main.hl:4:13: type error: `zz::f`: `zz` is not an import or a type of this seed
-/tmp/app/main.hl:6:13: type error: `b::Greeting` is not declared by the library imported as `b`; `b` provides: Config, Route, serve
-```
-
-The first is a head that is nothing at all — no `import … as zz;`
-in this seed, and no type of your own called `zz`: a typo, or an
-import you meant to add. The second is your own alias with a name
-the library does not declare; when a spelling is close the message
-says "did you mean", and when none is it lists what the library
-provides.
-
-Both hold in every position a path can stand in — a type
-annotation, a call, a `Name { }` literal, a const, an enum variant
-— and a `bindings { }` entry naming a topic nothing declares has
-always reported itself the same way. A `subscribe` or `publish` of
-`alias::Topic` gets the wording a local topic nobody declared gets,
-with the alias and the missing topic named:
-
-```text
-/tmp/app/main.hl:5:19: type error: subscribe references unknown topic `b::Nope` (the library imported as `b` declares no `topic Nope`)
-```
-
-`build`, `run` and `test` print the same finding, so a gate that
-runs `hale check` and a build that runs later agree about the
-program.
-
-A third shape belongs here: a stdlib call with the `std::` prefix
-left off. `env::args_count()` is not an import of anything, and the
-message says what it is — "`env::args_count` is unresolved — did you
-mean `std::env::args_count`?" — at the call rather than at the end of
-a build. (`time::sleep` and `time::monotonic` are the exception the
-compiler still answers unprefixed; they are old spellings, and
-`std::time::` is the one to write.)
-
-The *what* is the one above again: `hale check .` and every build
-path see the whole seed; `hale check <one file>` sees that file and
-its own imports, as `hale build <one file>` does, so a path whose
-`import` line is in a sibling file is refused by both.
-
-## The catalog
-
-**Persistence & data**
-
-| Library | Provides |
+| Rule | Behavior |
 |---|---|
-| `db` | Driver-agnostic database surface: the `DbDriver` interface + `Args` bind-parameter list for parameterized (`$1, $2, …`) queries. Pick a backend (`pq`, `sqlite`) at the `DbDriver` slot. |
-| `pq` | PostgreSQL driver — `PgConn` plus `PgPool`, a fixed-size fd connection pool that itself satisfies `db::DbDriver`. |
-| `sqlite` | SQLite connection + fallible query surface. |
-| `migrations` | Schema migration runner over `db::DbDriver`: register the migrations, then `Migrator` runs up / down / steps / goto. |
-| `jobs` | SQLite-backed job queue (`Queue`) + a pinned-worker pool (`Pool`, `Worker`). |
+| **Check/build the directory, not a single file** | In a multi-file seed, run `hale check .` or `hale build .`. Checking a single file (`hale check other.hl`) compiles that file standalone without sibling files' `import` declarations. |
+| **Directory vs. file imports** | `import "../lib" as lib;` and `import "../lib/main" as lib;` both import the entire `../lib/` seed directory as one library. Importing any other `.hl` file (`import "../lib/helper" as h;`) imports that single file standalone. You cannot import both a directory and an individual file inside that same directory in one program. |
+| **Aliases are seed-local namespaces** | An import alias (`sqlite::Db`) is a namespace, not a value binding: a function named `fn core()` and `import "../core" as core;` do not collide (`core::fn_name()` vs `core()`). However, keep aliases `snake_case` so they never collide with `PascalCase` `type` or `enum` names (`Type::Variant` takes precedence over `alias::Symbol`). |
+| **Type identity across aliases** | Importing the same library under two aliases (`a` and `b`) refers to the exact same underlying types (`a::Row` is type-compatible with `b::Row`). |
+| **Imported `main locus` is inert** | If an imported library directory contains its own `main locus` and `fn main()`, importing that library does **not** activate its `main locus`, `bindings`, or `placement`. Your application can still declare its own `main locus`. |
+| **Stdlib requires `std::`** | Built-in standard library modules are called directly via `std::*` (e.g., `std::env::args_count()`, `std::time::sleep(1s)`) with no `import` statement. Omitting `std::` produces a compile error suggesting the `std::` prefix. |
 
-**Web**
+---
 
-| Library | Provides |
+## 3. The `pond` Library Catalog
+
+All libraries below are imported from `vendor/pond/<path>` after running `hale fetch`.
+
+### Persistence & Databases
+
+| Import Path | Description |
 |---|---|
-| `http` | HTTP client (`http/client`) with a pool and retries. Superseded by the client in `std::http`; kept for older pins. |
-| `router` | HTTP router — method + path-param routes, middleware chain. Superseded by `std::http::Router`; kept for older pins. |
-| `sessions` | Stateless, HMAC-signed cookie sessions (`session=<base64(payload)>.<base64(hmac)>`). |
-| `websocket` | RFC 6455 WebSocket client and server-side upgrade, with ping/pong liveness deadlines (suggested alias `ws`). |
+| `vendor/pond/db` | Driver-agnostic database interface (`DbDriver`) and parameterized query builder (`Args` for `$1, $2, ...` placeholders). |
+| `vendor/pond/pq` | PostgreSQL driver (`PgConn`) and fixed-size connection pool (`PgPool`) implementing `db::DbDriver`. |
+| `vendor/pond/sqlite` | SQLite 3 connection and fallible query surface implementing `db::DbDriver`. |
+| `vendor/pond/migrations` | Schema migration runner (`Migrator`) over any `db::DbDriver` (`up`, `down`, `steps`, `goto`). |
+| `vendor/pond/jobs` | Persistent SQLite-backed job queue (`Queue`) and pinned worker pool (`Pool`, `Worker`). |
 
-**Realtime**
+### Web, HTTP & Realtime Messaging
 
-| Library | Provides |
+| Import Path | Description |
 |---|---|
-| `realtime/nats` | NATS core + JetStream client, and a `std::bus` adapter that carries a program's topics over NATS with at-least-once delivery. |
+| `vendor/pond/sessions` | Stateless HMAC-signed cookie sessions (`session=<base64(payload)>.<base64(hmac)>`). |
+| `vendor/pond/websocket` | RFC 6455 WebSocket client and server upgrade handler with ping/pong liveness deadlines. |
+| `vendor/pond/realtime/nats` | NATS Core and JetStream client plus a `std::bus` transport adapter for cross-process topic delivery with at-least-once semantics. |
+| `vendor/pond/http` | Legacy HTTP client pool (superseded by built-in `std::http`). |
+| `vendor/pond/router` | Legacy HTTP router (superseded by built-in `std::http::Router`). |
 
-**Observability & supervision**
+### Observability, Supervision & OS Processes
 
-| Library | Provides |
+| Import Path | Description |
 |---|---|
-| `logfmt` | Alternative `std::log` sinks wearing the `std::text::Sink` shape. Its file and console sinks moved into `std::log`; `OtlpSink` is pond-only. |
-| `metrics` | Counter / gauge / histogram primitives + a Prometheus text-format renderer and `/metrics` endpoint. Superseded by `std::metrics`; kept for older pins. |
-| `tracing` | Span tree mirroring the locus tower — one `Tracer` per app; spans nest with locus instantiation. |
-| `supervisor` | Erlang/OTP supervision-tree strategies grafted onto Hale's `on_failure` + `restart` / `restart_in_place` / `bubble`. |
+| `vendor/pond/logfmt` | Additional `std::log` sinks implementing `std::text::Sink`, including `OtlpSink` (console and file sinks are built into `std::log`). |
+| `vendor/pond/tracing` | Hierarchical span tracer (`Tracer`) that automatically mirrors the locus ownership tree. |
+| `vendor/pond/supervisor` | Erlang/OTP supervision strategies built on top of Hale's `on_failure` (`restart`, `restart_in_place`, `bubble`). |
+| `vendor/pond/subprocess` | Child process manager wrapping `std::process::run` and `spawn` with piped stdio and timeouts. |
+| `vendor/pond/crypto` | Additional cryptographic helpers complementing `std::crypto`. |
+| `vendor/pond/metrics` | Legacy Prometheus metrics registry (superseded by built-in `std::metrics` and `std::observe::Scrape`). |
 
-**Primitives & composition**
+### Terminal UI, AI Agents & Scientific Computing
 
-| Library | Provides |
+| Import Path | Description |
 |---|---|
-| `crypto` | SHA-256/512, HMAC-SHA256/512, hex encode/decode, constant-time compare, CSPRNG. |
-| `subprocess` | Spawn + manage child processes (suggested alias `sub`) — wraps `std::process::run` / `spawn` with pipes and a timeout. |
+| `vendor/pond/term` | Terminal capability detection (`is_tty`), ANSI SGR styling, raw-mode guard, and cursor/screen control over `std::term`. |
+| `vendor/pond/tui` | Elm-architecture terminal UI runtime (model / update / view locus driven by a frame loop). |
+| `vendor/pond/agent` | LLM agent toolkit (`agent/llm`, `agent/tools`, `agent/conversation`, `agent/embeddings`, `agent/sandbox`). |
+| `vendor/pond/ml` | Neural network primitives (`ml/neural`). |
+| `vendor/pond/math` | Matrix algebra and statistical functions (`math/matrix`, `math/stats`). |
 
-**Terminal & UI**
-
-| Library | Provides |
-|---|---|
-| `term` | Tier-0 terminal infrastructure — capability/`is_tty` probes, SGR styling, raw-mode guard, cursor + screen control over `std::term`. |
-| `tui` | An Elm-shaped TUI runtime: write a locus with model/update/view, the runtime drives the frame loop, input, and rendering. |
-
-**AI & numeric**
-
-| Library | Provides |
-|---|---|
-| `agent` | LLM-agent toolkit — `agent/{llm, tools, conversation, embeddings, sandbox}`: a client surface, a tool-registry, conversation state, and a sandboxed execution path. |
-| `ml` | Neural-network primitives (`ml/neural`). |
-| `math` | Numeric helpers — `math/{matrix, stats}`. |
-
-> The tree-sitter grammar that drives editor highlighting lives at
-> [tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale)
-> (it moved out of pond — it's developer tooling, not a library you
-> `import`). The `_util` directory holds small shared helper libs,
-> mostly consumed by other pond libs.
-
-Pond is where the ecosystem grows: if a protocol, parser, or
-shape is too useful to rewrite per project but doesn't belong in
-the language, it lands here.
+> **Editor Grammar:** The Tree-sitter grammar for syntax highlighting lives in its own repository at [github.com/hale-lang/tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale).

@@ -1,141 +1,127 @@
-# Your first run
+# Quickstart & Toolchain
 
-> Put something on screen.
+## 1. Hello World
 
-Create a file `hello.hl`:
+Create `hello.hl`:
 
 ```hale
 fn main() {
-    println("Hello from Hale.");
+    let name = "Hale";
+    println("Hello from ", name, ".");
 }
 ```
 
-Run it:
+Compile and execute it in one step with `hale run`:
 
 ```sh
 hale run hello.hl
 ```
 
-```
+```text
 Hello from Hale.
 ```
 
-`hale run` compiles your program and runs it in one step — it's
-the same native code `hale build` produces, just executed
-immediately and not left on disk. When you want the artifact to
-keep and ship, build it:
+To produce a standalone native binary on disk, use `hale build`:
 
 ```sh
 hale build hello.hl
 ./hello
 ```
 
-Same compiler, same output: `run` is the fast inner-loop shape,
-`build` is for the binary you deploy. There's no separate
-interpreter, so anything that runs under `build` runs identically
-under `run`.
+`hale run` and `hale build` use the exact same LLVM compiler pipeline—there is no separate interpreter. `hale run` compiles to a temporary binary, executes it, and cleans it up.
 
-## What's here
+### Scaffold a New Project
 
-- **`fn main()`** is the entry point, the same as it is in C, Go,
-  or Rust. A Hale program starts by calling it.
-- **`println(...)`** prints its arguments followed by a newline.
-  It takes *any number* of arguments and concatenates them —
-  there's no format string:
+To start a multi-file project with a `hale.toml` manifest, an entry seed, and a test file:
 
-  ```hale
-  fn main() {
-      let name = "Hale";
-      println("Hello from ", name, ".");
-  }
-  ```
-
-- **Statements end with `;`.** Newlines are just whitespace —
-  they don't end statements. Source is ASCII outside of string
-  literals and comments.
-
-Comments are C-style:
-
-```hale
-// a line comment
-/* a block comment */
+```sh
+hale init my-app
+cd my-app
+hale run .
+hale test .
 ```
 
-That's the whole surface you need to start. The next chapter
-introduces variables and the value types — the vocabulary every
-Hale program is built from.
+Passing a directory (`hale run .`, `hale check .`, `hale build .`) compiles all `.hl` files in that directory as a single **seed** (package/module unit) with shared top-level scope.
 
-> **`hale run` and imports.** `import "..." as ...;` directives
-> are resolved by `hale run` just as `hale build` resolves them,
-> for a single file and for a directory (`hale run ./dir`, which
-> takes the directory's files as one program).
+---
 
-## Build modes, diagnostics, and debugging
+## 2. Basic Syntax Rules
 
-A few switches worth knowing from day one:
+- **Entry point:** Execution starts at `fn main()`.
+- **Output:** `println(a, b, c)` concatenates any number of arguments and appends a newline. String interpolation uses `f"Hello {name}"`.
+- **Semicolons:** Every statement ends with `;`. Newlines are whitespace.
+- **Encoding:** Source files are ASCII outside of string literals and comments.
+- **Comments:** `//` for single-line comments, `/* ... */` for block comments, and `///` for doc comments rendered by `hale doc`.
 
-- **The rest of the loop:** `hale fmt` keeps your code canonical
-  (zero config; it also breaks lines wider than 100 columns, by
-  their shape), `hale test` runs `*_test.hl`, `hale verify` is
-  `check` with teeth (any advisory fails — what CI runs), and
-  `hale doc` renders API references from `///` comments. Agent
-  hosts without a shell get all of it via `hale mcp`.
-- **Faster iteration:** `hale build --dev` (or `HALE_DEV=1`) uses a
-  lighter optimization pipeline — noticeably quicker builds while
-  you're in an edit-run loop. Release builds default to `-O3`
-  tuned for your CPU.
-- **Where did the build time go?** `HALE_TIME=1 hale build app.hl`
-  prints per-phase wall times.
-- **What did the lifecycle do?** `HALE_LIFECYCLE_TRACE=1 hale run app.hl`
-  builds with the lifecycle trace: one `lc` line on stderr per step
-  (a birth, a `run()`, a drain, a dissolve, a reclaim, the pool
-  join), naming the instance, its restart incarnation and the thread
-  it ran on. Concurrent events for an instance wait for its trace
-  identity to be initialized; this synchronization and writing the
-  trace can affect scheduling. A debug aid: the format is not a
-  contract, and a build without the switch carries none of it.
-- **Editor & agent integration:** `hale lsp` is a stdio Language
-  Server — point any LSP-speaking editor (or agent harness) at it
-  and you get live diagnostics: type errors as errors, the
-  advisory analyses (unbounded-alloc survey, hot-path lint,
-  placement warnings) as warnings, refreshed as you edit. The server loads
-  the seed exactly as `hale check <dir>` does — every file of the
-  open file's directory, every `import` followed, your unsaved
-  buffers in place of the files on disk — so the two never disagree;
-  a seed file that cannot be read is an error on the file you have
-  open, not a clean result. On a program that declares laws the
-  diagnostics arrive in two steps: the type check's findings first,
-  then the laws' verdicts added to the files they concern. The first
-  step is incremental: when an edit changes only what bodies do, the
-  server type-checks again just the declarations you edited and the
-  ones that read them, and keeps the rest from the last check. An edit
-  to a signature, a field, or which declarations exist checks the
-  whole seed. Either way the findings are the ones a full check
-  gives. Diagnostics use your import aliases when naming library
-  declarations, with a stable spelling across checks. Repeated imports
-  of the same library share their rename entries, and each check reuses
-  its name index across diagnostic publications. Hover shows
-  signatures with their contracts (fallibility, `@hot`/`@budget`
-  status, a topic's routing key), completion covers `self.`
-  members, the `std::` surface, and your seed's symbols,
-  go-to-definition and references work across the seed —
-  go-to-definition on a `std::` path jumps into the stdlib's own
-  source (materialized read-only from the compiler's embedded copy,
-  so it works even when nothing is installed on disk) — and the custom requests `hale/busGraph`,
-  `hale/placement`, and `hale/allocSummary` return the pub/sub
-  topology, the thread/pool map of the `main locus` the build deploys
-  (your own, never an imported library's), and the allocation survey's leak
-  sites. If the compiler itself panics on a half-typed file the server
-  stays up: that file gets one error, "the compiler hit an internal error
-  on this file: …; please report it with the file" (a request gets a
-  JSON-RPC internal error), and the next edit is checked as usual. No
-  configuration. Prefer plain JSON?
-  `hale check app.hl --json` emits one object per diagnostic
-  (file, line, col, severity, kind, message) on stdout — a save-hook is
-  all a minimal integration needs.
-- **Real debugging:** binaries carry full DWARF by default —
-  `gdb ./app`, `break app.hl:42`, backtraces with real file:line,
-  `info locals` / `print x` with typed values (Strings print their
-  text),
-  and ASAN reports that point at the exact source line. Zero
-  runtime cost; opt out with `LOTUS_NO_DEBUGINFO=1`.
+---
+
+## 3. Essential Toolchain Commands
+
+| Command | Description |
+|---|---|
+| `hale check <file\|dir>` | Parse, typecheck, and run static topology/effect/memory analyses without codegen |
+| `hale verify <file\|dir>` | Strict CI gate: runs `hale check` and fails on any warning or advisory |
+| `hale run <file\|dir> [args...]` | Compile and immediately execute |
+| `hale build <file\|dir> [-o <out>]` | Compile to a native binary (or `.wasm` + `.mjs` with `--target wasm32`) |
+| `hale test <file\|dir>` | Compile and run `*_test.hl` test suites |
+| `hale bench <file\|dir>` | Compile and run `*_bench.hl` benchmarks (`ns/op`, `allocs/op`) |
+| `hale fmt <file\|dir>` | Format source code in place (zero-config, 100-column structural line breaking) |
+| `hale doc [<file\|dir> \| --stdlib]` | Render documentation from `///` comments or inspect the standard library (`--stdlib`) |
+| `hale lsp` | Start the built-in Language Server Protocol (LSP) server over stdio |
+| `hale mcp [--app <endpoint>]` | Start the Model Context Protocol (MCP) server for AI agents |
+
+---
+
+## 4. Build Modes, Tracing & Debugging
+
+### Fast Iteration (`--dev`)
+
+By default, `hale build` and `hale run` compile with `-O3` tuned for the host CPU. During rapid edit-compile-run loops, enable the lighter optimization pipeline:
+
+```sh
+hale build --dev app.hl
+# or via environment variable:
+HALE_DEV=1 hale run app.hl
+```
+
+### Build Timing & Lifecycle Tracing
+
+| Environment Variable | Effect |
+|---|---|
+| `HALE_TIME=1` | Prints per-phase compiler wall times during `hale build` / `hale run`. |
+| `HALE_LIFECYCLE_TRACE=1` | Instruments the binary to log every locus `birth`, `run`, `drain`, `dissolve`, `reclaim`, and pool join to `stderr` with instance IDs, restart incarnations, and thread IDs. |
+| `LOTUS_NO_DEBUGINFO=1` | Omits DWARF debug symbols from the emitted binary. |
+
+### Native Debugging with `gdb` / `lldb`
+
+Compiled binaries include full DWARF debug info by default at zero runtime cost:
+
+- Set breakpoints by `.hl` file and line (`break app.hl:42`).
+- Inspect backtraces with original Hale source locations.
+- Print local variables and typed `String` values with `info locals` / `print x`.
+- AddressSanitizer (`LOTUS_ASAN=1`) reports exact `.hl` source lines.
+
+---
+
+## 5. Editor Integration (`hale lsp` & `--json`)
+
+### Language Server (`hale lsp`)
+
+Point any LSP-compatible editor (VS Code, Neovim, Helix, Zed, Emacs) at `hale lsp`. It requires zero configuration and provides:
+
+- **Live incremental diagnostics:** Type errors, effect violations, placement errors, and memory-bound advisories update as you type. On programs with `claims`, type errors report first, followed by claim verdicts.
+- **Hover & completions:** Displays function signatures, `fallible(E)` contracts, `@hot`/`@budget` annotations, topic routing keys, `self.` members, and `std::` symbols.
+- **Go-to-definition & references:** Resolves across your seed, imported libraries, and directly into the compiler's embedded `std::` standard library source.
+- **Custom topology queries:** Exposes `hale/busGraph`, `hale/placement`, and `hale/allocSummary` LSP requests for inspecting the pub/sub graph, thread pool mapping, and arena allocation sites.
+
+### Machine-Readable Diagnostics (`--json`)
+
+For scripts, save hooks, or custom tooling, pass `--json` to `hale check`:
+
+```sh
+hale check app.hl --json
+```
+
+This emits one NDJSON object per diagnostic (`file`, `line`, `col`, `severity`, `kind`, `message`) on `stdout`. An empty output stream guarantees a clean check.
+
+Next: **[Tutorial: Build a Job Queue](../tutorial/job-queue.md)** or jump straight to **[Values, Types & Variables](../basics/values.md)**.

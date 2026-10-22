@@ -1,381 +1,189 @@
-# Math, money & time
+# Math, Money & Time
 
-> Arithmetic, and three types that save you from classic bugs.
+Hale provides standard arithmetic and bitwise operators alongside first-class types for exact fixed-point decimals (`Decimal`), nanosecond time spans (`Duration`), UTC timestamps (`Time`), and bounded or distinct integers. Financial calculations, unit conversions, and time arithmetic are checked at compile time with explicit rounding policies.
 
-## Arithmetic
+```hale
+fn main() {
+    let unit_price: Decimal<2> = 19.99d;
+    let total = unit_price * 3d;               // 59.97 (exact Decimal<2>)
 
-The operators are what you'd expect:
+    let start = `2026-05-08T12:00:00Z`;
+    let deadline = start + 1h + 30min;         // 2026-05-08T13:30:00Z
+    println(f"total={std::decimal::format(total, 2)} deadline={deadline}");
+}
+```
+
+## Numeric, Logical, and Bitwise Operators
+
+| Category | Operators | Supported Types | Behavior & Notes |
+|---|---|---|---|
+| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `Float`, `Decimal`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+` |
+| Remainder | `%` | `Int`, `Decimal` | Not defined on `Float` |
+| Equality | `==`, `!=` | `Int`, `Float`, `Decimal`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
+| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `Float`, `Decimal`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
+| Logical | `&&`, `\|\|`, `!` | `Bool` | `&&` and `\|\|` short-circuit |
+| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int` | Bitwise AND, OR, XOR, shifts, and NOT |
 
 ```hale,fragment
-let a = 7 + 3;       // 10
-let b = 7 - 3;       // 4
-let c = 7 * 3;       // 21
-let d = 7 / 3;       // 2   — integer division
-let e = 7 % 3;       // 1   — remainder
+let a = 7 + 3;                         // 10
+let d = 7 / 3;                         // 2 (integer division)
+let e = 7 % 3;                         // 1 (remainder)
+
+let between = a > 0 && a < 100;        // chained comparisons require &&
+let safe = d != 0 && a / d > 2;        // short-circuits before division when d == 0
+let masked = (a << 2) & 0xFF;          // bitwise operations on Int
 ```
 
-Comparison and logic:
+> [!NOTE]
+> Structs, tuples, and arrays do not overload `==` or other operators. Attempting `p1 == p2` on a struct produces a compile error instructing you to compare its fields explicitly.
 
-```hale,fragment
-let bigger = a > b;          // Bool
-let between = a > 0 && a < 100;
-let either  = ready || forced;
-let negated = !ready;
-```
+## `Int`, `Float`, and `Decimal` Overview
 
-Bitwise operators (`& | ^ << >> ~`) are available on `Int`.
+| Type | Representation | Implicit Conversions | Primary Use Case |
+|---|---|---|---|
+| `Int` | 64-bit signed integer (`i64`) | Widens to `Float` in unambiguous contexts | Counts, indices, bitwise logic |
+| `Float` | 64-bit IEEE-754 double (`f64`) | None | Scientific math, ratios, physical measurements |
+| `Decimal` (`Decimal<9>`) | 128-bit fixed-point, 9 fractional places | Widens to `Decimal<S>` where `S > 9` via `.rescale(S)` | General exact decimal arithmetic |
+| `Decimal<S>` (`S` in `0..=18`) | 128-bit fixed-point, `S` fractional places | None (distinct per scale `S`) | Currency (`Decimal<2>`), high-precision tokens (`Decimal<18>`) |
 
-Each operator applies to the types it means something for, and the
-checker says so at the operator when it doesn't: `%` is on `Int` and
-`Decimal` but not `Float`; a `Bool` has `==`, `!=`, `&&`, `||` and
-`!`; a `String` has `+` and the comparisons; an enum has `==` and
-`!=`. A struct, a tuple or an array has no operators at all — compare
-it field by field:
+## `Int` and `Float` Conversions and Math
 
-```text
-type error: `==` does not apply to a struct (`Point`): it has no
-operators; compare or combine its parts
-```
+### Implicit Widening and Explicit Casts
 
-Comparisons don't chain: write `a < b && b < c`. On numbers,
-`a < b < c` is refused — it would compare the `Bool` from `a < b`
-with an `Int` — so the maths-notation habit can't slip through
-silently.
+Hale automatically widens `Int` to `Float` in five unambiguous contexts:
+1. At a `let` binding with a `: Float` type annotation (`let x: Float = n;`).
+2. When passing an `Int` argument to a `Float` function parameter (`std::math::sqrt(16)`).
+3. In binary arithmetic or comparisons where the other operand is already `Float` (`2.0 * 3`).
+4. In a `Float` field of a `type` struct literal.
+5. When returning an `Int` from an infallible `-> Float` function (`fn f(n: Int) -> Float { return n; }`).
 
-`&&` and `||` short-circuit: the right side is evaluated only when
-the left side doesn't already decide the answer. So a guard protects
-what follows it:
+> [!IMPORTANT]
+> Implicit widening applies **only** to `Int`. Unit quantities (such as `5ms`), `fallible` function return paths, and `locus` `params` fields (`Worker { rate: 3.0 }`) do not implicitly widen.
 
-```hale,fragment
-let safe = d != 0 && total / d > 10;   // never divides by zero
-let found = cached || lookup(key);     // lookup runs only on a miss
-```
-
-## Int and Float
-
-`Int` is 64-bit signed; `Float` is a 64-bit IEEE double. Hale
-widens `Int` to `Float` automatically where it's unambiguous —
-at a `let` with a `Float` annotation, when passing an `Int` to a
-`Float` parameter, when one side of an arithmetic or comparison
-operator is a `Float`, when a `Float` field of a `type` literal
-is given an `Int`, and when a fn declared `-> Float` returns an
-`Int` (`fn half(n: Int) -> Float { return n; }`; a `fallible` fn's
-success return does not widen):
-
-```hale,fragment
-let n = 3;
-let x: Float = n;              // 3.0 — widened at the binding
-let r = std::math::sqrt(16);   // 4.0 — the Int argument widens
-let y = 2.0 * 3;               // 6.0 — Int 3 promoted to Float
-```
-
-Only an `Int` widens: a quantity such as `5ms` is not one, so
-`let t: Float = 5ms;` is refused, and a locus's `Float` param
-takes a `Float` (`Worker { rate: 3.0 }`).
-
-Going the other way loses information, so it's explicit:
-
-```hale,fragment
-let n = Int(3.9);        // 3 — truncates toward zero
-```
-
-`Float(x)` is the same cast in the widening direction, for the
-places the implicit rule doesn't reach — mid-expression, most
-often:
+Where both operands are `Int` or when converting `Float` to `Int`, use the built-in `Float(x)` and `Int(x)` casts or their `std::math` equivalents:
 
 ```hale,fragment
 let hits = 3;
 let total = 8;
-let rate = Float(hits) / Float(total);   // 0.375, not 0
+let rate = Float(hits) / Float(total);   // 0.375 (widens before division)
+let truncated = Int(3.9);                // 3 (truncates toward zero)
 ```
 
-Those two are the only casts. `String`, `Bool`, `Bytes` and the
-rest are type names, not conversions: `String(x)` calls nothing
-and is refused.
+`Int(x)` and `Float(x)` are the only primitive cast expressions in the language; type names like `String(x)`, `Bool(x)`, and `Bytes(x)` are not casts and are rejected at compile time.
 
-When you'd rather name the conversion — or need it mid-expression
-where the implicit widening doesn't reach — `std::math` has both
-directions as functions:
+### `std::math` Functions and IEEE-754 Semantics
 
-```hale,fragment
-let f = std::math::int_to_float(42);     // 42.0
-let m = std::math::float_to_int(3.99);   // 3 — round toward zero
-```
+| Function | Signature | Description |
+|---|---|---|
+| `abs(x)` | `(T) -> T` (builtin) | Absolute value (`Int`, `Float`, `Decimal`, `Duration`) |
+| `min(a, b)` / `max(a, b)` | `(T, T) -> T` (builtin) | Minimum / maximum; returns `NaN` if either `Float` argument is `NaN` |
+| `std::math::int_to_float(n)` | `(Int) -> Float` | Converts `Int` to `Float` (equivalent to `Float(n)`) |
+| `std::math::float_to_int(x)` | `(Float) -> Int` | Truncates `Float` toward zero (equivalent to `Int(x)`) |
+| `std::math::round(x)` | `(Float) -> Int` | Rounds half away from zero (`2.5 -> 3`, `-2.5 -> -3`) |
+| `std::math::trunc(x)` | `(Float) -> Int` | Truncates toward zero to `Int` |
+| `std::math::floor(x)` / `ceil(x)` | `(Float) -> Float` | Rounds down / up to nearest whole `Float` |
+| `std::math::sqrt(x)` / `pow(x, y)` | `(Float, ...) -> Float` | Square root and exponentiation |
+| `std::math::exp(x)` / `log(x)` | `(Float) -> Float` | Natural exponential and logarithm |
+| `std::math::nan()` / `is_nan(x)` | `() -> Float` / `(Float) -> Bool` | Produces or tests IEEE-754 `NaN` |
 
-They're the same `sitofp` / `fptosi` conversions as the casts,
-just callable anywhere — so numeric code never has to launder a
-value through `to_string` + `parse_float` to change its type.
+`Float` comparisons follow IEEE-754 rules:
+- `NaN` is unequal to everything, including itself (`nan != nan` is `true`; `==`, `<`, `<=`, `>`, `>=` are `false`).
+- `-0.0 == 0.0` evaluates to `true`.
+- Printing a `Float` via `println` or `to_string` outputs the shortest decimal representation that round-trips back to the exact same IEEE-754 double via `std::str::parse_float`. Use `f"{x:.2}"` when formatting for display.
 
-When you want a Float *rounded* to an `Int` rather than
-truncated — building an integer field out of a Float quantity,
-say — reach for `round`; `trunc` is the toward-zero sibling:
+## Exact Fixed-Point Numbers (`Decimal` and `Decimal<S>`)
 
-```hale,fragment
-let a = std::math::round(3.7);          // 4   (Int)
-let b = std::math::round(2.5);          // 3   — half away from zero
-let c = std::math::round(0.0 - 2.5);    // -3
-let d = std::math::trunc(3.7);          // 3   — toward zero, like float_to_int
-```
-
-Both return an `Int` directly. (`floor` / `ceil` below return a
-`Float`; wrap them in `float_to_int` if you need an `Int`.)
-
-Float comparisons are IEEE 754's. A NaN (what `0.0 / 0.0` or
-`std::math::sqrt(-1.0)` produces) is unequal to everything,
-itself included: `==`, `<`, `<=`, `>` and `>=` are `false` when
-either side is NaN, and `!=` is `true`. `-0.0 == 0.0` holds.
-`min` and `max` return NaN when either argument is one, whichever
-side it is on, so a NaN can't hide inside a running minimum:
-
-```hale,fragment
-let nan = std::math::nan();
-let a = nan != nan;          // true — the NaN test, like std::math::is_nan
-let b = nan == nan;          // false
-let c = min(1.0, nan);       // NaN, and so is min(nan, 1.0)
-```
-
-Printing a Float gives the shortest text that reads back as the
-same number, so nothing is lost on the way out and back in:
-
-```hale,fragment
-println(0.1 + 0.2);      // 0.30000000000000004
-println(1.0 / 3.0);      // 0.3333333333333333
-println(100.0);          // 100
-println(1e-300);         // 1e-300
-let back = std::str::parse_float(to_string(0.1 + 0.2)) or 0.0;   // the same double
-```
-
-When a display wants fewer digits, say so: `f"{x:.2}"` rounds to two
-places.
-
-The standard library covers the rest: `std::math::sqrt`,
-`exp`, `log`, `pow`, `floor`, `ceil`, the trig functions, and
-so on.
-
-## Decimal — exact numbers
-
-`Float` is wrong for money. `0.1 + 0.2` is not `0.3` in any
-IEEE-float language, and rounding error compounds. Hale gives
-you `Decimal`: a fixed-point type with exact arithmetic. Write
-the literal with a `d` suffix.
-
-```hale,fragment
-let price = 19.99d;
-let qty   = 3.0d;
-let total = price * qty;        // 59.97 — exact, no drift
-```
-
-Printing trims trailing zeros (`12.50d` prints as `12.5` — the
-value is the same number); when a display needs fixed places,
-`std::decimal::format(price, 2)` renders exactly two fraction
-digits with half-up rounding.
-
-A plain `Decimal` has exactly nine digits after the point. A literal with
-a nonzero digit past the ninth, like `0.1234567891d`, is a compile
-error at the literal, and `std::str::parse_decimal` of such text
-takes its `or` branch: neither drops the digit in silence. Arithmetic
-stays at nine places and truncates toward zero past them, so
-`1.0d / 3.0d` is `0.333333333` and a product smaller than
-`0.000000001d` is `0`.
-
-### The scale is part of the type
-
-Nine places is a default, not a limit. `Decimal<S>` holds `S` digits
-after the point, `S` from 0 to 18, and plain `Decimal` is
-`Decimal<9>`. Cents are `Decimal<2>`; a token counted in 10⁻¹⁸ units
-is `Decimal<18>`:
+Use `Decimal` for prices, balances, and financial quantities where binary floating-point drift (`0.1 + 0.2 != 0.3`) is unacceptable. Write `Decimal` literals with a `d` suffix:
 
 ```hale,fragment
 let price: Decimal<2>  = 19.99d;
 let wei:   Decimal<18> = 0.000000000000000001d;
-let total = price * 3d;         // 59.97, a Decimal<2>
+let total = price * 3d;                          // 59.97 (Decimal<2>)
 ```
 
-A literal takes the scale of wherever it goes — the annotation, the
-parameter, the field, the other side of an operator, through the arms
-of an `if` or a `match` that produces it — and has to fit
-it: `let p: Decimal<2> = 1.505d;` is a compile error at `1.505d`, not
-a quiet `1.50`. `std::str::parse_decimal` reads at the scale its
-result is stored at, and refuses text with more places.
+### Scale Rules and `.rescale(S)`
 
-Two scales are two types. Adding a `Decimal<18>` to a `Decimal` is a
-compile error, naming both; say which scale you mean with
-`.rescale(T)`. Widening is exact. Narrowing drops digits, so it asks
-what to do with them, the same `or` a unit conversion asks:
+- **Parameterized scale:** `Decimal<S>` stores `S` digits after the decimal point (`0 <= S <= 18`). Unparameterized `Decimal` is an alias for `Decimal<9>`.
+- **Compile-time scale checking:** A `d` literal adopts the scale expected by its context (type annotation, parameter, struct field, binary operator, or `if`/`match` arm). If the literal has nonzero digits beyond scale `S` (such as `let p: Decimal<2> = 1.505d;` or `0.1234567891d` for `Decimal<9>`), compilation fails at the literal. Similarly, `std::str::parse_decimal` fails into its `or` branch if the input string has more fractional digits than the target scale.
+- **No implicit scale or type mixing:** `Decimal<2>`, `Decimal<9>`, and `Decimal<18>` are distinct types, and `Decimal` never mixes implicitly with `Int` or `Float` (multiply by `3d`, not `3`).
+- **Arithmetic truncation:** Arithmetic within `Decimal<S>` truncates toward zero past the `S`th fractional digit (`1.0d / 3.0d` is `0.333333333d`).
+- **Rescaling:** Use `.rescale(S)` to convert between scales. Widening to a larger `S` is exact; narrowing to a smaller `S` can drop nonzero digits and requires an `or` rounding or failure policy:
 
 ```hale,fragment
 let precise: Decimal<18> = 1d / 3d;          // 0.333333333333333333
-let cents = precise.rescale(2) or half_even; // 0.33, rounded
-let exact = precise.rescale(2) or raise;     // fails: a digit would be lost
-let wide  = cents.rescale(18);               // exact
+let cents = precise.rescale(2) or half_even; // 0.33 (rounded)
+let exact = precise.rescale(2) or raise;     // fails if nonzero digits are dropped
+let wide  = cents.rescale(18);               // exact widening, no `or` needed
 ```
 
-`or trunc`, `or floor`, `or ceil`, `or half_up` and `or half_even`
-round; `or <value>`, `or raise` and `or handler(err)` keep the value
-only when nothing nonzero is dropped. A bare narrowing `rescale` is a
-compile error. Arithmetic at every scale truncates toward zero past
-its last place, as plain `Decimal` does; where a digit matters, widen
-first, or round explicitly with `rescale` or `std::decimal::format`.
+Supported narrowing policies on `.rescale(S)` are `or trunc`, `or floor`, `or ceil`, `or half_up`, `or half_even`, `or <fallback>`, `or raise`, and `or handler(err)`.
 
-A `Decimal<S>` prints at its scale (trailing zeros trimmed), crosses
-the bus as the same 16 bytes at every scale, and a JSON field of one
-writes and reads its exact digits.
+### Formatting and Converting `Decimal`
 
-Use `Decimal` for prices, balances, quantities, anything where a
-penny of rounding error is a bug. Use `Float` for measurements,
-ratios, and math where approximation is fine. The two never mix
-implicitly — there is no silent `Decimal`/`Float` conversion, and
-not even `Decimal * Int` (the quantity above is `3.0d`, not `3`), so
-you can't accidentally launder exactness away.
+Printing a `Decimal<S>` trims trailing fractional zeros (`12.50d` prints as `12.5`), serializes exact digits in JSON, and occupies 16 bytes on the bus regardless of scale.
 
-Converting is explicit. An `Int` becomes a `Decimal` exactly; a
-`Float` becomes the `Decimal` nearest its exact binary value, rounded
-half away from zero at the ninth place, and can fail (NaN, an
-infinity, or a magnitude past about `1.7e29`), so it takes an `or`.
-The way back is `to_float`:
+| Function | Signature | Description |
+|---|---|---|
+| `std::decimal::format(d, places)` | `(Decimal<S>, Int) -> String` | Formats with exact fractional `places` using `half_up` rounding |
+| `std::decimal::from_int(n)` | `(Int) -> Decimal<9>` | Exact conversion from `Int` (chain `.rescale(S)` for other scales) |
+| `std::decimal::from_float(x)` | `(Float) -> Decimal<9> fallible(...)` | Converts `Float` rounded half-away-from-zero at the 9th place; fails on `NaN`, `Inf`, or `\|x\| > ~1.7e29` |
+| `std::decimal::to_float(d)` | `(Decimal<S>) -> Float` | Converts `Decimal` to closest IEEE-754 `Float` |
 
-```hale,fragment
-let n    = std::decimal::from_int(3);                    // 3.0d
-let p    = std::decimal::from_float(19.99) or 0.0d;      // 19.99d
-let back = std::decimal::to_float(p);                    // 19.99
-```
+## `Duration` and `Time`
 
-`0.1` as a `Float` is `0.1000000000000000055…`, so `from_float(0.1)`
-is `0.1d`: the binary tail is past the ninth place. Both answer a plain
-`Decimal` (`Decimal<9>`); for another scale, `rescale` the result
-(`std::decimal::from_int(3).rescale(2)`).
+`Duration` and `Time` are defined by the standard library using Hale's unit system: `Duration` is `quantity Int in ns`, and `Time` is `point Duration` (nanoseconds since the Unix epoch in UTC).
 
-## Duration — time spans with units
+### Time Units and `std::time` Reference
 
-A duration is a length of time, written with a unit: `ns`, `us`,
-`ms`, `s`, `min`, `h` or `day`.
+| Unit / Function | Definition / Signature | Description |
+|---|---|---|
+| `ns`, `us`, `ms`, `s`, `min`, `h`, `day` | `1us = 1000ns`, `1ms = 1000us`, `1s = 1000ms`, `1min = 60s`, `1h = 60min`, `1day = 24h` | Duration literal suffixes (write `1h + 30min`, never `1h30m`, `5m`, or `3d`) |
+| `std::time::sleep(d)` | `(Duration) -> ()` | Sleeps for duration `d` |
+| `std::time::monotonic()` | `() -> Duration` | Monotonic elapsed time since boot (never jumps backward; use for benchmarks/timers) |
+| `std::time::current()` | `() -> Time` | Current UTC wall-clock instant (`Time`) |
+| `std::time::now()` | `() -> Int` | Current UTC Unix timestamp in whole seconds (`Int`) |
+| `std::time::iso8601(t)` | `(Time) -> String` | Formats `Time` as an ISO-8601 UTC string |
+| `std::time::parse_time(s)` | `(String) -> Time fallible(ParseError)` | Parses an ISO-8601 UTC string (validates leap years and calendar dates) |
+| `std::time::parse_iso8601(s)` | `(String) -> Int fallible(ParseError)` | Parses an ISO-8601 string to Unix epoch seconds (`Int`), supporting dates outside 1677–2262 |
+| `std::time::unix(t)` / `nanos(t)` | `(Time) -> Int` | Extracts Unix seconds or epoch nanoseconds from `Time` |
+| `std::time::time_from_unix(secs)` / `from_nanos(n)` | `(Int) -> Time` | Constructs `Time` from seconds or nanoseconds |
+
+### `Duration` Arithmetic
+
+Every `Duration` counts nanoseconds (`println(16ms)` outputs `16000000ns`). Durations support addition, subtraction, comparison, and integer scaling:
 
 ```hale,fragment
 let timeout = 5s;
 let frame   = 16ms;
-let shift    = 8h;
-let week     = 7day;
-let compound = 1h + 30min;      // durations add up
+let compound = 1h + 30min;
+
+let backoff = tries * 100ms;            // Int * Duration -> Duration
+let slice   = timeout / workers;        // Duration / runtime Int -> Duration (integer division)
+let half    = timeout / 2 or floor;     // Duration / literal Int -> requires rounding policy
+let frames  = timeout / frame;          // Duration / Duration -> Int
 ```
 
-A literal has one unit, so a mixed span is a sum: `1h30m` is refused,
-the message saying to write `1h + 30min`. Minutes are `min` (`5m` is
-refused and says so), and a day is `day`: `3d` is the Decimal `3`
-(above), never three days.
+Dividing a `Duration` by a compile-time integer literal requires an explicit remainder policy (`or floor`, `or ceil`, `or trunc`, `or half_up`, `or half_even`, or `or <fallback>`). Multiplying two durations (`Duration * Duration`) is a compile error.
 
-No more "is this milliseconds or seconds?" — the unit is part of
-the literal. Those units are not built into the compiler: the standard
-library declares them, the way a program declares its own units
-(`unit tick = 10 ms;` joins them), and `Duration` is the quantity they
-count, in nanoseconds:
+### `Time` Instants
+
+Write `Time` literals as UTC ISO-8601 timestamps enclosed in backticks:
 
 ```hale,fragment
-unit ns;
-unit us = 1_000 ns;
-unit ms = 1_000 us;
-unit s = 1_000 ms;
-unit min = 60 s;
-unit h = 60 min;
-unit day = 24 h;
-type Duration = quantity Int in ns;
-type Time = point Duration;
-```
-
-So every duration literal is a count of nanoseconds (`16ms` is
-16,000,000), and a duration prints as one: `println(frame)` shows
-`16000000ns`. Durations do arithmetic and comparison:
-
-```hale,fragment
-let total = timeout + frame;
-if elapsed > timeout { /* ... */ }
-```
-
-They also scale by plain integers — the shape you need when the
-number of units arrives at runtime (a computed retry count, a
-millisecond value from an FFI boundary):
-
-```hale,fragment
-let backoff = tries * 100ms;            // Int * Duration → Duration
-let slice   = timeout / workers;        // Duration / Int → Duration
-let half    = timeout / 2 or floor;     // a literal divisor: say how to round
-let frames  = timeout / frame;          // Duration / Duration → Int
-fn sleep_ms(ms: Int) { std::time::sleep(ms * 1ms); }
-```
-
-Dividing by a number you wrote down is a question with a remainder
-(5s / 3 is not a whole number of nanoseconds), so the program says
-what happens to it: `or floor`, `or ceil`, `or trunc`, `or half_up`,
-`or half_even`, or `or <value>` for a duration to use when it does
-not divide evenly. A divisor known only at run time divides as
-integers do. Two durations divide to a plain count. (`Duration *
-Duration` is rejected — ns² isn't a thing.)
-
-This is also what the runtime's sleep takes:
-
-```hale,fragment
-std::time::sleep(100ms);
-```
-
-## Time — wall-clock instants
-
-A `Time` is a specific instant — nanoseconds since the Unix epoch,
-UTC — written as an ISO-8601 literal in backticks:
-
-```hale,fragment
-let launch = `2026-05-08T12:00:00Z`;
-let precise = `2026-09-14T08:30:15.25Z`;   // a fraction, up to nanoseconds
-```
-
-The literal is checked when the program is: `` `2026-05-08T12:00:00+01:00` ``
-is a compile error, because a local time read as UTC in silence is the
-bug this type exists to prevent. An instant shifts by a `Duration` and
-two instants differ by one — those are the only arithmetic it admits —
-and it orders:
-
-```hale,fragment
+let launch   = `2026-05-08T12:00:00Z`;
+let precise  = `2026-09-14T08:30:15.25Z`;
 let deadline = launch + 30min;
-let slack = deadline - std::time::current();    // a Duration
-if std::time::current() > deadline { escalate(); }
-println(deadline);                                // 2026-05-08T12:30:00Z
+let slack    = deadline - std::time::current();   // Duration
 ```
 
-`std::time::current()` is the wall clock as a `Time`; `iso8601(t)` and
-`parse_time(s)` go to and from text (`parse_time` is fallible, so a
-malformed string is an `or` branch, not a sentinel, and so is a date
-that does not exist: `2099-02-30`, or `2100-02-29` in a year that is
-not a leap year); `unix(t)`,
-`nanos(t)`, `from_nanos(n)` and `time_from_unix(secs)` are the integer
-views. `now()` keeps returning epoch seconds as an `Int` for code that
-wants a number.
+- **UTC-only literals:** Non-UTC offsets (such as `` `2026-05-08T12:00:00+01:00` ``) are rejected at compile time.
+- **64-bit nanosecond range (1677–2262):** `Time` spans years `1677` through `2262`. Out-of-range literals fail at compile time, `parse_time` takes its `or` branch, and runtime arithmetic (`t + d` or `time_from_unix`) that overflows halts with a `violation:`. Use `std::time::parse_iso8601(s)` when working with calendar timestamps outside 1677–2262 as `Int` seconds.
 
-A `Time` is 64 bits of nanoseconds, so it holds the years 1677 through
-2262 and no others. Past either end is refused, never wrapped into
-another century: a literal like `` `2999-01-01T00:00:00Z` `` is a
-compile error, `parse_time` of that text takes its `or` branch, and
-`time_from_unix(n)` or `t + d` that would leave the range stops the
-program with a `violation:` that names the operation. A date that far
-out is a number of seconds: `parse_iso8601(s)` still reads it as an
-`Int`.
+## Distinct Identities, Bounded Ranges, and Custom Units
 
-For *measuring elapsed time*, reach for the monotonic clock —
-it never jumps backward when the wall clock is adjusted:
+### Identities (`distinct Int`) and Ranges (`range:`)
 
-```hale,fragment
-let start = std::time::monotonic();   // a Duration since boot
-do_work();
-let took = std::time::monotonic() - start;
-println("took ", took);
-```
-
-`std::time::now()` gives wall-clock seconds since the Unix
-epoch when you genuinely need calendar time; `monotonic()` is
-the basis for anything timing-related.
-
-## Identities and ranges
-
-Some integers must not mix. An order id is not a sequence number, and
-neither is a count you can add to. Some integers have a range: a byte
-is `0..256`, a session slot `0..64`. Say so in the type:
+Use `distinct Int` to create strongly typed integer IDs that cannot be added or mixed with plain `Int`, and `{ range: low..high; }` to constrain valid integer bounds:
 
 ```hale
 type OrderId = distinct Int;
@@ -383,42 +191,21 @@ type Byte    = Int { range: 0..256; }
 type Session = distinct Int { range: 0..64; }
 
 fn main() {
-    let id: OrderId = 4;             // a literal is checked against the type
+    let id: OrderId = 4;
     let b: Byte = 200;
-    let total: Int = b + 55;         // a byte is an Int, for free
-    let slot = Session(70) or 0;     // 70 is outside 0..64: the substitute
+    let total: Int = b + 55;         // range types widen to Int automatically
+    let slot = Session(70) or 0;     // 70 is out of range 0..64 -> substitutes 0
     let top = Byte(total + 10) or clamp;
-    let raw: Int = Int(id);
+    let raw: Int = Int(id);          // explicit unwrap of distinct Int
     println(id, " ", total, " ", slot, " ", top, " ", raw);
 }
 ```
 
-A `distinct Int` is an **identity**: it compares with itself and with
-nothing else, it has no arithmetic (`id + 1` is an error), and it
-never passes for an `Int`. You cross explicitly, `OrderId(n)` in and
-`Int(id)` out. A type with a `range:` is a **range**: it is an `Int`
-wherever an `Int` is expected, and its arithmetic is an `Int`'s.
+Narrowing an integer into a ranged type requires an `or` clause (`or <fallback>`, `or clamp`, `or wrap`, `or handler(err)`, or `or raise`). Out-of-range literals (`let b: Byte = 300;`) fail at compile time.
 
-Going *into* a range can fail, so a narrowing such as `Session(n)`
-says what becomes of a value outside it, with `or`:
+### Custom Units and Quantities
 
-- `or 0`, any value of the type, held to its range;
-- `or clamp`, the nearest bound;
-- `or wrap`, around the range (`-1` becomes the top);
-- `or handler(err)`, given a `RangeError` with the value and the
-  bounds;
-- `or raise`, to hand the `RangeError` to the caller.
-
-A literal outside the range is an error where you wrote it (`let b:
-Byte = 300;`), and a narrowing with no `or` is too. `spec/units.md §
-Conversions` has every rule.
-
-## Your own units
-
-`Duration` is not the only number with a unit, and its units are
-declared the way a program declares its own (above). Money is counted
-in cents, sizes in bytes, rates in basis points, and a program
-declares those units and the integer types counted in them:
+You can declare domain-specific units (cents, dollars, basis points, bytes, ticks) with `unit`, `quantity`, and `point`:
 
 ```hale
 unit cent;
@@ -431,90 +218,12 @@ type Ledger = Money { round: half_even; }
 type Rate   = quantity Int in bp;
 
 fn main() {
-    let fee = 1_250_000USD * 3bp;     // exactly 375 USD
-    let odd = 1_234_567USD * 3bp;     // 370.3701 USD: still exact here
-    let paid: Ledger = odd;           // rounded where the policy is
-    let cents = odd.in(cent) or ceil; // or name the rounding yourself
+    let fee = 1_250_000USD * 3bp;     // exact: 375000000 Money in 1/10000 cent (375 USD)
+    let odd = 1_234_567USD * 3bp;     // exact: 370.3701 USD in 1/10000 cent
+    let paid: Ledger = odd;           // rounds via Ledger's half_even policy
+    let cents = odd.in(cent) or ceil; // explicit site-level rounding
     println(fee, " ", odd, " ", paid, " ", cents);
 }
 ```
 
-A `unit` is a name and, optionally, what it equals: one `USD` is
-100 `cent`, and `bp` is a hundredth of a percent, itself a hundredth
-of the number one. A `quantity` counts an `Int` in one of them. A
-literal names its unit with no space, `3bp`, `1_250_000USD`, and
-counts in its quantity's unit: `1_250_000USD` is 125,000,000 cents.
-
-Arithmetic keeps every value **exact**. `fee` is not rounded to
-cents: multiplying money by a rate gives money counted in the product
-of the two units, here a ten-thousandth of a cent, and it prints that
-way (`375000000 Money in 1/10000 cent`). Rounding happens only where
-you say so, and you have to say so wherever a value goes somewhere
-coarser:
-
-- a type with `{ round: … }` (here `Ledger`, `half_even`) rounds what
-  is stored into it, with no more ceremony;
-- `.in(cent) or floor` (or `ceil`, `trunc`, `half_up`, `half_even`)
-  rounds at the site;
-- `.in(cent) or 0` keeps the value only when it is a whole number of
-  cents.
-
-`let bad: Money = odd;` is an error: `Money` has no policy, and the
-message says the division by 10,000 has a remainder to decide about.
-
-Time works the same way, because `Duration` and `Time` are these
-declarations too (the standard library's, above): a quantity counted in
-nanoseconds and a point over it.
-
-```hale
-type Bucket = Duration in 100ms { round: floor; }
-
-fn main() {
-    let d = 3s + 500ms;               // 3500000000ns: a Duration counts nanoseconds
-    let whole = d.in(s) or floor;     // 3s: the policy says what becomes of the rest
-    let (secs, rest) = d.split(s);    // 3 and 500000000ns, nothing lost
-    let n: Int = d / 1ms;             // 3500: two durations divide to a count
-    let b: Bucket = d;                // 35 buckets of 100ms
-    let start = Time(1_000s);
-    let later = start + d;            // a point moves by a quantity
-    let took = later - start;         // and two points differ by one
-    println(d, " ", whole, " ", secs, " ", rest, " ", n, " ", b, " ", took);
-}
-```
-
-A **point** (`Time`) is a position, a **quantity** (`Duration`) a
-distance: two points subtract to a quantity, a point plus a quantity
-is a point, and two points do not add. A point may declare where its
-zero is (`type Celsius = point TempDelta { origin: 273_150 mK; }`),
-and `Kelvin(c)` converts across the two zeros.
-
-An array literal may mix units of one quantity. Each literal counts in
-its quantity's unit, so `let a: [Money; 2] = [3cent, 2USD];` holds 3
-and 200 cents and `[1s, 500ms]` is two `Duration`s. A value at another
-unit is converted from its own: with no type to fit, `[whole, 500ms]`
-is counted in the finer unit, as a sum is: both in nanoseconds.
-
-Mixing kinds is an error at the operator, naming both declarations:
-`5ms + 4KiB` adds time to bytes, `bid + ask` adds two prices,
-`d > 0` compares a span with a bare number (write `d > 0ms`). An
-`Int` becomes a quantity by a unit (`n * 1cent`), and a quantity's
-count is a quotient (`q / 1cent`). The standard library declares the
-time units (`ns` … `day`), so a program's own unit takes another name,
-or joins them by what it equals (`unit tick = 10 ms;`).
-
-[Units, end to end](../units.md) walks through a whole program in the
-dialect, the mistakes the compiler catches, and `hale check --units`;
-`spec/units.md` has every rule.
-
-## Why these are in the language
-
-`Decimal`, `Duration`, and `Time` aren't library types you opt
-into — `Decimal` is a primitive with its own literal, and `Duration`
-and `Time` are declared by the standard library for every program,
-with the time units' literals. The reason is
-that the bugs they prevent (float drift in money, unit confusion
-in time) are *so common* and *so costly* that making them
-first-class is worth it. You get the safety without importing
-anything or remembering a convention.
-
-Next: [Units, end to end](../units.md).
+See [Units, End to End](../units.md) for the complete guide to custom units, affine points, unit splitting (`.split(u)`), and `hale check --units`.

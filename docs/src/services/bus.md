@@ -1,111 +1,69 @@
-# The bus
+# The Bus
 
-> **Coming from Go?** Topics are like channels, but typed by a
-> declaration instead of by `chan T`, and many-to-many instead of
-> point-to-point. You don't pass a channel into a goroutine; a
-> locus declares which topics it subscribes to and publishes, and
-> the runtime wires the delivery. No channel plumbing threaded
-> through constructors.
-
-You met the bus implicitly in [logging](../everyday/logging.md):
-emitters publish, sinks subscribe, neither references the other.
-Here you declare and use it directly.
-
-## Topics are typed declarations
-
-A topic names a channel and the type that flows on it:
+The Hale bus provides typed, many-to-many message passing between loci without shared pointers or channel plumbing. Loci declare which topics they publish and subscribe to inside a `bus { }` block, and the compiler and runtime wire delivery—from zero-overhead synchronous calls on the same thread to lock-free rings across threads or sockets across processes.
 
 ```hale
 type Order { id: String; amount: Decimal; }
 
 topic OrderPlaced  { payload: Order; }
 topic OrderShipped { payload: Order; }
-```
 
-A topic is a top-level declaration, like `type` or `locus`. It's
-referenced by name — never a magic string — so the payload type
-is checked at every publish and every handler, and renaming the
-topic moves every use with it.
-
-Because it is a top-level declaration, a topic shares one namespace
-with types and loci: `type Tick { … }` and `topic Tick { payload:
-Tick; }` are the same name declared twice, and the compiler says so
-with the fix — name the channel for what happens (`TickArrived`,
-`OrderPlaced`) or suffix it (`TickTopic`).
-
-### The payload is a record, not a value
-
-Notice that `Order` is a `type`, not a `Decimal`. That's the rule,
-not the example's taste: a delivery is a *serialized struct*, so a
-payload needs a field layout. Three things have one —
-
-- a user `type`;
-- an `enum` with at least one variant that carries a payload;
-- `BytesView`, for reading a foreign writer's frames as raw bytes.
-
-A bare `Int` does not, and the compiler says so at the
-declaration:
-
-```hale,fragment
-bus { publish "org.metrics" of type Int; }
-//                                  ^^^ `Int` is not carried on
-//                                      the bus
-```
-
-A `topic` is held to the same rule where it is used: subscribing
-to `topic Chunk { payload: String; }`, or sending `Chunk <- "hi"`,
-is an error at that line naming the topic's payload.
-
-Wrap it. `type Metric { n: Int = 0; }` costs one line and buys a
-name for what's on the wire — which is what every later reader of
-that subject actually wants. *(Inside* the payload, primitives are
-exactly what its fields are made of.)
-
-## Subscribe and publish
-
-A locus declares its bus interface in a `bus { }` block:
-
-```hale
 locus Warehouse {
     bus {
-        subscribe OrderPlaced as on_order;     // inbound
-        publish   OrderShipped;                 // outbound
+        subscribe OrderPlaced as on_order;
+        publish   OrderShipped;
     }
 
     fn on_order(o: Order) {
-        // ... pick and pack ...
-        OrderShipped <- o;                       // the send
+        OrderShipped <- o;
     }
 }
 ```
 
-- **`subscribe TOPIC as HANDLER;`** wires inbound messages to a
-  handler method. The handler must exist with the matching
-  signature — `fn on_order(o: Order)` — and the compiler checks
-  it.
-- **`publish TOPIC;`** authorizes this locus to send on the
-  topic. Without it, a send is a compile error.
-- **`TOPIC <- value;`** is the send. It's a statement, not an
-  expression — it produces no value, like Erlang's `Pid ! Msg`.
+> [!NOTE]
+> **Vertical Coordination via the Root**
+> In Hale's [parent/child hierarchy](./parents-children.md), direct references flow strictly vertically between parents and children. The bus preserves this invariant by routing messages through topic channels owned at the runtime root: publishers send up to the topic, and the topic dispatches down to subscribers, allowing loci on separate branches to coordinate without lateral pointers.
 
-Subscribing is declarative — there's no `subscribe()` call at
-runtime. Registration happens when the locus is constructed, and
-unsubscribe happens automatically at dissolve.
+## Declaring Topics & Payloads
 
-So a subscriber can be as short-lived as you like. A server that builds
-one per connection — the connection's peer subscribing to its own
-replies, `where key == self.id` — keeps a registry the size of the
-connections open at once, not of every connection it has served: a
-later subscription takes over a dissolved subscriber's slot, and a
-message still queued for the old one is dropped rather than delivered
-to the new. One thing does accumulate: a
-String-keyed subscription's key text is kept until the process exits.
+A `topic` is a top-level declaration that pairs a channel name with a payload type:
 
-### Choosing the subject at runtime
+```hale,fragment
+type Order { id: String; amount: Decimal; }
 
-Usually the subject is fixed. When it isn't — a logger that sends
-to `log.<component>` for whichever component it was built for — you
-declare a **wildcard** publish and send to a computed string:
+topic OrderPlaced { payload: Order; }
+```
+
+- **Shared top-level namespace**: Topics share the module namespace with `type` and `locus` declarations. Declaring both `type Tick` and `topic Tick` is a compile error; name topics after events (`TickArrived`, `OrderPlaced`) or add a suffix (`TickTopic`).
+- **Structured payload requirement**: Because bus deliveries serialize structured records, a topic's `payload` must be one of three types:
+  1. A user-defined `type` (struct).
+  2. An `enum` where at least one variant carries a payload.
+  3. `BytesView` (for reading raw frames from an external writer).
+
+Bare primitives (`Int`, `String`, `Decimal`) cannot be used directly as bus payloads and are rejected at compile time:
+
+```hale,fragment
+bus { publish "org.metrics" of type Int; }   // error: `Int` cannot be carried directly on the bus
+```
+
+Wrap scalar values in a single-field record (`type Metric { n: Int = 0; }`).
+
+## Publishing & Subscribing (`bus { }`)
+
+Every locus declares its bus inputs and outputs inside a `bus { }` block:
+
+| Syntax | Role | Description |
+|---|---|---|
+| `subscribe Topic as handler;` | Inbound | Registers `fn handler(p: Payload)` to receive messages sent to `Topic`. |
+| `publish Topic;` | Outbound | Authorizes the locus to send messages on `Topic`. Publishing without this declaration is a compile error. |
+| `Topic <- value;` | Statement | Sends `value` to `Topic`. Produces no return value. |
+| `publish "prefix.**" of type T;` | Wildcard outbound | Authorizes publishing `T` to runtime-computed subject strings matching `"prefix.**"`. |
+
+Subscriptions are declarative: the runtime registers a locus's subscriptions when it is constructed (before `birth()`) and deregisters them automatically when it dissolves. Short-lived subscribers (such as per-connection loci) reuse subscription table slots as they dissolve, and any queued messages addressed to a dissolved subscriber are dropped rather than delivered to a subsequent occupant of that slot. (Note: `String` routing keys registered by dynamic subscribers remain interned until process exit.)
+
+### Dynamic Wildcard Subjects
+
+When a locus computes the target subject at runtime—such as a structured logger targeting `log.<component>`—declare a wildcard pattern in `bus { }` and send to a `String` expression:
 
 ```hale
 type LogEvent { phase: String; }
@@ -121,123 +79,71 @@ locus Trace {
 }
 ```
 
-The `publish "log.**"` declaration isn't paperwork. It's the
-promise that bounds what this locus can do, and it is enforced:
+Computed subject publishes enforce two checks at runtime (static `Topic <- v` sends are verified at compile time and incur zero runtime check cost):
 
-- The computed subject **must lie under one of the patterns you
-  declared.** `Trace` can send to `log.db` or to `log` itself, but
-  not to `app.order` — that raises
-  `BusPublishUnauthorized`.
-- It **must not reach a subscriber expecting a different payload**,
-  which raises `BusPayloadMismatch`.
+1. **Pattern authorization**: The runtime subject string must fall under a pattern declared in the locus's `bus { }` block; otherwise the send raises `BusPublishUnauthorized`.
+2. **Payload agreement**: The subject must not match a subscriber expecting a different payload type (`BusPayloadMismatch`). `hale check` also warns at compile time if a subscription sits under another locus's wildcard pattern with a mismatched payload type.
 
-Both checks run only on the computed path. A literal `TOPIC <- v`
-is bound to its declaration when you compile, so it costs nothing.
+Keep wildcard patterns as narrow as possible (`"log.**"` rather than `"**"`). Static analysis uses wildcard prefixes to prove that a logger cannot publish to unrelated application topics (such as `app.order`) when verifying `claims { }` publisher counts.
 
-Keep the pattern as narrow as the locus really needs. A wide
-pattern doesn't just permit more sends — it tells the compiler
-less. Because a computed publish can't escape its declaration, the
-compiler knows a locus declaring `log.**` can never become a
-publisher of `app.order`, so questions like "how many publishers
-does this topic have?" stay answerable even in a program that
-logs. Declare `"**"` and you've given that up everywhere.
+## Delivery Guarantees, Ordering, and Lowering
 
-If you subscribe to a subject that sits under *another* locus's
-wildcard pattern while expecting a different payload, you'll get a
-warning — that's the arrangement where the two rules above would
-fire at runtime.
+### In-Process vs. Bound Delivery
 
-## What sending actually means
+A send statement `OrderShipped <- o;` requires no `or` error handler by default because the broker only accepts messages it can deliver under the topic's contract:
 
-Notice that `OrderShipped <- o;` has no error handling — no `or`
-clause, no return code. That's a promise, not an omission: a send
-succeeding means *the broker accepted the message*, and the
-broker is never allowed to accept a message it already knows it
-can't deliver under the topic's delivery guarantee. For an
-in-process topic that guarantee is "dispatched to every born
-subscriber". For a [bound topic](./multi-binary.md) the guarantee
-comes from the binding — and if a declared binding can't be
-opened at startup at all, the program refuses to boot rather
-than run with a broker that would quietly drop your messages.
-The error channel isn't missing from `<-`; it's relocated to the
-one place it can be acted on — the structural failure path.
+- **In-process topics**: Delivered to every live subscriber. Payload size is bounded only by the payload arena (e.g., a record containing a 1 MiB `String` transfers intact).
+- **Bound topics ([Multi-Binary Deployment](./multi-binary.md))**: Governed by the transport binding. If a declared binding cannot be opened at startup, the process refuses to boot rather than dropping messages silently. Bound transports frame messages in **64 KiB** chunks: a payload exceeding 64 KiB still reaches in-process subscribers, but is dropped for remote peers (logging a warning to stderr once per subject).
 
-A payload is as large as its fields make it. In-process delivery is
-bounded only by the payload arena: a record carrying a 1 MiB
-`String` crosses the bus whole. A [bound topic](./multi-binary.md)
-travels in 64 KiB frames, so a payload past that reaches every
-in-process subscriber and is **lost** for every remote one — there
-is no fallible-publish path or counter your program can see this
-through yet, only a stderr line once per subject for whoever is
-watching logs. Keep a subject a remote peer needs under 64 KiB on
-the wire.
+### FIFO Ordering
 
-## What order you can count on
+All messages published by a single publisher arrive in FIFO send order across all topics on the same thread:
 
-One publisher's sends arrive in the order it sent them, across
-topics: after `Prices <- p; Orders <- o;`, every subscriber on the
-same thread hears `p` before any hears `o`. That holds however the
-compiler lowered each publish — when it turns a send into a direct
-call to its one subscriber, it only does so while nothing that
-publisher sent earlier is still waiting to be delivered; otherwise the
-send waits its turn like any other. Two publishers on different
-threads, or subscribers on different threads, have no order between
-them.
+```hale,fragment
+Prices <- p;
+Orders <- o;
+```
 
-## One ordering rule
+Every same-thread subscriber receives `p` before any same-thread subscriber receives `o`, regardless of whether the compiler lowers either send to a direct synchronous call or a queued delivery. No ordering is defined between publishers or subscribers executing on different threads.
 
-A subscriber must exist before a publisher sends, or the message
-has nowhere to land. In practice: instantiate your subscribers first
-in `main`. (This is the same rule you saw with the log sink.) Where
-`hale check` can see it — a publish written before the literal that
-builds a locus subscribing to it, in the same body — it warns at the
-publish ("publish before its subscriber").
+### Subscriber Registration Order & Tree Reservations
 
-Within one literal's tree the order is handled for you. A literal
-and the loci its params build are one *static tree*, and before it
-builds any of them the literal reserves the subscriptions its tree
-will make for the topics its tree publishes. So when an earlier
-params sibling publishes from its `birth()` or `run()`, a later
-sibling subscribing to that topic — or a locus nested under it, a
-keyed subscriber taking its key, a pinned or pool-placed field and
-the loci its params build on its thread (a placed field among them
-included), each replica of a `replicas = K` field (a `where key ==
-replica` subscriber taking its own shard), a wildcard subscriber
-whose pattern matches the subject — still hears it:
-the messages wait, in order, and arrive once the subscriber's own
-`birth()` has returned. The wait is bounded like a queue, by each
-subscriber's own bound: a `bounded(N, drop_new)` subscriber gets the
-oldest N, a `bounded(N, drop_old)` one the newest N — of its own key's
-messages, for a keyed one — whichever is built first, each counting
-what it lost; an `on_full: fail` topic sheds the
-newcomer and says so once on stderr, since by then there is no
-publisher to raise into; and with no bound, the reservation holds a
-queue's worth and sheds what comes after, counted, saying so once on
-stderr — no publisher ever waits for a subscriber to be built. A
-wildcard subscriber's bound is over everything its pattern matched,
-as its queue's is.
-`LOTUS_BUS_LOG_RESERVE=1` prints each reservation's counts as it
-closes.
+A subscriber must be constructed before a publisher sends a message. In imperative bodies (`fn main()` or methods), instantiate subscribers before publishers (`hale check` warns on `"publish before its subscriber"` when both appear in the same body).
 
-The mirror-image rule at the *end* of a program is handled for
-you: at teardown, the runtime joins pinned workers (and drains
-what they published) *before* dissolving their sibling
-subscribers, so events a worker publishes in its final moments
-still arrive even when `main`'s `run()` returns immediately.
-What can still be lost is a publish made *after* its last
-subscriber has dissolved — say, from a pool-placed publisher
-whose queued work outlives teardown. If losing those would
-matter, don't lean on teardown ordering: have the parent wait
-for a completion signal ("exit when done") before returning.
-Set `LOTUS_BUS_LOG_DROP=1` to see any such drop while
-debugging.
+Within a **single locus literal's static tree**, the runtime handles registration order automatically:
 
-## When a consumer can't keep up
+- Before initializing any `params` field, the literal reserves all subscriptions across its entire subtree (including later sibling `params`, nested children, keyed subscribers, `pinned` fields, `cooperative(pool = ...)` fields, `replicas = K` shards, and wildcard subscribers).
+- Messages published by an earlier sibling's `birth()` or `run()` are queued in order and delivered to later siblings as soon as each subscriber's `birth()` completes.
+- Pre-birth reservation buffers respect each subscriber's queue bound: `bounded(N, drop_new)` retains the oldest `N` messages, `bounded(N, drop_old)` retains the newest `N`, `on_full: fail` drops excess arrivals and logs once to stderr, and unbounded subscribers buffer one queue capacity before shedding excess with a stderr warning. Set `LOTUS_BUS_LOG_RESERVE=1` to inspect reservation counts.
+- At **shutdown**, the runtime joins `pinned` workers and drains their final published messages *before* dissolving sibling subscribers. Messages published by pool-placed tasks *after* their last subscriber has already dissolved are dropped (set `LOTUS_BUS_LOG_DROP=1` to log shutdown drops; use an explicit completion signal if all pool work must finish before teardown).
 
-Unbounded by default: most topics are low-rate control flow and
-a queue that grows briefly is fine. When a fast publisher meets
-a slow consumer, two opt-in knobs bound the damage — one for
-each side of the contract:
+### Static Devirtualization (`dispatch_plan`)
+
+When a closed-world local topic has quiet handlers on the same thread, the compiler elides the bus queue and lowers `Topic <- value;` into a direct synchronous method call:
+
+| Lowering Flavor | Conditions | Mechanism |
+|---|---|---|
+| `static_direct` | Local unbound topic, same thread, quiet handler, flat scalar payload (`Int`, `Float`, `Bool`, `Decimal`, `Duration`). | Direct synchronous function call passing scalar fields. |
+| `static_bucket` | Local unbound topic, same thread, quiet handler, payload contains `String`, `Bytes`, or nested structs. | Direct synchronous call with arena scratch management. |
+| `dynamic` | Cross-thread delivery, topic bound in `bindings { }`, or non-quiet handler. | Full runtime bus queue / ring dispatch. |
+
+Inspect the compiler's lowering decisions for every subject with:
+
+```sh
+hale model dump app.hl   # see the `dispatch_plan` section
+```
+
+The `dispatch_plan` is recorded in the build identity so deterministic recordings are only replayed against builds with identical dispatch lowering.
+
+## Backpressure & Queue Bounds
+
+By default, topic queues grow dynamically. For high-rate producers or slow consumers, you can bound capacity on the **topic** (publisher backpressure) or on individual **subscriptions** (consumer shedding):
+
+| Bound Location | Syntax | Behavior at Capacity |
+|---|---|---|
+| **Topic declaration** (Publisher contract) | `bounded(1024); on_full: fail;` | Broker rejects the send when full; every publish site must handle the failure with `or raise`, `or discard`, or `or wait`. |
+| **Subscribe clause** (Consumer shedding) | `bounded(64, drop_old)` | Silently drops the oldest queued message to keep the newest 64 (ideal for latest-state snapshots). |
+| **Subscribe clause** (Consumer shedding) | `bounded(64, drop_new)` | Silently drops newly arriving messages until queue space opens. |
 
 ```hale,fragment
 topic Frame {
@@ -247,95 +153,18 @@ topic Frame {
 }
 ```
 
-The topic bound is the *publisher's* contract: at capacity the
-broker refuses, and every send site must say what it does about
-that — `or raise` (a full queue is a bug), `or discard` (shed at
-the source, counted), or `or wait` (run at the consumer's pace).
-
 ```hale,fragment
 subscribe Frame as on_frame bounded(64, drop_old);
 ```
 
-The subscriber bound is that consumer's *private* coping
-strategy: `drop_old` keeps the newest 64 (right for reload-style
-events, where stale beats losing the freshest), `drop_new`
-rejects arrivals. A consumer bound below the topic bound sheds
-quietly before the publisher ever sees refusal. Pool- and
-pinned-placed subscribers don't take these bounds — their queues
-are already fixed-size rings that push back on producers
-directly. That includes a subscriber nested inside a pool- or
-pinned-placed locus, which runs on its owner's thread and receives
-through its owner's ring.
+A subscriber bound smaller than the topic bound sheds excess messages locally before the topic bound is reached.
 
-## Why this doesn't break the tower
+> [!NOTE]
+> Subscriber-level `bounded(...)` clauses apply only to cooperative subscribers on `main`. Subscribers placed on a non-`main` `cooperative(pool = ...)` or `pinned` thread (and children nested under them) already receive messages through fixed-size inter-thread rings that apply backpressure directly to producers.
 
-In the [parent/child model](./parents-children.md), flow is
-strictly vertical — a locus only talks up to its parent and down
-to its children. The bus seems to let unrelated loci talk
-sideways. It doesn't, really: publishers and subscribers don't
-see *each other*, they see the *topic*, which lives at the
-runtime root — structurally above everyone. Every send goes up to
-the bus; every delivery comes down to a subscriber. It's vertical
-flow through a shared root, which is why two loci on opposite
-branches of a deep tree can coordinate with no shared pointer and
-no registry lookup.
+## Keyed Routing (`keyed_by`)
 
-This is the productive shape for events: many-to-many flow
-without back-channels. A topic can have any number of publishers
-and subscribers.
-
-## You won't always pay for it
-
-If a topic is only ever used *inside a single locus type* — the
-same locus both publishes and subscribes, with no external
-binding — the compiler can prove every send routes back to a
-handler on the same instance, and rewrites the send into a direct
-method call. The bus is elided entirely. So you can use topics
-freely for a locus's own internal event flow without paying
-dispatch cost; if the topic later grows a second subscriber or a
-deployment binding, the real bus path comes back automatically,
-and your code doesn't change.
-
-The static-dispatch devirtualization is broader than that
-intra-locus-type case: any *quiet*, flat-payload, same-thread
-handler on a closed-world local subject lowers to a direct
-synchronous call — even when the publisher and subscriber are
-distinct locus types.
-
-A topic your deployment binds to a transport keeps the real bus
-path no matter how simple it looks: once a `bindings { }` entry
-names it, an external peer may be the counterparty, and the send
-has to go out the transport rather than into a local call.
-
-You can see what the compiler decided for each subject:
-
-```sh
-hale model dump app.hl        # …then read the dispatch_plan section
-```
-
-Each row names the wire subject, the flavor it lowers to
-(`dynamic`, `static_bucket`, `static_direct`), why — when the
-answer is "dynamic" — and which thread domains the publishers and
-subscribers actually run in, a locus from an imported seed
-included. A subject is `static_direct` only when
-its payload is flat (every field an inline scalar: `Int`, `Float`,
-`Bool`, `Decimal`, `Duration`); one carrying a `String`, `Bytes` or
-another struct is a `static_bucket`, however quiet its handlers. The decision is part of the build's
-identity, so a recording made from one build is never replayed
-against another that dispatches differently.
-
-## Routing keys: one topic, sharded by a field
-
-By default every subscriber to a topic sees every message. When
-you have many subscribers that each care about *one slice* of the
-traffic — one connection, one symbol, one tenant — fanning every
-message to all of them and filtering in each handler is wasteful.
-A **routing key** moves that filter into the bus: a subscriber
-declares which key it wants, and the runtime only delivers
-matching messages.
-
-Name a payload field as the key on the topic, then filter on it
-at the subscribe site:
+By default, a topic broadcasts every message to every subscriber. When managing per-entity or sharded subscribers (such as one locus per connection, symbol, or tenant), declare `keyed_by <field>` on the topic and `where key == <expr>` on the subscription so the runtime routes matching messages directly:
 
 ```hale
 type Tick { symbol_id: Int; price: Decimal; }
@@ -350,50 +179,26 @@ locus Feed {
     }
 
     fn on_quote(t: Tick) {
-        // only ticks whose symbol_id matches this Feed arrive
+        // receives only ticks where t.symbol_id == self.symbol_id
     }
 }
 ```
 
-A publish carries its key in the payload, so the send is
-unchanged — `Quote <- Tick { symbol_id: 7, price: 100.0d };`
-reaches only the `Feed` instances that subscribed with
-`where key == 7`.
+### Routing Key Rules
 
-- **`keyed_by FIELD`** on the topic picks the routing field. It
-  must be a field of the payload, and its type must be one the bus
-  can compare per entry: `Int`, `Bool`, `Time`, `Duration`, a
-  no-payload enum, `Decimal`, or `String`. A `String` key routes
-  by name directly — `keyed_by room` + `where key == self.name`
-  — with a hash gate so a non-matching key still costs one
-  integer compare. (Need a compound key like `(symbol, venue)`?
-  Pack it into one `Decimal` field or render it into the
-  `String` key yourself.)
-- **`where key == EXPR`** on a subscribe filters that subscriber.
-  `EXPR` can be a literal, a `const`, or `self.<field>` — the
-  common case, one instance per shard. The key is read **when the
-  subscription is registered, at construction and before
-  `birth()` runs**: pass it as a param at the literal
-  (`Feed { symbol_id: 7 }`). A field left at its default and
-  assigned in `birth()` registers the default, and a later
-  assignment to the field does not retarget the subscription. A
-  locus imported from another module behaves the same way: pass
-  its key at the literal that makes it. It can also be the bare
-  word **`replica`**: the instance's 0-based replica index, so a
-  `pinned(..., replicas = K)` fan-out shards an Int-keyed topic
-  with one subscribe line (see the concurrency chapter's
-  fan-out pattern). A filter of any shape requires a *keyed*
-  topic — on an unkeyed one it would silently match nothing, so
-  the checker refuses it.
-- The key is **captured by value when the locus is constructed.**
-  Reassigning `self.symbol_id` later does *not* re-route the
-  subscription; to change shards, dissolve the locus and
-  instantiate a fresh one.
+- **Supported key types**: The `keyed_by` field must exist on the payload struct and have type `Int`, `Bool`, `Time`, `Duration`, a payload-less `enum`, `Decimal`, or `String`. (`String` keys use a hash gate so non-matching keys cost a single integer comparison; for compound keys, pack values into a `Decimal` or format a composite `String` key.)
+- **Filter expressions (`where key == EXPR`)**: `EXPR` may be a literal, a `const`, `self.<field>`, or the keyword `replica` (the instance's 0-based replica index when using `pinned(..., replicas = K)`). Applying a `where` filter to an unkeyed topic is a compile error.
+- **Captured at construction before `birth()`**: The runtime reads `self.<field>` when registering the subscription *before* `birth()` executes. Always pass the key in the locus literal (`Feed { symbol_id: 7 }`). Mutating `self.symbol_id` inside `birth()` or during `run()` does not re-target an existing subscription; to switch keys, dissolve the locus and construct a new instance.
 
-### When nothing matches
+### Unmatched Key Policies (`on_unmatched`)
 
-A keyed publish whose key matches no subscriber is governed by the
-topic's `on_unmatched:` policy:
+Configure how a keyed topic handles messages whose key matches no active subscriber using `on_unmatched:`:
+
+| Policy | Syntax | Behavior when No Subscriber Matches |
+|---|---|---|
+| **Swallow** *(default)* | `on_unmatched: swallow;` | Drops the message silently. Set `LOTUS_BUS_LOG_UNMATCHED=1` to log unmatched drops during debugging. |
+| **Fail** | `on_unmatched: fail;` | Makes publishing fallible; every send site must specify `Topic <- msg or raise;` or `Topic <- msg or discard;`. |
+| **Fallback** | `on_unmatched: fallback;` | Delivers unmatched messages to catch-all subscribers registered with `where key == _`. Requires at least one catch-all subscriber in the program. |
 
 ```hale
 type Tick { symbol_id: Int; price: Decimal; }
@@ -401,22 +206,9 @@ type Tick { symbol_id: Int; price: Decimal; }
 topic Quote { payload: Tick; keyed_by symbol_id; on_unmatched: fallback; }
 
 locus Unrouted {
-    bus { subscribe Quote as on_stray where key == _; }   // the catch-all
+    bus { subscribe Quote as on_stray where key == _; }
     fn on_stray(t: Tick) { }
 }
 ```
 
-- **`swallow`** *(the default)* — the message is dropped silently.
-  Run with `LOTUS_BUS_LOG_UNMATCHED=1` to log drops while
-  debugging.
-- **`fail`** — the publish becomes fallible; every send site must
-  dispose of it: `Quote <- t or raise;` panics on an unmatched
-  key, `Quote <- t or discard;` swallows it. Use this when an
-  unrouted message is a bug, not an expected case.
-- **`fallback`** — an unmatched message is delivered to a
-  catch-all subscriber that opts in with `where key == _`. At
-  least one such subscriber must exist program-wide, or the topic
-  is rejected at compile time.
-
-Next: where loci actually run — [Concurrency &
-placement](./concurrency.md).
+Next: [Concurrency & Placement](./concurrency.md).

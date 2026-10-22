@@ -1,241 +1,157 @@
-# Memory and the record
+# Memory and the Record
 
-The organism remembers in two places. The **record** is its long-term
-memory: every decision, in order, never rewound. It is rows in
-Postgres, one signed row per event, and anyone with a clone writes to
-it in their own name. **Memory** is also its working memory: the day's
-work (the ledger), the graph the org chart is read from, and protected
-evidence. It is Postgres, on the private tier, and every client opens
-it under a role of its own. A record write that loses a race goes
-round again until it lands; memory that stops answering stops the
-organism admitting anything until it answers. Neither is ever reached
-from a device: a browser talks to [the head](./head.md), and the head
-reads for it.
+DNA persists all governance history and operational state in **PostgreSQL** inside a per-organism schema named `dna_<identity>`. Long-term governance decisions are stored in an append-only hash-chained table called the **record** (`record_rows`), while day-to-day execution state, organizational topology, and encrypted evidence live in **working memory** tables (`ledger`, `graph`, `claims`, and `receipts`). Access is isolated at the database layer using three PostgreSQL roles (`owner`, `spine`, and `head`); user devices never connect to PostgreSQL directly and instead query through [the Head](./head.md).
 
-## Three memories, one home per row
+```sh
+hale habitat migrate .          # start and migrate local Postgres, NATS, and Prometheus
+hale dna record-rows            # dump signed governance rows (JSONL)
+hale dna ledger rows            # dump operational workflow & task rows (JSONL)
+hale dna show org               # query the projected organizational graph
+```
 
-There is a third memory too: the codebase itself, the genome, which
-holds what the organism *is*. Every row kind lives in exactly one of
-the other two:
+## Storage Layers
 
-| memory | holds | lives in |
-|---|---|---|
-| record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people | Postgres, `record_rows` in the record's schema |
-| ledger | what the organism did today: intents, tasks, cases, workflow executions and attempts, bills and receipts, money reserved and settled, schedules, concerns, readings, effect claims, leases | Postgres, the record's own schema |
+An organism divides its state across three durable stores, with each row kind routed to a fixed table by `memory_of` in `dna/core/routing.hl`:
 
-Which memory a kind lands in is its placement, `memory_of` in
-`dna/core/routing.hl`. The placement is fixed, part of the schema: it
-is not kept in the record and is not versioned, since every record has
-its ledger from its first row ([below](#the-ledger)). `hale dna history` and the projections read
-both memories as one sequence.
+| Layer | Backing Store | Contents |
+| --- | --- | --- |
+| **Genome** | Git repository | Application source code, `dna/org/` configuration, candidate branches (`dna/candidate/<mutation>`), published deploy revisions (`dna/revision/<rev>`), and remote tracking ref (`refs/hale/remote/genome`) |
+| **Record** | PostgreSQL (`dna_<identity>.record_rows`) | Signed, append-only audit log of governance and code transitions: mutations, Reviews, proposed/ratified practices, autonomy grants, cross-record connections, and enrolled people |
+| **Ledger** | PostgreSQL (`dna_<identity>` tables) | Operational daily state: intents, tasks, human cases, workflow executions/steps/attempts, model call bills and receipts, budget reservations, schedules, concerns, readings, effect claims, and leases |
 
-## The record
+Every organism is provisioned with both `record_rows` and the `ledger` from its first row. `hale dna history` and the spine's projections read both tables as a single ordered sequence.
 
-### Where the record lives
+## The Record
 
-The record is the table `record_rows` in the record's schema,
-`dna_<identity>`. Every clone and every body reads and writes it
-there, so nothing of it travels by git and there is nothing to sync.
-Each row has a `seq`, a `kind`, an `entity`, a `body`, an `author`,
-the `writer` (the role of the session that wrote it), the `prev` row's
-digest, its own `digest` and its `sig`.
+### Schema, Hash Chain, and Identity
 
-Candidates and deployed revisions are the genome's, not the record's:
-a candidate is the branch `dna/candidate/<mutation>`, a revision a
-deploy published is the branch `dna/revision/<rev>` on the forge, and
-the pull of the forge's default branch lands in
-`refs/hale/remote/genome`.
+The record is stored in `dna_<identity>.record_rows`. Because all clones and host bodies read and write this PostgreSQL table directly, record rows do not travel over Git refs and require no Git synchronization.
 
-A row's digest is `sha256(prev|kind|entity|body)`, and the first row's
-`prev` is `genesis`, so the rows are a chain. `hale dna status` says
-`chain verified at <head>` when every digest checks. `hale dna
-record-rows` prints the rows, oldest first, one JSON object per line:
-`seq`, `kind`, `entity`, `body`, `author`.
+Each row in `record_rows` contains:
+- `seq`: Monotonically increasing sequence number assigned on insert.
+- `kind`: Event type (e.g., `record.genesis`, `mutation.proposed`, `review.verdict`).
+- `entity`: Target entity identifier (e.g., `m1`, `review:m1`).
+- `body`: JSON payload.
+- `author`: Logical identity of the person or component that authored the event.
+- `writer`: PostgreSQL session role that inserted the row.
+- `prev`: SHA-256 digest of the immediately preceding row (`"genesis"` for row 1).
+- `digest`: `sha256(prev|kind|entity|body)`.
+- `sig`: Cryptographic signature over the row.
 
-The record's identity is the digest of its first row,
-`record.genesis {genome, nonce}`: the genome's root commit and a nonce,
-so two projects made alike are two records. It is the same in every
-clone and different for every record. Memory's schema and the nerves'
-token are both named after it (`dna_<identity>`).
+`hale dna status` verifies the entire hash chain and prints `chain verified at <head>`. To export the raw record as newline-delimited JSON (`seq`, `kind`, `entity`, `body`, `author`), run:
 
-The genome pins it. `hale habitat graft` writes it into `hale.toml` as it
-composes the record:
+```sh
+hale dna record-rows
+```
+
+The record's `<identity>` is the SHA-256 digest of its first row, `record.genesis {genome, nonce}`, which combines the repository's root commit with a random nonce (`hale habitat graft` appends `record.genesis` followed by `record.key {key}`, the record's Ed25519 public key). Both the PostgreSQL schema and the NATS JetStream prefix are named `dna_<identity>`.
+
+`hale habitat graft` pins this identity in `hale.toml`:
 
 ```toml
 [dna]
-record = "4f1c…"   # the record's identity, written by the graft
+record = "4f1c…"   # record genesis digest pinned at graft time
 ```
 
-A clone knows its record from the genome. A second clone reaches the
-record through memory: its pin names the schema, and `hale habitat
-migrate` (or `hale dna upgrade` with the owner's DSN) keeps the head's
-DSN there. A pin whose genome is not the one this clone's history
-holds — a `hale.toml` copied from another project — is refused.
-Remove the line from a copied manifest and graft it again.
+When you open a second clone or worktree, it locates its database schema from `[dna] record` and reads the `head` role DSN from `.hale/dna/memory.env` (populated by `hale habitat migrate` or `hale dna upgrade`).
 
-`hale habitat graft` appends two rows to the record it provisions:
-`record.genesis`, then `record.key {key}`, the public half of the
-record's key.
+> [!IMPORTANT]
+> - **Copied manifests**: If `hale.toml` contains a `[dna] record` pin whose genesis commit does not exist in the local Git history, DNA rejects the checkout. Remove `[dna] record` from the copied `hale.toml` and run `hale habitat graft` again.
+> - **Legacy Git-ref records**: Repositories containing `refs/dna/journal` from older toolchain versions are rejected by `graft` and `upgrade` (see [Troubleshooting](./troubleshooting.md)).
+> - **Scratch directory (`.hale/dna/`)**: `.hale/dna/` holds only cached status projections, sandbox worktrees, and local runtime sockets. Deleting `.hale/dna/` never deletes record or ledger data.
 
-A clone that still holds a record an earlier toolchain kept on git
-(`refs/dna/journal`) is refused by a graft and `upgrade`. Nothing reads
-it and nothing carries it forward; see
-[Troubleshooting](./troubleshooting.md).
+### Insert-Only Appends & Optimistic Concurrency
 
-`.hale/dna/` is not the record. It holds the status projection,
-worktrees and the toolchain's scratch; delete it and nothing the
-record holds is lost.
+Writers append to `record_rows` exclusively through two PostgreSQL functions: `record_append` (for a single row) and `record_append_rows` (for an atomic batch).
+- Both functions acquire the schema's advisory lock and verify that the current tail digest matches the `prev` digest read by the caller.
+- No database role holds `UPDATE`, `DELETE`, or `TRUNCATE` privileges on `record_rows`.
+- If a concurrent writer wins a race, the losing caller reads the new tail digest and retries the append automatically.
+- If a database read fails due to a transient connection drop, readers preserve their last known state and retry—a failed read is never misinterpreted as an empty or truncated record.
 
-### Append is insert-only
+### Row Signatures & Trust Policies (`dna.trust`)
 
-Every writer appends through a memory function: `record_append` for
-one row, `record_append_rows` for a batch made visible together. The
-function takes the schema's advisory lock and lands the row only on
-the `prev` the writer read. No role may update, delete or truncate a
-row of the record. A writer that lost the race reads the new tail and
-appends again; `seq` is the row's position once it lands, never a
-promise made before. Two people answering at once both land.
+Every record row carries a signature in `sig`:
+- **Runtime components** (`dna`, `spine`, `host`, fleet nodes, and legs) sign rows using the record's Ed25519 private key stored in the vault at `dna-exchange-<schema>`.
+- **Human users** sign rows using their SSH signing key (`ssh-keygen -Y sign -n hale-dna-record`), resolved from Git's `user.signingkey` when `gpg.format` is set to `ssh`. If no SSH signing key is configured, the CLI writes an unsigned row under the name passed to `--as <who>`.
 
-A read of the record either happened or failed. A read that failed
-(memory out of reach for a moment) is never taken for an empty or a shorter record: the reader
-keeps what it had and tries again, and a verb refuses with the reason
-rather than act on a record that is not there.
+Every reader evaluates rows through `dna::row_admissible` according to the repository's `dna.trust` setting:
 
-### Who wrote a row, and whether it counts
+| `dna.trust` Mode | Verification Behavior |
+| --- | --- |
+| `local` (default) | Set automatically by `hale habitat graft`. Admits rows from any writer who has database access. |
+| `signed` | Admits human-authored rows only when `sig` verifies against an SSH public key enrolled for that author in the record. Unverified request rows are rejected with `unverified writer` (never relayed to NATS) and skipped during graph projection. |
 
-Every row is signed by its writer. The organism's parts (`dna`,
-`spine`, `host`, a node, a leg) sign with the record's Ed25519 key,
-which lives in the vault as `dna-exchange-<schema>`. A person signs
-with their own ssh key (`ssh-keygen -Y sign -n hale-dna-record`), the
-key git's `user.signingkey` names under `gpg.format ssh`; a person with
-none configured writes an unsigned row. The organism's own rows carry
-its configured author; a person's rows (a verdict, an ask, a node's
-report) carry the identity of whoever ran the command, and `--as <who>`
-names the person on the verbs that take it.
-
-Whether a row counts is a check every reader makes,
-`dna::row_admissible`, under the clone's `dna.trust`:
-
-- `local`, the default and what `hale habitat graft` declares: every writer
-  to the record is trusted.
-- `signed`: a person's row counts only when a key enrolled for them
-  verifies its signature. A node answers an unverified request with a
-  refusal (`unverified writer`) and never relays it; the projection
-  into memory moves past it without applying anything of it.
-
-Enrol a person's key with `hale dna signers enroll <who> --key <ssh
-key or .pub file>`, revoke with `hale dna signers revoke <who>`, and
-list with `hale dna signers`. Enrolment and revocation are rows
-(`signer.enrolled {who, key}`, `signer.revoked {who}`), and each counts
-only when signed by someone the record already admits; the first
-enrolment is the bootstrap.
-
-### Sync
+Manage enrolled SSH signers with `hale dna signers`:
 
 ```sh
-hale dna sync
+hale dna signers enroll alice --key ~/.ssh/id_ed25519.pub
+hale dna signers revoke alice
+hale dna signers
 ```
 
-The record needs no sync. `hale dna sync` applies what the record says
-of this clone, which today is deleting the branch of a dropped
-candidate, and says so:
+Enrollment and revocation write `signer.enrolled {who, key}` and `signer.revoked {who}` rows to the record. Under `dna.trust = signed`, the first enrollment bootstraps the signer set, and every subsequent enrollment or revocation must be signed by an already-admitted signer.
+
+### Candidate Branches & `hale dna sync`
+
+Every candidate commit produced by a Mutation is preserved on a Git branch named `dna/candidate/<mutation>` so that rejected or revised changes remain inspectable after their sandbox worktree is cleaned up:
+
+```sh
+hale dna candidates                            # list kept candidate branches and Review states
+hale dna candidates m7                         # show diff between m7 and its Review base
+hale dna candidates drop m7 --why "superseded by m9"
+```
+
+`hale dna candidates drop` appends a `candidate.dropped` row and deletes the local `dna/candidate/m7` branch. Other clones delete their local copy of dropped candidate branches the next time they run `hale dna sync`:
 
 ```text
 $ hale dna sync
 record: the record is memory's: nothing to sync; 38 event(s)
 ```
 
-### Candidates
+## Receipts and Protected Evidence
 
-Every candidate a Mutation commits is kept as a branch of the genome,
-`dna/candidate/<mutation>`, and the record names its commit, so a
-refused or revised change stays readable after its worktree is gone.
-It is code, and travels as any branch does:
+Verification outputs, semantic diffs, model prompts, and user-filed documents are stored in PostgreSQL as content-addressed **receipts** referenced by SHA-256 digest. Every receipt carries a sensitivity class:
 
-```sh
-hale dna candidates                            # every kept candidate, with its Review's state
-hale dna candidates m7                         # one, as a diff from its Review's base
-hale dna candidates drop m7 --why "superseded by m9"
-```
+- **`public` and `internal`**: Stored unsealed in PostgreSQL by digest.
+- **`customer` and `confidential` (Protected)**: Encrypted at rest in PostgreSQL. Only the digest and classification (`receipt.classified`) are written to `record_rows`. If working memory is unavailable, the payload is rejected and `receipt.withheld` is logged.
 
-`drop` is a row, `candidate.dropped`; the branch goes here, and every
-other clone deletes its own at its next `hale dna sync`. A candidate branch
-someone pushed to a forge is deleted there like any other branch. The
-commits stay in each object store until git collects them.
+Protected receipts are encrypted using `HALE_DNA_RECEIPT_KEY` (minimum 16 characters), supplied in the owner's environment during migration and stored once in the owner-only `memory_keys` table. Supplying a different key on a subsequent migration is rejected so existing ciphertext remains decryptable. Runtime processes never read `memory_keys` directly; instead, they call three `SECURITY DEFINER` SQL functions owned by the schema owner:
+- `receipt_file` and `receipt_read`: Callable by `head` and `spine` roles.
+- `receipt_erase`: Callable only by `spine`; deletes the encrypted body while retaining the digest stub so the erased payload can never be re-filed.
 
-## Receipts and protected evidence
+> [!WARNING]
+> A full PostgreSQL database dump (`pg_dump`) contains both the `memory_keys` table and the encrypted receipt bodies. Protect and retain database backups with the same access controls as the raw confidential evidence.
 
-A receipt is evidence kept by the digest of its content: a
-verification step's output, a diff document, a bill you filed. Rows
-name receipts by digest. Every receipt has a class:
+### Receipt CLI Commands
 
-- `public` and `internal` bodies are
-  kept in memory by digest, unsealed.
-- `customer` and `confidential` bodies are **protected**. They are
-  kept in memory alone, sealed there, and the record gets only the
-  digest and the class (`receipt.classified`). With no memory to keep
-  it, the body is withheld (`receipt.withheld`) and nothing holds it.
+All `hale dna receipt` subcommands accept `--as <who>` to identify the caller:
 
-Memory seals a protected body under the **receipt key**, which you
-give at migration as `HALE_DNA_RECEIPT_KEY` in the owner's environment
-(sixteen characters at least). It is written once into the
-owner-only table `memory_keys`; a different key later is refused,
-because the bodies sealed under the first would no longer open. No
-process that runs the organism holds it. Three functions, run as the
-schema's owner, are the whole surface of the sealed table:
-`receipt_file` and `receipt_read`, which heads and the spine may call,
-and `receipt_erase`, the spine's alone, which deletes a body and keeps
-its digest so that nobody can file it again.
+| Command | Record Row Written | Description |
+| --- | --- | --- |
+| `hale dna receipt` | — | Lists all protected evidence receipts in the record |
+| `hale dna receipt file <path> [--class internal\|customer\|confidential]` | `receipt.classified` | Stores a file as a content-addressed evidence receipt |
+| `hale dna receipt disclose <digest> --to <who> --purpose <p>` | `receipt.disclosed` | Authorizes `<who>` to read `<digest>` for purpose `<p>` |
+| `hale dna receipt show <digest> --purpose <p>` | `receipt.read` | Reads and prints a protected receipt after verifying a matching `receipt.disclosed` row |
+| `hale dna receipt hold <digest> --why <w>` | `receipt.held` | Places a legal/audit hold preventing redaction until `release-hold` |
+| `hale dna receipt redact <digest> --why <w> --policy <p>` | `receipt.redacted` | Erases the receipt body while preserving its digest stub |
 
-**A dump of the database is as sensitive as the evidence.** It carries
-the key and the ciphertext together; protect and retain dumps as you
-would the bodies themselves.
+Every protected read appends `receipt.read` before returning the plaintext. Every redaction appends `receipt.redacted` before erasing bytes (unsealed receipts are erased immediately; protected receipts are erased by the spine node on its next tick).
 
-The verbs:
+## Working Memory
 
-| verb | what it does |
-|---|---|
-| `hale dna receipt` | lists the protected evidence in the record |
-| `hale dna receipt file <path> [--class internal\|customer\|confidential]` | files a document as evidence |
-| `hale dna receipt disclose <digest> --to <who> --purpose <p>` | authorizes a reader, as a row |
-| `hale dna receipt show <digest> --purpose <p>` | reads a protected body in your name |
-| `hale dna receipt hold <digest> --why <w>` | stops redaction until `release-hold` |
-| `hale dna receipt redact <digest> --why <w> --policy <p>` | removes the body and keeps the digest |
+Working memory is a direct PostgreSQL connection with role-based grants enforcing the trust boundary—there is no proxy service in front of the database. Each organism uses its own schema (`dna_<identity>`) and dedicated roles (`dna_<identity>_spine` and `dna_<identity>_head`), allowing a single PostgreSQL instance to host multiple organisms without cross-tenant access.
 
-Each takes `--as <who>` and says what it wrote, such as `receipt
-<digest> filed (customer, kept in memory; receipt.classified, by
-alice)`. A read is refused unless a `receipt.disclosed` row names both
-the reader and the purpose, and an answer is given only once its
-`receipt.read` row is in the record: every read of a protected body
-is a row in the reader's name. A redaction is in the record before a
-byte is erased. An unsealed body is erased from memory at once; a
-protected body is erased by a node on its next tick. A copy made
-outside the record cannot be recalled.
+Role passwords are stored in the vault (`postgres-<role>`), and DSNs reference the vault entry via `&vault=postgres-<role>` rather than embedding plaintext passwords.
 
-## Working memory
+### Database Roles and DSN Environment Variables
 
-Memory is Postgres, and only Postgres. There is no service in front
-of it: a process that reads or writes memory opens Postgres itself,
-as a role, and the role's grants are the trust boundary.
+| Environment Variable | Held By | Permitted Operations |
+| --- | --- | --- |
+| `HALE_DNA_MEMORY_DSN_OWNER` | `hale habitat migrate`, `hale dna memory migrate`, `hale dna upgrade`, `hale dna body provision` | DDL schema creation, role provisioning, and migrations |
+| `HALE_DNA_MEMORY_DSN_SPINE` | Host supervisor (`hale dna dev` / `hale dna run`) and `dna/org` | Read/write record and ledger tables, project the graph, call `receipt_file` / `receipt_read` / `receipt_erase`; no DDL |
+| `HALE_DNA_MEMORY_DSN_HEAD` | CLI commands, web face, and edge API (`hale dna head`) | Read tables, acquire/fence claims, append to the ledger via `ledger_append`, call `receipt_file` / `receipt_read` |
 
-Memory is per record. Each record has its own schema, `dna_<identity>`,
-and two roles of its own, `dna_<identity>_spine` and
-`dna_<identity>_head`, so one Postgres can hold many records and no
-role reads another record's evidence. A role's password is drawn into
-the vault as `postgres-<role>`, and its DSN names that entry instead
-of carrying the password; the driver presents it when it connects.
-
-### Three DSNs, three jobs
-
-| variable | who holds it | what it may do |
-|---|---|---|
-| `HALE_DNA_MEMORY_DSN_OWNER` | `hale habitat migrate`, `hale dna memory migrate`, `hale dna upgrade`, a provisioned body's provisioning script | apply the schema |
-| `HALE_DNA_MEMORY_DSN_SPINE` | the host that runs the organism, and the organization it starts | read and write the record's tables, protected evidence through the functions; no DDL |
-| `HALE_DNA_MEMORY_DSN_HEAD` | a head: the CLI, the face, the API | read; take or fence a claim; write the ledger through its gate; file and read protected evidence |
-
-Apply the schema with `hale habitat migrate` (it migrates the nerves
-too). `hale dna memory migrate` applies memory's alone and prints the
-other two:
+Run `hale habitat migrate` to migrate both PostgreSQL and NATS, or `hale dna memory migrate` to migrate PostgreSQL alone and print the role DSNs:
 
 ```text
 $ hale dna memory migrate
@@ -243,243 +159,113 @@ HALE_DNA_MEMORY_DSN_SPINE=postgres://dna_…_spine@…/dna?sslmode=…&vault=pos
 HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_…_head@…/dna?sslmode=…&vault=postgres-dna_…_head
 ```
 
-The clone keeps the head's line in `.hale/dna/memory.env`, so the
-`hale dna` verbs you run there afterwards read and write memory as the
-head without being told; a DSN in the environment still wins. The file
-is the head's alone, mode 600, under `.hale/`, which git ignores; a verb
-refuses it if its mode lets anyone else read it. Beside the DSN it notes
-where the DSN came from (`HALE_DNA_MEMORY_FROM`: your own Postgres, or
-the organism's memory in the local habitat); a kept DSN from anywhere
-else is removed and refused, naming `hale habitat migrate <dir>`.
+Migration writes the `head` DSN to `.hale/dna/memory.env` (mode `0600`, Git-ignored) alongside `HALE_DNA_MEMORY_FROM` (recording whether the DSN points to the local habitat or a custom Postgres server). Subsequent `hale dna` CLI commands automatically load `.hale/dna/memory.env` unless overridden by `HALE_DNA_MEMORY_DSN_HEAD` in the environment. If `.hale/dna/memory.env` has overly permissive file permissions or points to an unrecognized origin, the CLI refuses to use it and prompts you to run `hale habitat migrate <dir>`.
 
-### The local habitat
+### The Local Habitat
 
-With no `HALE_DNA_MEMORY_DSN_OWNER`, memory is an allocation of the
-machine's **local habitat** (it needs `docker compose` on `PATH`). The
-habitat is one compose project per machine, `hale-habitat-local-<h>`,
-under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`. Each
-organism is a tenant of it: its memory, its nerves and its senses'
-store are the services `memory-<id>`, `nerves-<id>` and `senses-<id>`,
-`<id>` the first twelve hex digits of the record identity the genome
-pins. Two organisms on one machine are two sets of allocations; two
-worktrees or clones of one organism are the same organism, with the
-same allocations, so they share one memory. An allocation's files
-(`compose.yaml`, `ports.yaml` with its host ports, and the servers'
-configuration and secrets) live in the habitat, under
-`allocations/<id>/`, never in your checkout. `hale dna status` names
-the allocation and the project. To reach the services by hand:
-`docker compose -p <project> --project-directory <habitat>/allocations/<id> -f compose.yaml -f ports.yaml ps`.
+When `HALE_DNA_MEMORY_DSN_OWNER` is not set, DNA uses your machine's **local habitat** (`hale-habitat-local-<h>` under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, requiring `docker compose` on `PATH`).
 
-The habitat is long-lived: nothing takes it down when work ends, and
-your organism's memory is there on the next run. Only the habitat's
-acts provision or migrate. Birth (`hale habitat up`, `hale habitat graft`)
-brings memory and the nerves up, applies memory's schema and creates
-the organization's stream. `hale habitat migrate [organism]` brings
-the organism's allocations up and moves memory's schema and the
-nerves' stream to this toolchain's; it is idempotent, so run it after
-every toolchain update, or whenever a verb names it. Nothing else
-migrates implicitly.
-
-The migration is one transaction. It writes a schema version, and
-every store checks it when it opens: a host whose memory is at another
-version refuses to start, naming both versions and `hale habitat
-migrate <organism>`, and a migration refuses a schema a newer
-toolchain wrote.
-
-`hale dna dev` migrates nothing: it derives the spine's DSN from
-memory that is up and migrated and hands the host that DSN alone.
-When memory is not up it says so, names `hale habitat migrate`, and
-the host runs with no memory. `hale dna run` migrates nothing either:
-give it `HALE_DNA_MEMORY_DSN_SPINE`, and it keeps any owner's or head's DSN
-away from the host. Without the spine's DSN the host says so and runs
-with no memory, projecting and admitting nothing; on a record that has
-adopted the ledger, `run` refuses to start at all.
-
-The habitat is itself an organism, the one the toolchain ships and the
-one born without a parent. `hale habitat up` births it the first time
-(its genome under the habitat directory, its record in its own memory
-allocation, its positions and law proposed to its Board), brings every
-recorded allocation back up, and runs its body: a systemd user unit, or
-`--foreground` in your terminal. It migrates only its own memory and
-nerves; an organism's allocation moves when you upgrade that organism or
-run `hale habitat migrate` on it. `hale habitat status` lists each
-allocation as the habitat's record holds it, one row per organism and
-role with the schema version it was migrated to, and says which are
-behind this toolchain. `hale habitat down` stops everything and keeps
-the data.
-
-### Shared records
-
-Over a record several organizations share, each owner's heads write as
-that owner's role. Give the owners' keys to the migration
-(`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`) and it prints one more line
-per owner, `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>=<dsn>`; each owner's heads
-take theirs as `HALE_DNA_MEMORY_DSN_HEAD`. An owner's role writes only
-in its own members' names, and who is a member is the graph's
-([below](#the-graph)).
-
-## The ledger
-
-The ledger is the day's work. Memory's migration makes it with the
-record, so every record has it from its first row and no row says so:
+Each organism is provisioned as a set of three Docker Compose services—`memory-<id>`, `nerves-<id>`, and `senses-<id>`—where `<id>` is the first 12 hex characters of `[dna] record`. Their generated `compose.yaml`, `ports.yaml`, and mode `0600` secret files live in `<habitat>/allocations/<id>/`. To inspect the containers directly:
 
 ```sh
-hale dna ledger rows                     # the ledger, one JSON object per line
+docker compose -p <project> --project-directory <habitat>/allocations/<id> -f compose.yaml -f ports.yaml ps
 ```
 
-### Every writer writes, memory is the gate
+Key operational rules for the local habitat:
+- **Explicit migration only**: `hale habitat up`, `hale habitat graft`, and `hale habitat migrate [organism]` are the only commands that start containers or apply schema migrations. Each migration runs in a single transaction and stamps the schema version; if a host connects to a mismatched schema version, it exits and instructs you to run `hale habitat migrate <organism>`.
+- **No implicit migration in `dev` or `run`**: `hale dna dev` derives the `spine` DSN from the running habitat allocation and passes only that DSN to the host. `hale dna run` requires `HALE_DNA_MEMORY_DSN_SPINE` in its environment, strips any `owner` or `head` DSNs, and refuses to start if the spine DSN is missing.
+- **Habitat lifecycle commands**:
+  - `hale habitat up`: Births the habitat organism on first run, starts all recorded allocations, and runs the habitat supervisor (as a systemd user unit or `--foreground`).
+  - `hale habitat status`: Lists every organism allocation, role, and migrated schema version, highlighting any allocations behind the current toolchain.
+  - `hale habitat down`: Stops all habitat containers while preserving their volumes and data.
 
-A verb that writes the day's work in your name writes it
-straight into the ledger as your head's role, through memory's insert
-function, `ledger_append`. The row lands, or it is refused with the
-reason, there and then; there is nothing to wait on:
+### Shared Multi-Owner Records
+
+When multiple organizations share a single record, each organization's heads authenticate with a dedicated per-owner PostgreSQL role (`dna_<identity>_head_<owner>`). Pass `HALE_DNA_OWNER_KEYS="<owner>=<key> …"` during migration to provision per-owner roles and print `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>=<dsn>`. Each owner's head processes use their respective DSN as `HALE_DNA_MEMORY_DSN_HEAD` and may only author rows on behalf of members belonging to that owner in the organizational graph.
+
+## The Ledger
+
+The operational ledger tracks daily workflow execution state and is created alongside `record_rows` during initial migration. To dump all ledger rows as newline-delimited JSON:
+
+```sh
+hale dna ledger rows
+```
+
+When you run a command that records operational activity (such as `hale dna task done`), the CLI connects under the `head` role and calls the `ledger_append` PostgreSQL function directly. The database gate validates and commits the row immediately—or rejects it synchronously with an error:
 
 ```text
 $ hale dna task done acme:t4 --as alice
 hale dna: `task.done acme:t4` was not written to the ledger: task acme:t4 is handed to bob, not to alice; a completion is admitted in the assignee's name
 ```
 
-The gate refuses a row when:
+`ledger_append` rejects a write when any of the following conditions hold:
+1. The row kind belongs to `record_rows` rather than the ledger.
+2. The named author has been retired (`person.retired`).
+3. The calling PostgreSQL role is not authorized to write on behalf of that author.
+4. A task transfer crosses outside the organization that owns the task.
+5. `task.done` is submitted by anyone other than the current assignee.
+6. The write references an expired or superseded lease epoch (`fenced`).
+7. The write was computed against an outdated ledger revision (`stale_revision`) or claims an already-claimed entity.
 
-- its kind is not the ledger's (it goes to the record instead);
-- the person it names has retired;
-- the calling role does not write as that author;
-- it accepts a transfer outside the owner the task was offered to;
-- it completes a task in any name but the assignee's;
-- it names a lease that is not live at that epoch (`fenced`);
-- it was decided at a revision the ledger has moved past
-  (`stale_revision`), or claims an entity already claimed.
+Every ledger write includes a client request ID so retries after a network drop are idempotent. If PostgreSQL becomes unreachable, `hale dna status` displays `memory: THE LEDGER IS UNREACHABLE (…)` and halts new admissions until connectivity returns.
 
-A write carries a request id, so one retried after a lost answer lands
-once. A head with no memory named writes nothing: the verb says so.
+## The Graph
 
-`hale dna status` carries a `memory:` line on every organism:
+On every 1-second tick, each spine node projects new `record_rows` entries into PostgreSQL graph tables: ratified knowledge and bindings, observed code structure, raised concerns and pressure counts, repository nodes and edges (`graph.node`, `graph.edge`), and retired personnel.
 
-```text
-memory:     record + ledger (operations and leases live in memory)
-```
+- **Compare-and-swap projection**: Each projected row updates the graph and advances the projection watermark in a single transaction guarded by compare-and-swap, allowing multiple spine nodes to project concurrently without duplicating effects.
+- **Malformed row isolation (`graph.refused`)**: If a record row contains an invalid graph mutation (e.g., referencing nodes of the wrong kind), memory appends a `graph.refused` row (`by: memory`) naming the offending row and reason, then advances past it so a bad proposal never blocks subsequent graph reads.
 
-When memory stops answering the same line says `THE LEDGER IS
-UNREACHABLE (…)`: what you read is the last projection, and nothing
-is admitted until it answers.
-
-## The graph
-
-The graph is what memory understands of the record. Every node of
-[the spine](./spine.md) projects the record into it on its tick:
-ratified knowledge and its bindings, the code's structure as the graft
-observed it, the concerns and pressure raised per source, the
-repository's nodes and edges (`graph.node`, `graph.edge`), and who
-retired. Each record row is one transaction that moves memory's stamp
-by compare-and-swap before the row's effects, so any number of nodes
-over one record converge on one graph with each row applied once, and
-a projection interrupted mid-row leaves nothing of it. Nothing else
-writes the graph.
-
-A graph row memory will not take, malformed or naming nodes of the
-wrong kind, whether written straight to the record or carried by a
-proposal the Board ratified, is refused as a row of its own:
-`graph.refused` with the row it was at and why, `by: memory`. The
-projection goes on past it, so one bad row never holds back the reads
-that wait for memory to catch up. Only the database failing stops the
-projection, at that row, until it answers.
-
-There is one org chart, and it is this graph: its positions, the
-organizations that own them, and who holds them, all `holds` edges.
-Read its two perspectives with:
+The organizational chart is stored directly in this graph via `holds` edges. Query the two primary views with:
 
 ```sh
-hale dna show org               # every position, what it sits under, who holds it, what it signs
-hale dna show processes         # every process, where it meets another, what runs it
+hale dna show org               # positions, parent hierarchy, holders, and signing authority
+hale dna show processes         # processes, contract boundaries, and runtime placement
 ```
 
-Both read memory under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`;
-without it they refuse and say so) and take `--json`. When memory is
-behind the record they say how far on stderr (`memory has projected N
-of the record's M rows`) and show the graph as of that row. How positions are filled and routed is [The head and the
-face](./head.md) and [Shaping and governing it](./shaping.md).
+Both commands require `HALE_DNA_MEMORY_DSN_HEAD` and support `--json`. If graph projection lags behind `record_rows`, they print `memory has projected N of the record's M rows` on stderr before rendering.
 
-### Reading the repository again
+### Re-Ingesting Repository Structure (`hale dna ingest`)
 
-`hale habitat graft` reads the repository once. `hale dna ingest [--at
-<rev>]` reads it again at a commit (`HEAD` by default) with the same
-ingest, and files what differs from the graph the record states as one
-Board Review, listed under `ingest`: nodes and edges added, bodies
-changed, and what is gone as retirements.
+While `hale habitat graft` inspects the repository graph once at creation, `hale dna ingest [--at <rev>]` re-analyzes the repository at a given commit (`HEAD` by default) and opens a single Board Review (under group `ingest`) containing any added nodes/edges, modified bodies, and retired nodes:
 
 ```text
 ingested 3f2a…c1: 6 added, 0 changed, 3 retired; the Board ratifies it as k:… (`hale dna review` lists it under `ingest`)
 ```
 
-Every operation of a surface the repository serves is a node of kind
-`tool`, `tool:<Surface>::<op>`, naming its contract and the roles it
-requires: the tools an organization's positions may come to use, found
-in the graph. A `graph.ingested` row names the commit either way. The
-same difference at the same commit is proposed once, and once the
-Board ratifies it, reading that commit again says
-`the graph the record states is the repository's; nothing to review`.
+Every operation exposed by an API surface in the repository becomes a `tool` node (`tool:<Surface>::<op>`) recording its contract and required roles. Each run writes `graph.ingested`; once ratified, re-running `hale dna ingest` on the same commit reports `the graph the record states is the repository's; nothing to review`.
 
-### What a Work is told, and by which node
+### Context Targets & Toolchain Library Families
 
-An idea is bound to a **target**, and a target is a locus path or a node
-of this graph. A path (`org`, `org/<child>`) reaches itself and
-everything under it. A node id (`language:hale`, `system:dna`,
-`position:leader`) reaches exactly that node: `language:hale` is not
-`language:hale-x`, and a prefix of an id is nothing. The package a Work's
-hat carries is read for a *set* of targets, in one query, and an idea
-that several of them reach arrives once. The hat's set is the Work's
-path; the languages the attached application is written in (its
-`written_in` edges); `system:dna` instead of the languages when the Work
-is a change to the organization itself; and the performer's position, so
-a mandate bound to the position arrives with the Work. The hat's JSON
-names them as `targets`, and they are part of its digest. A reviewer reads
-the same way: `hale dna review <id>` lists, under `knowledge for …`, the
-ideas ratified for the node the Review is bound to (or `system:dna` for a
-change to the organization), when memory is there to ask.
+Knowledge ideas and mandates are bound to **targets** in the graph:
+- **Locus path target** (`org`, `org/<child>`): Matches the path itself and all descendant paths beneath it.
+- **Node ID target** (`language:hale`, `system:dna`, `position:leader`): Matches only that exact node ID (never prefix-matched).
 
-The graft writes the two nodes everything hangs from, `language:hale` and
-`system:dna`, and for an attached application the node
-`application:<name>` with a `written_in` edge to the language. It also
-proposes the toolchain's library: the book per chapter and the spec per
-section, one idea each, generated from the tree when the toolchain is
-built (a new chapter joins the library by existing). The language's
-chapters and sections are bound to `language:hale`; the DNA chapters
-(`docs/src/dna`, `docs/src/parts`, `spec/dna.md`, `spec/model.md`) to
-`system:dna`. The Board does not review hundreds of ideas one by one: the
-library is two **families**, `library/language@<version>` and
-`library/design@<version>`, and each is one Review whose body names the
-ideas it ratifies. Approving a family ratifies every idea in it and binds
-each to its node; rejecting it refuses them all. Nothing arrives in a
-Work's brief until the Board decides:
+When a worker claims a unit of work, its context **hat** queries PostgreSQL for all ratified ideas matching the work's target set:
+1. The work's locus path.
+2. The `written_in` language nodes of the attached application (or `system:dna` when modifying `dna/org/`).
+3. The performer's position node (including its ratified mandate).
+
+These resolved targets are recorded in the hat's JSON (`targets`) and included in its content digest. `hale dna review <id>` queries the same target set to display relevant ratified knowledge under `knowledge for …`.
+
+At graft time, DNA creates the root `language:hale` and `system:dna` nodes (plus `application:<name>` linked via `written_in` to `language:hale`) and proposes the built-in toolchain documentation as two **library families**:
+- `library/language@<version>`: Book chapters and spec sections bound to `language:hale`.
+- `library/design@<version>`: DNA architecture chapters and specs bound to `system:dna`.
+
+Ratify both families in one command so workers receive ranked, token-budgeted documentation chapters matching their task:
 
 ```sh
-hale dna review                      # two library families, listed beside the practices
-hale dna review library approve      # ratify both families, and so bind every idea
-hale dna review <family id>          # the ideas a family ratifies, by name
-hale habitat graft <name> --no-library    # a record with none of it
+hale dna review                      # lists library families alongside practice groups
+hale dna review library approve      # ratifies both families and binds all chapters
+hale dna review <family-id>          # inspects the individual chapters in a family
+hale habitat graft <name> --no-library    # provisions a record without library proposals
 ```
 
-What a brief pulls from the library is what is bound to the node it is
-about, ranked, within the package's budget: a Work on the language reads
-the few chapters and sections of `language:hale` that matter to its ask,
-not the whole book, and a change to the organization reads the ones bound
-to `system:dna`. An idea bound to everyone would crowd out what the work
-needs, which is why a chapter is bound to the node it is about and not to
-`org`.
+When you update the toolchain and run `hale dna upgrade`, DNA proposes new `@<version>` library families; approving them atomically replaces and retires the previous version's bindings.
 
-When the toolchain moves, `hale dna upgrade` proposes the new version's
-library as new families. Each idea names the digest it replaces, and
-approving the family retires the old ones: until then an application keeps
-the bindings of the version it was seeded at.
+## Cross-Record Connections & Handoffs
 
-An idea whose target is a node the record has no node for is refused,
-naming it.
-
-## Between records
-
-Memory gives your whole record to people inside it. Work that leaves
-the organization goes to another record through a **connection**,
-which says what may cross. Records meet on their nerves:
+Organizations with separate records can exchange tasks and evidence receipts over NATS using mutually ratified **connections**:
 
 ```sh
 hale dna connect nats://acme.example:4222 --record 4f1c… --name acme \
@@ -487,36 +273,8 @@ hale dna connect nats://acme.example:4222 --record 4f1c… --name acme \
 hale dna handoff acme task t7
 ```
 
-- Every record publishes a **card** on its nerves (`hale dna nerves
-  migrate` does it): its identity, its genome and the key it signs
-  with, signed by that key. `connect` reads the card of the record you
-  name (its identity is `[dna] record` in its `hale.toml`) and pins its
-  key, and nothing else of it. It needs the card, not a running peer.
-  It opens a Board Review, and the connection is in force once a Board
-  verdict from someone other than its proposer approves it.
-  `hale dna connect` alone lists connections.
-- To deliver into another record's inbox you need its **inbox key**,
-  the password of its nerves' `exchange` user: its operator hands it to
-  yours, who keeps it in your vault as `nats-<its org>-exchange`.
-- `handoff <name> task <id> | receipt <digest>` signs one envelope with
-  your record's key and delivers it to the other record's inbox: the
-  fact, where it came from, its history here and its purpose. Only a
-  handed task crosses. A receipt crosses as its digest and class, never
-  its body, and only if the connection carries its class. A retried
-  handoff is one envelope. An inbox bounds what waits in it undrained,
-  per sender; a full one refuses the handoff, and nothing is recorded
-  here. What the other side has drained leaves its inbox, so a record
-  that reads its inbox takes any number.
-- The other side admits it only through a connection of its own back
-  to you, under the key that connection pinned (an envelope claiming you
-  under another key is dropped, or kept beside yours and never
-  admitted), and accepts it with
-  `hale dna handoff accept <id>`. Your `hale dna handoff sync` reads the
-  acceptance back, and only then does your task settle.
-- `hale dna disconnect acme --why "the engagement ended"` stops
-  anything further crossing. Both records keep what already did.
-
-Neither record reads the other's record: a connection reads one card,
-and an inbox holds only the envelopes sent to it. A connection
-proposed before the nerves exchange pinned no key and is proposed
-again.
+1. **Identity cards & connection ratification (`connect`)**: `hale dna nerves migrate` publishes a signed identity card on the organization's NATS server containing its `[dna] record` identity, genome digest, and Ed25519 public key. `hale dna connect` fetches the peer's card, pins its public key, and opens a Board Review. The connection becomes active once approved by a Board member other than the proposer. Run `hale dna connect` with no arguments to list active connections.
+2. **Inbox credentials**: To deliver envelopes to a peer's NATS server, store the peer's `exchange` NATS password in your vault as `nats-<peer-org>-exchange`.
+3. **Delivering tasks and receipts (`handoff`)**: `hale dna handoff <name> task <id> | receipt <digest>` signs an envelope with your record's Ed25519 key and publishes it to the peer's bounded inbox. Only human-assigned (`handed`) tasks may cross records. Receipts cross as `(digest, class)` metadata only (never raw bodies) and only if the connection permits that sensitivity class.
+4. **Mutual admission (`handoff accept` & `handoff sync`)**: The receiving organization verifies the envelope against its own reverse connection pinning your key, then accepts the work with `hale dna handoff accept <id>`. Running `hale dna handoff sync` on the sending side reads the acceptance receipt and settles the local task.
+5. **Disconnecting (`disconnect`)**: Run `hale dna disconnect acme --why "the engagement ended"` to revoke future handoffs while preserving all previously exchanged records.

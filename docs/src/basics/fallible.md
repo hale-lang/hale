@@ -1,18 +1,6 @@
-# When a call can fail
+# When a Call Can Fail
 
-> Hale's value-level error model — and why you can't ignore it.
-
-Some calls can't always succeed. Parsing `"banana"` as an
-integer, reading a file that isn't there, connecting to a host
-that's down. In Hale these calls have a type that says so, and
-the compiler *requires* you to deal with the failure right at the
-call site. There are no exceptions, no surprise control flow, and
-no silently-ignored error codes.
-
-## The `fallible` type
-
-A function that can fail declares it with `fallible(E)`, where
-`E` is the type of the error payload:
+Hale handles recoverable, value-level errors through `fallible(E)` function signatures and mandatory `or` clauses at every call site. Unlike exceptions, errors never propagate invisibly across stack frames; unlike Rust's `Result<T, E>` or Go's `(T, error)`, a fallible return is not a wrapper value that can be stored or ignored—it must be resolved immediately where the call is made.
 
 ```hale
 type ParseError { kind: String; input: String; }
@@ -23,144 +11,97 @@ fn parse_count(s: String) -> Int fallible(ParseError) {
     }
     return std::str::parse_int(s) or 0;
 }
+
+fn main() {
+    let valid   = parse_count("42") or 0;
+    let invalid = parse_count("banana") or -1;
+    println(f"valid={valid} invalid={invalid}");
+}
 ```
 
-(`ParseError` is also the name of the error the stdlib's parsers
-fail with, and a program's declaration of it stands in for the
-stdlib's everywhere — the stdlib's own code included. So it keeps the
-stdlib's fields, `kind` and `input`; `hale check` refuses a
-`ParseError`, `CryptoError`, `IndexError`, `KeyError`, `CapacityError`
-or `ClosureViolation` of your own that drops one. Give a different
-shape a different name.)
+## Declaring `fallible(E)` and Raising Errors
 
-`fail <payload>;` exits the function through the error path,
-carrying the payload. The function's result is now "either an
-`Int`, or a `ParseError`" — and the caller can't just use it as
-an `Int`:
+Append `fallible(E)` after a function's return type (or directly after the parameter list if the function returns `()`) to declare that it may fail with error payload `E`:
 
 ```hale,fragment
-let n = parse_count(input);     // ERROR: says nothing about failure
+fn write_report(path: String, body: String) fallible(IoError) {
+    std::io::fs::write_file(path, body) or raise;
+}
 ```
 
-You have to *address* the error. You do that with an `or`
-clause, and only with one: a `match` over the call, passing it as
-an argument or comparing it are all the same error.
+Inside a `fallible(E)` function, `fail <expr>;` exits the function immediately along its error channel with `<expr>` of type `E`.
 
-## The five `or` motions
+> [!NOTE]
+> **Standard Library Error Types:** If your program declares a record with the same name as a built-in stdlib error (`ParseError`, `IoError`, `CryptoError`, `IndexError`, `KeyError`, `CapacityError`, or `ClosureViolation`), your declaration unifies with the stdlib's type across the entire program and must include all fields required by the stdlib (for example, `kind: String; input: String;` on `ParseError`). Use a distinct name for custom error shapes.
 
-```hale,fragment
-let a = parse_count(s) or raise;              // propagate upward
-let b = parse_count(s) or 0;                  // substitute a value
-let c = parse_count(s) or handle(err);        // hand off to a helper
-let d = parse_count(s) or fail OtherErr { };  // translate the error
-parse_count(s)         or discard;            // ignore (as a statement)
-```
+## Addressing Fallible Calls with `or`
 
-- **`or raise`** — pass the error up to *your* caller. For that
-  your function is itself `fallible(E)` with the same error type
-  (a different one is refused). In a function that isn't
-  fallible the error has nowhere to go, so it ends the program:
-  `Hale panic: unhandled E escaping main locus`.
-- **`or <expression>`** — substitute a fallback value of the
-  success type. Inside the expression, `err` is bound to the
-  payload, so you can inspect it:
-  ```hale,fragment
-  let port = std::str::parse_int(arg) or 8080;
-  ```
-- **`or handler(err)`** — call a function that takes the error
-  and returns the success type. Good when several call sites
-  share one recovery policy.
-- **`or fail <payload>`** — fail with a *new* error of your own
-  type, instead of forwarding the inner one. Use it so a library
-  doesn't leak a stdlib error type through its own surface. The
-  payload sees `err` bound to the inner error, so a translation
-  can carry fields across:
-  ```hale,fragment
-  let n = std::str::parse_int(s) or fail AppErr { msg: err.kind };
-  ```
-- **`or discard`** — throw the error away. On a call that
-  returns `()` it goes anywhere. On a call that returns a value it
-  goes where the value is thrown away too — the call is the whole
-  statement, `cache.put(k, v) or discard;` — and both are dropped.
-  Where the value is used, `let n = parse_count(s) or discard;`,
-  there is nothing to give `n` when the call fails, so the
-  compiler refuses it and suggests `or <fallback>`, `or raise` or
-  the statement form.
+Every call to a `fallible(E)` function must be followed immediately by an `or` clause. Calling a fallible function bare (`parse_count(s);`), passing it directly as an argument, or matching on it (`match parse_count(s) { ... }`) is a compile error in `hale check`, `hale verify`, and `hale build`.
 
-As a statement, any `or` runs its fallback for its effect only — the
-value is thrown away — so the fallback needn't be a value of the
-success type: `parse_count(s) or { log(err.kind); };` is fine. And a
-call that succeeds with `()` has no value to keep: `let ok =
-write_file(p, s) or { };` is refused (there is nothing to bind); write
-the call as a statement.
+| `or` Form | Syntax Example | Behavior |
+|---|---|---|
+| **Fallback value** | `parse_count(s) or 0` | Substitutes a default value of the success type (`err` is in scope inside the fallback expression). |
+| **Fallback block** | `parse_count(s) or { log(err.kind); return; }` | Runs a block with `err: E` in scope. In value position, the block must evaluate to `T` or diverge (`return`, `break`, `continue`, `fail`, `violate`). |
+| **Propagate (`raise`)** | `parse_count(s) or raise` | Returns `E` from the enclosing `fallible(E)` function. In an infallible function (such as `main`), halts the process with `Hale panic: unhandled E escaping main locus`. |
+| **Handler function** | `parse_count(s) or handle_err(err)` | Calls a helper `fn(E) -> T` with `err` to compute a substitute value (or trigger structural shutdown). |
+| **Translate (`fail`)** | `parse_count(s) or fail AppErr { msg: err.kind }` | Fails the enclosing `fallible(AppErr)` function with a translated error payload. |
+| **Ignore (`discard`)** | `cache.put(k, v) or discard;` | Drops the error. Valid anywhere for `()` functions, or at statement position when discarding both value and error. |
 
-## A real example
-
-Reading a file is fallible — the file might not exist:
+### Examples of Each `or` Disposition
 
 ```hale
-fn load_greeting() -> String {
-    return std::io::fs::read_file("welcome.txt") or "(no welcome)";
+type AppErr { msg: String; }
+
+fn default_port(e: ParseError) -> Int {
+    eprintln("bad port (", e.input, "), defaulting to 8080");
+    return 8080;
+}
+
+fn read_port(raw: String) -> Int fallible(AppErr) {
+    return std::str::parse_int(raw) or fail AppErr { msg: err.kind };
+}
+
+fn main() {
+    let p1 = std::str::parse_int("9000") or 8080;
+    let p2 = std::str::parse_int("bad") or default_port(err);
+    let p3 = read_port("3000") or {
+        eprintln("fatal: ", err.msg);
+        return;
+    };
+    std::io::fs::mkdir("tmp_cache") or discard;
+    println(p1, " ", p2, " ", p3);
 }
 ```
 
-If the read fails, we substitute a default. If instead we wanted
-the failure to stop us, we'd make `load_greeting` fallible and
-`or raise`:
+### Statement vs. Value Position Rules
 
-```hale,fragment
-fn load_greeting() -> String fallible(...) {
-    return std::io::fs::read_file("welcome.txt") or raise;
-}
-```
+- **Statement-position `or` blocks:** When a fallible call stands as a complete statement (`parse_count(s) or { log(err.kind); };`), its success value is discarded, so the `or` block does not need to produce a value of the success type.
+- **No binding `()` calls:** A fallible function whose success type is `()` cannot be bound to a `let` variable (`let ok = std::io::fs::write_file(p, s) or { };` is rejected); call it as a statement instead.
+- **No `or discard` in value bindings:** Writing `let n = parse_count(s) or discard;` is a compile error because `n` would have no value on failure; use `or <fallback>`, `or raise`, or call `parse_count(s) or discard;` as a statement.
 
-## The bare form is an error
+## Chaining and Fallible Recovery Handlers
 
-Any function that can fail, yours or the stdlib's, must be called with
-an `or`:
-
-```hale,fragment
-std::io::fs::write_file(path, text);                // ERROR: says nothing about failure
-let r: Int = std::io::fs::write_file(path, text);   // ERROR: the legacy Int status
-match parse_count(s) { 0 -> { }, _ -> { } }         // ERROR: a match does not handle it
-```
-
-The compiler refuses every such call in `hale check`, `hale verify`
-and `hale build` alike (for stdlib calls since v0.22.0), naming the
-function, what it can fail with, and the four ways to say what should
-happen:
-
-```hale,fragment
-std::io::fs::write_file(path, text) or raise;      // propagate
-std::io::fs::write_file(path, text) or discard;    // deliberately ignore
-let text = std::io::fs::read_file(path) or "";     // substitute
-let n = std::str::parse_int(s) or handler(err);    // handle
-```
-
-**Migrating.** Pick the disposition per site: `or raise` where the
-caller can act on the failure, `or <fallback>` where a default is
-right, `or handler(err)` where several sites share a policy, and
-`or discard` only where ignoring the failure is the intent. A code
-that read the legacy Int status (`let r: Int = write_file(..)`)
-moves the call into a `fallible` helper that `or raise`s and takes
-the status from its caller's `or`. The `--strict-fallible` flag is
-removed; drop it from scripts.
-
-## Chaining
-
-`or` clauses chain right-to-left — each one disposes of one
-failure:
+`or` clauses associate right-to-left, allowing you to chain fallback attempts before a final default or `raise`:
 
 ```hale,fragment
 let id = parse_count(primary) or parse_count(fallback) or 0;
 ```
 
-"Try the primary; if that fails, try the fallback; if *that*
-fails, use 0."
+When a recovery expression in an `or` clause can itself fail:
 
-## Through an interface
+- **User-defined fallible functions** implicitly propagate their error to the enclosing `fallible` function (`db_read(k) or self.rebuild(k)`).
+- **Stdlib functions, generic functions, interface methods, and `@form` methods** used inside an `or` arm require an explicit inner `or` disposition:
 
-An interface method can say it fails, the same way:
+```hale
+fn load(primary: String, backup: String) -> String fallible(IoError) {
+    return std::io::fs::read_file(primary)
+        or (std::io::fs::read_file(backup) or raise);
+}
+```
+
+## Fallible Methods in Interfaces
+
+Interface method signatures may declare `fallible(E)`:
 
 ```hale
 type StoreError { kind: String; }
@@ -169,7 +110,7 @@ interface Store {
     fn put(key: String) -> Int fallible(StoreError);
 }
 
-locus Strict {
+locus StrictStore {
     fn put(key: String) -> Int fallible(StoreError) {
         if key == "" { fail StoreError { kind: "empty key" }; }
         return len(key);
@@ -181,53 +122,18 @@ fn store_or_zero(s: Store, key: String) -> Int {
 }
 ```
 
-A call through the interface is addressed like any other fallible
-call. A locus whose `put` cannot fail still satisfies `Store`; one
-whose `put` fails with a different error type, or that fails where
-the interface says it cannot, does not — `hale check` names both
-signatures.
+A locus whose `put` method is infallible still satisfies `Store` (since it never exercises the error path). A locus whose `put` fails with a different error type, or declares `fallible` when the interface method is infallible, fails typechecking.
 
-## Why it works this way
+## Two Failure Channels: Why Lifecycle Hooks Cannot Be `fallible(E)`
 
-This is the only failure channel you need at the basics level,
-and it has a single rule: **every fallible call is addressed at
-the immediate call site.** That means when you read a function
-body, every place that can fail is visibly marked with `or`. No
-error propagates invisibly through three stack frames; no `try`
-wraps a whole block in ambiguity.
+Hale separates failures into two orthogonal channels:
 
-There's a *second* failure channel for a different situation — a
-long-running component whose internal invariant breaks, where the
-right response is a supervisor's policy rather than a return
-value. That's the structural channel, and it belongs to the
-services tier ([When things fail](../services/failure.md)). For
-everything you'll write at this level, `fallible` + `or` is the
-whole story.
+1. **Value channel (`fallible(E)` + `or`):** Caller-addressed operational errors on free functions and user-declared `fn` methods on a locus.
+2. **Structural channel (`↑` — closure tests, `violate`, and `on_failure`):** Component-level invariant violations and supervision policies, covered in [When Things Fail](../services/failure.md).
 
-## When the handler can fail too
+> [!IMPORTANT]
+> **`fallible(E)` is rejected on substrate-invoked surfaces:** lifecycle hooks (`birth`, `run`, `dissolve`), mode bodies (`bulk`, `harmonic`, `resolution`), closure-assertion bodies, and bus-subscribed handlers (`subscribe Topic as handler`).
+>
+> Because the runtime invokes these hooks directly rather than a caller frame in your code, there is no call site to attach an `or` clause. Inside a lifecycle hook or bus handler, resolve fallible calls with `or <fallback>`, `or { ... }`, `or discard`, or bridge to the structural channel using an error-check method that executes `violate`.
 
-A recovery handler is often itself a fallible operation — read a
-fallback file, query a secondary source. You can
-write that directly:
-
-```hale
-fn load(primary: String, backup: String) -> String fallible(IoError) {
-    return std::io::fs::read_file(primary)
-        or (std::io::fs::read_file(backup) or raise);
-}
-```
-
-If the backup read succeeds, its value substitutes. If it *also*
-fails, `or raise` routes the error out through YOUR function's
-error path — which is why `load` must itself be `fallible` with a
-compatible error type.
-
-For your own fallible functions the inner `or raise` is implicit —
-`db_read(k) or self.rebuild(k)` propagates the handler's failure
-automatically. Stdlib calls, generic functions, interface methods and
-`@form` methods used as handlers still need the explicit nested
-spelling above (the compiler will tell you, with the exact rewrite, if
-you forget).
-
-Next, we put the pieces together: [Your first
-program](./first-program.md).
+Next: [Your First Program](./first-program.md).

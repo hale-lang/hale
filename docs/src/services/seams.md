@@ -1,37 +1,17 @@
 # Seams
 
-Most programs that talk to the outside world have an edge with three
-jobs: turn bytes into a message, act on the message, and turn the
-result back into bytes. The three are easy to write and easy to tangle.
-The decoder starts to know which handler wants what, the handler starts
-to know how the wire spells things, and the dispatch between them grows
-a default arm where a new kind of message quietly goes missing.
-
-A **seam** keeps the three apart. You write the decoder, the handler and
-the encoder as ordinary loci, and one line says how they connect. The
-compiler writes the dispatch and checks that every kind of message has
-exactly one place to go.
-
-## The pieces
-
-A seam works on [sets](../everyday/records.md#sets--one-of-several-types):
-a type that is one of several record types, each member its own tag.
-Start with the messages:
+A **seam** is a declarative pipeline inside a locus that connects a wire decoder, a domain handler locus, and an encoder over [set types](../everyday/records.md#sets--one-of-several-types) (`type Inbound = A | B;`). Instead of writing manual `match` dispatch glue with catch-all `_` arms, you write a single `->` chain and the compiler generates statically inlined dispatch while verifying that every message variant and error type is handled by exactly one target.
 
 ```hale,fragment
-type NewOrder { id: Int; qty: Int; }
-type Cancel { id: Int; }
-type Ack { id: Int; }
-type Reject { id: Int; why: String; }
+type NewOrder  { id: Int; qty: Int; }
+type Cancel    { id: Int; }
+type Ack       { id: Int; }
+type Reject    { id: Int; why: String; }
 type WireError { at: Int; }
 
-type Inbound = NewOrder | Cancel;
+type Inbound  = NewOrder | Cancel;
 type Outbound = Ack | Reject | WireError;
-```
 
-The decoder and the encoder know the bytes and nothing about the desk:
-
-```hale,fragment
 locus Wire {
     fn decode(frame: String) -> Inbound fallible(WireError) {
         if frame == "cancel" { return Cancel { id: 1 }; }
@@ -49,12 +29,7 @@ locus Wire {
         };
     }
 }
-```
 
-The handler knows its own types and nothing about the wire. It has one
-method per kind of message it takes:
-
-```hale,fragment
 locus Desk {
     params { open: Int = 0; }
     fn new_order(n: NewOrder) -> Outbound {
@@ -67,14 +42,7 @@ locus Desk {
         return Ack { id: c.id };
     }
 }
-```
 
-## Stitching them
-
-The seam lives in a locus that holds the pieces, and reads left to
-right:
-
-```hale,fragment
 locus Counter {
     params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
     seam answer(frame: String) -> String {
@@ -92,6 +60,8 @@ fn main() {
 }
 ```
 
+Running this program prints:
+
 ```text
 ack 30
 reject 500 too big
@@ -100,65 +70,49 @@ bad frame at 0
 open: 0
 ```
 
-`answer` is a method like any other: it takes a frame and returns the
-encoded reply. Each step after the arrow is a **hop**:
+## Seam Forms & Hop Types
 
-- `self.wire.decode` and `self.wire.encode` are **method hops**: the
-  value goes to that one method.
-- `self.desk` is a **locus hop**: the value is a set, and each member
-  goes to the `Desk` method whose parameter is that member. A
-  `NewOrder` reaches `new_order` and a `Cancel` reaches `cancel`. That
-  is the dispatch you did not write.
+| Construct | Syntax | Behavior |
+|---|---|---|
+| **Callable seam** | `seam name(arg: T) -> R { arg -> ...; }` | Generates a callable method `self.name(arg)` on the enclosing locus. |
+| **Self-running (closed) seam** | `seam { self.src.next() -> ... -> self.sink.write; }` | Generates the locus's `run()` loop, pulling frames until `!self.draining` is false or the source fails. |
+| **Method hop** | `-> self.wire.decode` | Passes the current value directly to the named method. |
+| **Locus hop** | `-> self.desk` | Dispatches each variant of an incoming set type (`NewOrder \| Cancel`) to the unique method on `self.desk` whose parameter matches that variant's type. |
 
-Nothing in `Wire` names `Desk`, and nothing in `Desk` names `Wire`. The
-seam is the only place they meet.
+## Bidirectional Exhaustiveness Checking
 
-## Every message has one place to go
+In the example above, `Wire` knows nothing about `Desk`, and `Desk` knows nothing about wire framing. The `seam` connects them and verifies exhaustiveness in both directions at compile time:
 
-The compiler checks the dispatch at every boundary, both ways. Delete
-`Desk::cancel` and the seam is refused where the `Cancel` would have
-been dropped:
+1. **Locus hop coverage**: Every member in the set arriving at `self.desk` must match the parameter type of **exactly one** method on `Desk`. If `Desk::cancel` is omitted, compilation fails at `self.desk`:
+   ```text
+   type error: `self.desk` has no method taking `Cancel`, which reaches it from `self.wire.decode`: every member has one eater
+               frame -> self.wire.decode -> self.desk -> self.wire.encode;
+                                            ^^^^^^^^^
+   ```
+   Similarly, if two methods on `Desk` both accept `Cancel`, the compiler rejects the ambiguity naming both methods.
+2. **Method hop coverage**: At a method hop (`self.wire.encode`), every member produced by the preceding hop must be a member of the method parameter's set type (`Outbound`).
 
-```text
-type error: `self.desk` has no method taking `Cancel`, which reaches it from `self.wire.decode`: every member has one eater
-            frame -> self.wire.decode -> self.desk -> self.wire.encode;
-                                         ^^^^^^^^^
-```
+Adding a new message type to `Inbound` immediately fails compilation at `self.desk` until a corresponding handler method is added. (Note: if a seam has a type error, its generated method is omitted, which will also produce a secondary `"no field answer"` diagnostic at call sites until the seam is fixed.)
 
-Two methods that both take `Cancel` are refused the same way, naming
-both. At a method hop, every member arriving must be one the parameter
-holds. So adding a member to `Inbound` fails the build until the desk
-handles it, which is the point: the hand-written version of this
-dispatch is a `match` whose `_` arm is where the new member goes
-missing at run time. (A refused seam's method does not exist, so its
-callers are refused too, with "no field `answer`". Fix the seam first.)
+## Error Routing in Seams
 
-## Failures are answers
+When a hop in a seam is `fallible(E)` (such as `self.wire.decode` failing with `WireError`), the compiler routes `E` using one of three mechanisms:
 
-`decode` can fail with a `WireError`. Because `WireError` is a member of
-`Outbound`, the failure enters the chain at the first later hop that
-takes it, which is `encode`, and becomes an ordinary reply: `bad frame
-at 0` above. A protocol error answered on the wire is usually exactly
-what you want.
+| Error Route | Syntax | Behavior |
+|---|---|---|
+| **Forward into a later hop's set** | Include `E` in a downstream hop's input set (`type Outbound = Ack \| Reject \| WireError;`) | `E` bypasses intermediate hops and enters the first downstream hop that accepts `E` (e.g., `self.wire.encode`), turning the error into an ordinary encoded reply. |
+| **End the seam (`or end;`)** | Append `or end;` to the seam block | On a callable seam, makes the seam method `fallible(E)` so callers handle it with `c.answer(frame) or ...`. On a closed seam, terminates the `run()` loop. |
+| **Escalate structurally (`or violate`)** | Append `or violate <closure>;` to the seam block | Fires the enclosing locus's `epoch inline` closure `<closure>`, routing a `ClosureViolation` to the parent's `on_failure` hook. See [Failure & Supervision](./failure.md). |
 
-When no later hop takes a failure, the seam has to say what happens to
-it, or it is refused:
+If a hop can fail with `E` and neither a downstream hop's set nor an `or` clause handles `E`, compilation fails:
 
 ```text
 type error: `self.wire.decode` fails with `WireError`, and no later hop takes it: add `WireError` to a later hop's set, or route it with `or end;` or `or violate <closure>;`
 ```
 
-`or end;` ends the flow: a callable seam such as `answer` then fails
-with the error, so its caller writes `c.answer(frame) or …`. `or violate
-NAME;` violates the locus's closure `NAME` instead, which hands the
-failure to the parent's `on_failure` like any other [structural
-failure](./failure.md).
+## Self-Running Closed Seams
 
-## A seam that runs by itself
-
-Give the chain a source and a sink and it needs no caller. The source
-is a call that makes each frame, and the sink a method that takes the
-last value and returns nothing:
+When a seam begins with a source call expression (`self.feed.next()`) and ends with a void sink method (`self.log.write`), it forms a **closed seam** that serves as the locus's `run()` method:
 
 ```hale,fragment
 type Ended { why: String; }
@@ -186,50 +140,27 @@ locus Gateway {
 }
 ```
 
-```text
-ack 20
-bad frame at 0
-ack 1
-```
+- **Loop lifecycle**: While `!self.draining` is true, the generated `run()` pulls one item from `self.feed.next()` and executes the chain. When the source fails (`fail Ended`), the loop exits cleanly. (`or end;` and `or violate` apply to failures in hops *after* the source.)
+- **Mutually exclusive with `run()`**: Because a closed seam *is* the locus's `run()` phase, declaring both a closed `seam { ... }` and an explicit `run()` on the same locus is a compile error.
+- **Flat per-frame memory**: The compiler extracts a single turn of the closed seam (source pull, decode, dispatch, encode, sink write) into a helper method called inside the `run()` loop. Any scratch memory allocated while processing a frame is reclaimed at the end of that frame, keeping memory usage flat across long-running streams.
 
-This closed seam *is* the locus's `run`: while the locus is not
-draining, it pulls a frame and runs the chain, and a failing source
-(`Ended`) ends the flow by itself; `or end;` and `or violate` are for the
-failures of the hops after it. A locus with a closed seam declares no
-`run` of its own; writing both is refused.
+## Single-Tower Constraints & API Integration
 
-Each frame is one turn of that `run`: the compiler writes the frame
-(pull, decode, dispatch, encode, write) as a method of its own, which
-`run` calls until the source ends. So what a frame makes is freed when
-the frame is done, and a gateway that runs for hours holds flat.
+Every hop in a seam is compiled as a direct, statically inlined call within a single locus tower: each variant retains its concrete static type from the decoder through to the encoder without boxing into an unrequested runtime union.
 
-## One tower
+To preserve static single-thread lowering, `hale check` rejects two hop targets:
 
-A seam is wiring inside one locus tower. Its hops are the locus's own
-methods and its children's, called directly; each call is inlined, a
-member keeps its own static type from the decoder to the encoder, and
-no union is built that the program did not declare. Two shapes are
-refused because they would break that:
+1. **Interface-typed fields**: The concrete target method of an `interface` field is not known at compile time.
+2. **Children placed on a different pool**: Cross-pool communication must go through the [bus](./bus.md) (`Topic <- msg;`) rather than a synchronous seam hop.
 
-- **A hop on an interface.** The method it would call is not known
-  until run time, and a seam's chain is static.
-- **A hop on a child placed on another pool.** Crossing pools is the
-  bus's job: publish the decoded message to a topic, and let the other
-  pool's locus subscribe.
+> [!NOTE]
+> **How `api::serve` Uses Seams**
+> When you expose an [API surface](./api.md), the compiler lowers each route into a seam on the receiver locus: a generated decoder parses the HTTP/JSON or gRPC/Protobuf request body into your request type, a hop dispatches to your handler method, and an encoder serializes the response, error, or handler violation status code.
 
-## Your API already has one
+### Specification References
 
-When you serve a [surface](./api.md), every row is a seam the compiler
-writes on its receiver: one decoder turns the request body into the
-row's request type (JSON, or protobuf on gRPC), the dispatch hands it to
-your method, and one encoder writes the answer, your error, or the
-server error a violating handler gets. That is why an API handler is
-just a method over its own types, and why none of that plumbing shows
-up in what callers see.
+- Seam semantics: `spec/semantics.md` § Seams
+- Set types: `spec/types.md` § Set types
+- Style guide rules: `spec/styleguide.md` §§ 2.9–2.10
 
-## Where it is specified
-
-- Seams: `spec/semantics.md` § Seams.
-- Sets: `spec/types.md` § Set types.
-- The style guide's rules for the shape: `spec/styleguide.md` 2.9 and
-  2.10.
+Next: [Repositories](./repositories.md).

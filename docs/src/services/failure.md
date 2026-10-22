@@ -1,34 +1,48 @@
-# When things fail
+# Failure & Supervision
 
-> **Coming from Go?** This is the part that's more Erlang than
-> Go. Alongside the value-level [`fallible`](../basics/fallible.md)
-> channel you already know, a long-running locus has a *structural*
-> failure channel: when an invariant it promised to keep breaks,
-> the failure flows **up** to its parent, which decides recovery —
-> restart, quarantine, or escalate. Supervisors, let-it-crash, and
-> typed recovery policy, built into the language.
+Hale separates recoverable call errors from supervisor-level component failures into two distinct channels: the **value channel** (`fallible(E)` and `or`) and the **structural channel** (`closure`, `violate`, and `on_failure`). When a locus's invariant breaks, the runtime constructs a typed `ClosureViolation` and routes it up the ownership tower to the parent locus's `on_failure` hook, which decides whether to absorb, restart, quarantine, dissolve, or escalate.
 
-## Two channels, on purpose
+```hale
+locus Account {
+    params { debits: Decimal = 0.00d; credits: Decimal = 0.00d; }
 
-Hale keeps two failure mechanisms strictly separate:
+    closure balanced {
+        self.debits ~~ self.credits within 0.01d;
+        epoch tick;
+    }
+}
 
-- **The value channel** — `fallible(E)` + `or`, from the basics.
-  "This call didn't produce a value; the caller decides what to
-  do." Routes up the *call stack*, addressed inline.
-- **The structural channel** — a locus's declared invariant
-  breaks, the runtime builds a typed event and routes it up the
-  *locus tower* to the parent's `on_failure`. "A promised
-  property no longer holds; the supervisor decides."
+locus Bank {
+    accept(a: Account) { }
 
-There's no `panic` statement, no exceptions, and `assert` lives only
-in the test library. Every legitimate
-failure is one of these two, and they only meet at the program's
-root.
+    on_failure(a: Account, err: ClosureViolation) {
+        quarantine(a);
+    }
+}
+```
 
-## Declaring an invariant: `closure`
+## Two Failure Channels
 
-A `closure` is a property a locus promises to keep, checked by
-the runtime at a declared moment:
+Hale provides no `panic` statement or uncaught exceptions (`assert` exists only in the test library). Every error flows through one of two typed channels:
+
+| Channel | Mechanism | Direction | Allowed Surfaces & Purpose |
+|---|---|---|---|
+| **Value channel** | [`fallible(E)`](../basics/fallible.md) + `or` | Up the **call stack** | Free functions and user-declared locus `fn` methods. Rejected on runtime-driven hooks (`birth`, `run`, `dissolve`, mode bodies, closure assertions, bus handlers) because they have no caller frame. |
+| **Structural channel (`↑`)** | `closure` / `violate` → `on_failure` | Up the **locus ownership tower** | Every locus. Triggered by broken invariant closures or explicit `violate` statements; handled by the parent supervisor's `on_failure` hook. |
+
+If a structural failure bubbles past the root `main locus` without being absorbed by an `on_failure` handler, the process exits non-zero and prints a structured violation report.
+
+## Declaring Invariants (`closure`)
+
+A `closure` block inside a locus declares an invariant condition and the `epoch` at which the runtime evaluates it:
+
+| Epoch | Syntax | Evaluation Timing |
+|---|---|---|
+| **Tick** | `epoch tick;` | Checked after each event-loop iteration or handler turn. |
+| **Birth** | `epoch birth;` | Checked immediately after `birth()` completes (including after every `restart` re-runs `birth()`). |
+| **Dissolve** | `epoch dissolve;` *(default)* | Checked immediately before `dissolve()` runs. |
+| **Periodic** | `epoch duration(1min);` | Checked on the specified time interval. |
+| **Inline** | `epoch inline;` | Assertion-less closure (`captures: field1, field2;`) triggered explicitly via `violate NAME;`. |
 
 ```hale
 locus Account {
@@ -41,30 +55,28 @@ locus Account {
 }
 ```
 
-`~~` is "approximately equal, within tolerance." The `epoch`
-says when to check — `tick` (each event-loop iteration), `birth`,
-`dissolve`, `duration(1min)`, or `inline` (only when fired by
-hand). If the assertion holds, nothing happens; closures are
-silent on success. If it breaks, the runtime constructs a typed
-`ClosureViolation` and routes it to the parent's `on_failure`.
+- The `~~ ... within <tolerance>` operator tests approximate equality within a numeric bound.
+- Closures are silent when their assertion holds. When an assertion evaluates to `false`, the runtime builds a `ClosureViolation` (`err.locus`, `err.closure`, `err.diff`) and routes it to the parent's `on_failure` handler.
 
-## Handling failure: `on_failure`
+### Accumulator Closures (`persists_through` & `resets_on`)
 
-The parent is the supervisor. It decides policy per child type:
+Closures that aggregate values across epochs using `sum(...)`, `count(...)`, or `mean(...)` reset their running totals to zero whenever the locus is recovered. To preserve running totals across specific recovery actions, add `persists_through(...)`:
 
-```hale
-locus Bank {
-    accept(a: Account) { }
-
-    on_failure(a: Account, err: ClosureViolation) {
-        quarantine(a);
-    }
+```hale,fragment
+closure within_band {
+    sum(self.delta) ~~ 0 within 100;
+    epoch tick;
+    persists_through(quarantine);
 }
 ```
 
-A parent with children of several types writes one handler per
-type. The failing child's type picks the handler, so each child's
-failure reaches its own:
+- Valid recovery names in `persists_through(...)` and `resets_on(...)` are `restart`, `restart_in_place`, and `quarantine` (an exhausted `restart(c) for N` budget transitions to `quarantine` and matches `quarantine`). Passing `dissolve` is a compile error because totals never outlive the locus.
+- `resets_on(restart)` explicitly documents the default reset behavior. Naming the same recovery in both `persists_through` and `resets_on` is a compile error.
+- `hale check` warns if a closure names a recovery that no `on_failure` handler in the program ever applies to that locus, or if `persists_through` is declared on a closure that contains no `sum`, `count`, or `mean` accumulator.
+
+## Supervising Children (`on_failure`)
+
+A parent locus supervises its children—both dynamic children admitted via `accept` and static children held in `params`—by declaring one `on_failure` handler per child type:
 
 ```hale
 locus Cache { params { hits: Int = 0; } }
@@ -76,16 +88,9 @@ locus App {
 }
 ```
 
-One handler per type, and only one: a second `on_failure` for a
-type that already has one could never run — the first is the one a
-failing child reaches — so `hale check` refuses it and points at
-the first. Everything a failure of that type needs goes in the one
-handler.
-
-The parent is the locus that holds the child in a field. It
-does not matter whether the child's literal is the field's
-default or is written in the parent's literal where the parent
-is built — the usual way to configure a child from `main()`:
+- **One handler per child type**: A parent can declare at most one `on_failure` per child type; `hale check` rejects duplicate handlers for the same type.
+- **Supervision of `params` children**: A `params` child routes failures to its parent whether constructed via the parameter's default initializer or passed as an inline literal at parent construction (`App { conn: Conn { url: std::env::var("URL") } }`). However, constructing a child in an outer `let` variable and passing it by name (`let c = Conn { }; App { conn: c };`) borrows `c` and preserves the supervision route of the scope that created `c`.
+- **Mandatory subtree supervision (`@supervised`)**: Annotating a locus with `@supervised` requires every locus in its ownership subtree to be covered by an `on_failure` policy in scope.
 
 ```hale
 locus Conn { params { url: String = ""; } }
@@ -100,80 +105,19 @@ fn main() {
 }
 ```
 
-`Conn` fails to `App`'s `on_failure` either way. What does not
-carry supervision is a child built somewhere else and handed
-over by name — `let c = Conn { … }; App { conn: c };` — since it
-was built before `App` existed; it keeps the route of the place
-that built it. Write the literal in the parent's.
+### Recovery Actions
 
-A handler never runs while its locus is still setting params.
-A child declared early in `params` can fail before the later
-params are set: a child on the main thread runs its whole `run()`
-during that setup, and a pinned child's thread starts during it.
-The runtime holds that failure and delivers it once every param
-has its value, just before the parent's `birth()`. So the handler
-can read any param, and what it writes is not overwritten by a
-later default. The failing child stays alive until then, even if
-its `run()` has already ended, and a restart the handler asks for
-happens as soon as the handler returns.
+Inside an `on_failure(child: T, err: ClosureViolation)` body, the supervisor selects a recovery policy:
 
-A handler runs where its locus runs, never on the failing child's
-thread. When the child is pinned to its own thread or placed on
-another pool, its failure is handed to the parent's thread, and the
-child waits there for the handler's answer before it restarts,
-carries on or ends. The parent hears it at its next yield (a
-`sleep`, a wait, its queue's next message), or while it joins the
-child at shutdown, so the handler is never running beside the
-parent's own code on a second thread, and what it writes to `self`
-needs no lock. The parent does not tear the child down under a
-handler that is still hearing it. A handler can even replace a
-*different* child whose failure is still waiting
-(`self.b = Kid { … }` while handling `a`): the field takes the new
-child at once, and the replaced one is kept until its own failure
-has been heard, after the current handler returns (handlers never
-run inside each other), then torn down.
-
-Once a child has been replaced, its teardown wins over any recovery.
-A `restart(c)` or `restart_in_place(c)` about a child the handler has
-already swapped out of its field, or one whose own teardown its parent
-had already begun, is not carried out: the old
-child is torn down once, after its handler, and never born or run
-again, and the new child in the field is left alone.
-
-The recovery primitives:
-
-- **absorb** — just return; the failure is noted and contained.
-  The child stops, but a child the parent holds in a field (or a
-  binding holds) stays readable until the parent tears it down.
-  `return;` anywhere in the handler absorbs early (an
-  `if give_up { return; }` guard); the handler returns no value.
-- **`restart(child)`** — run it again: `birth()`, then `run()`,
-  on the same instance, and where it ran the first time: a pinned
-  child on its own thread, a child placed on a pool on that pool's
-  worker. A child whose `birth()` failed (a `violate` in it, or a
-  `birth_check`) is restarted before its `run()` starts, and again
-  if the new `birth()` fails too — its `birth_check` clauses run
-  after every `birth()`, a restart's included — within the bound,
-  and at the bound it is quarantined and never runs. A child whose
-  `run()` failed restarts once that `run()` has returned. It
-  hears its subscriptions again, even when one of its handlers
-  returned while the parent was still deciding and stopped it.
-- **`restart_in_place(child)`** — the same, after putting every
-  param back to the value this instance was built with (what its
-  literal said, or its default as it evaluated then). A child held in
-  a param stays the same child.
-- **`quarantine(child)`** — pause it, preserving state for
-  inspection. The specified `quarantine(child) for d` (restart
-  automatically after `d`) and the `until` modifier are not
-  implemented, and the compiler refuses them at the statement.
-- **`bubble(err)`** — pass it up to *this* locus's parent.
-- **`dissolve(child)`** — force it down.
-
-### Saying how many times: `restart(child) for N`
-
-Restarting forever is rarely what you want. A child that fails
-for a structural reason will keep failing, and a supervisor that
-keeps retrying just turns a broken child into a busy loop.
+| Recovery Action | Syntax | Runtime Behavior |
+|---|---|---|
+| **Absorb** | *(return from handler or `return;`)* | Contains the failure. The child stops running, and its fields remain readable on the parent until parent teardown. |
+| **Restart** | `restart(child);` | Re-runs `birth()` (and any `birth_check` closures) and `run()` on the same instance on its assigned thread/pool, and re-arms its bus subscriptions. Defaults to a limit of **2** restart attempts. |
+| **Bounded restart** | `restart(child) for N;` | Allows at most `N` cumulative restarts over the child's lifetime (recorded as `retry_bound` in the topology artifact; `for 0` never restarts). On failure `N + 1`, the child is **quarantined**. |
+| **Restart in place** | `restart_in_place(child);` | Resets all `params` fields of `child` back to the initial values it was constructed with, then re-runs `birth()` and `run()`. |
+| **Quarantine** | `quarantine(child);` | Pauses the child while preserving its memory and fields for inspection. (`quarantine(child) for d` and `until` modifiers are not implemented and are rejected at compile time.) |
+| **Escalate** | `bubble(err);` | Forwards the `ClosureViolation` up to this supervisor's own parent locus. |
+| **Force teardown** | `dissolve(child);` | Immediately tears the child down (`dissolve()`). |
 
 ```hale,fragment
 on_failure(c: Book, err: ClosureViolation) {
@@ -181,74 +125,23 @@ on_failure(c: Book, err: ClosureViolation) {
 }
 ```
 
-That gives this child three restarts. The fourth failure
-**quarantines** it instead: you said when to stop trying, so
-stopping means the child no longer runs. The count is per child
-and cumulative over its life, so a child that recovers keeps
-whatever budget it had left. `for 0` is a legitimate policy — do
-not restart this one at all.
+> [!TIP]
+> Always use `restart(c) for N;` rather than maintaining a manual retry counter in a parameter field. Both enforce the limit at runtime, but `for N` exports the bound as `retry_bound` in the topology artifact so deployment verification and runtime telemetry can audit retry budgets.
 
-Write the bound here rather than counting failures by hand in the
-handler. Both do the same thing at runtime, but the declared form
-is the one the topology artifact records (`retry_bound`), so the
-policy you wrote and the restarts actually observed can be
-compared. A counter in a param is invisible to everything outside
-the handler.
+### Handler Threading & Initialization Timing
 
-Without the modifier, `restart(child)` stops re-running after a
-default of two attempts and leaves the child live.
+- **Deferred delivery during parent `params` initialization**: If an earlier sibling parameter fails while the parent is still initializing later parameters in its `params` block, the runtime holds the `ClosureViolation` until all parent `params` are initialized and delivers it immediately before the parent's `birth()`. This guarantees that `on_failure` never reads uninitialized sibling parameters or has its writes clobbered by later defaults.
+- **Executes on the parent's thread**: Even if the failing child runs on a `pinned` thread or a separate cooperative pool, `on_failure` runs on the parent's own thread (at the parent's next sleep, wait, yield, bus message, or shutdown join) while the child thread pauses for the verdict.
+- **Field replacement precedence**: If an `on_failure` handler replaces a child field (`self.b = Kid { }`) while `b` has a pending failure or is being handled, the field immediately points to the new instance; the old instance is torn down once after its handler finishes, and any `restart(b)` or `restart_in_place(b)` on a replaced or tearing-down child is ignored.
 
-If a failure bubbles past the root with no one absorbing it, the
-process exits non-zero with a structured report. That's the only
-way a Hale program "crashes" — and it's a deliberate, typed
-event, not a surprise. This is Erlang's let-it-crash, but the
-recovery policy is *typed* and written next to the locus it
-governs.
+## Bridging Value Errors to Structural Failure (`violate`)
 
-### What a recovery does to a closure's running totals
+When a locus method encounters a fatal `fallible(E)` value error (such as a broken socket) and needs to shut the locus down and trigger parent supervision, use the four-part inline violation pattern:
 
-A closure that accumulates (`sum(...)`, `count(...)`, `mean(...)`)
-keeps its totals across epochs. A recovery zeroes them, so a
-restarted child starts its audit fresh. A closure that should
-keep its totals through a recovery says which recoveries:
-
-```hale,fragment
-closure within_band {
-    sum(self.delta) ~~ 0 within 100;
-    epoch tick;
-    persists_through(quarantine);
-}
-```
-
-The recoveries a clause can name are the three a parent applies:
-`restart`, `restart_in_place` and `quarantine` (a spent
-`restart(c) for N` quarantines, so it counts as `quarantine`).
-Any other name is refused at the name, and a misspelling one
-letter away from a recovery is pointed at it. `dissolve` is
-refused in `persists_through(...)`: a closure's totals end with
-its locus, so there is nothing to keep.
-
-`resets_on(...)` says the default out loud: `resets_on(restart)`
-documents that the totals start over on a restart, which they do
-anyway. It is checked like `persists_through`, and naming the same
-recovery in both is refused, since the two cannot both hold.
-
-`hale check` warns when a clause cannot take effect: when no
-`on_failure` (and no recovery statement elsewhere) in the program
-applies that recovery to the locus, it lists the handlers that do
-handle it and what they apply; and when a closure with no `sum`,
-`count` or `mean` says `persists_through`, since it has no totals to
-keep. A recovery statement counts for the locus its receiver is, as
-the checker types it: `restart(x)` on a local counts as much as
-`restart(self.t)`, and one in a generic locus counts for whatever
-each use of the generic locus binds.
-
-## Crossing from value to structural
-
-Sometimes a method catches a value-level error and decides it's
-fatal — the right move is to stop this locus and let the
-supervisor take over. You bridge with an *inline* closure and the
-`violate` statement:
+1. **`closure NAME { captures: f1, f2; epoch inline; }`**: Declares a named structural failure that fires only when explicitly invoked.
+2. **`violate NAME;` (or `violate NAME with expr;`)**: Divergent statement (`Never` type) that sets `self.draining = true`, delivers a `ClosureViolation` to the parent's `on_failure`, and exits the method.
+3. **Error-check bridge method**: A locus method `fn handle_err(e: E) -> T fallible(ClosureViolation)` called via `or` at fallible call sites that either returns a fallback `T` or executes `violate NAME;`.
+4. **`self.draining`**: Synthetic boolean field set to `true` as soon as `violate` (or shutdown) triggers, used to guard subsequent publishes.
 
 ```hale
 type Query { sql: String; }
@@ -270,14 +163,12 @@ locus DbConnection {
 
     closure fatal_io { captures: last_error; epoch inline; }
 
-    // an error-check fn: takes the error, returns the success type,
-    // and either substitutes a value or escalates.
     fn handle_io(e: IoError) -> Row fallible(ClosureViolation) {
         self.last_error = e.kind;
         if e.kind == "broken_pipe" {
-            violate fatal_io;        // diverges — escalate structurally
+            violate fatal_io;        // diverges: triggers parent on_failure
         }
-        return Row { data: "" };     // transient — substitute and continue
+        return Row { data: "" };     // transient error: substitute fallback Row
     }
 
     fn on_query(q: Query) {
@@ -288,41 +179,10 @@ locus DbConnection {
 }
 ```
 
-- `closure fatal_io { ... epoch inline; }` is a *named structural
-  failure* with no assertion — it only fires when you say so. The
-  `captures:` clause names the state the failure is about. The
-  `ClosureViolation` itself has a fixed shape (`err.locus` and
-  `err.closure`, which locus and which closure, and `err.diff`), so
-  the supervisor reads that state through the child handle it is
-  given: `c.last_error` in `on_failure(c, err)`. `err.last_error` is
-  a type error, since the violation has no such field.
-- `violate fatal_io;` fires it. It's divergent (the `Never` type,
-  like `fail` and `bubble`), so the branches that violate need no
-  `return`. It fires on the spot: `self.draining` turns true, the
-  parent's `on_failure` runs with the typed violation, and the
-  method exits as a `return` would.
-- `handle_io` returns a value and can violate, so it is declared
-  `fallible(ClosureViolation)`: the checker refuses it otherwise.
-  When it violates there is no `Row` to hand back, so the call
-  fails instead, after the parent's `on_failure` has run, and the
-  caller's `or` decides what that means. Here `or { return; }`
-  ends the handler without publishing; `or Row { data: "" }`
-  would carry on with an empty row, and `or handler(err)` gets the
-  `ClosureViolation` itself. A method that returns nothing and
-  violates just exits, and the checker warns that it will need the
-  same declaration in a later release. One shape is not covered
-  yet: a method that serves a [perspective](./perspectives.md) fn
-  cannot be `fallible`, because a perspective call cannot carry the
-  failure, so it is exempt and the checker warns instead. A caller
-  of such a call must not read the value after the method violated.
-- `self.draining` is a Bool every locus can read — true once it's
-  decided to wind down. Use it to stop publishing after the
-  decision.
+### Rules for `violate` and `ClosureViolation`
 
-That's the canonical "catch an error and shut this locus down"
-shape: one closure, one error-check method, one `violate`. You
-don't reach for a hand-rolled `should_exit` flag and a polling
-loop — these primitives are the supported form.
+- **Reading captured state**: `ClosureViolation` exposes fixed metadata fields (`err.locus`, `err.closure`, and `err.diff`). The supervisor reads the fields listed in `captures:` directly off the child parameter passed to `on_failure(c, err)` (e.g., `c.last_error`, not `err.last_error`).
+- **Required `fallible(ClosureViolation)` on value-returning methods**: Because a value-returning method that executes `violate` produces no return value after `on_failure` finishes, it must be declared `fallible(ClosureViolation)` so the caller's outer `or` (`or { return; }`, `or fallback`, or `or handler(err)`) handles the aborted call.
+- **Void and perspective methods**: A method with no return type that executes `violate` simply returns after `on_failure` (emitting a warning that `fallible(ClosureViolation)` will be required in a future release). A method serving a [`perspective`](./perspectives.md) cannot be marked `fallible`, so the compiler emits a warning and callers must not read its return value after a violation.
 
-Next: splitting a program across processes — [Across
-binaries](./multi-binary.md).
+Next: [Multi-Binary Deployment & Fleets](./multi-binary.md).

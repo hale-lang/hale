@@ -1,563 +1,153 @@
-# Verification
+# Verification & Model-Checking Reference
 
-Most languages ask you to *write* correct concurrent code and hope you
-did. Hale takes a different bet: make incorrect *designs* fail to
-compile, and model-check the runtime everything executes on. This page
-is the honest account of what that buys you — and what it deliberately
-doesn't.
+Hale verifies programs at two levels:
+1. **Runtime substrate verification:** The C runtime (`lotus`) concurrency primitives are exhaustively model-checked with [GenMC](https://github.com/MPI-SWS/genmc).
+2. **Compile-time whole-program verification:** `hale check` enforces data-race freedom, bus topology checks, thread-placement rules, arena memory bounds, transitive effect contracts, and architectural `claims`.
 
-## The substrate is model-checked
+For the exhaustive specification of every static check, see [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
 
-Hale's runtime, **lotus**, is C: pthreads and C11 atomics. Its core
-cross-thread primitives are transcribed into models and checked
-**exhaustively, under every legal interleaving**, with
-[GenMC](https://github.com/MPI-SWS/genmc) — as a standing CI gate. A
-race, use-after-free, or assertion failure in any model fails the build.
+---
 
-| Primitive | What's verified |
+## 1. Runtime Substrate Model-Checking (GenMC)
+
+Hale's C runtime (`lotus`) uses pthreads and C11 atomics. Its core cross-thread protocols are transcribed into standalone C11 models and checked exhaustively across all legal memory-model interleavings by GenMC in CI. Every model is paired with a negative control (removing a barrier or atomic ordering) to verify that GenMC catches the resulting race or use-after-free.
+
+| Runtime Primitive | Verified Properties |
 |---|---|
-| Lock-free hashmap | the enter / drain / grow protocol |
-| Hashmap iteration | a grow landing between iteration steps (sequential consistency only; see below) |
-| Mailbox | the pinned locus's lock-free MPSC ring and its wake-when-parked handshake |
-| Cooperative pool queue | the same ring and wake on the cooperative pool |
-| Bus queue | the cooperative-pool conditional lock, and a grow racing a drain |
-| Arena subregion lock | the parent's child-slot freelist |
-| Failure cascade | a failure held while its owner is constructed, delivered at settle with the child and the violation kept alive until the handler returns; a queued run's cancel against the worker starting it; a started run holding its child until it returns, against a reclaim no join orders |
+| **Lock-free hashmap** | Concurrent `enter` / `drain` / `grow` protocol safety |
+| **Hashmap iteration** | Table growth occurring between iteration steps (verified under sequential consistency; see limitations below) |
+| **Pinned mailbox** | Lock-free MPSC ring buffer and wake-when-parked handshake |
+| **Cooperative pool queue** | MPSC ring buffer and worker wakeup protocol |
+| **Bus queue** | Cooperative-pool conditional lock and concurrent grow-during-drain |
+| **Arena subregion lock** | Parent locus child-slot freelist concurrency |
+| **Failure cascade** | Deferred failure delivery during parent birth, child/violation retention until `on_failure` returns, queued run cancellation, and memory retention while an off-pool `run()` is active |
 
-Each model carries a **negative control**: delete the synchronization
-and GenMC reports the exact bug the real code prevents — proof the
-check has teeth. (The per-thread chunk pool needs no model: it is
-`__thread`, with no cross-thread surface.) Sanitizers catch races on
-the paths your tests happen to hit; model checking catches the ones no
-test reliably triggers — grow-during-drain, compact-then-grow. For a
-language whose whole concurrency story is the bus, trusting the
-substrate is the foundation everything else rests on.
+### Scope and Limitations of the GenMC Models
 
-### What the models do not establish
+See [`verification/README.md`](https://github.com/hale-lang/hale/blob/main/verification/README.md) for the live audit inventory:
 
-Note the word *transcribed*. Each model is a hand-written rendering of
-one protocol's atomics, not the production C, and **nothing checks the
-two against each other**. A model that still passes proves a property
-of the runtime as it stood when the model was written. Correspondence
-is maintained by hand and is part of the trusted base.
+- **Hand-transcribed models:** Models are hand-maintained transcriptions of the protocol atomics in `lotus`, not mechanically extracted from the production C files.
+- **Hashmap iterator memory ordering:** The hashmap iterator model passes under sequential consistency (`-sc`) but reports a use-after-free under GenMC's release-acquire model; closing that gap is tracked in the audit log.
+- **Safety vs. liveness:** GenMC verifies memory safety and assertions, not liveness (condition variables are stubbed). Liveness, absence of deadlock during teardown, and handler-boundary release queues are covered by the runtime deadline, lifecycle-trace, and ASan test suites.
 
-That has consequences worth stating rather than burying:
+---
 
-- Individual atomics and code paths added since a model was written are
-  not in it until someone transcribes them.
-- One model (the hashmap iterator) verifies clean under sequential
-  consistency and reports a use-after-free under GenMC's default
-  release-acquire model — the one that corresponds to the runtime's
-  actual orderings. That is a gap in the model-level justification, not
-  a demonstrated bug in the runtime, and it is open.
-- The models check safety, not liveness: GenMC has no condition
-  variables. The failure-cascade model says so in its header: that a
-  waiter is always woken, and that a parent waiting for a child never
-  deadlocks with a child waiting for its parent, rests on the
-  deadline and lifecycle-matrix tests, not on the model. So does the
-  reclaim's wait for a started run ending; the model checks only that
-  the child's memory outlives the run. The handler-boundary release
-  queue and retention of an owner's descendant storage are exercised
-  by deadline, trace-order and ASan tests; they are not represented by
-  that model.
-- The CI gate is conditional: a prose-only diff skips the model
-  checker, on the reasoning that no sentence in a `.md` alters a memory
-  ordering.
+## 2. Default Compile-Time Checks (`hale check`)
 
-[`verification/README.md`](https://github.com/hale-lang/hale/blob/main/verification/README.md)
-in the compiler repo is the audit of record, including a dated
-inventory of exactly which surfaces have drifted. It is kept honest
-because it is the document we read before trusting a result.
+These checks run automatically on every `hale check` and `hale build`:
 
-## Your programs are data-race-free by design
+### Data-Race Freedom by Construction
 
-Above the substrate, the language is shaped so application code can't
-introduce a data race in the first place:
+- **Copy-on-publish bus semantics:** Publishing to a `topic` copies the payload into the subscriber's arena (or transfers a frame via a lock-free `shm_ring`). Loci never share mutable pointers across threads.
+- **Single-threaded locus methods:** Direct method calls across different thread pools are rejected at compile time.
+- **Vertical-only ownership:** Sibling loci cannot hold references to one another; failures propagate strictly upward to the parent's `on_failure` block.
 
-- **A typed bus instead of shared state.** Loci talk by publishing
-  typed values to topics; the payload is *copied* into the receiver's
-  region. There is no shared mutable cell to race on.
-- **The single-threaded-method invariant.** Calling a locus's method
-  from the wrong pool's thread is a compile error.
-- **Vertical-only failure.** No lateral references between siblings; a
-  failure travels up to a parent's `on_failure`, never sideways.
+### Bus Topology & Design Rules
 
-The lifecycle trace tests use the compiler's derived plan to check
-retention as well as event order. For example, replacing a child whose
-run has started on another pool must keep its memory until the run
-ends. That rule permits drain and dissolve to overlap the run; it does
-not require the run to finish before teardown starts. The tests also
-distinguish an immediate teardown from a subscriber's teardown at scope
-exit.
+| Check | Severity | Condition Flagged |
+|---|---|---|
+| **Subject type mismatch** | Error | Two declarations or bindings disagree on a topic's payload type |
+| **Intra-locus re-entrant publish** | Error | Direct synchronous self-publish cycle with no queued hop |
+| **No locus-return** | Error | A locus method returns a managed locus value (violating single-tree ownership / CQRS) |
+| **Codec purity** | Error | A bus codec's `encode`/`decode` reaches `syscall`, `block`, or `publish` |
+| **`ring_layout` conformance** | Error | A foreign shared-memory ring layout has overlapping fields or invalid offsets |
+| **Orphan topic** | Warning | A topic has publishers but no subscribers (or vice versa) in a closed binary |
+| **Bus queue cycle** | Warning | A publish-subscribe cycle across loci that can spin indefinitely |
+| **Unthrottled publish loop** | Warning | Publishing inside an unbounded loop without a sleep/yield/blocking gate |
 
-## Checked at build time
+### Concurrency & Thread Placement Checks
 
-These run during `hale check` / `hale build`, on top of ordinary
-type-checking.
+| Check | Severity | Condition Flagged |
+|---|---|---|
+| **Dead bus receiver** | Error | A non-`main` cooperative locus subscribes to a topic *and* makes a blocking call in `run()`, starving its own bus handlers |
+| **Nested long-running child** | Error | A non-`main` locus with its own work holds a `params` child whose `run()` is long-running (delaying parent startup). Fix: hoist the child to `main` with its own placement |
+| **Unowned subscriber locus** | Error | A bus-subscribing locus is instantiated inside a handler without being `accept`ed by an ancestor on all paths, causing it to dissolve when the handler returns |
+| **Blocking on cooperative pool** | Warning | Calling blocking I/O (`recv`, `accept`, `process::run`) on a cooperative pool without `where async_io` |
+| **Cooperative pool starvation** | Warning | Two or more loci on the same cooperative pool have non-terminating `run()` loops (`while true`, `while !self.draining`), preventing later loci in birth order from starting `run()` |
+| **Dropped scope-local delivery** | Warning | A bus subscriber is constructed and dissolved within a single function call on a non-`async_io` cooperative pool, so its handlers never get the thread to run |
 
-**Bus-graph properties.** The bus topology is a typed graph, and the
-compiler walks it. This is the analysis that is **on by default** and
-fails the build:
+---
 
-- *orphan* topics (wired to only one end) — warning
-- *cycles through the queue* that can spin (across loci, or within one
-  locus when a hop stays on the bus) — warning
-- *intra-locus re-entrant* self-publish, every hop a direct call
-  (unbounded recursion) — **error**
-- *backpressure* — an unthrottled publish in an unbounded loop — warning
-- *subject type-mismatch* — two sites disagreeing on a payload type — **error**
+## 3. Arena Memory-Bound Proofs & Budgets
 
-**Design rules**, enforced as errors:
+### Default Escape & Loop Survey
 
-- **No locus-return** — a method may not hand back a managed locus (a
-  Law-of-Demeter / CQRS / dependency-inversion violation caught in one
-  rule).
-- **Codec purity** — a bus codec's `encode` / `decode` must be pure;
-  they may run off-thread. A stdlib call is impure when its effect
-  classes include `syscall`, `block` or `publish` (file, socket or
-  process I/O, a sleep, a bus send): `std::io::tcp::connect` in an
-  `encode` is refused, `std::time::now` is not.
-- **`ring_layout` conformance** — a foreign shared-memory ring layout
-  is checked for internal and cross-field consistency before a torn
-  read is possible.
+On any program with a long-running `run()` loop or bus handler, `hale check` analyzes every loop and handler across the call graph (including imported seeds and reachable `std::*` methods) to detect allocations that escape into a long-lived arena and accumulate across iterations:
 
-**Concurrency & placement**, keeping a program's placement coherent
-with how the runtime dispatches:
+- **Automatically proven safe (no warning):**
+  - Bounded loops (`while i < N` where the counter is ranked).
+  - Allocations inside a locus method's **per-call scratch region** that do not escape to `self` or the return value.
+  - Non-recursive **scratch-local free functions** (functions taking/returning only primitives/`String` that construct no structs and call no locus methods), whose temporaries are freed on return.
+  - String/accumulator loops (`out = out + piece(i)`) inside a method or scratch-local helper where intermediate values are reclaimed on return.
+  - **Whole-field replacement** (`self.last = "seen " + id`), where the runtime retires the previous field value and reuses its arena block (whereas `self.log = self.log + line` appends and is flagged).
+- **Acknowledging intentional growth:**
+  - `@bounded_by(record)` (preferred): Documents the external domain bound that caps growth and silences the warning.
+  - `@unbounded`: Acknowledges unbounded growth that is not yet bounded by a known input.
+- **Inspecting memory analysis:**
+  - `--dump-alloc-summary`: Prints per-function allocation behavior, scratch-local status, and `@bounded_by` tags.
+  - `--report-unbounded-use`: Lists every `@bounded_by` and `@unbounded` annotation and which warnings it silences.
+  - `--no-warn-unbounded-alloc`: Disables the advisory for a run.
 
-- **Dead bus receiver** — a non-`main` cooperative locus that
-  subscribes to the bus *and* blocks in `run()`, so the blocking call monopolizes the
-  pool thread and its handlers never fire — **error**.
-- **Blocking call on a cooperative pool** — a blocking `run()`
-  (`recv` / `accept` / `process::run`) on a pool that isn't
-  `where async_io`; it holds the pool's thread and stalls
-  co-scheduled loci — warning.
-- **Cooperative pool starvation** — two or more loci on one
-  cooperative pool whose `run()` bodies statically never return
-  (`while true`, `while !self.draining`, a never-assigned flag): the
-  pool runs each `run()` to completion in birth order, so the later
-  ones never start — including the main locus's own `run()` when a
-  forever-looping locus shares pool `main`. Bus handlers keep firing
-  at sleep/yield drains, which makes the hang look like a healthy
-  idle; the warning names every offender — warning.
+### Opt-In Hard Ceilings (`@budget` & `--check-resource-budget`)
 
-- **Dropped scope-local delivery** — a bus subscriber (or a locus
-  that keeps one, such as a wrapper whose params default builds it)
-  built and dissolved inside one call (a `let`, or a bare statement, not stored
-  or returned or `accept`ed) on a classic cooperative pool. Its
-  handlers run on that pool, which runs one cell at a time, and the
-  call holds the pool's thread for the subscriber's whole life, so
-  every message sent to it is dropped. Place the pool `where
-  async_io` (its handlers run while the call waits) or keep the
-  subscriber beyond the call — warning.
+- **`@budget(alloc_per_call = N)`:** Hard compile error if a function or its transitive callees perform more than `N` arena allocations per invocation (`N = 0` certifies a zero-allocation hot path).
+- **`--check-resource-budget budget.toml`:** Static ceiling gate on OS threads, cooperative pools, file descriptors, and bus subjects spawned by `main`.
 
-  These three judge the `main locus` the build deploys, each field
-  by the locus it actually builds (through an alias too); a library's
-  `main locus` you import is not deployed by your build, so it is not
-  judged.
-- **Nested long-running child** — a non-`main` locus with work of
-  its own holding a params field of a locus type whose `run()` is
-  long-running: any body of its own, since a nested child's `run()`
-  finishes before its parent's starts, so even one that returns
-  (`std::time::sleep(1min)`) delays the parent. This is a different
-  question from the starvation warning's "never returns". The fix is
-  hoisting it to a `main` sibling with its own placement —
-  **error**.
-- **Unowned subscriber locus** — a bus-subscribing locus
-  instantiated in another locus's bus handler that no ancestor
-  `accept`s on every path that builds the handler's locus (one built
-  directly in `fn main` has no ancestor), so it dissolves when the
-  handler returns, before its subscription can fire. Ownership is
-  judged by the declaration the `accept` names, and a birth whose
-  owner can't be decided is not reported — **error**.
+---
 
-**Memory-bound proofs** *(on by default).* Every `hale check` /
-`hale build` runs the whole-program survey: the compiler's
-escape/loop dataflow flags allocations that escape a per-message
-handler or unbounded loop and **accumulate until the locus
-dissolves** — with loop-ranking that *proves* a `while v < N`
-counter bounded. The survey follows calls into imported seeds and
-into the stdlib's own Hale bodies: a handler the stdlib's HTTP loop
-dispatches to is invoked once per request when your program starts
-that loop, and not otherwise. Stdlib code your program never
-reaches counts for nothing: a stdlib body that calls a method named
-`set` does not make your own `set` method suspect unless your
-program runs that body. Run-to-exit programs (a `main` with no
-`run` loop and no bus handler of their own) warn nothing — a script
-owes no bound proof. A library's loops and handlers count only where
-your program starts their locus: a program that imports a seed full
-of bus handlers and only calls its functions still runs to exit,
-because those handlers run in whichever process instantiates them.
-Whether an allocation accumulates depends on where it is reclaimed,
-judged against the loop in question. A small helper that takes and
-returns only Strings and numbers, builds no struct and calls no
-method — a *scratch-local* function — frees its temporaries when it
-returns. For a nonrecursive helper, those temporaries do not accumulate
-across iterations of its caller's loop. Values returned to the caller
-keep the caller's lifetime, and a loop inside the helper retains its
-temporaries until the call returns. Recursive helpers keep the survey's
-conservative locus-lifetime boundary. Any other free function allocates
-into its caller's memory: called once per
-iteration of an unbounded loop in `main` or `run`, even a temporary it
-never returns piles up there until the locus dissolves, and the survey
-says it "lands in its caller's arena". Make such a helper
-scratch-local, or move the work into a method, whose per-call scratch
-reclaims it. A function that builds its result in a loop
-(`out = out + x`, then `return out`) is charged one value per call,
-not one per iteration, wherever a per-call boundary frees the values
-each iteration replaces — its own (a method, a scratch-local helper)
-or its caller's; the result is then reported only where it lands in
-a long-lived frame, `main`'s or `run`'s loop. A String `+` counts
-however it is spelled: the survey types each operand from what you
-declared — a `String` parameter, field or annotated `let`, a `let`
-initialized from one, a function or method declared `-> String`,
-`to_string(x)` — so `out = out + piece(i)` is the same accumulator as
-`out = out + "x"`, and `i + 1` is never a concatenation. So are
-`out += piece(i)` and `f"{out}{piece(i)}"`: each is a value charged
-once per call to the frame that receives it, while the same accumulator
-stored into a field of `self` is still reported. Inserts into a returned
-collection are left as they were. A
-`String` field replaced whole in a method or handler (`self.last =
-"seen " + id`) holds one value, its largest at most — the store
-retires what it replaces and the next value reuses the block — so it
-is not reported. An append is, however it reaches the old value:
-`self.log = self.log + line`, through a `let` bound to `self.log`, or
-through a method of `self` — the survey excuses only a value it can
-show carries nothing of the field.
-`--dump-alloc-summary` tags each scratch-local function,
-and lists one row per declaration: two declarations sharing a name are
-two rows, even in a program the check refuses for it.
-`@unbounded fn` is the in-source carve-out for an acknowledged
-site. It says the growth is *not yet understood*. When it is
-understood — the growth is real but bounded by an input outside the
-code — say what bounds it instead:
+## 4. Transitive Effect Contracts & Architectural Claims
 
-```hale
-type Row { id: Int; name: String; }
+### Function & Phase Effect Contracts
 
-locus Mirror {
-    // One entry per row of the record: as large as the record, no larger.
-    @bounded_by(record)
-    fn on_row(r: Row) {
-        // ... keep `r` in the in-memory mirror ...
-    }
-}
-```
+Functions can forbid or restrict side effects with `@effects(...)` or shorthands (`@no_syscall`, `@no_block`, `@deterministic`, `@no_ffi`, `@no_publish`, `@no_spawn`, `@no_recursion`), and loci can restrict lifecycle phases with `@phase_effects(birth: {alloc}, run: {})`.
 
-`@bounded_by(<name>)` goes wherever `@unbounded` goes (a fn, a method,
-a lifecycle hook) and silences exactly what it silences; the name — an
-identifier or dotted name, `open_requests`, `self.fan` — is
-documentation the compiler keeps but never resolves. A fn carries one
-or the other, not both. `--dump-alloc-summary` shows the bound beside
-the fn. `--no-warn-unbounded-alloc` opts a run out, and
-`--report-unbounded-use` lists each `@unbounded` and `@bounded_by` with
-the sites and hot-path warnings it silences (and the bound, for
-`@bounded_by`), so one that silences nothing can be found and
-removed. It lists the stdlib's own decorators your program reaches as
-well, at their place in `crates/hale-stdlib/hl/`, counted as though
-the stdlib's sites were yours (the warnings never show them). A site in code
-the compiler generated (a serve site's exposure, a `json:` parser) has no
-place in your source to report it, so it is left out; a site in
-your own code is reported wherever it is called from. It is advisory:
-the warnings print and never fail the build. A separate
-advisory also flags two **loop-scoped hot-path allocations** — a locus
-or `BytesBuilder` instantiated per iteration, and an allocating `recv`
-in a loop — steering toward a hoisted field / `recv_into`.
+- Checked transitively across direct calls, method calls, imported libraries, and all concrete loci satisfying an `interface` slot.
+- **Fails closed:** Any unclassified or unknown external call violates the contract rather than being assumed pure.
 
-**Hot-path allocation budget** *(opt-in, hard error).* `@budget(alloc_per_call
-= N)` on a fn is the dual of `@unbounded`: an explicit per-call
-allocation ceiling the compiler enforces. It counts the arena
-allocations it can see — literals, `@form` inserts, transitively
-through resolved callees, plus the known-allocating `recv` family — and
-**fails the build** if the fn allocates more than `N` per call (a
-loop-nested allocation is unbounded per call). `N = 0` is the zero-alloc
-certificate for a hot-path handler. The one allocation check that gates
-the build, because you opted into it.
+See **[Effect Contracts & Resource Budgets](./effects.md)** for full details.
 
-**Resource budgets** *(opt-in).* Static counts of file descriptors, OS
-threads, cooperative pools, and bus subjects, with a
-`--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
-detection. The threads are the ones placement spawns, counted per
-instance: a `pinned` field is one thread (`replicas = K` is K), once
-for every construction of `main` that can be live at once, and an
-adapter in `bindings { }` is one more. A `main` built in a loop has no
-static bound, so its count is *uncertain* (the dump says why), and a
-thread ceiling refuses it. A pool is one worker however many loci run
-on it, and `main` is the program's own thread, never a pool. Threads
-outside placement (a binding's reader, a stdlib transport's serve
-thread) are named on a "not counted" line, never folded into the
-total.
+### Whole-Program `claims`
 
-**A `module { … }` hides none of it.** A module is a namespace, not an
-analysis boundary: a locus, fn, topic or `bindings` entry declared
-inside one — however deeply nested — is checked exactly as if it sat at
-the top level, with the same findings at the same severity. That holds
-for the whole-program questions too: a `main locus` in a module is
-still *the* main locus (so a second one is still "more than one"), its
-`placement { }` block still decides where everything runs, and a
-`bindings` block still binds its topic for `or wait`.
-
-## Effects you forbid, proven absent
-
-The checks above run whether you ask for them or not. **Effect
-assertions** are the opt-in half: you name something a function must
-never do — reach a syscall, block, read the clock, allocate — and the
-compiler proves it over the call graph, naming the path to any
-violation.
-
-```hale,fragment
-@no_syscall @deterministic
-fn price(book: OrderBook, qty: Int) -> Decimal { ... }
-```
-
-Three properties make them worth relying on rather than decorating
-with:
-
-- **The proof follows the call graph**, including calls made on a
-  handle (`reader.slurp()`), across seed boundaries into imported
-  libraries, and through interface-typed slots into *every*
-  implementation the program stores there (every constructor literal,
-  and the declaration's default where one is left to apply), or every conformer when a write
-  comes from somewhere the compiler cannot see.
-- **Incompleteness fails closed.** A stdlib call the registry cannot
-  classify — or does not know at all — is treated as may-do-anything
-  and violates the assertion, rather than being quietly assumed pure.
-- **The compiler reports what it infers**, not only what you declared,
-  as a diffable artifact — so a handler that silently starts doing
-  filesystem I/O is a one-line review diff even though nothing
-  annotated changed.
-
-They are taught in full in **[Effects & contracts](./effects.md)**.
-
-
-## Claims: the law of the assembled system
-
-Effect assertions attach to one function. A **claim** quantifies over
-the whole assembled program: a named sentence, declared on the main
-locus, checked at every `hale check`. The canonical use is isolation
-— "nothing in wing A reaches wing B" — stated once, with a name a
-code review or a compliance document can cite. The program below is
-written to be refused:
-
-```hale,refused
-type Task { id: Int; }
-type Metric { n: Int; }
-topic Tasks   { payload: Task; }
-topic Metrics { payload: Metric; }
-
-locus DeltaTriage {
-    params { seen: Int = 0; }
-    bus { subscribe Tasks as on_task; publish Metrics; }
-    fn on_task(t: Task) {
-        self.seen = self.seen + 1;
-        Metrics <- Metric { n: t.id };
-    }
-}
-
-locus GammaResearch {
-    params { total: Int = 0; }
-    bus { subscribe Metrics as on_metric; }
-    fn on_metric(m: Metric) { self.total = self.total + m.n; }
-}
-
-group delta_wing = { DeltaTriage };
-group gamma_wing = { GammaResearch };
-
-main locus Org {
-    params {
-        triage: DeltaTriage = DeltaTriage { };
-        research: GammaResearch = GammaResearch { };
-    }
-    claims {
-        iso_dg: forbid reaches(delta_wing, gamma_wing);
-    }
-}
-
-fn main() { Org { }; }
-```
-
-This program **fails to check**: the metrics publish crosses the
-boundary, and the violation names the claim and the full path —
-
-```text
-claim `iso_dg` violated: `delta_wing` reaches `gamma_wing` —
-witness: `DeltaTriage::on_task` -(publishes "Metrics")-> `GammaResearch::on_metric`
-```
-
-A `group` is declared vocabulary: it names loci and functions
-(including imported ones — `delta::*` enumerates a whole imported
-seed). An unknown name in a group is an error, never a silently
-empty set, and an empty group is an error unless it says
-`may_be_empty` — a rule that exists because a `forbid` over an empty
-set holds vacuously, which is a fail-open wearing formal clothing.
-
-`forbid reaches(A, B)` follows both call edges and bus edges by
-default; `via { calls }` or `via { bus }` restricts the relation.
-The target may also be an effect class — `forbid
-reaches(quote_api, effects(money))` says the quote path can never
-reach anything classified as moving money.
-
-Claims are **errors**, not warnings, and deleting or weakening one
-is a visible source diff — which is exactly the review event the
-feature exists to create.
-
-Beyond `forbid reaches`, the claim family covers the properties
-real topologies ask for:
+A `main locus` or `constitution` can assert compile-time laws over `group` declarations:
 
 ```hale,fragment
 claims {
-    // The boundary itself: every direct edge must match a grant.
-    grant: only edges gamma_wing -> delta_wing {
-        publish t::ResearchDigest;
-    };
-    // Cost law: at most one model call per task, on any path.
-    one_call: bound llm <= 1 on paths from planners;
-    // Wiring the org must actually have.
-    wired: require subscribes(some delta_wing, topic t::Tasks);
-    no_orphans: cover topic in seed(t): subscribed_by(some staff);
-    single: count publishers(topic t::Tasks) == 1;
-    // The quiet-boot and interposition forms.
-    quiet: forbid reaches(delta_wing, gamma_wing) during birth;
-    gated: forbid reaches(intake, execute) avoiding permission_gate;
+    isolated:   forbid reaches(delta_wing, gamma_wing);
+    gated_io:   forbid reaches(app, effects(syscall)) avoiding safe_io;
+    attributed: require attributed(all syscall);
+    one_llm:    bound llm <= 1 on paths from planners;
+    wired:      require subscribes(some delta_wing, topic t::Tasks);
+    single_pub: count publishers(topic t::Tasks) == 1;
 }
 ```
 
-Effect classes can also be **indexed families** — `domain wing = {
-delta, gamma }; effect knowledge(wing);` — so per-tenant capability
-contracts (`@effects(only: {knowledge(delta), llm})`) don't need
-N² boilerplate, and `knowledge(*)` covers every index. And the
-whole checked model exports as the **topology artifact**: `hale
-check <t> --dump-topology` emits the sorts, relations, and every
-claim's result under a `shape_hash`, and `--check-topology
-<baseline>` fails CI when the topology or the law changes without
-review.
+When a claim fails, `hale check` prints the exact **witness path** in your source identifiers. Topology models can be exported and diffed in CI using `hale check --dump-topology` and `--check-topology <baseline>`. See **[Architectural Claims & Topology Proofs](./claims.md)**.
 
-## Secrets: confine, classify, claim
+---
 
-A signing key is not a problem for a taint checker to solve. It's a
-problem the ownership model already solves, once you close one gap.
+## 5. Secret Confinement (`@sealed` & `std::secret`)
 
-`@sealed` on a locus makes its `params` readable **only from inside its
-own methods**. Others can still call it — that's the point — they just
-can't read its state:
+Hale enforces secret handling through **state confinement** (`@sealed`), **effect classification** (`secret_use`), and **single-statement reveal rules**, rather than heuristic taint analysis.
 
-```hale,fragment
-@sealed locus Signer {
-    params { key: Bytes; }
+### 1. Confining State with `@sealed`
 
-    @effects(is: { secret_use })
-    fn sign(m: Bytes) -> Signature { … }
-}
-```
+Annotating a locus with `@sealed` makes its `params` fields private to its own methods (including across generic specializations and parameter defaults). Combine `@sealed` with `require sealed(all vaults);` in `claims` to guarantee every secret-holding locus is sealed.
 
-Loci are not otherwise field-encapsulated: `self.signer.key` typechecks
-from anywhere holding one. `@sealed` makes the only way in a method
-call — and that method carries an effect class, so every path that can
-touch the key is visible on the call graph.
+Run `hale check --sealable` on any existing project to see which loci can be marked `@sealed` immediately without breaking callers.
 
-The rule follows the read wherever it is evaluated. A parameter's
-default is read by each caller that leaves it, so a default that
-reaches `key` is refused, at the default, unless every such call is
-inside `Signer`. A sealed generic locus is sealed in every
-specialization: `b.v` on a `b: Box<Int>` is refused from outside `Box`.
-And a generic body is judged in each specialization: `self.inner.key`
-with `inner: T` is refused once some use binds `T` to `Signer`, and so
-is `self.h.s.key` with `h: Holder<T>`, however many fields deep.
+### 2. Built-In Secret Containers (`std::secret::Signer` & `Credential`)
 
-Now the law is two ordinary claims:
-
-```hale,fragment
-claims {
-    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
-    one_op_per_request: bound secret_use <= 1 on paths from handlers;
-}
-```
-
-Wire a `Signer` into a plugin and the build stops with the crossing
-call named:
-
-```text
-claim `no_plugin_secrets` violated: `plugins` reaches
-  `effects(secret_use)` — witness: `PluginHost::sneaky` -> `Signer::sign`
-```
-
-The shape that falls out: an ordinary function prepares a request from
-public data and hands back a plan; the sealed locus interprets the plan
-and performs the one privileged step. The planner never receives the
-key, a handle, or anything that could produce one — so there is nothing
-for it to leak, whatever it does.
-
-**You usually don't have to write the sealed locus.** `std::secret`
-ships one. Sealing protects reads and writes but not construction — a
-parent writing `Signer { key: … }` holds the key to pass it — so these
-take the *name of a source* instead:
-
-```hale,fragment
-locus Gateway {
-    params {
-        s: std::secret::Signer =
-            std::secret::Signer { env_var: "SIGNING_KEY" };
-    }
-    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
-}
-```
-
-The key is read during `birth`, so it exists only inside a sealed locus
-from the moment it enters the program — there is no line anywhere in
-your code where you hold it. `self.s.key` is a compile error naming the
-methods you can call instead. `std::secret::Credential` is the same for
-a token or password, plus a `fingerprint()` for logs, `sign_ed25519(m)`
-and `ed25519_public()` for signing with a key derived from it (the
-signature leaves, the key never does), and `reveal()` /
-`reveal_text()` for when a plain credential has to leave as text to be
-usable at all. `Signer`'s key never does. A reveal is held to the one
-use it exists for: it is called in a locus method, and its value is
-consumed in the same statement by a wire write's payload (the body or
-headers, never the URL), a comparison of the whole value or a `@secret`
-parameter — never bound to a `let` or a `match` pattern, stored,
-returned, used to decide a branch or handed to `std::process`. Compare
-with `matches`: it is constant-time, and `==` is not; comparing a slice
-of the secret is refused, because each answer gives away part of it.
-`hale check` (and `build`) refuses anything else and says where the
-value went. On its way to the wire the value may pass through what only
-computes a new value from it — `+`, a conversion, a hash,
-`std::url::encode` — or through a fn of your own built from those, and
-the result is held to the same rule. A client secret in a form body is
-percent-encoded in the statement that sends it:
-
-```hale,fragment
-let r = std::http::post(issuer + "/token",
-    std::bytes::from_string("grant_type=client_credentials&client_secret="
-        + std::url::encode(self.secret.reveal_text())),
-    "application/x-www-form-urlencoded") or raise;
-```
-
-A fn of your own that does anything else with what it is handed — prints
-it, stores it, calls a method — is refused there, and the message names
-the call that keeps it from carrying the value on. A tool that reads a secret from a file gets it through
-`write_private(path)`, which writes a new 0600 file in a private
-directory on the sealed side with nothing revealed; what the tool, or
-your own code, reads back from that file is beyond the check.
-
-When the source is encoded — many venues issue an HMAC secret in
-base64 — name the encoding with `decode:` (`Signer { env_var: "…",
-decode: "base64" }`), so the key is the *decoded* bytes rather than the
-text of the base64. Undecodable input, or an unrecognized transform,
-fails closed: an empty key and `ready() == false`, never a key that
-isn't the one the source names.
-
-A `Credential` can also name `vault:` instead of `env_var:` — a secret
-resolved against a vault rather than an env var or a file. Where the
-other two sources resolve once, at `birth`, `vault:` resolves fresh on
-every privileged call: a vault's whole point is that a value can
-change without restarting every process that reads it.
+Instead of passing raw key bytes through `main`, pass the *source name* to `std::secret::Signer` or `std::secret::Credential` so the secret material enters the program already inside a `@sealed` locus:
 
 ```hale,fragment
 locus ApiClient {
     params {
-        token: std::secret::Credential =
-            std::secret::Credential { vault: "api-token" };
+        // Loaded at birth from $SIGNING_KEY (optionally decoded with `decode: "base64"`):
+        signer: std::secret::Signer = std::secret::Signer { env_var: "SIGNING_KEY" };
+        // Resolved fresh on each privileged call from Vault or local vault dir:
+        token:  std::secret::Credential = std::secret::Credential { vault: "api-token" };
     }
-    // the header line is the wire write: revealed in its statement
+
     fn call(url: std::http::Url, body: Bytes) -> std::http::ClientResponse fallible(std::http::HttpError) {
         return std::http::request(std::http::ClientRequest {
             method: "POST",
@@ -569,110 +159,20 @@ locus ApiClient {
 }
 ```
 
-A secret that goes into JSON on its way out is escaped in that
-statement, with `std::json::escape_string`, whose result carries the
-secret on and is held to the same rule; never splice it in raw on the
-grounds that today's values need no escaping. (A handler's returned
-`Response` is not a wire write: a secret there is refused either way.)
+| Type / Method | Behavior |
+|---|---|
+| `std::secret::Signer { env_var: "...", decode: "base64" }` | Reads key at `birth`. Exposes `sign(bytes)` (`@effects(is: {secret_use})`). Raw key never leaves the locus. |
+| `std::secret::Credential { env_var: "..." \| file: "..." \| vault: "..." }` | Holds a token or password. `vault: "<name>"` resolves on each call from `HALE_VAULT_ADDR` (`GET <addr>/v1/secret/<name>` with `HALE_VAULT_TOKEN`) or local directory `HALE_VAULT_DIR` / `~/.cache/hale/vault`. |
+| `cred.fingerprint()` / `cred.sign_ed25519(m)` / `cred.ed25519_public()` | Safe operations that never expose the underlying secret bytes. |
+| `cred. matches(candidate)` | Constant-time full-value comparison (`==` and slice comparisons are rejected). |
+| `cred.write_private(path)` | Writes the secret to a `0600` file in a private directory without revealing it to caller code. |
+| `cred.reveal()` / `cred.reveal_text()` | **Single-statement wire rule:** Must be called inside a locus method and consumed in the *same statement* by an outbound wire payload (HTTP request `body` or `headers`, never `url`), `matches`, or a `@secret` parameter. May pass only through pure transforms (`+`, `std::url::encode`, `std::json::escape_string`, hashes). Cannot be bound to `let`, matched, stored, logged, or returned. |
 
-With no `HALE_VAULT_ADDR` set, this reads a directory of files keyed
-by name — `HALE_VAULT_DIR`, or the per-user cache root the toolchain
-already uses (`std::secret::vault_local_dir()`) — filesystem
-permissions the only access control, no server, no token. Set
-`HALE_VAULT_ADDR`, and it becomes an HTTP `GET` to
-`<addr>/v1/secret/<name>`, authenticated with the per-host token in
-`HALE_VAULT_TOKEN`. Both fail closed the same way the other sources
-do: nothing there is an empty credential, never a partial or stale
-one.
+---
 
-Two more claims worth knowing, because they answer different questions
-about the same boundary. **Where** may the program touch the OS?
+## 6. Runtime State Invariants (`closure`)
 
-```hale,fragment
-claims {
-    all_io_is_gated: forbid reaches(app, effects(syscall)) avoiding safe_io;
-}
-```
-
-Every syscall path must pass through the vetted component. And,
-separately, **what is each crossing for?**
-
-```hale,fragment
-effect audit;
-
-claims {
-    io_attributed: require attributed(all syscall);
-}
-```
-
-(`secret_use` above needs no `effect` declaration — it is a compiler
-built-in, so every program means the same class by it.)
-
-Every fn that actually touches the OS must name a purpose with a user
-effect class. Where the checker cannot see — a fn making an indirect
-or opaque call, naming no purpose of its own — the claim is
-**uncertified** rather than quietly satisfied: unknown is not the
-same as clean. Classify the caller with `@effects(is: {...})`, or
-bind the callee so it resolves. These are independent: I/O can be perfectly gated and
-still tell you nothing about why any given write happened, or be
-scattered across forty loci while each one says exactly what it's for.
-The second also covers code nobody has written yet — it quantifies over
-the whole program rather than a named group.
-
-If a whole group of loci should be confined, say so once and let the
-compiler watch for the one someone forgets:
-
-```hale,fragment
-group vaults = { Signer, TokenStore };
-
-claims {
-    vault_confined: require sealed(all vaults);
-}
-```
-
-**What this is and isn't.** The secret lives in a locus that owns it,
-your code cannot obtain it, the operations on it are classified, and
-your claims constrain who reaches them. That is confinement, not
-information flow: a signature *derived* from the key is not tracked, a
-constant-time compare still lets the verdict be published, and the
-sealed locus's own body is trusted — keep it small enough to read.
-
-`@secret` on a parameter is a **lint**, not a proof. It flags a secret
-reaching a publish or log in the same body, follows no calls, and
-tracks no aliases. `hale check --strict-secret` widens the walk and
-reports `uncertified` wherever it can't follow, which is loud by
-design.
-
-**Adopting `@sealed` on an existing codebase** is a question you don't
-have to answer by reading. `hale check --sealable` tells you:
-
-```text
-sealability: 4 of 5 loci can be `@sealed` today
-
-  free to seal (nothing outside touches their params):
-    Already
-    App
-    Holder
-    Private
-
-  would break callers:
-    Exposed — 1 external access(es): Exposed.k
-```
-
-Empty means sealing that locus is a no-op. The survey reads what the
-check itself typed, so it counts the same accesses sealing would refuse,
-including those that reach an imported seed's locus by its qualified
-name (`lib::Counter { }`). In practice most loci
-already qualify: when the survey landed, 148 of 151 loci across this
-repo's own corpus did. The ones that didn't share a shape — a parent reading a child's *result* field
-instead of calling a method, which the no-locus-return rule already
-discourages.
-
-## Invariants you declare, checked as it runs
-
-The checks above are the compiler's. You can add your own with a
-**closure** — a property a locus promises to keep, written as a
-first-class block and audited by the runtime while the program runs:
+Alongside compile-time checks, any locus can declare runtime `closure` assertions checked automatically across lifecycle transitions or triggered inline via `violate`:
 
 ```hale,fragment
 closure balanced {
@@ -680,54 +180,12 @@ closure balanced {
 }
 ```
 
-`~~` is "approximately equal, within tolerance." When the invariant
-breaks, it routes to the owner's failure handler (or, unhandled, stops
-the program) — a declared property enforced by the substrate, not a
-comment you hope holds. Closures are taught in full in
-[When things fail](./services/failure.md#declaring-an-invariant-closure);
-they're the runtime half of "verified by construction."
+When a closure invariant fails, execution immediately transitions the locus into `drain` and routes the violation upward to the parent locus's `on_failure` policy (`restart`, `restart_in_place`, or `bubble`). See **[Supervision & Structural Failure](./services/failure.md)**.
 
-## What Hale does *not* claim
+---
 
-Hale is **not** a whole-program functional-correctness prover — that is
-the world of CakeML and F\*. The guarantee here is narrower and
-deliberately so: the **coordination** (the bus graph), the **substrate**
-(the concurrent primitives), and **bounded resource use** are verified,
-because those are the properties that must hold no matter what executes
-the design — native, wasm, or a future target. Verification that
-survives a change of substrate is the kind worth building on.
+## 7. Soundness and Analysis Boundaries
 
-Nor does it prove arbitrary application correctness, make a lossy
-transport reliable, or remove the need to choose sensible bounds and a
-recovery policy. It makes those choices visible, checkable, and
-attributable to the architecture that owns them.
-
-### The analysis boundary
-
-Three properties of the analysis are worth stating precisely, because
-each one shapes how a result should be read.
-
-**The checks are sound, not complete.** Every analysis here is a
-conservative over-approximation. When the compiler cannot resolve
-something it treats it as may-do-anything and the contract fails, rather
-than assuming the best and passing. That direction is deliberate, and it
-has a cost worth naming: a rejected program is sometimes a limit of the
-analysis rather than a defect in the code.
-
-**Closed-world reasoning has an edge.** The guarantees derive from a
-closed call graph, a closed topic set, and a classified standard
-library. Influence that leaves that world — through `@ffi`, through a
-transport to another binary, through the operating system — is outside
-what the compiler can follow, and the contracts say so rather than
-pretending otherwise.
-
-**Cost models are source-level bounds.** Effect classes, publish sets,
-and causal sets are checked facts. The quantitative budgets are measured
-against what the compiler can see before the backend has finished
-deciding layout and inlining, so read those numbers as bounds on the
-program you wrote rather than on the instructions that ultimately run.
-
-> The authoritative, exhaustive catalog of every compile-time check is
-> [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
-> The verification roadmap that drove this work — now delivered — is
-> [GitHub issue #18](https://github.com/hale-lang/hale/issues/18).
+1. **Sound over-approximation (fails closed):** Whenever the static analyzer encounters an unresolvable call or unclassified symbol, it refuses certification (`uncertified` or build error) rather than assuming safety.
+2. **Closed-world horizon:** Static guarantees hold up to explicit external boundaries (`@ffi("c")`, network/IPC sockets, OS filesystems).
+3. **Source-level cost models:** `@budget(alloc_per_call = N)` and resource budgets count source-level arena operations and placement declarations prior to LLVM inlining.

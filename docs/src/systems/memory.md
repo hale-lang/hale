@@ -1,68 +1,80 @@
-# Memory & lifetime
+# Memory & Lifetime
 
-> **Coming from Rust / C++?** No garbage collector, and no borrow
-> checker either. Memory is *region-based*: every locus owns an
-> arena, allocations inside it are bump-pointer cheap, and the
-> whole region frees in one shot when the locus dissolves. The
-> locus tree *is* the ownership graph — so lifetimes are
-> structural, not annotated. You never write `free`, and you never
-> fight a borrow checker, because no pointer ever crosses sideways.
+Hale manages memory through hierarchical region allocation rather than garbage collection or compile-time borrow checking. Every locus owns an arena allocator: intermediate allocations inside methods use a per-call scratch region that resets on return, while values stored on `self` live in the locus's arena and free in one shot when the locus dissolves.
 
-You've used loci for pages without thinking about memory, because
-the model is automatic. Here's what's underneath.
+```hale
+type Route { path: String; target: String; }
+type Session { id: Int; user: String; }
 
-## A locus owns a region
+locus Worker { }
 
-Every locus has an arena — a region of memory. Everything the
-locus allocates (strings it builds, records it constructs,
-collection storage) comes from that arena. When the locus
-dissolves, the entire region is freed at once. Nothing in the
-arena is freed object by object.
+locus Router : projection chunked {
+    capacity {
+        heap routes   of Route;
+        pool sessions of Session;
+    }
+    accept(w: Worker) { }
+}
 
-Regions nest exactly like loci do. A child's region is a
-sub-region of its parent's:
-
-```
-  root
-  └── App's region
-      └── Server's region
-          ├── Conn A's region
-          └── Conn B's region
+fn main() {
+    Router { };
+}
 ```
 
-When a locus dissolves, its whole subtree of regions frees
-wholesale. This is why [shutdown](../services/lifecycle.md)
-cascades cleanly and why [flow children](../services/parents-children.md)
-reclaim per connection: freeing is structural, not traced.
+## Region Hierarchy & Locus Arenas
 
-## Why no GC and no borrow checker
+Every locus instance owns an arena—a contiguous bump-allocated memory region. Strings, records, and collection buffers created and persisted by the locus allocate from this arena. Individual objects are not freed one by one; when the locus dissolves, its entire arena is reclaimed at once.
 
-Both exist to answer one question — *when is it safe to free
-this?* Hale answers it structurally instead:
+Arena regions nest alongside the locus tree. A child locus allocates from a sub-region of its parent:
 
-- **No pointer crosses sideways.** [Vertical-only
-  flow](../services/parents-children.md) means a value in one
-  locus's region is never referenced by a sibling. So when a
-  region frees, nothing dangles into it.
-- **Messages are copies, not pointers.** A payload crossing a
-  locus boundary is copied for the receiver, into storage of the
-  delivery's own that is freed when its handler returns; a field the
-  handler keeps (`self.last = msg.body`) is copied into the
-  receiver's arena as it is stored. Sender and receiver have
-  independent lifetimes; the sender can dissolve while the receiver
-  still holds what it kept, and a long-lived receiver grows only by
-  what it keeps, never by what it is sent.
+```text
+root
+└── App arena
+    └── Server arena
+        ├── Conn A arena
+        └── Conn B arena
+```
 
-With those two invariants, wholesale-free-at-dissolve is sound
-with no tracing and no aliasing analysis. The discipline the
-borrow checker enforces with annotations, Hale enforces with
-structure — you got it for free by building a locus tree.
+When a parent locus dissolves, its entire subtree of child regions frees wholesale in depth-first order (see [Lifecycle & Shutdown](../services/lifecycle.md)).
 
-## Bounded storage: capacity slots
+### Flow-Child Reclamation (`release`)
 
-The arena is for transient, locus-lifetime allocation. When a
-locus needs *bounded, disciplined* storage — a recycling pool, a
-growable buffer — it declares **capacity slots**:
+When a long-running parent accepts child loci via `accept(c: Conn)`, child lifetime depends on whether the parent declares `release(c: Conn)`:
+
+- **Resident children (default)**: Without `release`, an accepted child's arena lives until the parent locus dissolves.
+- **Flow children (`release(c: Conn)`)**: Declaring `release` marks `Conn` as a per-request or per-connection flow. As soon as the child's `run()` returns (or it executes `terminate;`), the runtime dissolves the child and reclaims its arena immediately (see [Parents & Children](../services/parents-children.md)).
+
+## Structural Memory Safety
+
+Garbage collectors and borrow checkers exist to determine when memory can be safely freed without creating dangling pointers. Hale enforces two structural invariants that make wholesale arena reclamation sound without runtime tracing or lifetime annotations:
+
+1. **Vertical-only pointer flow**: References follow parent-to-child hierarchy (`H9`). A value inside one locus's arena is never referenced directly by a sibling locus, so freeing a locus region never leaves dangling pointers in peers.
+2. **Copy-on-delivery messaging**: Bus payloads crossing a locus boundary are copied into a delivery-scoped buffer that is freed as soon as the subscriber handler returns. If a handler persists a field (`self.last = msg.body`), the runtime deep-copies that value into the receiver's own arena. Sender and receiver lifetimes remain completely independent.
+
+## Per-Method Scratch Regions & Field Retirement
+
+Not every allocation inside a locus belongs to its long-lived arena:
+
+| Allocation Scope | Where It Allocates | When It Frees |
+|---|---|---|
+| Method / handler transient values | Per-activation scratch sub-region | Immediately when the method or handler returns |
+| Scratch-local free `fn` | Function-local scratch region | Immediately when the free function returns |
+| Non-scratch free `fn` | Caller's active region | When the caller's activation or scope ends |
+| Persisted field (`self.field = val`) | Locus lifetime arena | When the locus dissolves (or on field replacement retirement) |
+| Stack-local scalar array (`[T; N]`) | CPU stack frame (up to 8 KiB) | When the function frame returns |
+
+### Whole-Field Replacement Retirement
+
+When a method or bus handler overwrites a field on `self` (`self.latest = Thing { ... }` or `self.state = State::Ready(name)`), the struct bytes overwrite in place and any heap blocks owned by the displaced value—such as `String`s, `Bytes`, or nested records, tuples, and arrays—are retired at the activation boundary and recycled on subsequent stores into `self`.
+
+For `String` and `Bytes` fields whose lengths vary across writes, retired blocks are retained at their size-class capacity and reused by future stores. As a result, repeated whole-field replacement inside handlers or methods keeps the locus arena flat at the high-water mark of the largest stored value.
+
+> [!TIP]
+> In-place scalar mutation (`self.latest.count = v`, `self.arr[i] = v`) avoids the clone-and-retire cycle altogether and is required inside tight loops in `run()` that do not cross a method or handler activation boundary.
+
+## Capacity Slots (`heap` and `pool`)
+
+While the default locus arena handles general locus-lifetime state, loci that manage structured collections declare explicit `capacity` slots:
 
 ```hale
 type Route { path: String; target: String; }
@@ -70,72 +82,45 @@ type Session { id: Int; user: String; }
 
 locus Router {
     capacity {
-        heap routes  of Route;     // growable, individually freed
-        pool sessions of Session;  // fixed-shape, recyclable cells
+        heap routes   of Route;    // growable buffer, cells freed individually
+        pool sessions of Session;  // bounded population of fixed-size recyclable cells
     }
 }
 ```
 
-- **`heap X of T`** — growable storage, cells allocated and freed
-  individually during the locus's life, the whole slot reclaimed
-  at dissolve.
-- **`pool Y of T`** — a bounded population of fixed-shape,
-  recyclable cells (acquire / release).
+| Slot Kind | Storage Discipline | Typical Use |
+|---|---|---|
+| `heap <name> of <T>` | Growable contiguous or node storage; elements can be resized and reclaimed during the locus's lifetime, and the entire slot frees at dissolve. | Backing slot for `@form(vec)` and `@form(heap)`. |
+| `pool <name> of <T>` | Fixed-shape recyclable cell pool supporting fast acquire, release, and indexed lookup. | Backing slot for `@form(hashmap)`, `@form(set)`, `@form(ring_buffer)`, and `@form(lru_cache)`. |
 
-The [forms](./forms.md) you've been using — `@form(vec)`,
-`@form(hashmap)` — are built on exactly these slots; the form
-annotation just synthesizes the method surface over them. And for a
-list that belongs *inside a value* rather than on a locus, there's
-`bounded[T; N]` (see [Collections](../everyday/collections.md)) —
-fixed-capacity, laid out inline, whole-struct copies carry it, and
-the memory-bound analysis treats it as bounded by construction. Slots
-hold *values*, never locus references: locus membership goes
-through [`accept`](../services/parents-children.md), not storage.
+Collection annotations such as `@form(vec)` and `@form(hashmap)` synthesize their typed method surfaces directly over these capacity slots (see [Forms Under the Hood](./forms.md)). For fixed-capacity lists embedded directly inside a value `type` rather than a locus, use `bounded[T; N]` (see [Collections](../everyday/collections.md)).
 
-## Projection classes: committing to resolution
+> [!IMPORTANT]
+> Capacity slots hold value types (`type` records and primitives), never locus instances. Dynamic child loci are managed through `accept` and `release`, not storage slots.
 
-When a parent has *many* children, you can commit up front to the
-resolution at which it observes them — which lets the compiler
-pick the allocator that makes that resolution cheap:
+## Projection Classes
+
+When a parent locus accepts child loci, its **projection class** declares the observation resolution and population scale for those children, allowing the compiler to select an appropriate child-arena allocator:
+
+| Projection Class | Population Scale | Observation Model | Allocator Strategy |
+|---|---|---|---|
+| `rich` | ~4–10 children | Individual named children, fully inspected | Dedicated per-child arenas, low churn |
+| `chunked` *(default)* | ~10–30 children | Range-based observation and moderate churn | Per-child sub-regions with free-list reuse |
+| `recognition(cap = N, fixed_cell)` | ~100–500+ children | Aggregate observation (counts, histograms) | Pre-allocated fixed-cell pool with hard runtime capacity `N` |
 
 ```hale
 locus Worker { }
 
-locus WorkerPool : projection chunked {
+locus Fleet : projection recognition(cap = 200, fixed_cell) {
     accept(w: Worker) { }
+    release(w: Worker) { }
 }
 ```
 
-- **`rich`** — a handful of named children (≈4–10), each fully
-  observed. Per-child arenas, low churn.
-- **`chunked`** — moderate counts (≈10–30), observed in ranges.
-  Per-child sub-regions with free-list reuse — the default when a
-  locus accepts children.
-- **`recognition`** — large populations (≈100–500), observed in
-  aggregate (a count, a histogram). Pre-allocated fixed pools,
-  and explicit only: you name the cap and the storage discipline,
-  as in `projection recognition(cap = 200, fixed_cell)`.
+Changing a locus's projection class alters the underlying region layout without changing parent or child method code.
 
-The projection class changes the allocator strategy, not your
-code: the same parent and child methods read from a `rich` pool
-or a `recognition` pool unchanged. It's a commitment about
-*observation resolution*; the compiler turns that into a layout.
+## Sizing Hints vs. Lifetime Rules
 
-## Sizing is hints, lifetime is law
+Declared arena sizes are allocation hints: if a locus arena exceeds its initial chunk budget, the runtime attaches an additional chunk rather than panicking. The sole hard capacity limit is the `cap = N` parameter on `projection recognition`, which enforces a strict cell ceiling at runtime.
 
-Declared sizes are hints — an arena that out-allocates its budget
-just adds another chunk; it doesn't panic. (The one hard limit is
-a `recognition` class's `cap`: a declared budget, enforced at run
-time.) The load-bearing
-property is *lifetime*: wholesale free at dissolve. That's the
-contract every other guarantee leans on.
-
-One shape sits outside the arena entirely: a fixed-size array
-literal bound to a `let` and only ever indexed is a stack local
-in that function's frame, so a scratch table inside a helper
-costs the arena nothing. The details — and the uses that put it
-back on the arena — are in
-[Performance](./performance.md#a-fixed-scratch-table-is-free).
-
-Next: keeping a long-running program's memory flat —
-[Performance](./performance.md).
+One allocation shape bypasses arenas entirely: a fixed-size scalar array literal bound to a local variable (`let mut counts: [Int; 16] = [0; 16];`) and accessed solely by index (`counts[i]`) is allocated directly on the CPU stack frame (up to 8 KiB per function). See [Performance](./performance.md) for details on keeping hot-path memory flat.

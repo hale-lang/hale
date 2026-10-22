@@ -1,33 +1,27 @@
-# Getting started
+# Getting Started with DNA
 
-This chapter makes an organism, shows what it wrote, fills its vault,
-starts it on your machine, and walks you through the first Review and
-the first task.
+This guide walks through provisioning a new DNA organism, configuring its local infrastructure in the habitat, populating secret slots in the vault, starting the local supervisor (`hale dna dev`), ratifying the initial Board reviews, and submitting your first task.
 
-## What you need
+```sh
+hale habitat up
+hale habitat graft demo
+cd demo
+hale dna dev
+```
 
-- The `hale` binary on your `PATH`.
-- git. The record lives in your repository, so a graft makes
-  one when there is none.
-- `docker compose` on your `PATH`. The organism's private services
-  (Postgres for memory, NATS for the nerves, Prometheus for the senses)
-  run in your machine's local habitat, one compose project that birth
-  and `hale habitat migrate` bring up.
-- A model, for the organism to do work: a model key you put in the
-  vault, `ollama` on your `PATH`, or a coding harness (`claude`, else
-  `codex`) on your `PATH`. Without one the organism still runs; the
-  Leader cannot decide anything, and every Review waits for you.
-- For a team, or for nodes: a git remote. Alone on one machine, none
-  is needed.
+## Prerequisites
 
-## Make one
+Before creating an organism, verify that your machine has:
 
-Every organism but the habitat is grafted from it: the habitat is the
-long-lived organism on your machine that holds every other one's
-infrastructure. `hale habitat up` births it the first time and brings
-it up after that ([The habitat](../habitat.md)). Then `hale habitat
-graft <name>` makes a greenfield application with its organism in a new
-directory, as the habitat's child:
+- **`hale` on `PATH`**: The Hale compiler and DNA CLI.
+- **`git`**: Candidate branches and base commits live in your Git repository. `hale habitat graft` initializes a repository automatically if none exists.
+- **`docker compose` on `PATH`**: Runs the organism's private backing services—PostgreSQL (`memory`), NATS JetStream (`nerves`), and Prometheus (`senses`)—inside your machine's local habitat.
+- **An LLM backend (optional but recommended)**: Either a hosted API key stored in the vault (`hale dna secret set <NAME>`), a local `ollama` server on `PATH` (`127.0.0.1:11434`), or a coding CLI harness (`claude` or `codex`) on `PATH`. Without a model, the organism still runs, but the Leader cannot plan tasks or decide delegated reviews, so every review waits for human Board approval.
+- **A Git remote (optional)**: Required only when sharing a record across teammates or deploying to remote fleet nodes.
+
+## Provisioning an Organism
+
+Every organism on a machine is provisioned as a child of the local **habitat** ([The Habitat](../habitat.md)), which manages shared Docker Compose infrastructure. Run `hale habitat up` to initialize and start the habitat, then run `hale habitat graft <name>` to create a new application and its DNA organization in a fresh directory:
 
 ```text
 $ hale habitat up
@@ -76,101 +70,72 @@ next steps:
     the first Review (`purpose`) ratifies the declared purpose (dna/org/purpose.hl): `hale dna review purpose approve --as <you>`
 ```
 
-The `models` lines depend on your machine. This one had `claude` on
-its `PATH` and no key in its vault, so the harness took every tier and
-the hosted backends wait for their key. The `seated` line names your
-login: the record's local config maps your uid to you, and
-`dna.trust = local` says this is one person's record, in which you hold
-every position.
+Key details from the `graft` output:
 
-A graft of a new application refuses a directory that exists. `--profile remote-body
---remote <url> [--body <user@host>]` starts it on a shared record and
-a remote body instead; [The heart and the body](./heart.md) covers
-bodies.
+- **Model probing (`models`)**: `graft` inspects your machine's vault and `PATH` to generate `dna/org/models.hl`. In the output above, `claude` was found on `PATH` and no API key was present in the vault, so `quick` and `deep` tiers default to the `claude` harness while hosted models remain disabled until `OPENAI_API_KEY` is set.
+- **Local identity (`seated`)**: Local Git config (`dna.unix.member`) maps your OS UID to your username, and `dna.trust = local` grants that local user authority over every organizational position.
+- **Remote body profile**: Grafting a new application refuses an existing target directory. Pass `--profile remote-body --remote <url> [--body <user@host>]` to configure a shared remote record and remote host body instead (see [The Heart and the Body](./heart.md)).
 
-### Or attach one to an application you have
+### Attaching to an Existing Application
+
+To add DNA governance and runtime supervision to an existing Hale repository, run `hale habitat graft` with `--attach`:
 
 ```sh
 hale habitat graft . --attach
 ```
 
-`--attach` prints the same kind of lines. It makes a git repository when
-there is none, writes `vendor/dna`, and then cuts your application's
-structure with `hale check`: an application that does not check stops
-it there, before any of the organization is written, so fix the
-application first. It keeps your application's files (`kept … (the
-application is not modified …)`), adds the two environments to your
-`hale.toml` (or writes one), and ends by running `hale fmt` over
-`dna/` and your application's seed. On a directory with no application
-at its root, the graft seeds the record with the repository's graph
-instead. Grafting an application reads its graph too, after the rows it
-observes: the application is the root seed, and each API surface it
-serves (and each stream over a hub) is a contract it meets as server,
-named from `hale check --api`, so the example above also ends with a
-`graph` line and a `holes` group. Either way the graft proposes the holes
-that graph implies: the positions (the board, and for the application
-its `dev` and its `reviewer`), and with each position its **mandate**, a
-text bound to the position that says what it decides, what it may not,
-what it cites, how it writes and what it escalates. `hale dna review
-holes approve` ratifies a position and then its mandate. A position also
-carries its standard equipment: the roles the contract's members
-require (`requires: [editor]` in an application's surface, or
-`spec/<Stem>.description.json`, what `hale api describe` writes) are the
-equipment of the part that serves it (`reviewer` on its reviewer, every
-other role on its dev), and `hale dna fill` prints them. The roles
-inform what a holder is fitted with; they never create a position or
-grant authority.
+`--attach` performs the following steps:
 
-## What it wrote
+1. Initializes a Git repository if one does not exist and writes `vendor/dna`.
+2. Runs `hale check` to extract the application's baseline topology. If the existing application fails typechecking, `graft` aborts before writing any `dna/` files.
+3. Leaves your application source files untouched (`kept …`), adds the `local` and `org` environments to `hale.toml`, and runs `hale fmt` across `dna/` and your application seed.
+4. Inspects the repository graph (via `hale check --api` when an application seed is present at the root, or the repository graph otherwise). The application becomes the root `seed` node, and every HTTP/RPC API surface or hub stream it serves becomes a `contract` node.
+5. Proposes **holes** (`hale dna review` group `holes`) for the organizational positions implied by the graph (`board`, plus the application's `dev` and `reviewer` positions) along with each position's **mandate** (a policy text defining what the position decides, what it is forbidden from deciding, what it must cite, how it writes, and what it escalates).
+6. Computes each position's standard **equipment** from contract role annotations (`requires: [editor]` in an API surface or `spec/<Stem>.description.json` generated by `hale api describe`), assigning `reviewer` to the seed's reviewer position and all other required roles to its `dev` position (`hale dna fill` displays these roles). Equipment roles describe what tools a position holder is fitted with; they never create positions or grant authority on their own.
 
-| what | where | yours? |
+## Generated Files & Habitat Allocations
+
+`hale habitat graft` creates the following files and database structures:
+
+| Path / Resource | Purpose | User-Editable? |
 | --- | --- | --- |
-| The purpose: one sentence, what this codebase is for. The first Review asks you to ratify it. | `dna/org/purpose.hl` | yes |
-| The charter: the Leader's brief, which it reads with the purpose, the law and the ratified design before it plans an ask or decides a Review. | `dna/org/charter.hl` | yes |
-| The organization: the Board, the Leader and its grant, the substrate. Ordinary Hale source. | `dna/org/main.hl` | yes |
-| The law: what no position may do, checked by the compiler against the wiring you built. Add to it; do not weaken it. | `dna/org/law.hl` | yes, to extend |
-| The model catalog and the budget, written from what this machine had. | `dna/org/models.hl` | yes |
-| The performers a leg runs. | `dna/org/work.hl` | yes |
-| The workflow catalog: the baseline, rewritten by every `hale dna upgrade`. | `dna/org/workflows.hl` | no |
-| Your own workflow definitions, never rewritten. | `dna/org/own_workflows.hl` | yes |
-| The core, as the `hale` you ran carries it. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna` | no |
-| Scratch: the baseline artifact, sockets, worktrees, logs. Ignored by git; deleting it loses nothing. | `.hale/dna/` | no |
-| The record: one signed row per event, and the receipts. Rows in memory (Postgres), not files; the clone keeps only the head's DSN in `.hale/dna/memory.env`. | `record_rows` in `dna_<identity>` | no |
+| `dna/org/purpose.hl` | Single-sentence declaration of the codebase's purpose, ratified in the first Board Review. | Yes |
+| `dna/org/charter.hl` | The Leader's architectural brief, read alongside the purpose, law, and ratified design practices during planning and review. | Yes |
+| `dna/org/main.hl` | Entrypoint defining the Board, Leader, `AutonomyBoundary` grant, and `dna::Dna` substrate. | Yes |
+| `dna/org/law.hl` | Compile-time architectural claims enforced by `hale check`. You may add stricter claims, but do not weaken baseline rules. | Yes (extend only) |
+| `dna/org/models.hl` | Model catalog, tier routing, and daily spend budget generated from detected local tools. | Yes |
+| `dna/org/work.hl` | Worker performer definitions executed by legs (`hale dna work`). | Yes |
+| `dna/org/workflows.hl` | Baseline workflow catalog; overwritten whenever you run `hale dna upgrade`. | No |
+| `dna/org/own_workflows.hl` | Custom workflow definitions; preserved across `hale dna upgrade`. | Yes |
+| `vendor/dna` | Vendored DNA core library matching the `hale` binary digest (`embedded dna ca4012a0cda7226d`). Git-ignored; refreshed by `hale dna upgrade`. | No |
+| `.hale/dna/` | Ephemeral runtime state: baseline topology artifacts, Unix sockets, sandbox worktrees, logs, and `.hale/dna/memory.env`. Git-ignored; safe to delete. | No |
+| `record_rows` (`dna_<identity>`) | Append-only PostgreSQL table storing signed record rows and receipts. | No |
 
-`hale.toml` gained two environments, one for the application and one
-for the organization, and `[claims] no_base = true`, because the two
-entrypoints are checked against their own law and share none. The
-[DNA chapter](./dna.md) quotes every generated file.
+`hale.toml` is updated with two environments (`[environments.local]` for the application and `[environments.org]` for `dna/org`), `[claims] no_base = true` so each entrypoint is checked against its own architectural claims, and `[dna] record = "<identity>"` pinning the record's genesis digest. See [DNA, the Building Block](./dna.md) for the full contents of each generated file.
 
-Nothing in the checkout runs a service. The organism's memory, nerves
-and senses' store are **allocations** of your machine's local habitat:
-the services `memory-<id>`, `nerves-<id>` and `senses-<id>` of one
-compose project, `hale-habitat-local-<h>`, under
-`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, `<id>` the
-start of the record's identity. Their compose file, host ports, server
-configuration and passwords live there, under `allocations/<id>/`, not
-in your repository. The habitat is long-lived: a second clone or
-worktree of the same organism uses the same allocations, and nothing
-takes them down when you stop. Birth brought memory and the nerves up
-and migrated them; after a toolchain update, run `hale habitat migrate`
-(it is idempotent, and it also brings the senses' store up):
+### Local Habitat Services
+
+No Docker Compose files are added to your repository checkout. Instead, PostgreSQL (`memory-<id>`), NATS JetStream (`nerves-<id>`), and Prometheus (`senses-<id>`) run as **allocations** inside your machine's local habitat Compose project (`hale-habitat-local-<h>`) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local/allocations/<id>/`, where `<id>` is the 12-character prefix of `[dna] record`.
+
+Because allocations are keyed by record identity:
+- Multiple clones or Git worktrees of the same organism share the same PostgreSQL database, NATS stream, and Prometheus server.
+- Stopping `hale dna dev` leaves the backing containers running in the habitat.
+- After updating the `hale` toolchain, run `hale habitat migrate` to idempotently update schemas and bring up any new habitat services (including `senses-<id>`):
 
 ```sh
 hale habitat migrate .
 ```
 
-`embedded dna ca4012a0cda7226d` on the `wrote` line is the provenance
-of `vendor/dna`: the digest of the DNA source this `hale` binary
-carries. `hale dna status` prints it on its first line.
-
-Commit what the graft wrote (the ignored files stay out):
+Commit the generated project files (Git automatically ignores `vendor/dna` and `.hale/`):
 
 ```sh
 cd demo
 git add -A && git commit -m "the organism"
 ```
 
-## Check nothing broke
+## Verifying the Workspace
+
+Use `hale check --matrix` to verify both the application entrypoint and `dna/org` against their respective laws, then run the test suite:
 
 ```text
 $ hale check --matrix .
@@ -186,16 +151,13 @@ ok   ./tests/main_test.hl
 1 passed, 0 failed
 ```
 
-Your tests matter twice from here on: every change the organism
-proposes is tested against them before anyone is asked.
+Every candidate mutation proposed by the organism will automatically run `hale check`, `hale verify`, and `hale test` before opening a Review.
 
-## Fill the vault
+## Managing Secrets in the Vault
 
-The graft provisioned every secret the organism owns and left a slot for
-each one a person supplies. The vault is a local directory,
-`HALE_VAULT_DIR`, else one under the toolchain's cache; each entry is
-a file of mode 600. `hale dna secrets` lists what the organism
-requires and whether the vault holds it, never a value:
+`hale habitat graft` automatically generates random passwords for internal PostgreSQL and NATS roles and creates empty **slots** for user-supplied API keys. Secrets live in `HALE_VAULT_DIR` (or `~/.cache/hale/vault` by default) as mode `0600` files.
+
+Run `hale dna secrets` to check which secrets are present or missing (values are never printed):
 
 ```text
 $ hale dna secrets
@@ -214,12 +176,7 @@ the organism's secrets (the local vault, …):
 2 missing
 ```
 
-The long names carry the record's identity, so two organisms on one
-machine never share an entry.
-
-A model key goes into its slot with `hale dna secret set`. The value
-comes from stdin, never the command line, and the record gets only the
-name:
+To populate a user-supplied slot (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or any model key declared in `dna/org/models.hl`), run `hale dna secret set <NAME>` and enter the secret on stdin:
 
 ```text
 $ hale dna secret set OPENAI_API_KEY
@@ -227,39 +184,24 @@ value for OPENAI_API_KEY (this machine), on one line:
 secret set: OPENAI_API_KEY is in its slot of the vault, …/model-OPENAI_API_KEY (secret.rotated OPENAI_API_KEY; the value is nowhere in the record). A part reads it from the vault where it uses it
 ```
 
-A name the organism has no slot for is refused. The slots are
-`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, and each key your model catalog
-names. The environment is not read for a model key: a key exported in
-your shell does nothing until it is in the vault.
+> [!IMPORTANT]
+> DNA never reads model API keys from shell environment variables (such as `export OPENAI_API_KEY=…`). A model key must be written into its vault slot via `hale dna secret set`. `FORGE_TOKEN` is only required when mirroring Reviews to GitHub pull requests and can be left unset for local development. See [The Skin](./skin.md).
 
-The forge's token is only needed when GitHub mirrors your Reviews.
-Leave it missing for now. [The skin](./skin.md) covers the vault,
-rotation, and setting a secret on a remote body.
+## Starting the Runtime (`hale dna dev`)
 
-## Start it
-
-On one machine, the organization and the application run under one
-host:
+Start the organization and your application together under the local host supervisor:
 
 ```sh
 hale dna dev
 ```
 
-Leave that terminal open; it is the host. In order, `dev`:
+Leave `hale dna dev` running in its terminal. On startup, `hale dna dev` executes five steps in order:
 
-1. derives the spine's credentials from the organism's memory and
-   nerves in the local habitat, which must be up and migrated: `dev`
-   brings nothing up and migrates nothing, and when they are not up it
-   says so and names `hale habitat migrate`;
-2. takes the body lease, so this clone is the one body running the
-   record;
-3. builds and starts the organization (`dna/org`), handing it only the
-   spine's credentials, and waits for it to read the nerves;
-4. builds and starts your application, and attaches iris on port 8787;
-5. then ticks: syncs the record, relays new rows onto the nerves, and
-   rebuilds and restarts the application when a change is applied.
-
-What it prints comes from the host, one line per event, for example:
+1. **Resolves spine credentials** for the organism's PostgreSQL (`memory`) and NATS (`nerves`) services in the local habitat. `hale dna dev` does not start containers or run schema migrations itself—if the habitat services are down or unmigrated, it exits and instructs you to run `hale habitat migrate`.
+2. **Acquires the body lease** in PostgreSQL so this checkout is the single active host supervising the record.
+3. **Compiles and launches `dna/org`** with the `spine` credentials and waits up to 20 seconds for it to subscribe to the NATS stream.
+4. **Compiles and launches your application**, attaching the Iris inspector on port `8787`.
+5. **Enters the 1-second tick loop**: syncs record state, relays unanswered request rows onto NATS JetStream, and rebuilds/restarts the application whenever an approved mutation is applied.
 
 ```text
 hale dna dev: body lease taken as … (token 1)
@@ -269,26 +211,17 @@ hale dna dev: the organization reads its facts from the nerves (…)
 hale dna dev: expression demo (pid …) under LOTUS_OBS=1
 ```
 
-With no model key in the vault it says so, and the board says so too,
-until one is:
+If no model credential is present in the vault, the host logs a warning (`hale dna dev: no credential for the model: …`) and displays a notice on `hale dna board` until the slot is filled.
 
-```text
-hale dna dev: no credential for the model: none of OPENAI_API_KEY is in its slot of the vault (`hale dna secret set <NAME>`); the board says so until one is
-```
+Useful flags for `hale dna dev`:
+- `--observe <secs>`: Duration of the post-restart health observation window (default: `15` seconds).
+- `--port <N>`: Port for the Iris inspector (default: `8787`).
+- `--no-iris`: Disables the Iris inspector.
+- Stop the supervisor at any time with `Ctrl-C`; all pending Reviews and tasks remain durable in PostgreSQL.
 
-`--observe <secs>` sets the observation window after a restart
-(15 seconds by default), `--port N` moves iris, and `--no-iris` leaves
-it out. `hale dna dev` refuses to start when the vault lacks a secret
-the organism owns; `hale dna upgrade` draws it again.
-[The heart and the body](./heart.md) has `dev`, `run` and the fleet in
-full.
+## Inspecting Runtime Status
 
-Stop the host with Ctrl-C. A Review left pending is still pending next
-time.
-
-## Look at it
-
-From another terminal:
+In a second terminal, run `hale dna status`:
 
 ```text
 $ hale dna status
@@ -308,28 +241,17 @@ memory:     record + ledger (operations and leases live in memory)
 genome:     no node has recorded the genome it runs
 ```
 
-That is the status before the first start; with `dev` up, the
-`organism:` and `body:` lines name the running body. `status`,
-`history`, `review` and `board` need no running organism: they read the
-record from memory, where every clone reads it.
+Read-only inspection commands (`hale dna status`, `hale dna history`, `hale dna review`, and `hale dna board`) query PostgreSQL directly using the `head` DSN stored in `.hale/dna/memory.env` and work even when `hale dna dev` is stopped. When `hale dna dev` is running, the `organism:` and `body:` lines display the active holder and lease status.
 
-The `memory:` line matters. An organism keeps its record and its
-day's work in memory from its first row: the record and its Ledger are
-born together.
-[Memory and the record](./memory.md) explains the split.
+## Ratifying Initial Board Reviews
 
-## The first Review
-
-There is already something to decide. The graft declared a purpose and
-proposed it to the Board, which is you:
+`hale habitat graft` seeds `dna/org/purpose.hl` and proposes initial governance items for the Board (you) to ratify:
 
 ```hale,fragment
 const PURPOSE: String = "refproj: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.";
 ```
 
-That is `dna/org/purpose.hl` in a project named `refproj`. The Review
-pins the text the graft declared by its digest, and your verdict ratifies
-those words. `hale dna review` lists every pending Review, grouped:
+Run `hale dna review` to list all pending Reviews grouped by category:
 
 ```text
 $ hale dna review
@@ -353,59 +275,32 @@ $ hale dna review
 render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`
 ```
 
-With `dev` running, answer it:
+With `hale dna dev` running, ratify the declared purpose and the seeded practice families (`design`, `operating`, and `using`):
 
 ```sh
 hale dna review purpose approve --as alice
-```
-
-The command writes your verdict as a row and waits for the Review's
-answer, `review k:… settled: approve by alice`. `--as` is your name on
-the record; a verdict from the terminal carries the Board's authority.
-With no organism running anywhere (no body holds the record's lease),
-the verdict is refused and nothing is written; `--no-wait` leaves it in
-the record for when one starts.
-
-The other twenty-two are the toolchain's practices: `design`, how an
-organization like this one is shaped, `operating`, how the organism
-runs, and `using`, how to work with it. Each is its own Review. Read them, then decide them one
-by one, or a family at once:
-
-```sh
 hale dna review design approve --as alice
 hale dna review operating approve --as alice
 hale dna review using approve --as alice
 ```
 
-Nothing the toolchain proposes is in force until you ratify it. Every
-change from here on goes through the same door: something is proposed,
-someone with the authority answers with their name on it, and the
-answer is a row. [The head and the face](./head.md) has Reviews in
-depth.
+Each command appends a `review.verdict` row signed by `--as <name>` and waits for the running spine node to settle the Review (`review k:… settled: approve by alice`). If no body holds the record lease, `hale dna review` refuses to write unless you pass `--no-wait` to queue the verdict for the next run.
 
-`hale dna review all approve --as alice` decides every group in turn,
-the holes included. The holes are positions with nobody in them; to
-take the seats yourself in the same verdict, propose it at the graft:
+To ratify every pending group—including `holes`—in one command, run `hale dna review all approve --as alice`. To also assign yourself to every position opened by `holes` (`board`, `<app>/dev`, and `<app>/reviewer`) during initial setup, apply the `founder` pack when grafting:
 
 ```sh
 hale habitat graft . --attach --with founder --set founder=alice --as alice
-hale dna review all approve --as alice      # with `dev` running
+hale dna review all approve --as alice      # with `hale dna dev` running
 ```
 
-The `founder` pack fills every seat the holes open (the board, the
-application's dev and reviewer) with you, planned on those holes while
-they are still proposals, and `review all` ratifies it right after them.
-[A pack at the graft](./shaping.md#a-pack-at-the-graft) has how it waits for
-them and when it is refused.
+See [A Pack at the Graft](./shaping.md#a-pack-at-the-graft) for details on how packs stage proposals against open position holes.
 
-## The first task
+## Submitting Your First Task
 
-Ask for an outcome in a sentence, naming the file when you know it:
+With `hale dna dev` running, request a code change from the terminal:
 
 ```sh
 hale dna task create --as alice "document the Echo locus in main.hl"
 ```
 
-The organism answers with the Task it made,
-`task t1 born for intent i… […]`. What happens next, row by row, is
-[One task, end to end](./workflow.md).
+The CLI writes the request row, waits for the spine to admit the workflow, and prints `task t1 born for intent i… […]`. Continue to [One Task, End to End](./workflow.md) to trace how this task executes, verifies, reviews, and deploys.
