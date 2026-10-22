@@ -11636,6 +11636,24 @@ row	Clock@main1	Clock	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
+== dna/tests/forge_forgejo_test.hl
+row	__StdSecretCredential@main1	__StdSecretCredential	main	default
+row	__StdSecretCredential@main2	__StdSecretCredential	main	default
+row	__lib_dna__core___forgejo__ForgejoForge@main3	__lib_dna__core___forgejo__ForgejoForge	main	default
+dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main	in tests
+shared	__lib_dna__core___memory_record__MemoryReceipts@main5	__lib_dna__core___memory_record__MemoryReceipts #deee0984
+shared	__lib_dna__core___routing__RoutedJournal@main4	__lib_dna__core___routing__RoutedJournal #8fc95e4d
+-- dynamic	sites in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___exchange__ExchangeKey	on main
+dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
+dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/tests/forge_gates_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -13559,27 +13577,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/retired_admission_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- App@literal1.j	__lib_dna__core___routing__RoutedJournal
-row	~	__lib_dna__core___routing__RoutedJournal	main	default
-row	~.ledger	__lib_dna__core___memory_spine__MemoryLedger	main	inherited
-row	~.ledger.leases	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
-row	~.ledger.leases.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
-row	~.ledger.leases.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
-row	~.ledger.store	__lib_dna__core___memory_ledger__PqLedger	main	inherited
-row	~.ledger.store.authors	__lib_dna__core___journal__Authors	main	inherited
-row	~.ledger.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
-row	~.ledger.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
-row	~.ledger.store.rows	__lib_dna__core___journal__EventRows	main	inherited
-row	~.ledger.store.writers	__lib_dna__core___journal__Authors	main	inherited
-row	~.order	__lib_dna__core___routing__PlacedRows	main	inherited
-row	~.record	__lib_dna__core___memory_record__RecordJournal	main	inherited
-row	~.record.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
-row	~.record.store	__lib_dna__core___memory_record__PqRecord	main	inherited
-row	~.record.store.authors	__lib_dna__core___journal__Authors	main	inherited
-row	~.record.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
-row	~.record.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
-row	~.record.store.rows	__lib_dna__core___journal__EventRows	main	inherited
-row	~.record.store.sigs	__lib_dna__core___journal__Authors	main	inherited
+shared	App@literal1.j	__lib_dna__core___routing__RoutedJournal #8fc95e4d
 shared	App@literal1.lead	__lib_dna__core___org__Leader #c39f2520
 shared	App@literal1.one	__lib_dna__core___assembly__Dna #a94d581e
 shared	dynamic	sites in core #358f8923
@@ -16072,6 +16070,7 @@ dynamic	__StdIoTcpStream	on pool:senses
 dynamic	__StdJsonBuilder	on main|unknown (no caller)
 dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___forge__NoForge	on main
+dynamic	__lib_dna__core___forgejo__ForgejoForge	on main
 dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
@@ -18964,6 +18963,28 @@ row	~.git.store.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.git.store.sigs	__lib_dna__core___journal__Authors	main	inherited
 row	~.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.seats	__lib_dna__core___roles__HoldsReader	main	inherited
+
+== shared __lib_dna__core___routing__RoutedJournal #8fc95e4d
+row	~	__lib_dna__core___routing__RoutedJournal	main	default
+row	~.ledger	__lib_dna__core___memory_spine__MemoryLedger	main	inherited
+row	~.ledger.leases	__lib_dna__core___memory_ledger__PqLeaseStore	main	inherited
+row	~.ledger.leases.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.ledger.leases.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.ledger.store	__lib_dna__core___memory_ledger__PqLedger	main	inherited
+row	~.ledger.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.ledger.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.ledger.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.ledger.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.ledger.store.writers	__lib_dna__core___journal__Authors	main	inherited
+row	~.order	__lib_dna__core___routing__PlacedRows	main	inherited
+row	~.record	__lib_dna__core___memory_record__RecordJournal	main	inherited
+row	~.record.signer	__lib_dna__core___memory_record__RecordSigner	main	inherited
+row	~.record.store	__lib_dna__core___memory_record__PqRecord	main	inherited
+row	~.record.store.authors	__lib_dna__core___journal__Authors	main	inherited
+row	~.record.store.conn	__lib_dna__core__pond__pq___pq__PgConn	main	inherited
+row	~.record.store.conn.rx_buf	__StdBytesBytesBuilder	main	inherited
+row	~.record.store.rows	__lib_dna__core___journal__EventRows	main	inherited
+row	~.record.store.sigs	__lib_dna__core___journal__Authors	main	inherited
 
 == shared __lib_dna__core___routing__RoutedJournal #d907b0f2
 row	~	__lib_dna__core___routing__RoutedJournal	main	default

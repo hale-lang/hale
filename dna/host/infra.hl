@@ -690,3 +690,101 @@ fn compose_sweep(dir: String, own_mark: String) -> String {
     );
     return dna::trim_nl(r.stdout);
 }
+
+// ---- the habitat's forge (phase 4 ruling) ----------------------------------
+
+// The habitat's Forgejo up and answering, its administrator made: "" once
+// it is, else why not. The administrator's password is drawn into the vault
+// the first time (dna::FORGEJO_ADMIN_VAULT) and reaches the server through
+// the file compose mounts, read inside the container by its root shell,
+// never on a command line of this machine's.
+fn forgejo_up() -> String {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        return "the habitat's forge runs under docker compose, which is not on PATH";
+    }
+    let argv = dna::forgejo_compose();
+    if len(argv) == 0 { return "cannot make " + dna::forgejo_dir(); }
+    if !secret_present(dna::FORGEJO_ADMIN_VAULT) {
+        let value = draw_secret();
+        if len(value) == 0 { return "no randomness for the forge administrator's password"; }
+        let put = vault_put(dna::FORGEJO_ADMIN_VAULT, value);
+        if len(put) > 0 { return put; }
+    }
+    let secret = dna::forgejo_dir() + "/admin.secret";
+    if dna::run_tool(
+        "sh\n-c\numask 077 && cp \"$1\" \"$2\" && chmod 600 \"$2\"\nsh\n"
+            + std::secret::vault_local_dir() + "/" + dna::FORGEJO_ADMIN_VAULT + "\n" + secret,
+    ).code != 0 {
+        return "cannot write " + secret;
+    }
+    let up = dna::run_tool_timeout(600, argv + "\nup\n-d\n--quiet-pull\nforge");
+    if up.code != 0 { return "the habitat's forge did not come up: " + dna::trim_nl(up.stderr); }
+    if !forgejo_healthy(120) {
+        return "the habitat's forge did not answer at " + dna::forgejo_address() + " within 120 s";
+    }
+    let listed = forgejo_exec("su-exec git forgejo admin user list --admin");
+    if std::str::contains(listed.stdout, " " + dna::FORGEJO_ADMIN + " ") { return ""; }
+    let made = forgejo_exec(
+        "su-exec git forgejo admin user create --admin --username " + dna::FORGEJO_ADMIN
+            + " --email " + dna::FORGEJO_ADMIN
+            + "@habitat.invalid --must-change-password=false --password \"$(cat /run/secrets/forgejo-admin)\" >/dev/null",
+    );
+    if made.code != 0 {
+        return "the forge's administrator was not made: " + dna::trim_nl(made.stderr);
+    }
+    return "";
+}
+
+// `script` run by the habitat's Forgejo container's shell.
+fn forgejo_exec(script: String) -> dna::RunResult {
+    return dna::run_tool(dna::forgejo_compose() + "\nexec\n-T\nforge\nsh\n-c\n" + script);
+}
+
+// Whether the habitat's Forgejo answers healthy within `secs`.
+fn forgejo_healthy(secs: Int) -> Bool {
+    let deadline = std::time::now() + secs;
+    while std::time::now() <= deadline {
+        let u = std::http::parse_url(dna::forgejo_address() + "/api/healthz") or {
+            return false;
+        };
+        let r = std::http::request(
+            std::http::ClientRequest { method: "GET", url: u, body: b"" },
+        ) or std::http::ClientResponse {
+            status: 0,
+            body: b""
+        };
+        if r.status == 200 { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// The Forgejo user `user` the organism keyed `key` is, made when it is not,
+// and its token drawn into the vault slot dna::forgejo_vault(key) when the
+// vault holds none: "" once both are, else why not. Its password is
+// Forgejo's own random one, never read; the token goes from the server
+// into the vault and nowhere else.
+fn forgejo_user(user: String, key: String) -> String {
+    let listed = forgejo_exec("su-exec git forgejo admin user list");
+    if !std::str::contains(listed.stdout, " " + user + " ") {
+        let made = forgejo_exec(
+            "su-exec git forgejo admin user create --username " + user + " --email " + user
+                + "@habitat.invalid --random-password --must-change-password=false >/dev/null",
+        );
+        if made.code != 0 {
+            return "the forge's user " + user + " was not made: " + dna::trim_nl(made.stderr);
+        }
+    }
+    let slot = dna::forgejo_vault(key);
+    if secret_present(slot) { return ""; }
+    let t = forgejo_exec(
+        "su-exec git forgejo admin user generate-access-token --username " + user
+            + " --token-name hale-" + key + "-" + to_string(std::time::now())
+            + " --scopes all --raw",
+    );
+    let token = dna::trim_nl(t.stdout);
+    if t.code != 0 || len(token) < 20 || std::str::contains(token, " ") {
+        return "the forge's user " + user + " was given no token: " + dna::trim_nl(t.stderr);
+    }
+    return vault_put(slot, token);
+}

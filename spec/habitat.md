@@ -174,25 +174,72 @@ does not already say it (below). The head's surface reads them back
 
 ## Forge and identity
 
+**The forge is a gate, not a store.** Code goes out through it as
+branches, and verdicts come back through it; the organism reads nothing from
+it that it did not already decide. A Review lives in the record, its
+candidate is a branch in git, and the pull request is a mirror. Which forge
+stands in the gate is an allocation, and swapping it is swapping a remote.
+
 `forge` and `identity` are roles the habitat allocates, as it allocates an
 organism's memory: each a `habitat.allocated <id>/forge` and
-`<id>/identity` row naming its provider, written at `up` for the habitat
-and at a graft for the organism. The `local` profile's policy gives the
-forge `none` (no forge: `hale dna forge sync` answers `forge: no forge
-allocated`) and the identity `oidc-stub`, the habitat's own sign-in, at the
-organism's issuer (`dna.oidc.issuer`, else the stub's default address),
-which `Commands::allocations` observes by whether it answers. A graft takes
-`--forge <provider>` over the policy. The Board allocates a forge with
+`<id>/identity` row naming its provider, written once, when absent, at `up`
+for the habitat and at a graft for the organism (a retried graft records
+what an interrupted one left out, and never overwrites an allocation the
+Board made since). The identity is `oidc-stub`, the habitat's own sign-in,
+at the organism's issuer (`dna.oidc.issuer`, else the stub's default
+address), which `Commands::allocations` observes by whether it answers.
+
+**The `local` profile's forge is Forgejo**, the habitat's own: on its own
+backends the compose provider brings one Forgejo up at every `hale habitat
+up`, as it brings up memory and the nerves. It is a service (`forge`) of the
+habitat's compose project, its image pinned by digest, published on a
+loopback port chosen once (`<habitat>/forge/port`), its data in the
+project's volume. Its administrator (`hale-admin`) has a password drawn
+into the vault the first time (`forgejo-admin`); the server reads it from
+the file compose mounts, inside the container, never from a command line,
+and the habitat's forge row names the slot, never the value. On an
+operator's backends the policy's forge is `none` until the Board allocates
+one. A graft gives the organism a Forgejo user of its own (named for it),
+its token drawn into the vault slot `forgejo-<id>`, and a repository for
+its codebase (`<user>/<user>`); its forge row names the provider
+`forgejo`, the address, the repository and the slot. `hale dna forge sync`
+keeps the organism's branch there as it stands (a branch the forge moved
+past, by a merge there, is left as the forge has it), pushing as the
+organism's user with its token handed to git through a credential helper
+reading a private file.
+
+The forge's implementations sit behind the core's `Forge` interface:
+`ForgejoForge` (Forgejo's API, which maps onto GitHub's nearly one to one:
+a pull request per review, its approving or change-requesting reviews as
+verdicts, its commit statuses as check runs, a comment at settlement),
+GitHub through `gh`, the file forge (the fixtures'), and `NoForge`, a bare
+remote whose Reviews are decided in the organism's own face or CLI, the
+no-infrastructure fallback. **GitHub is the allocation when a Board names
+it**; neither GitHub nor `none` is the default. A graft takes `--forge
+<provider>` over the policy. The Board allocates a forge with
 `Commands::allocate_forge` (`{organism, provider, repo, key_vault}`, `hale
-habitat forge <organism> none|github|file [--repo <owner/name>]
-[--key-vault <slot>]`; `habitat` names the habitat's own): GitHub names its
+habitat forge <organism> forgejo|github|file|none [--repo <owner/name>]
+[--key-vault <slot>]`; `habitat` names the habitat's own): Forgejo makes the
+organism's user and repository there as a graft does; GitHub names its
 repository and the vault slot of its token (`forge-token` by default), never
-the token, and `file` is a forge of files (the fixtures'). The host reads
-the allocation from its cache beside the organism's allocations
-(`allocations/<id>/forge.json`) at each sync; `HALE_DNA_FORGE` stays the
-fixtures' override. `hale dna forge sync` is the forge's pass (`hale dna
-github sync` is gone): the verdicts a forge reports flow through it
-unchanged.
+the token; `file` is a forge of files. The host reads the allocation from
+its cache beside the organism's allocations (`allocations/<id>/forge.json`)
+at each sync; `HALE_DNA_FORGE` stays the fixtures' override.
+
+`hale dna forge sync` is the forge's pass, against whichever forge the
+allocation names, as `github sync` was: a pending mutation Review is opened
+as a pull request (its candidate pushed as `dna/<review>`), the forge's
+verdicts and check runs come back as rows, a settlement goes back as a
+comment, and a leg's review at an attached codebase's forge comes back as
+`task.delivered` when merged or `task.refused` when closed, its comments as
+receipts. The `github.pr` row names the forge it was opened at, and only the
+rows of the forge in the gate now are read: moving a project from one forge
+to another is changing the remote, changing the allocation, and syncing. A
+Review still open reappears as a pull request at the new forge; nothing
+migrates, and the old forge's pull request is left as it was.
+
+No practice, workflow or standard names a forge by kind: "open a review" is
+the verb, and the allocation answers it (a guard test reads every pack).
 
 ## Nurseries and saplings
 
@@ -272,7 +319,7 @@ they call the head's socket, so the habitat's body must be up.
 | `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
 | `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
-| `forge <organism> none\|github\|file [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
+| `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each

@@ -70,6 +70,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "exchange",
     "face",
     "forge",
+    "forgejo",
     "handoff",
     "hat",
     "infrastructure",
@@ -161,7 +162,7 @@ macro_rules! host {
 /// with the project resolved. This seed is the host's body (`run`,
 /// `dev`, `node`, `body-fence`: the `main locus` and the renewer beside
 /// it), and the library the verb program imports.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "forgejo_habitat", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 

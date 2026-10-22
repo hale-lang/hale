@@ -2376,7 +2376,10 @@ type ForgeIndex {
 
 // The record read backwards once: a Review's latest row of a kind is the
 // first one met.
-fn forge_index(p: Projection) -> ForgeIndex {
+// The forge's rows are the forge's that stands in the gate now (`kind`):
+// a review opened at a forge allocated before is that forge's mirror, and
+// a Review still pending opens again at the new one (nothing migrates).
+fn forge_index(p: Projection, kind: String) -> ForgeIndex {
     let mut x = ForgeIndex { };
     let mut i = p.rows() - 1;
     while i >= 0 {
@@ -2392,7 +2395,8 @@ fn forge_index(p: Projection) -> ForgeIndex {
             let id = p.review_id_of(e);
             if !listed(x.met, id) { x.met = x.met + id + "\n"; x.settled = x.settled + id + "\n"; }
         } else if e.kind == "github.pr" {
-            if !indexed(x.prs, e.entity) {
+            let at = std::json::find_string_field(e.body, "forge");
+            if (at == kind || (len(at) == 0 && kind == "github")) && !indexed(x.prs, e.entity) {
                 x.prs = x.prs + e.entity + "\t" + std::str::replace(e.body, "\n", " ") + "\n";
             }
         } else if e.kind == "review.routed" {
@@ -2500,7 +2504,7 @@ fn forge_sync_on(
     let mut out = "";
     // the Reviews the forge mirrors are the mutation Reviews; the rest
     // are never read past the index (an idle body runs this every tick)
-    let x = forge_index(p);
+    let x = forge_index(p, forge.kind());
     let ids = forge_open(x);
     let n = list_len(ids);
     // 1. out: a review at the forge per pending mutation Review
@@ -2513,9 +2517,17 @@ fn forge_sync_on(
                 let e = genome_push_branch(root, remote, r.candidate_commit, head, true);
                 if len(e) > 0 { return fail(e); }
             }
+            if forge.kind() == "forgejo" {
+                let e = forgejo_push(root, r.candidate_commit, head, true);
+                if len(e) > 0 { return fail(e); }
+            }
             let body = render_review(p, r.id, false);
             let opened = forge.open_review(
-                if forge.kind() == "github" { head } else { r.candidate_commit },
+                if forge.kind() == "github" || forge.kind() == "forgejo" {
+                    head
+                } else {
+                    r.candidate_commit
+                },
                 r.question,
                 body.text,
             );
@@ -2658,6 +2670,9 @@ fn forge_sync_on(
             if std::str::starts_with(r.settled, "approve") && forge.kind() == "github" {
                 let pushed = genome_push_branch(root, remote, branch, branch, false);
             }
+            if std::str::starts_with(r.settled, "approve") && forge.kind() == "forgejo" {
+                let pushed = forgejo_push(root, branch, branch, false);
+            }
             if !forge.comment(ref, "dna: review " + r.id + " settled: " + r.settled) {
                 return fail("the forge did not take the comment");
             }
@@ -2734,6 +2749,36 @@ fn github_slug(repo: String) -> String {
     return r;
 }
 
+// The `owner/name` of a repository at the Forgejo at `address`: from its
+// url there (`<address>/<owner>/<name>[.git]`); "" when it is elsewhere.
+fn forgejo_slug(address: String, repo: String) -> String {
+    if len(address) == 0 || !std::str::starts_with(repo, address + "/") { return ""; }
+    let mut r = repo[(len(address) + 1)..len(repo)];
+    if std::str::ends_with(r, ".git") { r = r[0..(len(r) - 4)]; }
+    let slash = std::str::index_of(r, "/");
+    if slash <= 0 || slash == len(r) - 1 || std::str::contains(r[(slash + 1)..len(r)], "/") {
+        return "";
+    }
+    return r;
+}
+
+// `src` pushed to `branch` of the organism's repository at its allocated
+// Forgejo, as its own user: the error text, "" when done.
+fn forgejo_push(root: String, src: String, branch: String, force: Bool) -> String {
+    let f = dna::forge_allocated(root);
+    let slash = std::str::index_of(f.repo, "/");
+    if len(f.address) == 0 || slash <= 0 { return "the forgejo allocation names no repository"; }
+    return genome_push_url(
+        root,
+        f.address + "/" + f.repo + ".git",
+        f.repo[0..slash],
+        f.key_vault,
+        src,
+        branch,
+        force,
+    );
+}
+
 // Phase 3: what became of the reviews legs opened at the attached
 // codebases' forges, one forge per codebase (the codebase's own
 // repository, not the genome's), recorded as the `task` family's rows
@@ -2741,7 +2786,8 @@ fn github_slug(repo: String) -> String {
 @bounded_by(names)
 fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
     let k = forge_kind(root);
-    if k != "github" && k != "file" { return answer(""); }
+    if k != "github" && k != "file" && k != "forgejo" { return answer(""); }
+    let allocated = dna::forge_allocated(root);
     let mut out = "";
     let mut names = dna::codebase_names(p.j);
     while len(names) > 0 {
@@ -2760,6 +2806,17 @@ fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
                 token_slot: forge_token_slot(root),
             };
             rows = dna::codebase_intake(p.j, gh_forge, receipts, c.name);
+        } else if k == "forgejo" {
+            // a codebase whose repository is on the allocated Forgejo
+            let slug = forgejo_slug(allocated.address, c.repo);
+            if len(slug) == 0 { continue; }
+            let fj_forge = dna::ForgejoForge {
+                address: allocated.address,
+                repo: slug,
+                base: c.branch,
+                token_slot: allocated.key_vault,
+            };
+            rows = dna::codebase_intake(p.j, fj_forge, receipts, c.name);
         } else {
             let file_forge = FileForge { dir: root + "/.hale/dna/forge" };
             rows = dna::codebase_intake(p.j, file_forge, receipts, c.name);
@@ -2791,6 +2848,38 @@ fn forge_sync_genome(p: Projection, root: String, seed: String, memory: dna::Mem
         };
         return forge_sync_on(p, root, seed, gh_forge, memory);
     }
+    if k == "forgejo" {
+        let f = dna::forge_allocated(root);
+        let branch = genome_branch(root);
+        // the habitat keeps the organism's repository there: its branch as
+        // it stands goes out first, so a review has its base (a branch the
+        // forge moved past, by a merge there, is left as the forge has it)
+        let mut based = "";
+        if len(genome_commit(root, "HEAD")) > 0 {
+            let e = forgejo_push(
+                root,
+                "HEAD",
+                if len(branch) == 0 { "main" } else { branch },
+                false,
+            );
+            if len(e) > 0
+                && !std::str::contains(e, "non-fast-forward")
+                && !std::str::contains(e, "fetch first")
+            {
+                based = "note: the organism's branch did not reach its repository at the forge: "
+                    + e + "\n";
+            }
+        }
+        let fj_forge = dna::ForgejoForge {
+            address: f.address,
+            repo: f.repo,
+            base: (if len(branch) == 0 { "main" } else { branch }),
+            token_slot: f.key_vault,
+        };
+        let synced = forge_sync_on(p, root, seed, fj_forge, memory);
+        if !synced.ok || len(based) == 0 { return synced; }
+        return answer(based + synced.text);
+    }
     if k == "file" {
         let forge_dir = root + "/.hale/dna/forge";
         let file_forge = FileForge { dir: forge_dir };
@@ -2813,7 +2902,7 @@ fn forge_verb(root: String, seed: String, sub: String, memory: dna::Memory) -> A
     if sub != "sync" { return fail("usage: hale dna forge sync"); }
     if forge_kind(root) == "none" {
         return answer(
-            "forge: no forge allocated (`hale habitat forge <organism> github --repo <owner/name>` allocates one)\n",
+            "forge: no forge allocated (`hale habitat forge <organism> forgejo` or `hale habitat forge <organism> github --repo <owner/name>` allocates one)\n",
         );
     }
     let s0 = sync_record(root, memory);

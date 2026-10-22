@@ -1367,7 +1367,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
     eprintln!("       hale dna forge sync          mirror pending Reviews to the allocated forge and read its reviews back as verdicts");
-    eprintln!("                                    (`hale habitat forge <organism> github --repo owner/repo`; dna.github.board logins,…; needs `gh`)");
+    eprintln!("                                    (the habitat's Forgejo by default; `hale habitat forge <organism> github --repo owner/repo` for GitHub, via `gh`; dna.github.board logins,…)");
     eprintln!("       hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state");
     eprintln!("       hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)");
     eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");

@@ -418,10 +418,11 @@ fn habitat_sapling_ratify(root: String, name: String, by: String) -> NurseryRepl
 // ---- the forge, allocated by the Board ---------------------------------------
 //
 // `Commands::allocate_forge` allocates an organism's forge (`habitat` for the
-// habitat's own): `none`, `github` with its repository and the vault slot
-// of its token (never the token), or `file`. The act is `hale habitat forge
-// <organism> <provider> … --no-head`, run by the head with the toolchain
-// that launched it.
+// habitat's own): `forgejo` (a user and a repository at the habitat's
+// Forgejo, its token a vault slot), `github` with its repository and the
+// vault slot of its token (never the token), `file` or `none`. The act is
+// `hale habitat forge <organism> <provider> … --no-head`, run by the head
+// with the toolchain that launched it.
 
 type ForgeAllocate {
     organism: String = "";

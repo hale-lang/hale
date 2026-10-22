@@ -351,8 +351,8 @@ locus FileForge {
 }
 
 // The forge the organism is allocated (`hale habitat forge`, the head's
-// `Commands::allocate_forge`): GitHub, the file forge (or HALE_DNA_FORGE,
-// the fixtures' override), or none. `profile` says which.
+// `Commands::allocate_forge`): the habitat's Forgejo, GitHub, the file forge
+// (or HALE_DNA_FORGE, the fixtures' override), or none. `profile` says which.
 fn forge_kind(root: String) -> String {
     let named = std::env::var("HALE_DNA_FORGE");
     if len(named) > 0 { return named; }
@@ -362,6 +362,10 @@ fn forge_kind(root: String) -> String {
 fn forge_name(root: String) -> String {
     let k = forge_kind(root);
     if k == "github" { return "github " + dna::forge_allocated(root).repo; }
+    if k == "forgejo" {
+        return "forgejo " + dna::forge_allocated(root).repo + " at "
+            + dna::forge_allocated(root).address;
+    }
     if k == "file" { return "file forge at .hale/dna/forge"; }
     return "none (a bare remote: no reviews are opened, no verdicts read from it)";
 }

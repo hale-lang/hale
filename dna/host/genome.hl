@@ -110,6 +110,42 @@ fn genome_push_branch(
     return if len(e) == 0 { "push failed" } else { e };
 }
 
+// Push `src` to `branch` of the repository at `url` (a Forgejo's), as the
+// user `user` whose token the vault slot `slot` holds: the token reaches
+// git through a credential helper reading a file only this user can read,
+// in a fresh private directory, never an argv or this process's
+// environment, and the directory goes after the push. The error text, ""
+// when done.
+fn genome_push_url(
+    root: String,
+    url: String,
+    user: String,
+    slot: String,
+    src: String,
+    branch: String,
+    force: Bool
+) -> String {
+    let token = std::secret::Credential { vault: slot };
+    if !token.ready() { return "no token in the vault slot " + slot; }
+    let made = dna::run_tool("mktemp\n-d\n-t\nhale-forge-XXXXXX");
+    let dir = dna::trim_nl(made.stdout);
+    if made.code != 0 || len(dir) == 0 { return "no private directory for the forge's token"; }
+    if !token.write_private(dir + "/token") {
+        dna::run_tool("rm\n-rf\n" + dir);
+        return "the forge's token could not be written for git";
+    }
+    let r = genome(
+        root,
+        "-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username=" + user
+            + "; echo \"password=$(cat '" + dir + "/token')\"; }; f\npush\n-q\n"
+            + (if force { "-f\n" } else { "" }) + url + "\n" + src + ":refs/heads/" + branch,
+    );
+    dna::run_tool("rm\n-rf\n" + dir);
+    if r.code == 0 { return ""; }
+    let e = dna::trim_nl(r.stderr);
+    return if len(e) == 0 { "push failed" } else { e };
+}
+
 // Check the genome out at a revision, detached; the error text, "" when done.
 fn genome_checkout(root: String, rev: String) -> String {
     let r = genome(root, "checkout\n-q\n--detach\n" + rev);

@@ -21,7 +21,7 @@ hale dna review <id> approve --comment "verified semantic diff and test receipts
 | **Standard Face** | Browser UI shell serving `/index`, `/app/`, and the Projects workspace in front of the head | `dna/face` |
 | **Read-Only UI** (`hale dna ui`) | Standalone read-only HTTP server rendering offline CLI projections on port `8790` | `dna/ui` |
 | **Board & Reviews** | Governance queue, 3-view Review rendering, signer routing, and verdict settlement | `hale dna board`, `hale dna review`, `hale dna route`, `dna/core/review.hl` |
-| **Forge Mirror** | Reviews mirrored as pull requests at the organism's allocated forge, and their verdicts read back | `hale dna forge sync`, `dna/host/forge_github.hl` |
+| **Forge Mirror** | Reviews mirrored as pull requests at the organism's allocated forge, and their verdicts read back | `hale dna forge sync`, `dna/core/forgejo.hl`, `dna/host/forge_github.hl` |
 
 ---
 
@@ -274,20 +274,34 @@ When a Review opens, it records this routing calculation as a `review.routed` ro
 
 ## The forge mirror (`hale dna forge sync`)
 
-You can mirror DNA change Reviews to GitHub Pull Requests while keeping the DNA record as the source of truth:
+The forge is a gate, not a store. Code goes out through it as branches and verdicts come back through it; the organism reads nothing from it that it did not already decide. A Review lives in the record, its candidate is a branch in git, and the pull request is a mirror of it. The record wins.
+
+Which forge stands in the gate is an allocation, a role the habitat allocates as it allocates memory. On your machine it is the habitat's own Forgejo: `hale habitat up` brings it up with memory and the nerves, and a graft gives the organism a Forgejo user and a repository there, its token in the vault (`forgejo-<id>`). Nothing to set up:
 
 ```sh
+hale habitat graft chat
+hale dna forge sync          # the branch goes out; pending Reviews become pull requests
+```
+
+GitHub is the allocation when the Board names it:
+
+```sh
+git remote add origin git@github.com:acme/chat.git
 hale habitat forge chat github --repo acme/chat --key-vault forge-token
 git config dna.github.board alice,bob     # whose GitHub reviews carry the Board's authority
 hale dna secret set FORGE_TOKEN
 hale dna forge sync
 ```
 
-The forge is a role the habitat allocates, as it allocates memory: `none` until the Board allocates one (`hale habitat forge`, the head's `Commands::allocate_forge`), its token a vault slot the allocation names, never the token; with none allocated, `hale dna forge sync` says `forge: no forge allocated`. Running `hale dna forge sync` (or letting the host run it on each tick under `hale dna dev` / `hale dna run`) against the allocated forge:
-1. Pushes each pending change Review's candidate commit to branch `dna/<id>`, opens a GitHub PR containing the three Review views as its description, and records `github.pr` in the record.
-2. Imports GitHub PR reviews back into the record as `review.verdict` rows under the reviewer's GitHub login (granting `board` authority if listed in `dna.github.board`, or `reviewer` otherwise).
-3. Records GitHub Actions / check runs on the candidate commit as `gate.observed` rows.
-4. Once a change is applied, posts a settlement comment on the PR (`github.commented`) and pushes the updated genome branch on approval.
+Moving a project from the local forge to GitHub is exactly that: change the remote, change the allocation, sync. A Review still open reappears as a pull request on GitHub; nothing migrates, and the Forgejo pull request is left as it was. `none` (a bare remote, Reviews decided in the organism's own face or CLI) is there when there is no forge at all, and `hale dna forge sync` then says `forge: no forge allocated`.
+
+Against whichever forge is allocated, `hale dna forge sync` (or the host, on each tick under `hale dna dev` / `hale dna run`):
+1. Pushes each pending change Review's candidate commit to branch `dna/<id>`, opens a pull request with the three Review views as its description, and records `github.pr` in the record.
+2. Reads every review on it back as a `review.verdict` in the reviewer's login (`board` when `dna.github.board` lists the login, `reviewer` otherwise, each once).
+3. Records the gate runs it finds at the candidate as `gate.observed` rows.
+4. Once a change is applied, comments the settlement (`github.commented`) and pushes the genome on approval.
+
+A leg's review at an attached codebase comes back as `task.delivered` when merged and `task.refused` when closed, the comments on it as receipts. Each forge acts as its allocation's token alone, the vault slot it names. A practice never names a forge: "open a review" is the verb, and the allocation answers it.
 
 > [!NOTE]
 > `gh` executes strictly using the `forge-token` slot from the vault (`hale dna secret set FORGE_TOKEN`). If the vault slot is empty, `forge sync` runs nothing and never falls back to a developer's personal `gh auth` session.

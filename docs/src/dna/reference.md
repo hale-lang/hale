@@ -27,7 +27,7 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat place <key>/<role> <host>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
-       hale habitat forge <organism> none|github|file [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
@@ -256,7 +256,7 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
 hale dna route [--json] (<path>… | --diff <range>)
                              who must sign a change set, and the gates it is judged against
 hale dna forge sync          mirror pending Reviews to the allocated forge and read its reviews back as verdicts
-                             (`hale habitat forge <organism> github --repo owner/repo`; dna.github.board logins,…; needs `gh`)
+                             (the habitat's Forgejo by default; `hale habitat forge <organism> github --repo owner/repo` for GitHub, via `gh`; dna.github.board logins,…)
 hale dna report [project]    file a report from the record since the last one (report.filed)
 ```
 

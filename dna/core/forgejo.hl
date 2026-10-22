@@ -1,0 +1,368 @@
+// dna/core/forgejo.hl — the local profile's forge (phase 4 ruling): a
+// Forgejo of the habitat's, behind the core's `Forge` (forge.hl).
+//
+// The forge is a gate, not a store: code goes out through it as branches,
+// verdicts come back through it, and the organism reads nothing from it
+// that it did not already decide. A Review lives in the record, its
+// candidate is a branch in git, and the pull request is a mirror. Which
+// forge stands in the gate is an allocation; swapping it is swapping a
+// remote.
+//
+// The habitat runs one Forgejo, a service of its compose project brought up
+// at `hale habitat up` as memory and the nerves are. Its admin's password is
+// drawn into the vault (FORGEJO_ADMIN_VAULT), and each grafted organism is a
+// Forgejo user of its own whose token is a vault slot of its own
+// (`forgejo_vault(key)`); rows and replies name the slot, never the value.
+// `ForgejoForge` speaks Forgejo's API, which maps onto GitHub's nearly one
+// to one; where it differs, this file absorbs it and the interface stays.
+
+// The image, pinned by digest.
+const FORGEJO_IMAGE: String = "codeberg.org/forgejo/forgejo:14@sha256:a39d4e644a7b0169a03a9d990a973f76f99425f98b3722174f4ae02a74c74105";
+// The habitat's Forgejo administrator, and the vault slot of its password.
+const FORGEJO_ADMIN: String = "hale-admin";
+const FORGEJO_ADMIN_VAULT: String = "forgejo-admin";
+
+// The vault slot of the token of the Forgejo user the organism keyed `key` is.
+fn forgejo_vault(key: String) -> String { return "forgejo-" + key; }
+
+// Where the habitat's Forgejo keeps its compose file, its port and the
+// file its admin's password is mounted from.
+fn forgejo_dir() -> String { return local_habitat_dir() + "/forge"; }
+
+// The loopback port the habitat's Forgejo is published on, chosen once.
+fn forgejo_port() -> Int {
+    let kept = std::str::trim(std::io::fs::read_file(forgejo_dir() + "/port") or "");
+    let n = std::str::parse_int(kept) or 0;
+    if n > 0 { return n; }
+    let port = allocation_port("forge", 16000);
+    std::io::fs::write_file(forgejo_dir() + "/port", to_string(port) + "\n") or discard;
+    return port;
+}
+
+// The habitat's Forgejo, as its API and its repositories are reached.
+fn forgejo_address() -> String { return "http://127.0.0.1:" + to_string(forgejo_port()); }
+
+fn forgejo_compose_text(port: Int) -> String {
+    return "# The local habitat's forge (phase 4): one Forgejo, a service of the habitat's\n"
+        + "# compose project. Written by the habitat; never in a checkout.\n"
+        + "services:\n"
+        + "  forge:\n"
+        + "    image: " + FORGEJO_IMAGE + "\n"
+        + "    network_mode: bridge\n"
+        + "    environment:\n"
+        + "      FORGEJO__security__INSTALL_LOCK: \"true\"\n"
+        + "      FORGEJO__database__DB_TYPE: sqlite3\n"
+        + "      FORGEJO__server__ROOT_URL: http://127.0.0.1:" + to_string(port) + "/\n"
+        + "      FORGEJO__server__HTTP_PORT: \"3000\"\n"
+        + "      FORGEJO__server__DISABLE_SSH: \"true\"\n"
+        + "      FORGEJO__service__DISABLE_REGISTRATION: \"true\"\n"
+        + "      FORGEJO__repository__DEFAULT_BRANCH: main\n"
+        + "      FORGEJO__log__LEVEL: Warn\n"
+        + "    ports: [\"127.0.0.1:" + to_string(port) + ":3000\"]\n"
+        + "    volumes:\n"
+        + "      - ./admin.secret:/run/secrets/forgejo-admin:ro\n"
+        + "      - forge:/data\n"
+        + "volumes:\n"
+        + "  forge: {}\n";
+}
+
+// `docker compose` on the habitat's Forgejo, newline-separated, its files
+// written the first time: the arguments go after it. "" when its directory
+// cannot be made.
+fn forgejo_compose() -> String {
+    let dir = forgejo_dir();
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return ""; }
+    let compose = dir + "/compose.yaml";
+    if !std::io::fs::file_exists(compose) {
+        std::io::fs::write_file(compose, forgejo_compose_text(forgejo_port())) or discard;
+    }
+    return "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + local_habitat_project()
+        + "\n--project-directory\n" + dir + "\n-f\n" + compose;
+}
+
+// A Forgejo user's name for the organism named `name`: lowercase letters,
+// digits and dashes, never empty.
+fn forgejo_user_name(name: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(name) && len(out) < 39 {
+        let c = std::str::lower(name[i..(i + 1)]);
+        let ok = (c >= "a" && c <= "z") || (c >= "0" && c <= "9");
+        out = out + (if ok { c } else { "-" });
+        i = i + 1;
+    }
+    return if len(out) > 0 { out } else { "organism" };
+}
+
+// What Forgejo answered: its status and body, or why there was none.
+type ForgejoReply {
+    ok: Bool = false;
+    status: Int = 0;
+    body: String = "";
+    why: String = "";
+}
+
+// Forgejo's API, as the vault slot `token_slot` holds the token of: a call
+// sends the token in the one statement that writes the request.
+locus ForgejoApi {
+    params { address: String = ""; token_slot: String = ""; }
+    @effects(is: { secret_use })
+    fn call(method: String, path: String, body: String) -> ForgejoReply {
+        let u = std::http::parse_url(self.address + "/api/v1" + path) or {
+            return ForgejoReply { why: "not a forge address: " + self.address };
+        };
+        let r = std::http::request(std::http::ClientRequest {
+            method: method,
+            url: u,
+            headers: "Accept: application/json\r\nContent-Type: application/json\r\nAuthorization: token "
+                + std::secret::Credential { vault: self.token_slot }.reveal_text(),
+            body: std::bytes::from_string(body)
+        }) or {
+            return ForgejoReply { why: "the forge at " + self.address + " did not answer" };
+        };
+        return ForgejoReply {
+            ok: r.status >= 200 && r.status < 300,
+            status: r.status,
+            body: std::str::from_bytes(r.body),
+            why: if r.status >= 200 && r.status < 300 {
+                ""
+            } else {
+                "the forge answered " + to_string(r.status) + ": "
+                    + std::json::find_string_field(std::str::from_bytes(r.body), "message")
+            },
+        };
+    }
+}
+
+// The JSON of a pull request to open.
+fn forgejo_pull_json(head: String, base: String, title: String, body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("head", head);
+    b.string_field("base", base);
+    b.string_field("title", title);
+    b.string_field("body", body);
+    b.end_object();
+    return b.result();
+}
+
+// The JSON of a comment.
+fn forgejo_body_json(text: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("body", text);
+    b.end_object();
+    return b.result();
+}
+
+// The pull request number a review's reference names (its url, or a bare
+// number).
+fn forgejo_number(review: String) -> String {
+    let mut r = review;
+    let hash = std::str::index_of(r, "#");
+    if hash >= 0 { r = r[0..hash]; }
+    let mut i = len(r);
+    while i > 0 && r[(i - 1)..i] >= "0" && r[(i - 1)..i] <= "9" { i = i - 1; }
+    return r[i..len(r)];
+}
+
+// A comment line as the interface lists it: `who\tkey\ttext`.
+fn forgejo_said(who: String, key: String, text: String) -> String {
+    return std::str::replace(who, "\t", " ") + "\t" + key + "\t"
+        + std::str::replace(
+            std::str::replace(std::str::replace(text, "\r", ""), "\t", " "),
+            "\n",
+            "\\n",
+        )
+        + "\n";
+}
+
+// Forgejo: a pull request per review, its reviews as verdicts, its commit
+// statuses as check runs, a comment at settlement. `address` is the
+// Forgejo's, `repo` `owner/name`, `base` the branch a candidate is
+// proposed against, `token_slot` the vault slot of the token it acts with.
+locus ForgejoForge {
+    params {
+        address: String = "";
+        repo: String = "";
+        base: String = "main";
+        token_slot: String = "";
+    }
+    fn kind() -> String { return "forgejo"; }
+    fn present() -> Bool { return len(self.address) > 0 && len(self.repo) > 0; }
+    fn name() -> String { return "forgejo " + self.repo + " at " + self.address; }
+    @effects(is: { secret_use })
+    fn call(method: String, path: String, body: String) -> ForgejoReply {
+        let u = std::http::parse_url(self.address + "/api/v1" + path) or {
+            return ForgejoReply { why: "not a forge address: " + self.address };
+        };
+        let r = std::http::request(std::http::ClientRequest {
+            method: method,
+            url: u,
+            headers: "Accept: application/json\r\nContent-Type: application/json\r\nAuthorization: token "
+                + std::secret::Credential { vault: self.token_slot }.reveal_text(),
+            body: std::bytes::from_string(body)
+        }) or {
+            return ForgejoReply { why: "the forge at " + self.address + " did not answer" };
+        };
+        return ForgejoReply {
+            ok: r.status >= 200 && r.status < 300,
+            status: r.status,
+            body: std::str::from_bytes(r.body),
+            why: if r.status >= 200 && r.status < 300 {
+                ""
+            } else {
+                "the forge answered " + to_string(r.status) + ": "
+                    + std::json::find_string_field(std::str::from_bytes(r.body), "message")
+            },
+        };
+    }
+    fn pulls(n: String) -> String { return "/repos/" + self.repo + "/pulls/" + n; }
+    // `candidate` is the branch the candidate was pushed to.
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef {
+        // Forgejo indexes a pushed branch after it answers the push: a
+        // branch it does not know yet is asked for again, a while
+        let mut r = self.call(
+            "POST",
+            "/repos/" + self.repo + "/pulls",
+            forgejo_pull_json(candidate, self.base, title, body),
+        );
+        let mut tries = 0;
+        while !r.ok && (r.status == 404 || r.status == 422) && tries < 40 {
+            std::time::sleep(250ms);
+            r = self.call(
+                "POST",
+                "/repos/" + self.repo + "/pulls",
+                forgejo_pull_json(candidate, self.base, title, body),
+            );
+            tries = tries + 1;
+        }
+        if !r.ok { return ReviewRef { why: "forgejo pull request: " + r.why }; }
+        return ReviewRef { present: true, ref: std::json::find_string_field(r.body, "html_url") };
+    }
+    // Every approving or change-requesting review, `who\toutcome\twhen\tkey`,
+    // `when` the commit reviewed and `key` naming the review once.
+    @bounded_by(doc)
+    fn verdicts(review: String) -> String {
+        let r = self.call("GET", self.pulls(forgejo_number(review)) + "/reviews", "");
+        if !r.ok { return "error\t" + r.why + "\t\t\n"; }
+        let doc = r.body;
+        let mut out = "";
+        let mut it = std::json::array_first(doc);
+        while !it.done {
+            let state = std::json::find_string_field(it.element, "state");
+            let outcome = if state == "APPROVED" {
+                "approve"
+            } else {
+                if state == "REQUEST_CHANGES" { "revise" } else { "" }
+            };
+            if len(outcome) > 0 && !std::json::find_bool_field(it.element, "dismissed") {
+                let login = std::json::find_string_field(
+                    std::json::find_field_raw(it.element, "user"),
+                    "login",
+                );
+                let oid = std::json::find_string_field(it.element, "commit_id");
+                out = out + login + "\t" + outcome + "\t" + oid + "\t" + login + "@" + oid + "@"
+                    + (if outcome == "approve" { "APPROVED" } else { "CHANGES_REQUESTED" }) + "\n";
+            }
+            it = std::json::array_next(it);
+        }
+        return out;
+    }
+    // The commit statuses Forgejo holds for `sha`, each as a check run:
+    // `name\tconclusion\tsha\turl` (conclusion "" while it runs).
+    @bounded_by(doc)
+    fn checks(review: String, sha: String) -> String {
+        let r = self.call("GET", "/repos/" + self.repo + "/commits/" + sha + "/statuses", "");
+        if !r.ok { return "error\t" + r.why + "\t\t\n"; }
+        let doc = r.body;
+        let mut out = "";
+        let mut it = std::json::array_first(doc);
+        while !it.done {
+            let status = std::json::find_string_field(it.element, "status");
+            let conclusion = if status == "success" {
+                "success"
+            } else {
+                if status == "failure" || status == "error" { "failure" } else { "" }
+            };
+            out = out + std::json::find_string_field(it.element, "context") + "\t" + conclusion
+                + "\t" + sha + "\t" + std::json::find_string_field(it.element, "target_url") + "\n";
+            it = std::json::array_next(it);
+        }
+        return out;
+    }
+    fn comment(review: String, text: String) -> Bool {
+        return self.call(
+            "POST",
+            "/repos/" + self.repo + "/issues/" + forgejo_number(review) + "/comments",
+            forgejo_body_json(text),
+        ).ok;
+    }
+    fn close_review(review: String, why: String) -> Bool {
+        let said = self.comment(review, why);
+        return self.call(
+            "PATCH",
+            self.pulls(forgejo_number(review)),
+            "{\"state\": \"closed\"}",
+        ).ok;
+    }
+    fn review_state(review: String) -> String {
+        let r = self.call("GET", self.pulls(forgejo_number(review)), "");
+        if !r.ok { return "unknown"; }
+        if std::json::find_bool_field(r.body, "merged") {
+            return "merged\t" + std::json::find_string_field(r.body, "merge_commit_sha");
+        }
+        let state = std::json::find_string_field(r.body, "state");
+        if state == "closed" { return "closed"; }
+        return if state == "open" { "open" } else { "unknown" };
+    }
+    fn review_body(review: String) -> String {
+        let r = self.call("GET", self.pulls(forgejo_number(review)), "");
+        return if r.ok { std::json::find_string_field(r.body, "body") } else { "" };
+    }
+    // The pull request's comments and its reviews' words, one line each.
+    @bounded_by(doc)
+    fn review_comments(review: String) -> String {
+        let n = forgejo_number(review);
+        let c = self.call("GET", "/repos/" + self.repo + "/issues/" + n + "/comments", "");
+        if !c.ok { return ""; }
+        let doc = c.body;
+        let mut out = "";
+        let mut it = std::json::array_first(doc);
+        while !it.done {
+            let text = std::json::find_string_field(it.element, "body");
+            if len(text) > 0 {
+                out = out
+                    + forgejo_said(
+                        std::json::find_string_field(
+                            std::json::find_field_raw(it.element, "user"),
+                            "login",
+                        ),
+                        "comment:" + to_string(std::json::find_int_field(it.element, "id")),
+                        text,
+                    );
+            }
+            it = std::json::array_next(it);
+        }
+        let rv = self.call("GET", self.pulls(n) + "/reviews", "");
+        if !rv.ok { return out; }
+        let rdoc = rv.body;
+        let mut ri = std::json::array_first(rdoc);
+        while !ri.done {
+            let text = std::json::find_string_field(ri.element, "body");
+            if len(text) > 0 {
+                out = out
+                    + forgejo_said(
+                        std::json::find_string_field(
+                            std::json::find_field_raw(ri.element, "user"),
+                            "login",
+                        ),
+                        "review:" + to_string(std::json::find_int_field(ri.element, "id")),
+                        text,
+                    );
+            }
+            ri = std::json::array_next(ri);
+        }
+        return out;
+    }
+}

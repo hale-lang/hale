@@ -236,6 +236,15 @@ fn main() {
         // phase 4: the habitat's host, policy and own allocations, placed by
         // the compose provider and recorded (`hale habitat up`)
         ans = host::habitat_place_verb(root, host::word(a, 0), memory);
+    } else if verb == "habitat-forge-provision" {
+        // phase 4 ruling: a grafted organism's user, token and repository
+        // at the habitat's Forgejo (`hale habitat graft`)
+        ans = host::habitat_forge_provision_verb(
+            root,
+            host::word(a, 0),
+            host::word(a, 1),
+            host::word(a, 2),
+        );
     } else if verb == "habitat-apply" {
         // phase 4: a tenant's allocations brought back by the compose provider
         ans = host::habitat_apply_verb(host::word(a, 0));

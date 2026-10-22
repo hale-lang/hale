@@ -1834,10 +1834,12 @@ what it read), and the tool calls (a `read` row names its `path`).
 learns it through the `Forge` interface (`dna/core/forge.hl`):
 `review_state` (`open`, `merged\t<commit>`, `closed`, `unknown`),
 `review_body` and `review_comments` (`who\tkey\ttext`, newlines as `\n`),
-beside the verdict, check and comment methods. The host's `github_sync`
-asks it for every codebase review not yet decided, per codebase (GitHub's
-`gh pr view` for a `github` forge, the repository taken from the
-codebase's url; the file forge's `<n>.merged`, `<n>.said` for fixtures),
+beside the verdict, check and comment methods. The host's forge sync
+asks it for every codebase review not yet decided, per codebase (the
+allocated Forgejo's API for a codebase whose repository is there, by its
+url; GitHub's `gh pr view` for a `github` forge, the repository taken
+from the codebase's url; the file forge's `<n>.merged`, `<n>.said` for
+fixtures),
 through `codebase_intake` (`dna/core/codebase_reviews.hl`), which returns
 the rows and writes none:
 
@@ -5821,10 +5823,13 @@ The assembly names what fills each role; `hale check` sees the wiring.
 - **Board** (the `board` field, a `Membrane`) — where humans see and
   decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
-  relayed by the host); GitHub, mirrored by the host when the organism's
-  forge allocation is GitHub (`hale habitat forge <organism> github --repo
-  owner/repo`, `spec/habitat.md`): every pending mutation Review becomes
-  a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the
+  relayed by the host); the organism's forge, mirrored by the host:
+  the forge is a gate, not a store, and which forge stands in it is the
+  organism's forge allocation (`spec/habitat.md`, Forge and identity) —
+  the habitat's own Forgejo by default in the local profile, GitHub when a
+  Board names it (`hale habitat forge <organism> github --repo
+  owner/repo`). Against whichever it is, every pending mutation Review becomes
+  a pull request (`github.pr`, naming the forge; the candidate pushed to `dna/<id>`, the
   three views as the body), every GitHub review on it becomes a
   `review.verdict` row in the reviewer's login (authority `board` when
   `dna.github.board` lists the login, else `reviewer`; each review
@@ -5840,16 +5845,23 @@ The assembly names what fills each role; `hale check` sees the wiring.
   forge's own key so each is admitted once), `comment`, `close_review`,
   `present`, `name`. `GitHubForge` (`gh`) is one implementation; the
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
-  `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
-  behaviour, and `hale dna profile`'s `github:` line names which the
+  `<n>.verdicts`) is the fixtures'; `ForgejoForge` (Forgejo's API, a
+  token the vault slot of the organism's own Forgejo user holds) is the
+  local profile's; `NoForge` is a bare remote's honest
+  behaviour, the no-infrastructure fallback, and `hale dna profile`'s `github:` line names which the
   host found: the organism's forge allocation (or `HALE_DNA_FORGE`, the
   fixtures' override). `hale dna forge sync` syncs with the allocated
   forge; with `none` allocated it answers `forge: no forge allocated`.
   (`hale dna github sync` is gone.) The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
-  not change with the forge. Nothing in the core or the host spells
-  `gh` outside that one implementation.
+  not change with the forge. Only the `github.pr` rows of the forge in
+  the gate now are read: after the allocation (and the remote) moves to
+  another forge, a Review still open is opened again there and nothing
+  migrates. Nothing in the core or the host spells
+  `gh` outside that one implementation, and no practice, workflow or
+  standard names a forge by kind: "open a review" is the verb, and the
+  allocation answers it.
 - **Deployment** — `Deployment`: `NoDeployment` (a host expresses:
   `hale dna dev`), `ShellDeployment { command, seed }` (the command
   owns expressing and judging: `express <candidate> <seed>` returning 0

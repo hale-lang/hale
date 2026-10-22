@@ -37,7 +37,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat place <key>/<role> <host>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
-       hale habitat forge <organism> none|github|file [--repo <owner/name>] [--key-vault <slot>] [--no-head]
+       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
@@ -140,10 +140,13 @@ nursery add <source> the Board trusts a nursery, a directory or a git
                      nursery is always one.
 forge <organism> <provider>
                      allocate the organism's forge (`habitat` for the
-                     habitat's own): none (the default), github with
-                     --repo owner/name and --key-vault, the vault slot of
-                     its token (`forge-token` by default; never the token),
-                     or file (a forge of files, the fixtures'). The head's
+                     habitat's own): forgejo (the habitat's own Forgejo,
+                     the local profile's default: a user and a repository
+                     there, its token a vault slot), github with --repo
+                     owner/name and --key-vault, the vault slot of its
+                     token (`forge-token` by default; never the token),
+                     file (a forge of files, the fixtures') or none (a bare
+                     remote; Reviews decided in the face or CLI). The head's
                      Commands::allocate_forge while the head answers; the
                      act itself with --no-head. `hale dna forge sync`
                      syncs with what is allocated. A graft takes
@@ -1857,7 +1860,7 @@ fn graft(args: &[String]) -> ExitCode {
             "--no-head" => no_head = true,
             "--forge" => {
                 let Some(v) = args.get(i + 1) else {
-                    eprintln!("hale habitat graft: `--forge` takes a provider (none, github, file)\n{}", usage_text());
+                    eprintln!("hale habitat graft: `--forge` takes a provider (forgejo, github, file, none)\n{}", usage_text());
                     return ExitCode::from(2);
                 };
                 let _ = GRAFT_FORGE.set(v.clone());
