@@ -6437,7 +6437,9 @@ connections on the loopback, `grafted` otherwise), the address of its face
 and the address of its head, its declared `purpose` (the `PURPOSE` of its
 `dna/org/purpose.hl`, taken at its graft) and its `pulse` (the worst state
 the providers of its allocations observe now, each where it was last
-applied: `down` over `degraded` over `up`, `""` when none is observed). No manifest table, record family or row kind
+applied: `down` over `degraded` over `up`, `""` when none is observed; its
+forge and identity, the habitat's services it is given, are observed with
+the allocations and are not its pulse). No manifest table, record family or row kind
 is added: the addresses are fields of the existing `habitat.grafted` row
 (`name`, `face`, `head`), taken at the graft. An organism's address is a
 block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a

@@ -197,6 +197,10 @@ fn organism_pulse(root: String, j: dna::Journal, latest: LatestRows, key: String
             continue;
         }
         if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        // its forge and identity are the habitat's services it is given (its
+        // Forgejo, its sign-in), observed with the allocations, not its pulse
+        let role = std::json::find_string_field(e.body, "role");
+        if role == "forge" || role == "identity" { continue; }
         let seen = observe_row(root, applied_at(allocation_of_row(e.entity, e.body))).state;
         if seen == "down" { return "down"; }
         if seen == "degraded" { worst = "degraded"; }
