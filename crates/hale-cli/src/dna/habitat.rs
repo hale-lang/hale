@@ -2113,11 +2113,12 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         let _ = std::fs::remove_file(&file);
         landed?;
         out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
-        // its forge and its identity, roles the habitat allocates as it
-        // allocates its memory: the forge the policy (or `--forge`) names,
-        // the identity the habitat's own sign-in at the organism's issuer
-        out.extend(sapling::allocate_roles(&child, &root)?);
     }
+    // its forge and its identity, roles the habitat allocates as it
+    // allocates its memory: the forge the policy (or `--forge`) names, the
+    // identity the habitat's own sign-in at the organism's issuer; outside
+    // the graft row's branch, so a retry finishes what a failure left
+    out.extend(sapling::allocate_roles(&child, &root)?);
     // the standard practices, the law every organism is born under, for
     // the child's Board (a process of its own: the verb execs the host),
     // proposed once

@@ -124,7 +124,7 @@ locus OperationCases {
         );
         let forge = head::own_arguments("dna.forge.configure");
         std::test::assert_eq_str(
-            head::arguments_shape("{\"github\":\"a/b\",\"board\":[\"x\",\"y\"]}", forge),
+            head::arguments_shape("{\"board\":[\"x\",\"y\"]}", forge),
             "",
             "a board is an array of strings",
         );
@@ -519,34 +519,34 @@ locus OperationCases {
             "values are single-quoted: " + implicit.script,
         );
         git(self.project, "remote\nremove\norigin");
+        // the forge is the habitat's allocation, never a setting: the
+        // operation sets the forge's Board alone and refuses a `github`
+        std::test::assert_eq_str(
+            head::arguments_shape(
+                "{\"github\":\"owner/repo\",\"board\":[]}",
+                head::own_arguments("dna.forge.configure"),
+            ),
+            "unknown argument github",
+            "the retired setting is refused",
+        );
         let forge = head::own_plan(
             self.cfg,
             ctx,
             "command-f1",
             "dna.forge.configure",
-            "{\"github\":\"owner/repo\",\"board\":[\"riley\"]}",
+            "{\"board\":[\"riley\"]}",
         );
         std::test::assert(
             forge.ok
                 && forge.kind == "inline"
-                && std::json::find_string_field(forge.outcome, "github") == "owner/repo",
+                && std::str::contains(forge.outcome, "\"board\": [\"riley\"]")
+                && !std::str::contains(forge.outcome, "github"),
             "forge configure: " + forge.outcome,
         );
         std::test::assert(
-            git(self.project, "config\ndna.github") == "owner/repo"
-                && git(self.project, "config\ndna.github.board") == "riley",
-            "the settings landed",
-        );
-        std::test::assert_eq_str(
-            head::own_plan(
-                self.cfg,
-                ctx,
-                "command-f2",
-                "dna.forge.configure",
-                "{\"github\":\"owner\",\"board\":[]}",
-            ).refused,
-            "name_invalid",
-            "github is owner/repo",
+            git(self.project, "config\ndna.github.board") == "riley"
+                && dna::run_tool("git\n-C\n" + self.project + "\nconfig\ndna.github").code != 0,
+            "the board landed, the retired setting untouched",
         );
         std::test::assert_eq_str(
             head::own_plan(
@@ -554,7 +554,7 @@ locus OperationCases {
                 ctx,
                 "command-f3",
                 "dna.forge.configure",
-                "{\"github\":\"\",\"board\":[\"not a login\"]}",
+                "{\"board\":[\"not a login\"]}",
             ).refused,
             "name_invalid",
             "a login grammar",
@@ -564,12 +564,14 @@ locus OperationCases {
             ctx,
             "command-f4",
             "dna.forge.configure",
-            "{\"github\":\"\",\"board\":[]}",
+            "{\"board\":[]}",
         );
         std::test::assert(
             cleared.ok
-                && dna::run_tool("git\n-C\n" + self.project + "\nconfig\ndna.github").code != 0,
-            "empty values unset",
+                && dna::run_tool(
+                    "git\n-C\n" + self.project + "\nconfig\ndna.github.board",
+                ).code != 0,
+            "an empty board unsets",
         );
         let forge_sync = head::own_plan(self.cfg, ctx, "command-f5", "dna.forge.sync", "{}");
         std::test::assert(
