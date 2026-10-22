@@ -1413,7 +1413,10 @@ fleet check` checks each instance's seed as it cuts its artifact.
   declares at most one fleet.
 - **placement** is a default per param: `host("<name>")`, one instance
   on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
-  (n ≥ 1) on no named host. An instance is a process, and its id is
+  (n ≥ 1) on no named host. A host is one name of letters, digits,
+  `.`, `_` and `-`, not starting with `.`, never a path (a render
+  writes each host's description into a directory of its name). An
+  instance is a process, and its id is
   `<param>-<i>`: `orders-0`, `gw-0` … `gw-(n-1)`. The habitat's
   allocation rows bind instances to hosts; the placement block is what
   they default to (`hale deploy render --placement`, below).
@@ -1517,7 +1520,8 @@ it is handed, and it never builds, applies or contacts anything:
   over those defaults. The file is a JSON array of `{"instance",
   "host"}` rows (`"provider"` and `"role"` beside them, as the
   habitat's allocation rows export them, are accepted and not read); an
-  instance the fleet does not deploy is refused, and an instance with
+  instance the fleet does not deploy, and a host that is no single name,
+  are refused, and an instance with
   no host in either is rendered for the host `local`, with a note. The
   render is **one description per host**, since the habitat applies
   each host on its own: a compose project per host (its `name:` the

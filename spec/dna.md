@@ -5944,7 +5944,8 @@ declaring `fleet locus` (`spec/verification.md`, "Fleet composition")
   to one service that breaks a claim the fleet makes over all of them
   is `mutation.deny` ("candidate breaks the fleet") with the witness
   in the receipt. A candidate whose diff names a fleet seed's source (a
-  `.hl` file declaring `fleet locus`) or the manifest (`hale.toml`)
+  `.hl` file in a directory one of whose own files declares `fleet
+  locus`, so an import-only change counts) or the manifest (`hale.toml`)
   changes the fleet's shape: it is
   re-classed `topology` (`mutation.topology`) whatever it was asked
   as, and `OrgPolicy` sends it to the Board.
