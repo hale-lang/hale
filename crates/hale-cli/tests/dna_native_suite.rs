@@ -1064,6 +1064,7 @@ fn dna_fixture_set_is_complete() {
             "faces_named_start_test.hl",
             "faces_named_test.hl",
             "first_run_test.hl",
+            "fleet_topology_test.hl",
             "forge_gates_test.hl",
             "genome_pull_test.hl",
             "grant_layering_test.hl",

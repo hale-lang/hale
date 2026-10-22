@@ -236,28 +236,46 @@ fn has_hale_source(worktree: String, rev: String, seed: String) -> Bool {
         );
 }
 
-// Does a `git diff --name-only` name the fleet's shape — a fleet seed's
-// source (a `.hl` file in `worktree` declaring `fleet locus`) or the
-// manifest (`hale.toml`)? Such a change is a `topology` mutation whatever
-// it was asked as (GH #566 F5).
+// Does a `git diff --name-only` name the fleet's shape — a source file of
+// a fleet seed (any `.hl` file in a directory one of whose own `.hl` files
+// declares `fleet locus`: its imports may sit in a sibling file, and
+// changing one switches an instance's seed) or the manifest (`hale.toml`)?
+// Such a change is a `topology` mutation whatever it was asked as (GH #566
+// F5).
 fn names_topology(worktree: String, names: String) -> Bool {
     let mut line = "";
     let mut p = 0;
-    let n = len(names + "\n");
     let all = names + "\n";
+    let n = len(all);
     while p < n {
         let ch = all[p..(p + 1)];
         if ch == "\n" {
             if line == "hale.toml" { return true; }
-            if std::str::ends_with(line, ".hl") {
-                let src = std::io::fs::read_file(worktree + "/" + line) or "";
-                if std::str::contains(src, "fleet locus") { return true; }
+            if std::str::ends_with(line, ".hl") && in_fleet_seed(worktree, parent_dir(line)) {
+                return true;
             }
             line = "";
         } else {
             line = line + ch;
         }
         p = p + 1;
+    }
+    return false;
+}
+
+// Whether the directory `dir` (relative to `worktree`) is a fleet seed:
+// one of its own `.hl` files declares `fleet locus`.
+fn in_fleet_seed(worktree: String, dir: String) -> Bool {
+    let at = if len(dir) == 0 { worktree } else { worktree + "/" + dir };
+    let n = std::io::fs::list_dir_count(at) or 0;
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(at, i) or "";
+        if std::str::ends_with(name, ".hl") && !std::str::ends_with(name, "_test.hl") {
+            let src = std::io::fs::read_file(at + "/" + name) or "";
+            if std::str::contains(src, "fleet locus") { return true; }
+        }
+        i = i + 1;
     }
     return false;
 }

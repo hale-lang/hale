@@ -21,6 +21,15 @@ use hale_syntax::ast::{
 };
 use hale_syntax::{Diag, Span};
 
+/// Whether `h` names a host: one name of letters, digits, `.`, `_` and
+/// `-`, not starting with `.` — never a path, since a render writes each
+/// host's description into a directory of that name.
+pub fn host_name_ok(h: &str) -> bool {
+    !h.is_empty()
+        && !h.starts_with('.')
+        && h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// What a seed the fleet imports declares under a name, read from that
 /// seed's own files.
 #[derive(Debug, Clone, PartialEq)]
@@ -264,10 +273,14 @@ pub fn fleet_source(
             continue;
         };
         match &e.spec {
-            FleetPlacementSpec::Hosts(hs) if hs.iter().any(|h| h.trim().is_empty()) => {
+            FleetPlacementSpec::Hosts(hs) if hs.iter().any(|h| !host_name_ok(h)) => {
+                let bad = hs.iter().find(|h| !host_name_ok(h)).cloned().unwrap_or_default();
                 diags.push(Diag::ty(
                     e.span,
-                    format!("instance `{name}`: `host(\"\")` names no host"),
+                    format!(
+                        "instance `{name}`: `host(\"{bad}\")` names no host: a host is one name of \
+                         letters, digits, `.`, `_` and `-`, never a path"
+                    ),
                 ))
             }
             FleetPlacementSpec::Hosts(hs) => {

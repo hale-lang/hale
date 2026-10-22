@@ -1,0 +1,35 @@
+// dna/tests/fleet_topology_test.hl — a change to a fleet seed's source is a
+// `topology` mutation, whichever of the seed's files it touches: a fleet
+// seed may keep its imports in a sibling of the file declaring the fleet,
+// and changing an import switches an instance to another seed.
+
+import "../core" as dna;
+
+main locus App {
+    run() {
+        let root = dna::scratch_root("fleet-topology");
+        std::io::fs::mkdir(root + "/prod") or discard;
+        std::io::fs::mkdir(root + "/a") or discard;
+        std::io::fs::write_file(root + "/prod/imports.hl", "import \"../a\" as app;\n") or discard;
+        std::io::fs::write_file(
+            root + "/prod/fleet.hl",
+            "fleet locus Prod {\n    params {\n        worker: app::App;\n    }\n}\n",
+        ) or discard;
+        std::io::fs::write_file(root + "/a/main.hl", "fn main() { }\n") or discard;
+        std::test::assert(
+            dna::names_topology(root, "prod/imports.hl\n"),
+            "an import-only change in a fleet seed changes the fleet's shape",
+        );
+        std::test::assert(
+            dna::names_topology(root, "a/main.hl\nprod/fleet.hl"),
+            "the fleet's own file, last on the list",
+        );
+        std::test::assert(dna::names_topology(root, "hale.toml\n"), "the manifest");
+        std::test::assert(
+            !dna::names_topology(root, "a/main.hl\n"),
+            "an instance's own source is not the fleet's shape",
+        );
+        dna::scratch_done(root);
+    }
+}
+fn main() { App { }; }

@@ -160,6 +160,20 @@ fn a_two_host_fleet_renders_a_project_per_host() {
     std::fs::write(d.join("ghost.json"), r#"[{"instance": "ghost", "host": "box-a"}]"#).unwrap();
     let (ok, _, err) = render(&d, &["demo", "--backend", "compose", "--placement", "ghost.json"]);
     assert!(!ok && err.contains("allocates `ghost`, which fleet `Demo` does not deploy"), "{err}");
+    // a host is one name, never a path: nothing renders outside --out
+    for bad in ["../escaped", "/abs", ".hidden", "a/b"] {
+        std::fs::write(d.join("bad.json"), format!(r#"[{{"instance": "svc-1", "host": "{bad}"}}]"#)).unwrap();
+        let (ok, _, err) = render(&d, &["demo", "--backend", "compose", "--placement", "bad.json", "--out", "intended"]);
+        assert!(!ok && err.contains("names no host"), "{bad}: {err}");
+    }
+    assert!(!d.join("escaped").exists() && !d.join("intended").exists(), "nothing was written");
+    // nor in the source's placement
+    let src = std::fs::read_to_string(d.join("demo/fleet.hl")).unwrap();
+    std::fs::create_dir_all(d.join("pathy")).unwrap();
+    std::fs::write(d.join("pathy/fleet.hl"), src.replace("svc: replicas(2);", "svc: host(\"../escaped\");")).unwrap();
+    let (ok, _, err) = render(&d, &["pathy", "--backend", "compose", "--out", "intended"]);
+    assert!(!ok && err.contains("names no host"), "{err}");
+    assert!(!d.join("escaped").exists(), "nothing was written");
     // a placement is a fleet's
     let (ok, _, err) = render(&d, &["svc", "--backend", "compose", "--placement", "one.json"]);
     assert!(!ok && err.contains("no fleet seed"), "{err}");

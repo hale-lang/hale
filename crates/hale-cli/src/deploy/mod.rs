@@ -310,8 +310,15 @@ fn read_placement(p: &Path) -> Result<BTreeMap<String, String>, String> {
     let rows: Vec<Allocation> = serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", p.display()))?;
     let mut out = BTreeMap::new();
     for r in rows {
-        if r.host.trim().is_empty() {
-            return Err(format!("{}: instance `{}` is allocated to no host", p.display(), r.instance));
+        if !hale_types::fleet::host_name_ok(&r.host) {
+            return Err(format!(
+                "{}: instance `{}` is allocated to `{}`, which names no host: a host is one name of \
+                 letters, digits, `.`, `_` and `-`, never a path (each host renders into a directory \
+                 of its name)",
+                p.display(),
+                r.instance,
+                r.host
+            ));
         }
         if out.insert(r.instance.clone(), r.host).is_some() {
             return Err(format!("{}: instance `{}` is allocated twice", p.display(), r.instance));
@@ -480,6 +487,10 @@ fn gather(
     let mut hosts: Vec<String> = placed.iter().map(|(h, _)| h.clone()).collect();
     hosts.sort();
     hosts.dedup();
+    // each host renders into a directory of its name: never a path
+    if let Some(bad) = hosts.iter().find(|h| !hale_types::fleet::host_name_ok(h)) {
+        return Err(format!("`{bad}` names no host: a host is one name, never a path"));
+    }
     let mut models = Vec::new();
     for h in hosts {
         // the programs with an instance on this host, re-indexed
