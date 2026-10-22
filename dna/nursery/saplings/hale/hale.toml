@@ -1,0 +1,26 @@
+# The hale organism: the organism that works on the Hale toolchain and the
+# repositories beside it. This tree is its genome, a small repository of its
+# own; the code it works on is its codebases, other repositories, attached
+# at its graft from the list below (`codebase.attached` rows, nothing
+# cloned until a leg works one).
+
+[dna]
+needs = ["memory", "nerves"]
+
+[[dna.codebase]]
+name = "hale"
+repo = "https://github.com/hale-lang/hale"
+branch = "main"
+build = "cargo build --release"
+test = "cargo nextest run --release --workspace"
+toolchain = "none"
+
+[[dna.codebase]]
+name = "voice"
+repo = "https://github.com/hale-lang/voice"
+branch = "main"
+# voice's seeds are api, brain and node (and store's fixtures), each built
+# and tested as its CI does (.github/workflows/ci.yml)
+build = "hale build api && hale build brain && hale build node"
+test = "hale test api && hale test store && hale test brain && hale test node"
+toolchain = "hale"

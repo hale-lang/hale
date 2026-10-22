@@ -1,0 +1,152 @@
+// dna/tests/habitat_hale_organism_test.hl — the hale organism, grafted as a
+// sapling (D8).
+//
+// The hale organism is the organism that works on the Hale toolchain: its
+// genome is a small repository of its own (the tree checked in at
+// dna/nursery/saplings/hale), and the code it works on is its codebases,
+// other repositories its manifest lists. The toolchain's nursery offers it
+// as the `hale` sapling, pinned by the tree's digest; until its repository
+// exists the nursery names a placeholder url, which this fixture maps onto a
+// local repository built from that tree. Grafted, the organism is the
+// habitat's child, its manifest's codebases are `codebase.attached` rows of
+// its record (nothing cloned), each once however many times the graft goes
+// on, and its positions are proposed to its Board. A habitat born with no
+// `--name` is named `local`. The habitat is this test file's own; without
+// docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+// The placeholder url the toolchain's nursery names for the hale organism.
+const PLACEHOLDER: String = "https://github.com/hale-lang/hale-organism";
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_hale_organism_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_hale_organism_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let source = (
+        if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." }
+    )
+        + "/dna/nursery/saplings/hale";
+    std::test::assert(
+        std::io::fs::file_exists(source + "/hale.toml"),
+        "the hale organism's tree is at " + source + " (HALE_DNA_SOURCE is the checkout)",
+    );
+    let scratch = dna::scratch_root("hale-organism");
+    dna::reap_on_exit(scratch);
+
+    // ---- a habitat born with no name is `local`, and the toolchain's
+    // nursery pins the hale organism
+    let born = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body");
+    std::test::assert_eq_int(born.code, 0, "the habitat is born: " + born.stdout + born.stderr);
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(
+        std::str::contains(status, "\nname    local\n"),
+        "a habitat named at no birth is `local`: " + status,
+    );
+    std::test::assert(
+        std::str::contains(born.stdout, "sapling hale at main (sha256:")
+            && std::str::contains(born.stdout, "from toolchain"),
+        "the toolchain's nursery offers the hale organism, pinned: " + born.stdout,
+    );
+
+    // ---- its genome, a repository built from the checked-in tree, where
+    // the placeholder url leads
+    let repo = scratch + "/hale-organism";
+    let made = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$2\" && cp -R \"$1\"/. \"$2\"/ && cd \"$2\" && git init -q -b main && git add -A && git -c user.name=board -c user.email=board@hale-dna commit -q -m 'the hale organism'\nsh\n"
+            + source + "\n" + repo,
+    );
+    std::test::assert_eq_int(made.code, 0, "its repository is built: " + made.stderr);
+    let graft = "env\nGIT_CONFIG_COUNT=1\nGIT_CONFIG_KEY_0=url." + repo
+        + ".insteadOf\nGIT_CONFIG_VALUE_0="
+        + PLACEHOLDER + "\n" + toolchain() + "\nhabitat\ngraft\nhale\n--no-library";
+    let g = in_dir(scratch, graft);
+    std::test::assert(
+        g.code == 0
+            && std::str::contains(g.stdout, "fetched hale at main")
+            && std::str::contains(g.stdout, "its digest sha256:"),
+        "the hale organism is grafted from its pinned tree: " + g.stdout + g.stderr,
+    );
+    std::test::assert(
+        std::str::contains(
+            g.stdout,
+            "attached the codebase `hale` (https://github.com/hale-lang/hale, main)",
+        )
+            && std::str::contains(
+                g.stdout,
+                "attached the codebase `voice` (https://github.com/hale-lang/voice, main)",
+            ),
+        "its manifest's codebases are attached at the graft: " + g.stdout,
+    );
+    std::test::assert(
+        std::str::contains(g.stdout, "`hale-organism` proposed to the child's Board"),
+        "its positions are proposed to its Board: " + g.stdout,
+    );
+
+    // ---- its record holds them, and nothing was cloned
+    let organism = dna::local_habitat_dir() + "/saplings/hale";
+    let codebases = in_dir(organism, toolchain() + "\ndna\ncodebase\nlist");
+    std::test::assert(
+        std::str::contains(codebases.stdout, "codebases: 2")
+            && std::str::contains(codebases.stdout, "hale")
+            && std::str::contains(codebases.stdout, "voice"),
+        "the organism's record holds both codebases: " + codebases.stdout + codebases.stderr,
+    );
+    let rows = in_dir(organism, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(rows, "\"kind\": \"codebase.attached\"")
+            || std::str::contains(rows, "\"kind\":\"codebase.attached\""),
+        "as codebase.attached rows: " + rows,
+    );
+    std::test::assert(
+        std::str::contains(rows, "hale build api && hale build brain && hale build node")
+            && std::str::contains(
+                rows,
+                "hale test api && hale test store && hale test brain && hale test node",
+            ),
+        "voice's row carries its seeds' build and test, as its CI runs them: " + rows,
+    );
+    std::test::assert(
+        !std::io::fs::file_exists(organism + "/hale")
+            && !std::io::fs::file_exists(organism + "/voice"),
+        "nothing is cloned at the graft",
+    );
+
+    // ---- a graft that goes on attaches nothing twice
+    let again = in_dir(scratch, graft);
+    std::test::assert(
+        again.code == 0
+            && std::str::contains(again.stdout, "kept    the codebase `hale` (its record holds it)")
+            && !std::str::contains(again.stdout, "attached the codebase"),
+        "each codebase once: " + again.stdout + again.stderr,
+    );
+    let twice = in_dir(organism, toolchain() + "\ndna\ncodebase\nlist");
+    std::test::assert(
+        std::str::contains(twice.stdout, "codebases: 2"),
+        "still two: " + twice.stdout,
+    );
+
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    dna::scratch_done(scratch);
+}

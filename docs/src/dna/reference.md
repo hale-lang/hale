@@ -19,7 +19,7 @@ Most `hale dna` commands accept an optional `[project]` directory path and defau
 The local habitat provisions and manages every organism's infrastructure (Postgres memory, NATS JetStream nerves, and Prometheus senses store) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`.
 
 ```text
-usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
+usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator] [--name <name>]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]

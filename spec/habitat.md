@@ -14,6 +14,15 @@ genome document's `law` items. It is the one organism born without a
 parent. **Every other organism is grafted from it**: its record's genesis
 names the habitat's record as its parent.
 
+**A habitat has a name**, given at its birth with `hale habitat up --name
+<name>`: a DNS label (1 to 63 lowercase letters, digits and `-`, neither
+first nor last a `-`); `local` when its birth names none. The name is
+recorded on its `habitat.profile` row and kept: an `up` that asks another
+name of a habitat born is refused (exit 2). `hale habitat status` shows it
+(`name` line), the head's `Commands::index` answers it (`name`, `""` for
+any record but a habitat's), and the operator face's first screen shows it
+as the habitat's name.
+
 The local habitat is one docker compose project per machine, named for the
 habitat, with a service per allocation, under
 `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`. `HALE_DNA_HABITAT`
@@ -290,9 +299,30 @@ checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
 The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit). A sapling needs nothing beyond what an attached repository
+commit) and **the hale organism** (`hale`). A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
+
+**The hale organism** is the organism that works on the Hale toolchain.
+Its genome is its own small repository: the tree checked in at
+`dna/nursery/saplings/hale` (its `hale.toml` with `[dna]`, its main, a
+README). The code it works on is its codebases, other repositories its
+manifest lists, `hale-lang/hale` and `hale-lang/voice`; its positions and
+their mandates are the nursery's `hale-organism` pack, which the sapling
+adopts at graft. It is neither the compiler's repository as a sapling nor
+the habitat's own organism. Its repository is not created yet: the
+nursery's entry names a placeholder url, pinned at `main` by the
+checked-in tree's digest (a test holds the two equal); once the
+repository exists, the tree is pushed there and the entry pinned to the
+commit.
+
+**A genome's codebases attach at its graft.** `[[dna.codebase]]` in its
+`hale.toml` lists them with phase 3's attach fields (`name`, `repo`,
+`branch`, `build`, `test`, `toolchain`). After the graft's row, each one
+the organism's record does not hold is attached by the host's `codebase
+attach` (as `hale dna codebase attach` does, as the habitat), a
+`codebase.attached` row; nothing is cloned until a leg works one. A graft
+that goes on attaches none twice.
 
 ## Long-lived, and only its acts provision
 
@@ -317,9 +347,9 @@ they call the head's socket, so the habitat's body must be up.
 
 | Verb | Behaviour |
 |---|---|
-| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's socket as the person this account maps to. |
-| `status` | The habitat, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
+| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
 | `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
@@ -528,7 +558,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
-| `habitat.profile local` | at birth | `profile`, `backends`, `project` |
+| `habitat.profile local` | at birth | `profile`, `backends`, `project`, `name` |
 | `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), `purpose` (its declared purpose), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
 | `habitat.applied <key>/<role>` | at each apply of an allocation | `host`, `provider`, `ok`, `why`, `state` (the pulse after), `fresh` |
 | `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |

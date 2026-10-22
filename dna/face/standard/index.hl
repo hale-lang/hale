@@ -26,6 +26,7 @@ type RecordIndex {
     ok: Bool = false;
     why: String = "";
     revision: Int = 0;
+    name: String = ""; // the habitat's name, "" for any other record
     purpose: String = "";
     positions: String = "[]";
     codebases: String = "[]";
