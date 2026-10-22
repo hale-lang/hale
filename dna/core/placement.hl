@@ -58,9 +58,13 @@ fn placed_on(key: String, role: String) -> AppliedOn {
 }
 
 // `p` kept as where `role` of `key` was applied: "" once it is, else why not.
+// A role on this machine needs no marker (it is there unless one says
+// otherwise), but an organism's own services do: applied here they are a
+// project of their own, and a marker that says so is what tells "applied
+// here" from "never applied", so a later move withdraws them from here.
 fn place_cache(key: String, role: String, p: AppliedOn) -> String {
     let path = placed_path(key, role);
-    if p.host == "local" || len(p.host) == 0 {
+    if (p.host == "local" || len(p.host) == 0) && role != "services" {
         std::io::fs::unlink(path) or discard;
         return "";
     }
@@ -68,7 +72,7 @@ fn place_cache(key: String, role: String, p: AppliedOn) -> String {
     if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return "cannot make " + dir; }
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("host", p.host);
+    b.string_field("host", if len(p.host) == 0 { "local" } else { p.host });
     b.string_field("provider", p.provider);
     b.string_field("address", p.address);
     b.string_field("project", p.project);

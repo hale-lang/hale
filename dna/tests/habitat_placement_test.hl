@@ -11,7 +11,11 @@
 // organism reaching it at the host's address. Moved back to this machine,
 // its memory is refused, since it holds the record and a moved memory
 // starts empty; `--fresh` moves it, empty, and the pulse says it is up
-// here. Without docker compose nothing here is exercised.
+// here. A move whose withdrawal fails (the machine stopped answering) is
+// refused as the apply's outcome, and its services stay where they were;
+// moved here once the machine answers again, they are marked applied here,
+// so a move back to the machine withdraws them from here and one copy runs.
+// Without docker compose nothing here is exercised.
 
 import "../core" as dna;
 
@@ -93,7 +97,8 @@ fn last_line(text: String) -> String {
 
 // The machine: alpine's sshd and docker CLI. Its entrypoint makes the user
 // `hale` with this uid, its home the directory the fixture shares with it,
-// in the group of the docker socket it mounts, and runs sshd with keys only.
+// in the group of the docker socket it mounts, and runs sshd with keys only
+// (again, unchanged, when the container is started again).
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
@@ -101,7 +106,7 @@ fn sshd_files(dir: String) {
     ) or discard;
     std::io::fs::write_file(
         dir + "/entry.sh",
-        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\"\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nid hale >/dev/null 2>&1 || adduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
     ) or discard;
 }
 
@@ -363,7 +368,97 @@ fn main() {
         "its address is this machine's again",
     );
 
+    // ---- a move whose withdrawal fails stops: with the machine unreachable,
+    // its services placed here are not applied here, the failure is the
+    // apply's outcome, and they stay as they were, there and in the marker
+    // where the organism's services run: the working directories of its
+    // `web` containers, in either of its projects (here, or named for the host)
+    let services = "sh\n-c\ndocker ps --filter label=com.docker.compose.service=web --format '{{.Label \"com.docker.compose.project\"}} {{.Label \"com.docker.compose.project.working_dir\"}}' | awk -v p=\"$1\" -v k=\"$2\" 'index($1, p) == 1 && substr($1, length($1) - length(k) + 1) == k { print $2 }'\nsh\n"
+        + dna::local_habitat_project() + "\n" + key;
+    let before = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        std::str::starts_with(before, home + "/"),
+        "its services run from the host's directory: " + before,
+    );
+    let stopped = dna::run_tool(compose + "\nstop\nsshd");
+    std::test::assert_eq_int(stopped.code, 0, "the machine stops answering: " + stopped.stderr);
+    let to_local = in_dir(scratch, toolchain() + "\nhabitat\nplace\n" + key + "/services\nlocal");
+    std::test::assert_eq_int(to_local.code, 0, "its services are placed here: " + to_local.stderr);
+    let failed = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    std::test::assert(
+        failed.code != 0
+            && std::str::contains(
+                failed.stdout,
+                "refused " + key + "/services on local: withdrawal_failed:",
+            ),
+        "a withdrawal that fails stops the move: " + failed.stdout + failed.stderr,
+    );
+    std::test::assert(
+        std::str::contains(text_of(dna::placed_path(key, "services")), "\"host\": \"localhost\"")
+            || std::str::contains(
+                text_of(dna::placed_path(key, "services")),
+                "\"host\":\"localhost\"",
+            ),
+        "it stays applied on the host: " + text_of(dna::placed_path(key, "services")),
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(dna::run_tool(services).stdout),
+        before,
+        "and its services run there as they were, and only there",
+    );
+
+    // ---- back with the machine answering: moved here, and marked applied
+    // here, so a move away withdraws them from here
+    let started_again = dna::run_tool(compose + "\nstart\nsshd");
+    std::test::assert_eq_int(started_again.code, 0, "the machine answers again");
+    let mut back_up = false;
+    tries = 0;
+    while !back_up && tries < 120 {
+        let p = in_dir(scratch, toolchain() + "\nhabitat\nhost\nprobe\nlocalhost");
+        back_up = p.code == 0 && std::str::contains(p.stdout, "): ready");
+        if !back_up { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(back_up, "the machine answers SSH again");
+    let here = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    std::test::assert(
+        here.code == 0
+            && std::str::contains(here.stdout, "applied " + key + "/services on local (compose)"),
+        "its services move here: " + here.stdout + here.stderr,
+    );
+    std::test::assert(
+        std::str::contains(text_of(dna::placed_path(key, "services")), "local"),
+        "marked applied here: " + text_of(dna::placed_path(key, "services")),
+    );
+    let local_dir = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        len(local_dir) > 0 && !std::str::starts_with(local_dir, home + "/")
+            && !std::str::contains(local_dir, "\n"),
+        "one copy, run from here: " + local_dir,
+    );
+    let away = in_dir(scratch, toolchain() + "\nhabitat\nplace\n" + key + "/services\nlocalhost");
+    std::test::assert_eq_int(away.code, 0, "placed on the host again: " + away.stderr);
+    let there_again = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    let after = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        there_again.code == 0
+            && std::str::contains(
+                there_again.stdout,
+                "applied " + key + "/services on localhost (ssh)",
+            )
+            && std::str::starts_with(after, home + "/")
+            && !std::str::contains(after, "\n"),
+        "moved away, they are withdrawn from here: one copy, on the host: " + after
+            + there_again.stdout + there_again.stderr,
+    );
+
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    // what ran on the machine is containers of this daemon in projects of
+    // their own (the habitat's named for the host): taken down with it
+    dna::run_tool(
+        "sh\n-c\nfor id in $(docker ps -aq); do d=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' \"$id\" 2>/dev/null); case \"$d\" in \"$1\"/*) p=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$id\"); docker rm -f -v \"$id\" >/dev/null; docker volume ls -q --filter \"label=com.docker.compose.project=$p\" | xargs -r docker volume rm >/dev/null 2>&1 ;; esac; done\nsh\n"
+            + home,
+    );
     dna::run_tool(compose + "\ndown\n-v");
     dna::scratch_done(scratch);
 }

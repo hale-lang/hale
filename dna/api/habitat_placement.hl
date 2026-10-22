@@ -187,6 +187,7 @@ fn apply_one(
     let host = std::json::find_string_field(body, "host");
     let provider = std::json::find_string_field(body, "provider");
     let was = dna::placed_on(key, role);
+    let marked = std::io::fs::file_exists(dna::placed_path(key, role));
     let target = dna::AppliedOn {
         host: if len(host) == 0 { "local" } else { host },
         provider: provider,
@@ -202,8 +203,8 @@ fn apply_one(
         },
     };
     // an organism's own services never applied are applied nowhere yet
-    let moved = was.host != target.host
-        && (role != "services" || std::io::fs::file_exists(dna::placed_path(key, role)));
+    // (applied here, a marker says so)
+    let moved = was.host != target.host && (role != "services" || marked);
     let mut ok = true;
     let mut why = "";
     if moved && role == "memory" && key == dna::allocation_key(root) {
@@ -226,12 +227,22 @@ fn apply_one(
         } else {
             dna::placed_withdraw(key, role, was)
         };
-        // nothing ran there yet is nothing to take down
+        // nothing ran there yet is nothing to take down; any other failure
+        // stops the move: the allocation stays where it was applied, and
+        // the failure is the apply's outcome
         if !gone.ok && !std::str::contains(gone.why, "no such service") {
-            why = "withdrawn from " + was.host + ": " + gone.why + "; ";
+            ok = false;
+            why = "withdrawal_failed: it was not withdrawn from " + was.host + " ("
+                + dna::trim_nl(gone.why) + "), so it stays there and nothing was applied on "
+                + target.host;
         }
-        if fresh && role != "services" {
+        if ok && fresh && role != "services" {
             let forgot = dna::placed_forget(key, role, target);
+            if forgot.code != 0 {
+                ok = false;
+                why = "fresh_reset_failed: its data on " + target.host + " was not forgotten ("
+                    + dna::trim_nl(forgot.stderr) + "), so nothing was applied there";
+            }
         }
     }
     let applied = if !ok {
@@ -248,8 +259,13 @@ fn apply_one(
         dna::placed_apply(key, role)
     };
     if ok && !applied.ok {
-        // the placement it was applied at stays the one in force
-        let back = dna::place_cache(key, role, was);
+        // the placement it was applied at stays the one in force (and one
+        // never applied stays never applied)
+        if marked {
+            let back = dna::place_cache(key, role, was);
+        } else {
+            std::io::fs::unlink(dna::placed_path(key, role)) or discard;
+        }
     }
     let a = dna::Allocation {
         role: role,
@@ -282,7 +298,7 @@ fn apply_one(
     row.string_field("host", target.host);
     row.string_field("provider", provider);
     row.bool_field("ok", applied.ok);
-    row.string_field("why", why + applied.why);
+    row.string_field("why", applied.why);
     row.string_field("state", seen.state);
     row.bool_field("fresh", fresh && moved);
     row.end_object();
@@ -292,7 +308,7 @@ fn apply_one(
     out.string_field("host", target.host);
     out.string_field("provider", provider);
     out.bool_field("ok", applied.ok);
-    out.string_field("why", why + applied.why);
+    out.string_field("why", applied.why);
     out.string_field("state", seen.state);
     out.string_field("detail", seen.detail);
     out.end_object();
