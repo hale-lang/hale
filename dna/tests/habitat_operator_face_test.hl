@@ -7,7 +7,8 @@
 // the head's rows (`Commands::index`, over `/api/hale/v1/head/surface`);
 // this fixture makes the same call the client makes and reads the habitat
 // and its organisms from the answer. The head is a fixture's trusted-local
-// one; the sign-in itself, under the stub issuer, is operator_face_test.hl.
+// one; the sign-in itself, under the stub issuer, is
+// dna/api/project_service/tests/operator_face_test.hl.
 // The habitat is this test file's own (`hale test` gives each file one).
 // Without docker compose nothing here is exercised.
 

@@ -1125,7 +1125,6 @@ fn dna_fixture_set_is_complete() {
             "oidc_head_test.hl",
             "oidc_verify_test.hl",
             "openai_chat_test.hl",
-            "operator_face_test.hl",
             "optimize_test.hl",
             "org_test.hl",
             "organization_source_request_test.hl",

@@ -8960,6 +8960,14 @@ shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in operations #547a6538
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/api/project_service/tests/operator_face_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
+shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
+shared	dynamic	sites in core #8e1938c5
+shared	dynamic	sites in core/pond/pq #39e83e0a
+shared	dynamic	sites in the stdlib #c3a51769
+
 == dna/api/tests/attempt_recovery_api_test.hl
 hole	RecoveryCases@main2.f	reuse `f`
 -- RecoveryCases@main2	RecoveryCases
@@ -11628,6 +11636,8 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/habitat_face_test.hl
 
 == dna/tests/habitat_graft_test.hl
+
+== dna/tests/habitat_operator_face_test.hl
 
 == dna/tests/habitat_operator_test.hl
 

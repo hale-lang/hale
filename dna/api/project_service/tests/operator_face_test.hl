@@ -1,5 +1,5 @@
-// dna/tests/operator_face_test.hl — the operator face signs in through the
-// stub issuer, then reads the habitat's state.
+// dna/api/project_service/tests/operator_face_test.hl — the operator face
+// signs in through the stub issuer, then reads the habitat's state.
 //
 // The operator face is a project's `ui/` (the habitat's own, here the
 // toolchain's copy of it in a project of the fixture) served by the standard
@@ -10,10 +10,10 @@
 // the shell, and the call the generated client makes
 // (`Commands::index`, `head-client.js`) answers the record's index.
 
-import "./../api/project_service/tests/fixture" as fixture;
-import "../core" as dna;
-import "../operations" as ops;
-import "../oidc" as oidc;
+import "./fixture" as fixture;
+import "../../../core" as dna;
+import "../../../operations" as ops;
+import "../../../oidc" as oidc;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }

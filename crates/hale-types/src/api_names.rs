@@ -31,12 +31,14 @@ pub const HALE_CLIENT_NAMES: &[&str] = &[
 /// with it.
 pub const JS_CLIENT_NAMES: &[&str] = &[
     "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "describe",
+    "__Outcome", "__StreamEvent", "__Subscription", "__apiCall", "__apiRefusal", "__apiSubscribe",
 ];
 /// The TypeScript client's own declarations.
 pub const TS_CLIENT_NAMES: &[&str] = &[
     "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "describe", "__Record",
     "__Promise", "__Array",
-    "__AsyncIterable", "__AsyncGenerator", "__Response", "__MessageEvent",
+    "__AsyncIterable", "__AsyncGenerator", "__Response", "__MessageEvent", "__Outcome", "__StreamEvent",
+    "__Subscription", "__apiCall", "__apiRefusal", "__apiSubscribe",
 ];
 
 /// `Orders::place` as `OrdersPlace`, `lib::Fills` as `LibFills`.
