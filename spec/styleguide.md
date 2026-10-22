@@ -792,6 +792,14 @@ fn main() {
   of an `if` chain. Name a path parameter after the request's field
   (`{id}`), and keep the `status:` honest (`201` for a create, `204` for
   a delete with nothing to say).
+- **What the rows cannot say goes to the fallback, on the same port.** A
+  stream, an SSE feed or a connection takeover beside the rows is an
+  `http::Rest { …, fallback: self.data_plane }` handler, not a second
+  `std::http::Server` on another port (two origins, and CORS between
+  them). Keep every path a contract can describe a row; the fallback
+  gets only what no row's path matches, carries its own authentication
+  (the exposure's bearer and roles gate the rows only), and is placed on
+  the exposure's `where async_io` pool. **[convention]**
 - **Import a surface you call; don't transcribe it.** Another
   service's operations are an `api NAME from openapi "…"` (or `from mcp
   "…"`) block that `hale api import` writes from its document, committed

@@ -1,0 +1,222 @@
+// tests/hale/rest_fallback_test.hl — `http::Rest { …, fallback: h }`: a
+// request whose path no row serves goes to the program's own
+// `std::http` handler, on the same listener and connection, with the
+// request untouched and ungated by the exposure's bearer, and the handler
+// may stream as it would under `std::http::Server`. The rows still answer
+// and are still gated; a row's path asked with another method is still
+// Rest's 405, and its OPTIONS Rest's; with no fallback, a path no row
+// serves is still Rest's 404.
+
+type Health { status: String; }
+type ItemKey { id: Int; }
+type Item { id: Int; name: String; }
+
+api Shop {
+    rpc Probe::live at "GET /healthz";
+    rpc Items::get at "GET /v1/items/{id}";
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-user" { return std::api::Principal { mode: "bearer", name: "user" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Probe {
+    fn live() -> Health { return Health { status: "live" }; }
+}
+
+locus Items {
+    fn get(k: ItemKey) -> Item { return Item { id: k.id, name: "item" }; }
+}
+
+// The program's own routes beside the rows: an event stream, a plain
+// answer that echoes what it was asked, and its own 404.
+locus Front {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/events" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(std::http::SseEvent { event: "tick", data: "one" }) or discard;
+            w.event(std::http::SseEvent { data: "two" }) or discard;
+            return w.end();
+        }
+        if std::str::starts_with(req.path, "/plain") {
+            return std::http::Response {
+                status: 200,
+                body: "plain " + req.method + " " + req.path + " ["
+                    + std::http::header(req, "Authorization") + "] " + req.body,
+            };
+        }
+        return std::http::Response { status: 404, body: "front has no " + req.path };
+    }
+}
+
+fn call(method: String, url: String, headers: String) -> std::http::ClientResponse {
+    let u = std::http::parse_url(url) or std::http::Url { };
+    let req = std::http::ClientRequest { method: method, url: u, headers: headers, body: b"" };
+    return std::http::request(req) or std::http::ClientResponse {
+        status: -1,
+        headers: "",
+        body: b"",
+    };
+}
+
+fn post(url: String, body: String) -> std::http::ClientResponse {
+    let u = std::http::parse_url(url) or std::http::Url { };
+    let req = std::http::ClientRequest {
+        method: "POST",
+        url: u,
+        body: std::bytes::from_string(body),
+    };
+    return std::http::request(req) or std::http::ClientResponse {
+        status: -1,
+        headers: "",
+        body: b"",
+    };
+}
+
+fn text(r: std::http::ClientResponse) -> String {
+    return std::str::from_bytes(r.body);
+}
+
+type Done { ok: Bool; }
+
+// The client: off main, whose run() must keep serving the exposures it
+// holds (their calls are answered on main's pool while run() sleeps).
+locus Driver {
+    params {
+        web: String = "";
+        bare: String = "";
+    }
+    bus { publish "rest.done" of type Done; }
+    run() {
+        let base = "http://" + self.web;
+        let user = "Authorization: Bearer t-user";
+
+        // ---- the rows answer, gated by the exposure's bearer
+        let live = call("GET", base + "/healthz", user);
+        std::test::assert_eq_int(live.status, 200, "a row answers: " + text(live));
+        std::test::assert(
+            std::str::contains(text(live), "\"live\""),
+            "the row's body: " + text(live),
+        );
+        let item = call("GET", base + "/v1/items/7", user);
+        std::test::assert(
+            std::str::contains(text(item), "\"id\":7"),
+            "a captured row: " + text(item),
+        );
+        std::test::assert_eq_int(
+            call("GET", base + "/healthz", "").status,
+            401,
+            "a row without a token",
+        );
+
+        // ---- a path no row serves: the fallback, ungated, the request untouched
+        let plain = post(base + "/plain?x=1", "hello");
+        std::test::assert_eq_int(plain.status, 200, "the fallback answers");
+        std::test::assert_eq_str(
+            text(plain),
+            "plain POST /plain?x=1 [] hello",
+            "the request as sent",
+        );
+        let with = call("GET", base + "/plain", user);
+        std::test::assert_eq_str(
+            text(with),
+            "plain GET /plain [Bearer t-user] ",
+            "its own headers reach it",
+        );
+        let own = call("GET", base + "/nope", "");
+        std::test::assert_eq_int(own.status, 404, "the fallback's own 404");
+        std::test::assert_eq_str(text(own), "front has no /nope", "not Rest's 404");
+
+        // ---- the fallback streams on the connection, as under a Server
+        let ev = call("GET", base + "/events", "");
+        std::test::assert_eq_int(ev.status, 200, "the stream's status");
+        std::test::assert(
+            std::str::contains(std::str::lower(ev.headers), "text/event-stream"),
+            "an event stream: " + ev.headers,
+        );
+        std::test::assert_eq_str(text(ev), "event: tick\ndata: one\n\ndata: two\n\n", "the events");
+
+        // ---- a row's path keeps Rest's answers: 405 for another method, OPTIONS
+        let wrong = post(base + "/healthz", "");
+        std::test::assert_eq_int(wrong.status, 405, "another method on a row's path");
+        std::test::assert(
+            std::str::contains(wrong.headers, "Allow: GET, HEAD, OPTIONS"),
+            "Rest's Allow: " + wrong.headers,
+        );
+        let opts = call("OPTIONS", base + "/v1/items/3", "");
+        std::test::assert_eq_int(opts.status, 204, "OPTIONS on a row's path is Rest's");
+        std::test::assert_eq_int(
+            call("OPTIONS", base + "/plain", "").status,
+            200,
+            "OPTIONS elsewhere is the fallback's",
+        );
+
+        // ---- no fallback: a path no row serves is Rest's 404
+        let none = call("GET", "http://" + self.bare + "/plain", user);
+        std::test::assert_eq_int(none.status, 404, "no fallback");
+        std::test::assert(std::str::contains(text(none), "not_found"), "Rest's 404: " + text(none));
+        "rest.done" <- Done { ok: true };
+    }
+}
+
+main locus App {
+    params {
+        tokens: Tokens = Tokens { };
+        probe: Probe = Probe { };
+        items: Items = Items { };
+        front: Front = Front { };
+        web: api::Exposure = api::serve(
+            Shop,
+            http::Rest {
+                bind: "127.0.0.1:0",
+                codec: json,
+                principals: self.tokens,
+                fallback: self.front,
+            },
+            as: "web",
+            bound: 8,
+            on_full: refuse
+        );
+        bare: api::Exposure = api::serve(
+            Shop,
+            http::Rest { bind: "127.0.0.1:0", codec: json, principals: self.tokens },
+            as: "bare",
+            bound: 8,
+            on_full: refuse
+        );
+        driver: Driver = Driver {
+            web: std::str::clone(self.web.address),
+            bare: std::str::clone(self.bare.address),
+        };
+        finished: Bool = false;
+    }
+    bus { subscribe "rest.done" as on_done of type Done; }
+    // the fallback runs where the exposure's listener runs: one pool; the
+    // rows' handlers off main, whose run() makes the calls
+    placement {
+        web: cooperative(pool = edge) where async_io;
+        front: cooperative(pool = edge) where async_io;
+        probe: cooperative(pool = work) where async_io;
+        items: cooperative(pool = work) where async_io;
+        driver: cooperative(pool = client) where async_io;
+    }
+    run() {
+        let mut i = 0;
+        while !self.finished && i < 3000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert(self.finished, "the client ran to its end");
+        self.web.stop();
+        self.bare.stop();
+    }
+    fn on_done(d: Done) {
+        self.finished = d.ok;
+    }
+}
+
+fn main() { App { }; }

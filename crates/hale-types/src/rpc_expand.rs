@@ -658,6 +658,7 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
     let windows: [(u32, &'static str, &'static str); 9] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
+        (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
         (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
         (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
@@ -671,6 +672,28 @@ pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)
         let local = pos.checked_sub(*base)? as usize;
         (local < src.len()).then_some((*name, *src, local))
     })
+}
+
+/// Where `api_rest_fallback.hl` parses: past the client binding's runtime,
+/// before the hub's.
+const REST_FALLBACK_BASE: u32 = RUNTIME_BASE + 0x0070_0000;
+
+/// The `http::Rest` fallback's server, once, for a program whose REST
+/// transport gives a `fallback:` (`hale_stdlib::API_REST_FALLBACK_SOURCE`).
+fn inject_rest_fallback(programs: &mut [&mut Program]) {
+    let have = programs.iter().any(|p| {
+        flat_decls(&p.items).any(|d| matches!(d, TopDecl::Fn(f) if f.name.name == "__api_rest_fallback_serve"))
+    });
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::API_REST_FALLBACK_SOURCE, REST_FALLBACK_BASE) {
+        Ok(rt) => programs[0].items.extend(rt.items),
+        Err(ds) => eprintln!(
+            "rpc_expand: the REST fallback's server did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
 }
 
 /// Append the runtime to the first program, once.
@@ -1248,6 +1271,9 @@ pub fn expand(
         files: String,
         /// an `http::Rest` exposure's route table (`rest_routes::table`).
         routes: String,
+        /// an `http::Rest` exposure's `fallback:`, the handler its listener's
+        /// connections give a request no row's path matches.
+        fallback: Option<Expr>,
     }
     let mut plans: Vec<Plan> = Vec::new();
     let confer;
@@ -1494,6 +1520,7 @@ pub fn expand(
                         revised,
                         grpc,
                         files,
+                        fallback: if routes.is_empty() { None } else { source_of("fallback") },
                         routes,
                     });
                 }
@@ -1563,6 +1590,11 @@ pub fn expand(
             serving: site.serving.clone(),
             param: site.param.clone(),
         });
+    }
+
+    // ---- the REST fallback's server, for a program that gives one ----
+    if plans.iter().any(|p| p.fallback.is_some()) {
+        inject_rest_fallback(programs);
     }
 
     // ---- mutate: the holders ----
@@ -1645,17 +1677,19 @@ pub fn expand(
         // born after the authored params its address may read and before
         // what serves through it (so it is subscribed when the exposure
         // attaches), on the pool its placement row names
-        let listener_for = |bind: Expr| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+        let listener_for = |bind: Expr, fallback: Option<Expr>| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
             match (&unix_path, &http_bind) {
                 (Some(_), _) => parse_unix_listener(id, bind, span),
                 (None, Some(_)) if grpc => parse_grpc_listener(id, bind, span),
-                (None, Some(_)) => parse_http_listener(id, bind, mcp, span),
+                (None, Some(_)) => parse_http_listener(id, bind, mcp, &plan.routes, fallback, span),
                 (None, None) => None,
             }
         };
         let field_of = |lp: &ParamDecl| lp.name.name.clone();
         if is_main {
-            if let Some((lp, default_entry)) = unix_path.clone().or_else(|| http_bind.clone()).and_then(listener_for) {
+            if let Some((lp, default_entry)) =
+                unix_path.clone().or_else(|| http_bind.clone()).and_then(|b| listener_for(b, plan.fallback.clone()))
+            {
                 let field = field_of(&lp);
                 insert_param_before(l, lp, &exposure.param);
                 // the exposure's own row places its listener (and the
@@ -1694,7 +1728,9 @@ pub fn expand(
         // pool that param's row names when a listener can run there, else
         // the transport's shared pool
         for (chain, addr) in &site.chains {
-            let Some((lp, default_entry)) = listener_for(addr.clone()) else { continue };
+            // the fallback as this main locus reaches it, as the address is
+            let fallback = plan.fallback.as_ref().and_then(|f| address_for_main(chain, f).ok());
+            let Some((lp, default_entry)) = listener_for(addr.clone(), fallback) else { continue };
             let field = field_of(&lp);
             let root = chain.fields[0].1.clone();
             let mut placed = false;
@@ -1870,6 +1906,10 @@ fn as_stdlib_unix(t: &Expr, id: i64, surface: &str, files: &str, routes: &str) -
             inits.retain(|i| {
                 i.name.name != "tid"
                     && i.name.name != "routes"
+                    // an `http::Rest` fallback is its listener's, which
+                    // runs where the handler does; the transport stays
+                    // with the exposure (parse_http_listener)
+                    && !(rest && i.name.name == "fallback")
                     && i.name.name != "surface"
                     && i.name.name != "files"
                     && !((kind == "http" || kind == "grpc") && i.name.name == "codec" && matches!(&i.value, Expr::Ident(c) if c.name == "json"))
@@ -1995,7 +2035,14 @@ fn parse_grpc_listener(id: i64, bind: Expr, span: Span) -> Option<(ParamDecl, ha
 
 /// The listener of HTTP exposure `id` and its placement: as the Unix one,
 /// a param of the serving main locus on a pool of its own.
-fn parse_http_listener(id: i64, bind: Expr, mcp: bool, span: Span) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+fn parse_http_listener(
+    id: i64,
+    bind: Expr,
+    mcp: bool,
+    routes: &str,
+    fallback: Option<Expr>,
+    span: Span,
+) -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
     let field = format!("__rpc_h_{id}");
     let src = format!(
         "main locus __Tmp {{ params {{ {field}: __StdApiHttpListener = __StdApiHttpListener {{ tid: {id} }}; }} placement {{ {field}: cooperative(pool = __api_http) where async_io; }} }}\n"
@@ -2020,6 +2067,16 @@ fn parse_http_listener(id: i64, bind: Expr, mcp: bool, span: Span) -> Option<(Pa
         if mcp {
             let what = Expr::Literal(Literal::String("mcp::Rpc".to_string()), span);
             inits.push(StructInit { name: Ident::new("what", span), value: what, span });
+        }
+        // an `http::Rest` fallback: its connections match a request's path
+        // against the route table and give one no row serves to the handler
+        if let Some(f) = fallback {
+            let table = Expr::Literal(Literal::String(routes.to_string()), span);
+            inits.push(StructInit { name: Ident::new("routes", span), value: table, span });
+            inits.push(StructInit { name: Ident::new("has_fallback", span), value: Expr::Literal(Literal::Bool(true), span), span });
+            inits.push(StructInit { name: Ident::new("fallback", span), value: f, span });
+            let serve = Expr::Ident(Ident::new("__api_rest_fallback_serve", span));
+            inits.push(StructInit { name: Ident::new("serve_fallback", span), value: serve, span });
         }
     }
     Some((param, entry?))

@@ -32,6 +32,13 @@
 /// [`PATH_RENAMES`] like the rest of `std::api`.
 pub const API_RUNTIME_SOURCE: &str = include_str!("../hl/api_rpc.hl");
 
+/// The `http::Rest` fallback's server (`api_rest_fallback.hl`): the one
+/// call of the program's `std::http` handler a REST connection makes for a
+/// path no row serves. Appended after [`API_RUNTIME_SOURCE`], and only to a
+/// program whose `http::Rest` gives a `fallback:`, so a program that gives
+/// none calls no handler from its listener's connections.
+pub const API_REST_FALLBACK_SOURCE: &str = include_str!("../hl/api_rest_fallback.hl");
+
 /// The stream hub's runtime (`api_hub.hl`, GH #1417 R5): the core, the
 /// listener, the per-connection locus and the adapter a topic bound to a
 /// hub becomes. It is appended after [`API_RUNTIME_SOURCE`], and only to a
