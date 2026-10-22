@@ -1,138 +1,95 @@
-# The locus, gently
+# The Locus, Gently
 
-> **Coming from Python / Node?** A `locus` is the closest thing
-> Hale has to a class or a module. It bundles state (fields) with
-> behavior (methods) and you make instances of it. There's no
-> separate "module" and "class" — one construct plays both roles.
-> This chapter only uses the object-like 80%; the lifecycle and
-> messaging parts wait until you need them.
-
-In *the basics*, a program was functions and a `main`. That's
-fine until you have **state that lives over time** — a counter, a
-cache, a configuration, a connection — or until a pile of free
-functions wants a name to live under. That's what a locus is for.
-
-## A locus with state
+A `locus` is Hale's primary structural building block, combining state (`params`), behavior (`fn` methods), and lifecycle management (`birth`, `run`, `dissolve`) into a single construct. Where other languages separate classes, modules, actors, and services, Hale uses loci for all stateful or behavioral components and `type` declarations for pure data records.
 
 ```hale
 locus Counter {
     params {
         count: Int = 0;
     }
+
     fn bump() {
         self.count = self.count + 1;
     }
+
     fn value() -> Int {
         return self.count;
     }
 }
-```
 
-`params` is the locus's state — typed fields, each with a default.
-Inside any method, `self.field` reads and writes that state.
-Methods are `fn`s, called with `.`:
-
-```hale
 fn main() {
-    let c = Counter { };          // make one; count defaults to 0
+    let c = Counter { count: 10 };
     c.bump();
     c.bump();
-    println(c.value());           // 2
+    println(c.value());           // 12
 }
 ```
 
-You construct a locus with `Name { ... }`, overriding any field
-you like:
+## `type` vs. `locus`
 
-```hale,fragment
-let c = Counter { count: 10 };
-```
+Every named construct in Hale is either a pure data `type` or a `locus`:
 
-If you've used objects before, this is familiar: `params` are
-the instance variables, methods are the methods, `Counter { }`
-is the constructor. Hale collapses "constructor parameters" and
-"instance fields" into one `params` block — the same way Ruby's
-`@foo` or Python's `self.foo` are just attributes.
-
-One habit from those languages doesn't carry over: there are no
-class constants. A `const` belongs at the top level, beside the
-locus, where it is in scope inside every locus of the program —
-writing one in a locus body is an error at the `const` keyword.
-A constant that each instance should carry is a `params` field
-with a default.
-
-Another habit that doesn't carry over: a default cannot build the
-locus it belongs to. `params { next: Node = Node { }; }` looks like
-a linked list, but it is a locus that cannot exist — the `Node` the
-default builds leaves ITS `next` to the same default, forever, and
-no call site can end the chain either, because `Node { next: ... }`
-needs a `Node` to hand over. Hale reports that at the param. It
-reports the same thing when the default calls a function that
-builds one (`next: Node = make_node();`) and when the loop goes
-around through another locus (`Alpha` builds a `Beta` that builds
-an `Alpha`). Holding a *different* locus is the ordinary shape and
-is fine; to hold one of its own kind, take it from the caller —
-`next: Node;`, with no default.
-
-## `type` vs `locus`
-
-You met `type` for plain records earlier. The line between them:
-
-- **`type`** is pure data — a record you construct, pass around
-  by value, and read. No methods, no state that changes itself,
-  no lifecycle.
-- **`locus`** is data *with behavior and identity* — it has
-  methods, it mutates its own state, and (at the next level) it
-  can run over time and send messages.
+| Property | `type` (Record / Enum) | `locus` (Component) |
+|---|---|---|
+| **Purpose** | Pure data values, messages, configuration records | Stateful objects, namespaces, collections, services |
+| **State** | Value fields (`x: Int;`) | Instance state in `params { count: Int = 0; }` |
+| **Behavior** | None (no methods) | `fn` methods with `self` access |
+| **Lifecycle** | None (copied by value) | `birth() -> run() -> dissolve()` hooks |
+| **Ownership** | Can be returned, copied, and sent over the bus | Owns its own arena; cannot be stored inside a `type` |
 
 ```hale
-type Point { x: Int; y: Int; }        // just data
+type Point { x: Int; y: Int; }        // pure data record
 
-locus Tally {                          // data + behavior
+locus Tally {                          // state + behavior
     params { total: Int = 0; }
     fn add(n: Int) { self.total = self.total + n; }
 }
 ```
 
-These aren't rival categories — they're points on a gradient. A
-`type` is a locus that hasn't grown behavior yet. When a record
-starts accumulating methods, you promote it from `type` to
-`locus`. There is no third thing to reach for.
+> [!IMPORTANT]
+> **Single Ownership of State (`I4`):** Every piece of mutable state in a Hale program belongs to a `locus` (or a local `let mut` variable inside a function). There are no mutable global variables or unowned shared buffers. This invariant allows Hale to manage memory with per-locus arenas and deterministic lifecycle hooks instead of a garbage collector.
 
-Note the two declarations above are **siblings**. A `type` used
-by one locus still goes beside it, not inside its body: a
-top-level `type` is in scope everywhere in the program, including
-inside every locus, and there are no nested types. A `type`
-written inside a locus body is an error at the `type` keyword.
+## State (`params`), Methods (`self`), and Instantiation
 
-## Two everyday shapes
+### `params` and `self`
 
-Almost every locus you write at this level is one of two shapes.
+A locus declares its fields and constructor parameters together in a `params { ... }` block. Callers construct a locus with `LocusName { field: value }`, omitting any field that has a default value. Inside a locus's methods and lifecycle hooks, `self.field` reads and mutates `params` fields.
 
-**The app locus** — the outer wrapper for a whole program. Your
-`main` reads arguments and hands off to it:
+### Lifecycle Hooks (`birth`, `run`, `dissolve`) and Lifetime
 
-```hale
-locus App {
-    params { name: String = "world"; }
-    run() {
-        println("hello, ", self.name);
-    }
-}
+A locus may optionally define lifecycle hooks (written **without** the `fn` keyword) that the runtime executes automatically:
 
-fn main() {
-    App { name: std::env::arg_or(1, "world") };
-}
-```
+- **`birth() { ... }`** runs when the locus is constructed to initialize resources.
+- **`run() { ... }`** runs the locus's main body after `birth()` completes.
+- **`dissolve() { ... }`** runs when the locus is torn down to release descriptors or external resources before its memory arena is freed.
 
-This replaces the bare-`main`-with-helpers shape from the basics:
-the app's top-level state and entry point now have a home. (`run`
-is a reserved lifecycle name — the runtime drives it; you never
-declare it with `fn` or call it yourself.)
+How you instantiate a locus determines when `dissolve()` runs:
 
-**The namespace locus** — a home for a coherent vocabulary of
-helpers, with little or no state. Hale's stand-in for a "module
-of functions" or a static class:
+| Instantiation Form | Example | Lifecycle & Lifetime |
+|---|---|---|
+| **`let`-bound** | `let c = Counter { };` | Runs `birth` and `run` immediately; keeps `c` alive for method calls (`c.bump()`) and runs `dissolve` when the enclosing function scope exits. |
+| **Statement-position** | `App { name: "world" };` | Runs `birth`, `run`, and `dissolve` immediately, reclaiming the locus at the semicolon `;`. |
+
+### Declaration Rules for Loci
+
+- **`const` and `type` are top-level only:** Do not place `const` or `type` declarations inside a `locus` body (`hale check` rejects them at the keyword). Declare `const` and `type` at the top level alongside the locus; they are automatically in scope inside every locus in the seed. For per-instance defaults, use a `params` field.
+- **No recursive `params` defaults:** A `params` field default cannot construct the same locus type directly (`params { next: Node = Node { }; }`), via a helper function (`next: Node = make_node();`), or through a cycle of loci (`Alpha` -> `Beta` -> `Alpha`), because construction would recurse infinitely. Holding a *different* locus in `params` with a default is valid; to hold a locus of the same type, omit the default (`next: Node;`) so the caller supplies it.
+
+## The Seven Idiomatic Hale Shapes
+
+Every idiomatic Hale program is composed from seven structural patterns (`spec/styleguide.md`):
+
+| # | Pattern | Shape & When to Use |
+|---|---|---|
+| 1 | **App locus** | Outer wrapper for a binary (`params` populated from CLI args, `run()` entry point, instantiated as `App { ... };` in `fn main()`). |
+| 2 | **Namespace locus** | Empty (or config-only) `params`, methods only. Groups 3+ related functions into a single callable vocabulary. |
+| 3 | **Service locus** | Long-lived component using `birth`, `run`, and `dissolve` (and bus subscriptions). Uses sentinel defaults (such as `fd: Int = -1`) so `dissolve` safely no-ops if `birth` stops early. |
+| 4 | **Spawned child** | `let s = Child { ... };` scoped to a function, or a dynamic per-connection child attached via `accept(c: Conn)` and reclaimed via `release(c: Conn)`. |
+| 5 | **Data collection** | A `@form(vec)`, `@form(hashmap)`, `@form(ring_buffer)`, `@form(lru_cache)`, `@form(set)`, or `@form(heap)` locus managing typed storage ([Collections](./collections.md)). |
+| 6 | **Shape type** | `type Foo { a: Int; b: String; }` for pure value records ([Records & Data](./records.md)). |
+| 7 | **Free `fn`** | Top-level function for stateless calculations; promote to a Namespace locus once 3+ functions form a domain vocabulary. |
+
+### Example: App Locus and Namespace Locus
 
 ```hale
 locus Temps {
@@ -140,23 +97,25 @@ locus Temps {
     fn f_to_c(f: Float) -> Float { return (f - 32.0) * 5.0 / 9.0; }
 }
 
+locus App {
+    params {
+        celsius: Float = 100.0;
+    }
+
+    run() {
+        let conv = Temps { };
+        println(self.celsius, "C = ", conv.c_to_f(self.celsius), "F");
+    }
+}
+
 fn main() {
-    let t = Temps { };
-    println(t.c_to_f(100.0));     // 212
+    App { celsius: 100.0 };
 }
 ```
 
-You instantiate it once and dispatch through it. When three or
-more related free functions show up, this is usually the tidier
-home for them.
+## Grouping Code with `module` Blocks
 
-### What about `module`?
-
-There is a `module NAME { ... }` block, and it does less than the
-word suggests. It groups declarations **for the reader** and
-introduces no namespace: whatever you declare inside it is
-registered under its plain name, so you spell it the same way
-from anywhere in the file.
+A `module NAME { ... }` block visually groups related top-level declarations inside a file without introducing a namespace prefix:
 
 ```hale
 module geo {
@@ -166,55 +125,19 @@ module geo {
 }
 
 fn main() {
-    let p = Point { x: 4, y: 5 };   // `Point`, never `geo::Point`
+    let p = Point { x: 4, y: 5 };   // referenced as `Point`, never `geo::Point`
     println(manhattan(p));          // 9
 }
 ```
 
-Everything else follows from that. A declaration one brace
-deeper is an ordinary declaration: it typechecks, compiles, and
-is reported on identically — the hot-path lint reaches into it,
-what its body does counts in its callers' effects (so an
-`@effects` or `causes:` law sees through it), a bus topic
-declared in it routes, a library's module-nested type
-is reachable across an `import` as `lib::Point`, and two modules
-declaring the same name is the same duplicate-name error as two
-top-level ones.
+Declarations inside a `module` block behave identically to top-level declarations:
+- They are registered under their plain names (`Point`, `manhattan`) across the seed, and exported across `import "lib" as lib;` as `lib::Point`.
+- Duplicate declarations across two `module` blocks in the same seed fail with the standard duplicate-name error.
+- Hot-path lints, `@effects` / `causes:` checks, and bus topic routing inspect declarations inside `module` blocks identically to top-level items.
 
-Two things a module does *not* hold, and it says so rather than
-quietly doing nothing with them:
+> [!WARNING]
+> Two program-level constructs must remain at the **top level** and are rejected inside a `module` block:
+> 1. **Program entry points:** `fn main()` and the entry `main locus App` must be declared at the top level outside any `module`.
+> 2. **Target directives:** `target wasm { ... }` applies to the whole build and must appear at the top level.
 
-- The program's **entry point**. `fn main` has to be at the top
-  level, and a `fn main` inside a module is an error: *the entry
-  point must be top-level* — move it out, or rename it if it was
-  meant to be an ordinary function. A `main locus` inside a module
-  is not the entry either, so the build does not run it: if it is
-  the only `main locus` you wrote, that is an error too — *the entry
-  must be top-level: `main locus App` inside `module inner` is not
-  the program's entry, and nothing else in the seed is* — and the
-  fix is to move it out. Every other check still looks at it while
-  you do (its placement, its bindings), so you see the whole list at
-  once. Keep the entry's `main locus` at the top level.
-- A **`target wasm { }`** block, which is a build directive for the
-  whole program rather than a declaration: *`target` is a
-  program-level declaration; move it to the top level.*
-
-If you want a namespace, the namespace locus above is the tool.
-
-## A rule worth meeting early
-
-Hale has one structural commitment that shapes everything above:
-
-> Every named piece of state belongs to exactly one locus.
-
-No globals, no shared mutable buffer that nobody owns, no
-"floating" value passed around by side channel. If you're not
-sure where some state should live, the productive question is
-"which locus *owns* this?" — and there's almost always a clean
-answer. This is what lets Hale clean up memory and coordinate
-failure without a garbage collector; you'll see the payoff at the
-systems level. For now it's just good hygiene: put state where it
-belongs.
-
-Next: the collections you'll reach for constantly — [Lists &
-maps](./collections.md).
+Next: [Lists & Maps](./collections.md).

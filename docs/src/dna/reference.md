@@ -1,34 +1,22 @@
-# Reference
+# DNA & Habitat Reference
 
-The CLI, the environment, the record's vocabulary, the status
-projection and the files, in one place. The chapters explain; this
-page lists. [spec/dna.md](https://github.com/hale-lang/hale/blob/main/spec/dna.md)
-is the contract behind all of it.
+This reference catalogs every CLI command (`hale dna`, `hale habitat`, `hale node`), environment variable, Git configuration key, record/ledger row kind, `hale dna status --json` field, and file/state location. The normative specification is [`spec/dna.md`](https://github.com/hale-lang/hale/blob/main/spec/dna.md).
 
-## The CLI
-
-`hale dna --help` prints every verb. Here the same lines are grouped by
-the part each verb drives, word for word. Most verbs take the project
-directory as an optional argument and default to the current one.
-
-### Starting: DNA and the genome
-
-[Getting started](./getting-started.md) and
-[DNA, the building block](./dna.md).
-
-```text
-hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library
-                             (each changed practice, and the library as new families, supersede the active one once the Board approves)
-hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust
-hale dna --embedded-digest [--from-tree <dir>]
-                             the digest of the DNA source this binary embeds (nothing else on stdout);
-                             with a checkout, what that tree would embed — a mismatch means the binary
-                             predates the working tree and a mutation run against it proves nothing
+```sh
+hale dna --help
+hale habitat --help
+hale node --help
 ```
 
-The habitat is its own command, the one that brings an organism's
-memory, nerves and senses' store up and migrates them. `hale habitat
---help`:
+---
+
+## CLI Reference
+
+Most `hale dna` commands accept an optional `[project]` directory path and default to the current working directory.
+
+### Habitat & Provisioning (`hale habitat`)
+
+The local habitat provisions and manages every organism's infrastructure (Postgres memory, NATS JetStream nerves, and Prometheus senses store) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`.
 
 ```text
 usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
@@ -45,142 +33,40 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat down
        hale habitat migrate [organism]
        hale habitat sweep <root> | --test-vaults [<root>]
-
-The local habitat holds every organism's infrastructure on this machine:
-one docker compose project, named for the habitat, with a service per
-allocation (memory-<id>, nerves-<id>, senses-<id>, <id> the organism's
-record identity), under ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local.
-It is long-lived: nothing tears it down when work ends, and two checkouts
-of one organism are the same tenant.
-
-up                   birth the habitat the first time, from the genome the
-                     toolchain ships (its positions the nursery's `habitat`
-                     pack, its law the `standard` pack and its document's
-                     `law` items), the one organism born without a parent;
-                     then bring every recorded allocation up through the
-                     compose provider, migrating any whose recorded schema
-                     version is behind this toolchain's; record its
-                     placement (the host `local` with what it offers, the
-                     profile's policy, its head and face on that host, rows
-                     of its record); and start the habitat's body: a systemd
-                     user unit named for the habitat, or, with
-                     --foreground, in this process; --no-body births it and
-                     brings its allocations up and starts no body (what a
-                     test's habitat needs to graft into). Idempotent. Its
-                     backends are chosen at its birth and kept: `own` (the
-                     default) provisions memory, the nerves and the senses'
-                     store as its project's allocations; `operator` adopts
-                     the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
-                     HALE_DNA_NATS_URL_OWNER name, and provisions nothing
-                     of its own. The hosted profile is not built.
-graft <dir>          birth an organism as the habitat's child, the one way an
-                     organism other than the habitat is born: its record's
-                     genesis names the habitat's record as its parent, the
-                     roles its genome needs (`[dna] needs` in its hale.toml:
-                     memory and nerves always, senses unless left out;
-                     undeclared, as a foreign heart is, it is exactly the
-                     organism's own, never a heart's; a Hale heart may
-                     declare `database`, a tenant database of its memory
-                     server handed to it as HALE_DNA_DATABASE_DSN) are
-                     allocated to it and recorded in the habitat's record,
-                     and the `standard` pack is proposed to its Board
-                     (--no-pack leaves it for `hale dna pack apply`).
-                     <dir> is a new application's directory, or with
-                     --attach an application (its workspace's manifest is
-                     the organism's) or a repository that is there
-                     already. A graft that stopped part way goes on
-                     where it stopped when run again; a record born of
-                     anything but this habitat is refused. A new
-                     application takes --profile remote-body --remote
-                     <url> [--body <user@host>]: the record shared over
-                     that remote, the body on that server. --with <pack>
-                     proposes a pack from the toolchain's nursery as
-                     well, planned on the holes the birth proposed (`hale
-                     dna pack apply <pack> --on-holes`, its --set and
-                     --as passed on), so one `review all approve`
-                     ratifies the starting organization whole.
-graft <sapling>      graft a sapling the habitat pins, by name, with no
-                     checkout: its pinned revision is fetched into the
-                     habitat's store (<habitat>/saplings/<name>), its digest
-                     checked (a mismatch refuses, nothing grafted), the
-                     repository there grafted as the habitat's child, the
-                     packs it adopts proposed to its Board (--set values go
-                     to them), and the sapling, revision and digest recorded
-                     on the graft's row. A bare name only; ./<name> is a
-                     directory.
-nursery add <source> the Board trusts a nursery, a directory or a git
-                     repository (the head's Commands::add_nursery), and what
-                     it offers is read into the habitat's record. `refresh`
-                     reads every nursery again (`up` does too): a sapling
-                     first seen is pinned, a newer revision of one pinned is
-                     filed for the Board and never taken; `ratify <sapling>`
-                     pins the revision filed (nothing grafted moves); `list`
-                     shows the nurseries and saplings. The toolchain's own
-                     nursery is always one.
-handover [organism]  what the habitat hands the organism's heart, one
-                     NAME=value a line, a secret only by its vault slot's
-                     name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
-                     HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and
-                     HALE_DNA_OIDC_CLIENT_VAULT, and for each heart role
-                     its genome declares, HALE_DNA_DATABASE_DSN or
-                     HALE_DNA_BROKER_URL, _USER, _VAULT, _SUBJECTS,
-                     _NODE_USER and _NODE_VAULT. `hale dna dev` hands the
-                     heart the same.
-host add <name>      add a machine on the LAN, by the name it resolves under,
-                     as a host the habitat places on over SSH (port 22
-                     unless --port, as --user or this user): prints the
-                     host key first seen there (the one trusted after it)
-                     and the habitat's public key, the line to append to
-                     ~/.ssh/authorized_keys on that machine. Until it is
-                     appended the host is pending-key.
-host probe <name>    probe it again over SSH: what it offers (docker
-                     compose, the user's systemd, its OS and architecture);
-                     a pending-key host whose key is now authorized is
-                     ready. A host that answers with another host key is
-                     refused.
-host remove <name>   remove it; refused while an allocation is placed on it.
-                     The host verbs are the Board's commands of the
-                     habitat's head (Commands::add_host, ::probe_host,
-                     ::remove_host): its body must be up.
-status               the habitat, its genome and body, and each
-                     allocation: its organism, whether each role's service
-                     runs, the schema version memory and the nerves record
-                     against this toolchain's, and how a heart's declared
-                     migration last ran.
-down                 stop the habitat's body and every service of its
-                     project; their data is kept, and `up` brings them back.
-migrate [organism]   bring the organism's allocations up and migrate them:
-                     memory's schema and the nerves' stream move to this
-                     toolchain's, and the head's DSN is kept in the
-                     checkout's .hale/dna/memory.env. With
-                     HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER
-                     set, that server of your own is migrated instead.
-                     Idempotent. The organism defaults to the current
-                     directory. Each role's version is recorded in the
-                     allocation's allocation.json.
-
-sweep <root>         take down every compose project run from under <root>,
-                     a test's habitat: its containers, networks and
-                     volumes, confirmed gone by the project's label. The
-                     projects are named in <root>/.dna-compose-projects
-                     until they are, so a teardown that did not finish is
-                     retried. Never the developer's habitat (under $HOME),
-                     nor the one XDG_DATA_HOME names outside <root>. Exit 1
-                     names what survived; nothing is done without docker.
-                     --test-vaults sweeps the test vaults of processes
-                     that are gone (<tmp>/hale-test-vaults-<uid>, or
-                     <root>): each one's habitat comes down before the
-                     vault goes, and a habitat whose vault went first is
-                     found by its compose working directory.
-
-Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
-and `work` run on what is up and migrated, and name this command when it
-is not.
 ```
 
-### The record
+| Subcommand | Description |
+| --- | --- |
+| `up` | Initializes the habitat on first run from the embedded genome (the only organism born without a parent; proposes the `habitat` and `standard` nursery packs), brings up all recorded allocations via the `compose` provider, migrates schemas behind the current toolchain, records placement (`local` host, policy, head, and face), and starts the habitat body (as a `systemd --user` unit, or in-process with `--foreground`; `--no-body` provisions without starting the body). `--backends own` (default) provisions Docker Compose services; `--backends operator` adopts `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER`. Idempotent. |
+| `graft <dir>` | Births a new organism as a child of the habitat (`record.genesis` names the habitat record as parent), allocates required roles (`[dna] needs` in `hale.toml`: `memory` and `nerves` always, `senses` unless omitted, plus optional `database` for a Hale heart passed as `HALE_DNA_DATABASE_DSN`), and proposes the `standard` pack (`--no-pack` skips it). Pass `--attach` for an existing application or repository, `--profile remote-body --remote <url> [--body <user@host>]` for a remote body, and `--with <pack> [--set k=v]… [--as <who>]` to plan a nursery pack on top of the initial `holes` Reviews. |
+| `graft <sapling>` | Fetches a pinned sapling by bare name into `<habitat>/saplings/<name>`, verifies its file digest, grafts it as a child of the habitat, proposes its packs (`--set` values forwarded), and records the sapling name, revision, and digest. |
+| `nursery add \| refresh \| list \| ratify` | `add <dir\|git-url>` trusts a nursery (`Commands::add_nursery`). `refresh` re-reads all nurseries (pinning newly seen saplings and filing newer revisions of existing saplings for the Board without moving grafted organisms). `ratify <sapling>` pins a filed revision. `list` displays all trusted nurseries and saplings. |
+| `handover [organism]` | Prints `NAME=value` environment lines handed to the organism's application heart (referencing secrets by vault slot name only): `HALE_DNA_APPLICATION_ID`, `HALE_DNA_HEAD_URL`, `HALE_DNA_OIDC_ISSUER`, `HALE_DNA_OIDC_CLIENT`, `HALE_DNA_OIDC_CLIENT_VAULT`, and per-role `HALE_DNA_DATABASE_DSN` or `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT`. |
+| `host add \| probe \| remove <name>` | Board commands on the habitat head (`Commands::add_host`, `::probe_host`, `::remove_host`). `add` probes `<name>` over SSH (`--user`, `--port 22`), trusts the first-seen host key, and prints the habitat's public key line for `~/.ssh/authorized_keys` (marking the host `pending-key`). `probe` re-probes capabilities (`compose`, `systemd-user`, OS, arch) and marks authorized hosts `ready`. `remove` deletes a host with no active allocations. |
+| `status` | Prints the habitat's genome, body, face URL, and every allocation (organism, service status, memory/nerves schema versions vs. toolchain, and last heart migration result). |
+| `down` | Stops the habitat body, face, and all Compose services while preserving persistent volumes. |
+| `migrate [organism]` | Starts the organism's allocations and migrates its Postgres memory schema and NATS JetStream stream to the current toolchain version, saving the head DSN in `.hale/dna/memory.env` (and recording versions in `allocation.json`). Uses `HALE_DNA_MEMORY_DSN_OWNER` / `HALE_DNA_NATS_URL_OWNER` when set. |
+| `sweep <root> \| --test-vaults [<root>]` | Tears down test habitat Compose projects (containers, networks, volumes) listed under `<root>/.dna-compose-projects` or stale test vaults under `<tmp>/hale-test-vaults-<uid>`, never touching the developer's `$HOME` habitat. |
 
-[Memory and the record](./memory.md).
+---
+
+### Genome & Toolchain (`hale dna`)
+
+See [Getting started](./getting-started.md) and [DNA, the building block](./dna.md).
+
+```text
+hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain, and propose this version's practices and library
+                             (each changed practice, and the library as new families, supersede the active one once the Board approves)
+hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust
+hale dna --embedded-digest [--from-tree <dir>]
+                             the digest of the DNA source this binary embeds (nothing else on stdout);
+                             with a checkout, what that tree would embed — a mismatch means the binary
+                             predates the working tree and a mutation run against it proves nothing
+```
+
+### The Record & Cross-Record Connections
+
+See [Memory and the record](./memory.md).
 
 ```text
 hale dna status [project] [--json]
@@ -198,9 +84,9 @@ hale dna handoff <n> task <id> | receipt <digest>
                              `handoff` lists, `handoff accept <id>` accepts one received, `handoff sync` reads acceptances back
 ```
 
-### Memory
+### Memory (Postgres), Ledger, and Receipts
 
-[Memory and the record](./memory.md).
+See [Memory and the record](./memory.md).
 
 ```text
 hale dna memory migrate [dir]
@@ -221,9 +107,9 @@ hale dna show org|processes [--json] [project]
                              the org chart and the process model, as queries over memory
 ```
 
-### The nerves
+### Nerves (NATS JetStream)
 
-[The nerves](./nerves.md).
+See [The nerves](./nerves.md).
 
 ```text
 hale dna nerves migrate [dir]
@@ -233,9 +119,9 @@ hale dna nerves urls [dir]   the token and each role's URL of nerves that are up
 hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
 ```
 
-### The spine
+### The Spine
 
-[The spine](./spine.md).
+See [The spine](./spine.md).
 
 ```text
 hale dna run [project] [--port N] [--no-iris]
@@ -246,9 +132,9 @@ hale dna definitions [project] [--json]
 hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name
 ```
 
-### The heart and the body
+### Heart, Body, Codebases, Fleet, and Nodes
 
-[The heart and the body](./heart.md).
+See [The heart and the body](./heart.md).
 
 ```text
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
@@ -256,7 +142,7 @@ hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the application on an apply, watch the window, report back
 hale dna application remove [project] [--as <who>]
                              the attached application removed (`application.detached` in the record) and its
-                             broker account revoked: its user, its password and its vault entry (GH #989)
+                             broker account revoked: its user, its password and its vault entry
 hale dna codebase [list | attach <name> --repo <url> --build <cmd> --test <cmd> [--branch <name>] | detach <name>]
                              a foreign codebase attached with no application (`codebase.attached` in the record): a leg
                              works a branch of its repository, verifies with the two commands, and its review opens there
@@ -273,23 +159,22 @@ hale dna rollback <mutation> express the base a Mutation was applied on, again
                              (`[dna] fleet = "<name>"` in hale.toml names the fleet seed; `hale node <name>` runs a node)
 ```
 
-A node is its own command. `hale node --help`:
+Fleet node agent (`hale node --help`):
 
 ```text
 usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]
 
 The agent that expresses a fleet's instances on one machine, from
 the record: it reconciles the instances the fleet places on this
-host (`host("<name>")`) with what is running here
-(GH #566 F5). With HALE_DNA_NATS_URL_APP
+host (`host("<name>")`) with what is running here. With HALE_DNA_NATS_URL_APP
 and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it
 hands both to every instance, which says what it says onto the
-nerves itself (GH #986).
+nerves itself.
 ```
 
-### Senses and reflexes
+### Senses and Reflexes
 
-[Senses and reflexes](./senses.md).
+See [Senses and reflexes](./senses.md).
 
 ```text
 hale dna senses up [dir]     bring up the organism's senses' store in the local habitat and print its read URL
@@ -300,9 +185,9 @@ hale dna concern raise <source> <what…> [--severity N]
                              a concern from a locus path about the part above it; persistent ones become knowledge proposals
 ```
 
-### The skin
+### The Skin (Secrets & Vault)
 
-[The skin](./skin.md).
+See [The skin](./skin.md).
 
 ```text
 hale dna secret set <NAME> [--body <user@host>]
@@ -311,9 +196,9 @@ hale dna secret set <NAME> [--body <user@host>]
 hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)
 ```
 
-### Legs and voice
+### Worker Legs and Voice (Models)
 
-[Legs, hands and voice](./legs.md).
+See [Legs, hands and voice](./legs.md).
 
 ```text
 hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,
@@ -327,7 +212,7 @@ hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode
 
 ### Schedules
 
-[Schedules](./schedules.md).
+See [Schedules](./schedules.md).
 
 ```text
 hale dna schedule [pause <id> | resume <id>]
@@ -335,12 +220,12 @@ hale dna schedule [pause <id> | resume <id>]
                              convenes it) and their occurrences; pause and resume are rows in your name (--as <who>)
 hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]
                              a schedule asked of the organization, which declares it or refuses it; an occurrence
-                             is an execution of the definition (GH #1143)
+                             is an execution of the definition
 ```
 
-### The head and the face
+### Head, Browser Face, Board, and Reviews
 
-[The head and the face](./head.md).
+See [The head and the face](./head.md).
 
 ```text
 hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-port P] [--source-drafts]
@@ -370,9 +255,9 @@ hale dna github sync         mirror pending Reviews to pull requests and read th
 hale dna report [project]    file a report from the record since the last one (report.filed)
 ```
 
-### Tasks and people
+### Tasks and Human Workflows
 
-[One task, end to end](./workflow.md).
+See [One task, end to end](./workflow.md).
 
 ```text
 hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--codebase <name>] [--no-wait] <outcome…>
@@ -384,9 +269,9 @@ hale dna task decide <id>    report a decision someone else made (--decided-by <
 hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows
 ```
 
-### Shaping
+### Shaping the Organization (`fill`, `position`, `apply`, `pack`, `practice`)
 
-[Shaping and governing it](./shaping.md).
+See [Shaping and governing it](./shaping.md).
 
 ```text
 hale dna fill <position> <holder> [project] [--as <who>]
@@ -417,219 +302,193 @@ hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <
                              propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
 ```
 
-## The environment
+---
 
-The variables you set yourself. Everything else the CLI and the body
-set for the processes they start.
+## Environment Variables and Git Configuration
 
-| variable | what it does |
-|---|---|
-| `HALE_DNA_MEMORY_DSN_OWNER` | a Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory (`hale habitat migrate`, `memory migrate`, `upgrade`); `dev`, `head` and `show` derive from it and migrate nothing |
-| `HALE_DNA_NATS_URL_OWNER` | a NATS server of your own instead of the organism's nerves allocation: the owner user that creates the stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive from it |
-| `HALE_DNA_MEMORY_DSN_SPINE` | the spine role's DSN, which `hale dna run` needs; `memory migrate` prints it |
-| `HALE_DNA_NATS_URL_SPINE`, `HALE_DNA_NATS_ORG` | the spine's nerves URL and the organization's token, which `hale dna run` needs; `nerves migrate` prints them |
-| `HALE_DNA_MEMORY_DSN_HEAD` | the head role's DSN, for a head and nothing else; `memory migrate` prints it |
-| `HALE_DNA_RECEIPT_KEY` | sixteen characters or more: the key protected evidence is sealed under, given to `memory migrate` once |
-| `HALE_DNA_OWNER_KEYS` | `<owner>=<key> …`: the owners of a shared record, for `memory migrate` |
-| `HALE_DNA_API`, `HALE_DNA_ID_TOKEN` | the head a leg's `hale dna work` verbs talk to without `--api`, and the bearer token it presents |
-| `HALE_DNA_GENOME_POLL` | seconds between polls of the record's remote for a changed genome (300) |
-| `HALE_DNA_NO_BUILD_CACHE` | build every seed, instead of reusing a build of the same sources |
-| `HALE_DNA_COMPOSE=off` | a repository's body leaves its compose services to you instead of bringing them up and down |
-| `HALE_VAULT_DIR`, `HALE_VAULT_ADDR`, `HALE_VAULT_TOKEN` | where the vault is: a local directory, or a vault's HTTP API and its token |
+### Operator Environment Variables
 
-Every `HALE_DNA_*` variable, with its default and effect, is in the
-spec's [Environment](https://github.com/hale-lang/hale/blob/main/spec/dna.md#environment)
-table; a test fails when the tree names one the table does not. The
-vault's three are in the runtime's
-[environment table](https://github.com/hale-lang/hale/blob/main/spec/runtime.md#diagnostic--tuning-env-vars).
+The table below lists environment variables set by operators; internal child-process variables are managed automatically by the CLI and host. The complete normative list is maintained in [`spec/dna.md#environment`](https://github.com/hale-lang/hale/blob/main/spec/dna.md#environment) and [`spec/runtime.md#diagnostic--tuning-env-vars`](https://github.com/hale-lang/hale/blob/main/spec/runtime.md#diagnostic--tuning-env-vars).
 
-The record's settings live in the clone's git config:
+| Variable | Purpose |
+| --- | --- |
+| `HALE_DNA_MEMORY_DSN_OWNER` | External Postgres owner DSN (used instead of the local habitat allocation) for schema migrations (`hale habitat migrate`, `hale dna memory migrate`, `hale dna upgrade`); `dev`, `head`, and `show` derive role DSNs from it without migrating. |
+| `HALE_DNA_NATS_URL_OWNER` | External NATS owner URL (used instead of the local habitat allocation) for stream creation (`hale habitat migrate`, `hale dna nerves migrate`); `dev` and `nerves urls` derive role URLs from it. |
+| `HALE_DNA_MEMORY_DSN_SPINE` | Postgres spine role DSN required by `hale dna run` (printed by `hale dna memory migrate`). |
+| `HALE_DNA_NATS_URL_SPINE`, `HALE_DNA_NATS_ORG` | Spine NATS URL and organization stream token required by `hale dna run` (printed by `hale dna nerves migrate`). |
+| `HALE_DNA_MEMORY_DSN_HEAD` | Postgres head role DSN used exclusively by the head API server (printed by `hale dna memory migrate`). |
+| `HALE_DNA_RECEIPT_KEY` | Encryption key (16+ characters) used to seal `customer` and `confidential` evidence in Postgres memory; passed once to `hale dna memory migrate`. |
+| `HALE_DNA_OWNER_KEYS` | Space-separated `<owner>=<key>` pairs defining organization owners on a shared record during `hale dna memory migrate`. |
+| `HALE_DNA_API`, `HALE_DNA_ID_TOKEN` | Default head HTTP URL and OIDC bearer token used by `hale dna work` when `--api` is omitted. |
+| `HALE_DNA_GENOME_POLL` | Interval in seconds (default `300`) between polls of the remote Git repository for genome updates. |
+| `HALE_DNA_NO_BUILD_CACHE` | When set, forces fresh compilation of every seed instead of reusing cached binaries. |
+| `HALE_DNA_COMPOSE=off` | Prevents a repository's body from automatically starting and stopping its `compose.yaml` services. |
+| `HALE_VAULT_DIR`, `HALE_VAULT_ADDR`, `HALE_VAULT_TOKEN` | Vault location: local filesystem directory (`HALE_VAULT_DIR`), or HTTP Vault API URL and token (`HALE_VAULT_ADDR`, `HALE_VAULT_TOKEN`). |
 
-| key | what it does |
-|---|---|
-| `dna.remote` | the remote the record syncs with (`origin` when unset) |
-| `dna.trust` | `local` (every writer to the record is trusted) or `signed` (a relayed row needs a verified signature) |
-| `dna.owner` | on a shared record, the organization this body is |
-| `dna.body` | `<user@host>`, set by `body provision` (or `new --body`): where `body start`, `stop`, `logs` and `secret set` go without `--body` |
-| `dna.unix.member` | `uid:<n>=<name>`: who a local uid is, for the head's socket |
-| `dna.principal` | `oidc` for a hosted head |
-| `dna.oidc.issuer`, `dna.oidc.client`, `dna.oidc.redirect` | the issuer, the head's client id, its redirect URI |
-| `dna.oidc.member` | `<subject>=<name>`, one per person: who a subject is |
-| `dna.oidc.board` | the member names that act with Board authority |
-| `dna.oidc.key` | the pinned signing key of an issuer on the loopback |
-| `dna.github`, `dna.github.board` | the `owner/repo` Reviews are mirrored to, and the logins whose reviews count as the Board's |
+### Repository Git Configuration Keys (`.git/config`)
 
-## The record's vocabulary
+| Git Config Key | Purpose |
+| --- | --- |
+| `dna.remote` | Git remote name used for genome synchronization (defaults to `origin`). |
+| `dna.trust` | `local` (trusts all writers to the record) or `signed` (requires verified cryptographic signatures on relayed rows). |
+| `dna.owner` | Organization identity that this body represents on a multi-owner shared record. |
+| `dna.body` | Default `<user@host>` SSH target set by `body provision` or `hale habitat graft --body` (used by `body start`, `stop`, `logs`, and `secret set`). |
+| `dna.unix.member` | `uid:<n>=<name>` mapping from local OS UID to person identity on the head's Unix socket. |
+| `dna.principal` | Set to `oidc` to enable OpenID Connect authentication on the head and `hale dna ui`. |
+| `dna.oidc.issuer`, `dna.oidc.client`, `dna.oidc.redirect` | OIDC issuer URL, client ID, and callback redirect URI. |
+| `dna.oidc.member` | `<subject>=<name>` mapping from OIDC `sub` claim to a person in the record (multi-valued). |
+| `dna.oidc.service` | `<subject>=<service>` mapping from OIDC `sub` claim to a read-only service principal (multi-valued). |
+| `dna.oidc.board` | Comma-separated member names authorized to act with `board` authority. |
+| `dna.oidc.key` | Base64 `SubjectPublicKeyInfo` pinned signing key required for loopback OIDC issuers. |
+| `dna.github`, `dna.github.board` | Target `<owner>/<repo>` for `hale dna github sync`, and comma-separated GitHub logins whose PR reviews carry `board` authority. |
 
-Every row has a kind, an entity, a body and an author. The **memory**
-column is where the row lives: `record` is `record_rows` and `ledger`
-is `ledger_rows`, both in the record's schema in memory (Postgres).
-The two are read as one sequence ([Memory and the record](./memory.md)). The table
-in `dna/core/routing.hl` (`memory_of`) decides. A reader that meets a
-kind it does not know keeps walking.
+---
 
-### The record and memory
+## Record and Ledger Row Vocabulary
 
-| kind | memory | what it is |
-|---|---|---|
-| `structure.observed` | record | the compiler's model of one of the application's parts, at the graft |
-| `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it (also inside a ratified graph proposal's receipt) |
-| `graph.ingested` | record | `hale dna ingest` read the repository at a commit (`added`, `changed`, `retired`, the `review_id` of its proposal) |
-| `graph.requested` / `graph.proposed` / `graph.refused` | record | `hale dna ingest` asks the running organization to open its Review; opened, or not. `graph.refused <row id>` with `by: memory` is a graph row memory would not project; the projection goes on past it |
-| `model.rule` | record | the size a selector's Work needs, and the sizes a more specific selector may move it to (`hale dna models rule`, `task create --size`) |
-| `model.category` | record | which model fills `<mode>.<size>`, whether it returns tool calls, and its price (`hale dna models category`) |
-| `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
-| `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
-| `receipt.filed` | ledger | an internal document filed as evidence |
-| `receipt.classified` / `receipt.withheld` | ledger | a protected body memory keeps sealed, or one withheld because no memory could keep it |
-| `receipt.disclosed` | ledger | a reader authorized, for a purpose |
-| `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
-| `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
-| `receipt.redacted` | ledger | the body removed, the digest kept |
-| `connection.proposed` / `connection.closed` | record | a connection to another record, for the Board; and its closing |
-| `handoff.published` / `handoff.refused` | ledger | a fact written into a connected record, or why not |
-| `handoff.received` | ledger | an envelope in the receiving record's inbox (a kind of the exchange's envelopes since GH #1590, never a row) |
-| `handoff.accepted` / `handoff.accepted_by_peer` | ledger | an acceptance in the receiving record, and its admission back in the origin |
-| `task.transfer_requested` / `task.transfer_accepted` | ledger | a Task offered across a connection or to another owner, and accepted |
+Every event row contains a `kind`, `entity`, `body`, and `author`. In Postgres memory (schema `dna_<record-identity>`), rows are routed by `dna/core/routing.hl` (`memory_of`) into either `record_rows` (**record**: governance, structure, mutations, and reviews) or `ledger_rows` (**ledger**: day-to-day task execution, leases, and readings), and read back as a single unified sequence ([Memory and the record](./memory.md)).
 
-### The spine
+### 1. Record, Graph, Evidence, and Cross-Record Connections
 
-| kind | memory | what it is |
-|---|---|---|
-| `intent.requested` | ledger | an ask from a clone with no organization running |
-| `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
-| `intent.unrecovered` | ledger | an intent offered before a restart that no admission names; never re-offered |
-| `task.born` | ledger | the work an intent or a settled Review made |
-| `workflow.admitted` / `workflow.refused` | ledger | an execution admitted (definition, revision, inputs, the bound recipe), or refused |
-| `workflow.ask_refused` | ledger | an ask refused before any Task was minted |
-| `workflow.settled` | ledger | an execution settled `done`, `failed` or `cancelled` |
-| `step.registered` / `step.activated` / `step.completed` / `step.failed` | ledger | a step's required set, then its life |
-| `attempt.admitted` / `attempt.outcome` | ledger | one attempt and the request it was admitted with; its disposition, result and evidence |
-| `work.settled` | ledger | a unit of work settled, naming the attempt it settled on |
-| `effect.requested` / `effect.result` | ledger | the exclusive claim on an effect key, and its outcome |
-| `effect.relayed` | ledger | an attempt a leg relay answered pending: a leg's to claim at the head |
-| `effect.redelivered` | ledger | a claimed attempt dispatched again after a restart |
-| `claim.taken` / `claim.released` | ledger | a node's claim by id before it acts, and its release |
-| `lease.taken` / `lease.renewed` / `lease.released` | ledger | the runtime's lease on its record, with its fencing token |
-| `budget.exhausted` | ledger | the window's model allowance is spent |
-| `model.called` | ledger | a model call and its evidence |
-| `grant.contracted` / `grant.revoked` / `grant.refused` | record | authority narrowed, taken back, or born wider than its ceiling |
-| `grant.reservation_refused` / `grant.fenced` | ledger | a spend the window would not admit; an admission refused because the grant's epoch moved |
-| `spend.reserved` / `spend.settled` / `spend.compensated` | ledger | a spend admitted; one attempt's actual consumption; money that came back, authorized by name |
-| `optimize.refused` | ledger | the organization's pass over itself did not run |
-| `org.reviewed` | record | that pass's own answer |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `structure.observed` | `record` | Compiler topology model of an application locus or topic captured at graft time. |
+| `graph.node` / `graph.edge` / `graph.retired` | `record` | Addition or retirement of a node or hyperedge in the repository knowledge graph. |
+| `graph.ingested` | `record` | Summary of `hale dna ingest` at a commit (`added`, `changed`, `retired`, and proposal `review_id`). |
+| `graph.requested` / `graph.proposed` / `graph.refused` | `record` | Request to open an ingest/graph Review, the resulting Review, or a projection refusal (`by: memory`). |
+| `model.rule` | `record` | Model size routing rule (`hale dna models rule`, `task create --size`). |
+| `model.category` | `record` | Model backend assignment, `--tools` capability flag, and pricing for `<mode>.<size>` (`hale dna models category`). |
+| `responsibility.proposed` | `record` | Inferred one-line locus responsibility proposal awaiting ratification. |
+| `candidate.dropped` | `record` | Removes a retained candidate branch locally and across clones on sync. |
+| `receipt.filed` | `ledger` | Internal document filed as evidence. |
+| `receipt.classified` / `receipt.withheld` | `ledger` | Protected evidence (`customer` / `confidential`) sealed in Postgres memory, or withheld when no memory was available. |
+| `receipt.disclosed` | `ledger` | Grants a named reader access to a protected receipt for a stated purpose. |
+| `receipt.read` / `receipt.read_refused` | `ledger` | Audit row recording an authorized read (or refusal) of protected evidence. |
+| `receipt.held` / `receipt.hold_released` | `ledger` | Retention hold preventing redaction of a receipt digest, and its release. |
+| `receipt.redacted` | `ledger` | Permanent erasure of a receipt body while retaining its digest and policy note. |
+| `connection.proposed` / `connection.closed` | `record` | Proposal to connect to an external record (`hale dna connect`), and connection closure (`hale dna disconnect`). |
+| `handoff.published` / `handoff.refused` | `ledger` | Fact published across a connection (`hale dna handoff`), or refusal reason. |
+| `handoff.received` | `ledger` | Incoming handoff envelope in the receiving record's exchange inbox. |
+| `handoff.accepted` / `handoff.accepted_by_peer` | `ledger` | Acceptance of a received handoff locally, and confirmation synced back to the origin record. |
+| `task.transfer_requested` / `task.transfer_accepted` | `ledger` | Cross-record or cross-owner Task transfer offer and acceptance. |
 
-### Legs
+### 2. The Spine (Intents, Workflows, Leases, and Budgets)
 
-| kind | memory | what it is |
-|---|---|---|
-| `attempt.claimed` | ledger | a leg's lease on an admitted attempt, taken at the head |
-| `attempt.outcome_requested` / `attempt.outcome_refused` | ledger | the outcome a leg handed back under its lease, or why the owner would not settle it |
-| `attempt.allowance_requested` | ledger | a leg's ask for its attempt's spend |
-| `attempt.allowance_granted` / `attempt.allowance_refused` | ledger | the budget's one gate answering it (also the editor's, and `review:<id>` for the Leader's) |
-| `attempt.released` | ledger | a leg gave its lease back without an outcome |
-| `attempt.unresolved` | ledger | an `uncertain` performer's attempt with no known outcome, until a person resolves it |
-| `friction.filed` | record | what got in a position's way |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `intent.requested` | `ledger` | Task intent recorded from a clone when no organism body is running (`--no-wait`). |
+| `intent.offered` / `intent.refused` | `ledger` | Intent admitted by the spine, or refused with a reason. |
+| `intent.unrecovered` | `ledger` | Intent offered before a restart before a `task.born` row was committed (never re-offered automatically). |
+| `task.born` | `ledger` | Task created from an admitted intent or settled Review. |
+| `workflow.admitted` / `workflow.refused` | `ledger` | Workflow execution admitted (definition, revision, inputs, bound recipe) or refused. |
+| `workflow.ask_refused` | `ledger` | Workflow request refused before minting a Task. |
+| `workflow.settled` | `ledger` | Workflow execution completed with disposition `done`, `failed`, or `cancelled`. |
+| `step.registered` / `step.activated` / `step.completed` / `step.failed` | `ledger` | Lifecycle transitions of an individual workflow step. |
+| `attempt.admitted` / `attempt.outcome` | `ledger` | Work attempt admitted by the spine, and its final settled disposition, result, and evidence. |
+| `work.settled` | `ledger` | Unit of Work settled, referencing the winning attempt ID. |
+| `effect.requested` / `effect.result` | `ledger` | Exclusive idempotency claim on an external effect key, and its resolved outcome. |
+| `effect.relayed` | `ledger` | Attempt queued by `dna::LegRelay` for external worker legs to claim via the head. |
+| `effect.redelivered` | `ledger` | Claimed attempt re-dispatched after a restart. |
+| `claim.taken` / `claim.released` | `ledger` | Node execution claim taken prior to acting, and its release. |
+| `lease.taken` / `lease.renewed` / `lease.released` | `ledger` | Runtime lease transitions with fencing tokens. |
+| `budget.exhausted` | `ledger` | Model spend budget window exhausted. |
+| `model.called` | `ledger` | LLM invocation audit record (adapter, backend, model, tokens, micro-dollar cost, latency). |
+| `grant.contracted` / `grant.revoked` / `grant.refused` | `record` | Autonomy grant narrowed, revoked, or clamped at startup because it exceeded its `ceiling`. |
+| `grant.reservation_refused` / `grant.fenced` | `ledger` | Monetary spend refused by window limit or stale grant epoch. |
+| `spend.reserved` / `spend.settled` / `spend.compensated` | `ledger` | Monetary spend reserved against a grant, settled with actual cost, or refunded/compensated. |
+| `optimize.refused` | `ledger` | Scheduled `optimize-walk` pass skipped (e.g., due to an exhausted budget window). |
+| `org.reviewed` | `record` | Outcome of the Leader's `optimize-walk` pass over organizational signals. |
 
-### Changes and Reviews
+### 3. Worker Legs (`hale dna work`)
 
-| kind | memory | what it is |
-|---|---|---|
-| `mutation.requested` | record | which Work and attempt asked for the Mutation |
-| `mutation.proposed` | record | a change proposed for a Task: class, objective, target, base |
-| `mutation.worktree` / `mutation.located` / `mutation.candidate` | record | the sandbox; the files found and the grant; the candidate commit |
-| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | record | what the autonomy boundary decided |
-| `mutation.topology` | record | the diff names a plan or the manifest: re-classed for the Board |
-| `mutation.applied` / `mutation.apply_retried` | record | the candidate applied to the genome; the apply run again |
-| `mutation.retained` / `mutation.rolled_back` | record | kept after its observation window, or the genome back at the base |
-| `mutation.rejected` / `mutation.revise` | record | refused after review, or sent back |
-| `mutation.refused` / `mutation.failed` | record | not applied, or did not survive its own verification |
-| `evidence.<step>` | record | a verification step's output by digest: `base`, `fmt`, `check`, `verify`, `test`, `fleet`, `replay`, `rollback`, `diff` |
-| `evidence.magnitude` | record | the measured magnitude of the change |
-| `review.requested` | record | the Review: question, authority, candidate, disposition, evidence, diffs |
-| `review.routed` / `review.signed` | record | what a routed Review requires; an approval it admitted that settled nothing |
-| `review.verdict` | record | a verdict in the reviewer's name, from a clone or a forge |
-| `review.command_decided` | record | a Review decided by a command |
-| `review.settled` / `review.refused` | record | the verdict that decided it, or why one was not admitted |
-| `review.reasoned` | record | the deciding verdict's comment |
-| `gate.observed` | record | a gate's check run at the candidate, as the forge reported it |
-| `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `attempt.claimed` | `ledger` | Attempt lease claimed by a leg position holder at the head. |
+| `attempt.outcome_requested` / `attempt.outcome_refused` | `ledger` | Outcome submitted by a leg under its lease, or refusal by the spine. |
+| `attempt.allowance_requested` | `ledger` | Leg request for an attempt's model spend allowance. |
+| `attempt.allowance_granted` / `attempt.allowance_refused` | `ledger` | Budget gate response for a leg attempt, editor pass, or Leader Review evaluation (`review:<id>`). |
+| `attempt.released` | `ledger` | Lease voluntarily released by a leg without an outcome. |
+| `attempt.unresolved` | `ledger` | Attempt by an `uncertain` performer whose outcome failed to settle or whose lease expired; awaits `hale dna effect resolve`. |
+| `friction.filed` | `record` | Operational friction reported by a worker (`hale dna work friction`). |
 
-### The heart and the body
+### 4. Code Mutations and Reviews
 
-| kind | memory | what it is |
-|---|---|---|
-| `application.attached` / `application.detached` | record | the application the organism oversees, and its removal |
-| `codebase.attached` / `codebase.detached` | record | a foreign codebase attached with no application: repository, build and test commands, default branch; and its removal |
-| `task.delivered` / `task.refused` | ledger | a codebase task's verdict: a merged pull request or an approved brief is delivered, a closed one or an unapproved brief refused; an edited merge also carries the diff as a receipt, and the pull request's comments are receipts on the row |
-| `expression.restart_requested` | record | the organization asks for a change to be expressed |
-| `expression.restarted` / `expression.deployed` | record | what the new expression reports, or what a deployment gateway expressed |
-| `expression.observed` / `expression.crashed` | record | the observation window's outcome |
-| `observation.requested` / `observation.refused` | record | the host's observation report as a row |
-| `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
-| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
-| `node.started` / `node.build_failed` | record | a node runs a genome; or a genome did not build, and it stayed on the last |
-| `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
-| `body.provisioned` | record | a machine made able to run it |
-| `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is in the vault where the body runs |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `mutation.requested` / `mutation.proposed` | `record` | Mutation requested by a Work/attempt, and its proposed change class, objective, target, and base commit. |
+| `mutation.worktree` / `mutation.located` / `mutation.candidate` | `record` | Scratch worktree path, located target files and grant, and resulting candidate commit SHA. |
+| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | `record` | Autonomy boundary `dispose()` outcome for the candidate. |
+| `mutation.topology` | `record` | Candidate re-classified to `topology` (Board authority) because its diff touches a fleet seed or `hale.toml`. |
+| `mutation.applied` / `mutation.apply_retried` | `record` | Candidate commit applied to the genome branch, or retried. |
+| `mutation.retained` / `mutation.rolled_back` | `record` | Applied mutation kept after passing its observation window, or rolled back to base on failure. |
+| `mutation.rejected` / `mutation.revise` / `mutation.refused` / `mutation.failed` | `record` | Candidate rejected or sent back by a reviewer, refused at apply time, or failed verification. |
+| `evidence.<step>` | `record` | Receipt digest for a verification step (`base`, `fmt`, `check`, `verify`, `test`, `fleet`, `replay`, `rollback`, `diff`). |
+| `evidence.magnitude` | `record` | Computed 10-dimensional semantic magnitude vector of the candidate. |
+| `review.requested` | `record` | Opens a Review (question, required authority, candidate digest, disposition, evidence, and diffs). |
+| `review.routed` / `review.signed` | `record` | Required signer positions and CI gates from `hale dna route`, and individual signer approvals prior to final settlement. |
+| `review.verdict` / `review.command_decided` | `record` | Verdict submitted by a reviewer (CLI, UI, or GitHub PR sync). |
+| `review.settled` / `review.refused` / `review.reasoned` | `record` | Final settlement of the Review, verdict refusal reason, and reviewer comment. |
+| `gate.observed` | `record` | CI check run status at the candidate commit observed from the forge. |
+| `github.pr` / `github.commented` | `record` | Mirrored GitHub Pull Request URL/number and settlement comment posted by `hale dna github sync`. |
 
-### Senses and reflexes
+### 5. Heart, Body, Codebases, and Fleet
 
-| kind | memory | what it is |
-|---|---|---|
-| `reading.recorded` | ledger | an application's event, landed as a reading before anything acts on it |
-| `reflex.acted` | ledger | what a node did about a reflex's firing |
-| `pressure.requested` / `pressure.raised` | ledger | a signal from a source, and its answer |
-| `pressure.remeasured` | ledger | the declared fitness signals, measured again after a change |
-| `concern.requested` / `concern.raised` / `concern.refused` | ledger | a concern from a part about the part above it, and its answer |
-| `concern.proposed` | record | three raises became a proposal |
-| `appendage.proposed` / `appendage.candidate` | record | an organ the organization proposes for itself, and the Mutation that proposes it |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `application.attached` / `application.detached` | `record` | Application seed attached to the organism, or detached via `hale dna application remove`. |
+| `codebase.attached` / `codebase.detached` | `record` | Foreign repository attached via `hale dna codebase attach` (repo URL, build/test commands, default branch) or detached. |
+| `task.delivered` / `task.refused` | `ledger` | Final verdict on an attached codebase task (merged PR / approved brief vs. closed PR / unapproved brief, with PR diffs and comments attached as receipts). |
+| `expression.restart_requested` | `record` | Spine request for the host to rebuild and restart the application at a newly applied revision. |
+| `expression.restarted` / `expression.deployed` | `record` | Confirmation that the new runtime expression started or deployed. |
+| `expression.observed` / `expression.crashed` | `record` | Post-deploy observation window outcome (clean survival vs. crash with exit code). |
+| `observation.requested` / `observation.refused` | `record` | Host observation report submission. |
+| `fleet.deploy` | `record` | Genome revision targeted for fleet expression (`hale dna deploy`). |
+| `instance.up` / `instance.exited` | `ledger` | Per-instance process status reported by `hale node <name>`. |
+| `node.started` / `node.build_failed` | `record` | Node agent startup at a genome revision, or build failure keeping the prior revision running. |
+| `body.claimed` / `body.released` | `ledger` | Fenced body lease acquisition or release. |
+| `body.provisioned` | `record` | Remote host provisioned via `hale dna body provision`. |
+| `body.credential_missing` / `body.credential_present` | `ledger` | Whether the body's vault holds the required model credentials. |
 
-### The skin
+### 6. Senses, Reflexes, Skin, and Schedules
 
-| kind | memory | what it is |
-|---|---|---|
-| `secret.rotated` | record | a credential set or rotated: its name and where, never the value |
-| `violation.recorded` | record | a closure a part absorbed and went on from: `adapter_undeliverable`, `lease_unsettled`, `pulse_stopped` |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `reading.recorded` | `ledger` | Application telemetry or upstream watch event recorded before any reflex acts. |
+| `reflex.acted` | `ledger` | Automated action taken by a node in response to a firing reflex. |
+| `pressure.requested` / `pressure.raised` / `pressure.remeasured` | `ledger` | Pressure signal submitted (`hale dna pressure raise`), recorded, and re-evaluated after a change. |
+| `concern.requested` / `concern.raised` / `concern.refused` | `ledger` | Upward structural concern raised from a locus path (`hale dna concern raise`). |
+| `concern.proposed` | `record` | Knowledge proposal automatically opened after 3 concerns (`concern_threshold`). |
+| `appendage.proposed` / `appendage.candidate` | `record` | New organizational position proposed after 3 pressure signals (`appendage_threshold`), and its generated `dna/org` mutation candidate. |
+| `secret.rotated` | `record` | Audit record noting that a named secret slot was set or rotated (never contains the secret value). |
+| `violation.recorded` | `record` | Runtime closure fault absorbed by a supervisor (`adapter_undeliverable`, `lease_unsettled`, `pulse_stopped`). |
+| `schedule.requested` / `schedule.answered` | `ledger` | Schedule declaration request and organization response. |
+| `schedule.declared` / `schedule.refused` | `ledger` | Active schedule specification, or declaration/occurrence refusal. |
+| `schedule.skipped` / `schedule.missed` | `ledger` | Occurrence skipped due to an in-flight execution, or missed during organism downtime. |
+| `schedule.paused` / `schedule.resumed` | `ledger` | Manual schedule pause or resume (`hale dna schedule pause\|resume`). |
 
-### Schedules
+### 7. People, Positions, Batches, and Practices
 
-| kind | memory | what it is |
-|---|---|---|
-| `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization, and its answer |
-| `schedule.declared` / `schedule.refused` | ledger | a schedule declared, or refused with the reason (also an occurrence refused) |
-| `schedule.skipped` / `schedule.missed` | ledger | an occurrence skipped while the last is open; occurrences that passed with no tick |
-| `schedule.paused` / `schedule.resumed` | ledger | paused and resumed by hand |
+| Row Kind | Table | Description |
+| --- | --- | --- |
+| `task.handed` / `task.reassigned` / `case.admitted` / `task.done` | `ledger` | Human task assignment, reassignment, leaf case admission, and completion report (`hale dna task done`). |
+| `completion.linked` / `completion.excepted` / `exception.authorized` | `ledger` | Evidence digest linked to a completed task, or third-party exception authorization (`hale dna task authorize`). |
+| `decision.reported` | `ledger` | External decision recorded via `hale dna task decide`. |
+| `person.retired` | `record` | Person retired from the organization (`hale dna retire`), transferring open tasks to `--to <successor>`. |
+| `hold.requested` / `hold.proposed` / `hold.refused` | `record` | Position holder assignment (`hale dna fill`) requested, opened as a Board Review, or refused. |
+| `batch.proposed` | `record` | Multi-step structural batch (`hale dna apply` / `hale dna pack apply`) opened under `changes`, recording steps and any `planned_on` hole Reviews. |
+| `position.requested` / `position.proposed` / `position.refused` | `record` | Runtime position and mandate proposal (`hale dna position open`). |
+| `practice.requested` / `practice.proposed` / `practice.refused` | `record` | Practice proposal lifecycle (`hale dna practice propose`). |
+| `knowledge.proposed` / `.ratified` / `.declined` / `.refused` / `.retired` | `record` | Knowledge and practice Review outcomes and version supersession. |
+| `knowledge.consulted` / `practice.read` | `ledger` / `record` | Audit rows recording which knowledge nodes and ratified practices were included in a Work's hat. |
+| `report.filed` | `ledger` | Summary report generated by `hale dna report`. |
 
-### People, knowledge and practices
+---
 
-| kind | memory | what it is |
-|---|---|---|
-| `task.handed` / `task.reassigned` | ledger | a Task handed to a person; the assignment moved |
-| `case.admitted` | ledger | a person's leaf as its own handed Task |
-| `task.done` | ledger | a person reports a handed Task done |
-| `completion.linked` / `completion.excepted` | ledger | the evidence a completion links, or the exception it carries |
-| `exception.authorized` | ledger | an exception to a Task's acceptance, in the authorizer's name |
-| `decision.reported` | ledger | a decision someone else made, reported by the assignee |
-| `person.retired` | record | someone left, and who took their work |
-| `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
-| `batch.proposed` | record | a batch `hale dna apply` proposed as one Review in `changes`, with its steps (and `planned_on`, the pending Reviews it was planned on); `graph.requested` under the same id asks the organization to open it |
-| `position.requested` / `position.proposed` / `position.refused` | record | a position asked at run time (`hale dna position open`), proposed with its mandate as one Board Review, or refused |
-| `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
-| `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |
-| `knowledge.retired` | record | a practice superseded by a later version |
-| `knowledge.consulted` | ledger | what a piece of work looked up |
-| `practice.read` | record | what the hat read once a proposal was ratified |
-| `report.filed` | ledger | a report from the record since the last one |
+## `hale dna status --json` Schema
 
-## `hale dna status --json`
+`hale dna status --json` (and `GET /api/status` on `hale dna ui`) outputs a single-line JSON projection of the organism's state:
 
-The projection `status` prints, as one JSON document on one line;
-`hale dna ui` serves the same at `/api/status`. Here it is for a fresh project with nothing
-running, indented, with twenty-two of its twenty-three pending Reviews cut:
-
-```text
-$ hale dna status --json
+```json
 {
   "organism": "not running — reading the Journal",
   "journal": {
@@ -670,8 +529,7 @@ $ hale dna status --json
       "required_authority": "board",
       "subject_digest": "sha256:05cecb18af4e5fc83bd62025ee3477b831ff2a9299c497116dc4ffaf90ccd7a1",
       "refusals": []
-    },
-    …
+    }
   ],
   "mutations": [],
   "law_deferred": [],
@@ -684,68 +542,48 @@ $ hale dna status --json
 }
 ```
 
-`organism` is `running (this clone's body holds the lease)` when a body
-here holds the lease. `chain` is `verified` or `BROKEN`. As the
-organism works, the arrays fill:
+- **`organism`:** `"running (this clone's body holds the lease)"` when the local body holds the active lease, or `"not running — reading the Journal"`.
+- **`journal.chain`:** `"verified"` or `"BROKEN"`.
+- **`tasks[]`:** Objects with `id`, `outcome`, `state`, `since`, and optional `detail`.
+- **`reviews[]`:** Settled Reviews add `settled` and `reasoned`; code Mutation Reviews add `mutation_id`, `change_class`, `seed`, `disposition`, `base_commit`, `candidate_commit`, `candidate_shape`, `evidence`, `magnitude`, `diff_text`, `diff_json`, and `author`.
+- **`mutations[]`:** Objects with `id`, `candidate`, `disposition`, `class`, `task`, `objective`, optional `detail` and `worktree`, and `events`.
+- **`expression.last_restart_request` / `last_observed`:** Objects with `mutation`, `what`, and `seq`.
 
-- a task: `id`, `outcome`, `state`, `since`, and `detail` when there is
-  one;
-- a settled Review adds `settled` (and `reasoned`); a Mutation's Review
-  adds `mutation_id`, `change_class`, `seed`, `disposition`,
-  `base_commit`, `candidate_commit`, `candidate_shape`, `evidence`,
-  `magnitude`, `diff_text`, `diff_json` and `author`;
-- a Mutation: `id`, `candidate`, `disposition`, `class`, `task`,
-  `objective`, `detail` and `worktree` when set, and its `events`;
-- `last_restart_request` and `last_observed`: `mutation`, `what`,
-  `seq`.
+---
 
 ## Where things live
 
-### A generated project
+### Project Checkout Files (`hale habitat graft`)
 
-`hale habitat graft <name>` writes these; `hale habitat graft <dir> --attach` writes the
-same around an application you already have.
+| Path | Description |
+| --- | --- |
+| `main.hl`, `tests/main_test.hl` | Starter application and test (created only when grafting a new application directory). |
+| `hale.toml` | Package manifest defining `[environments.local]` (`.`), `[environments.org]` (`dna/org`), and `[dna] record`. |
+| `hale.lock` | Lockfile pinning `[dna] toolchain = "<version>"`. |
+| `.gitignore` | Ignores compiled binaries, `/vendor/`, and `/.hale/`. |
+| `vendor/dna/` | Toolchain-managed DNA core library (git-ignored; updated via `hale dna upgrade`). |
+| `dna/org/main.hl` | Organization entrypoint locus (`Org`), positions, `dna::Grant`, and NATS bindings. |
+| `dna/org/law.hl` | Organization constitutional claims (`constitution Org`). |
+| `dna/org/purpose.hl` | Project purpose statement (`PURPOSE`). |
+| `dna/org/charter.hl` | Leader architectural brief (`CHARTER`). |
+| `dna/org/models.hl` | Model backend catalog and `org_budget()`. |
+| `dna/org/work.hl` | Worker leg performer catalog (`performers()`). |
+| `dna/org/workflows.hl` | Baseline workflow catalog (managed by `hale dna upgrade`; do not edit by hand). |
+| `dna/org/own_workflows.hl` | Custom project workflow definitions. |
 
-| path | what |
-|---|---|
-| `main.hl`, `tests/main_test.hl` | the application and its first test (a new application only) |
-| `hale.toml` | the manifest: an environment for the application (`.`) and one for the organization (`dna/org`) |
-| `hale.lock` | the toolchain the DNA was materialized for (`[dna] toolchain`) |
-| `.gitignore` | ignores the build artifact, `/vendor/` and `/.hale/` |
-| `vendor/dna/` | the DNA core, copied from the toolchain; git-ignored, `hale dna upgrade` copies it again |
-| `dna/org/main.hl` | the organization: its positions, the Leader's grant, the budget's owner |
-| `dna/org/law.hl` | its law |
-| `dna/org/purpose.hl` | the declared purpose |
-| `dna/org/charter.hl` | the Leader's brief |
-| `dna/org/models.hl` | the model catalog and the budget |
-| `dna/org/work.hl` | the performers a leg runs |
-| `dna/org/workflows.hl` | the workflow catalog; rewritten by `upgrade`, not yours to edit |
-| `dna/org/own_workflows.hl` | your own workflow definitions, beside the baseline |
+### Runtime State, Databases, and Scratch Directories
 
-No file in the project runs or configures a service: memory, the nerves
-and the senses' store are the organism's allocations in the local
-habitat, below.
-
-### The organism's state
-
-| where | what |
-|---|---|
-| memory, `record_rows` | the record: one signed row per event, insert-only |
-| memory, receipts | receipts, by the digest of their content (protected classes sealed) |
-| memory, leases | leases with fencing tokens, swapped by token; the body lease is one |
-| `hale.toml` `[dna] record` | the record's identity: the digest of its first row |
-| `.hale/dna/memory.env` | the head's DSN and where it came from (`HALE_DNA_MEMORY_FROM`), kept by `hale habitat migrate` and `hale dna memory migrate`; mode 600, head role only, git-ignored |
-| `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
-| `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |
-| `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
-| `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/`, a person's kept worktrees `work/<attempt>`, an ingest's checkout `ingest/<sha>/` (removed after) |
-| `.hale/node/<name>/` | on a node: its instances' pid files and artifacts |
-| memory | Postgres, schema `dna_<record identity>`: the ledger, the graph and protected evidence, under the spine's and the head's roles |
-| the nerves | one JetStream stream per organization, named after its token in capitals |
-| the local habitat | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`: one compose project per machine, `hale-habitat-local-<h>`, with the services `memory-<id>`, `nerves-<id>` and `senses-<id>` per organism (`<id>` the first twelve hex digits of the record's identity); each organism's `allocations/<id>/` holds `compose.yaml`, `ports.yaml`, `postgres.secrets`, `nats.conf`, `nats.secrets.conf` and `senses.yml`. Long-lived; `hale habitat migrate` brings an organism's allocations up |
-| the vault | `HALE_VAULT_DIR`, else `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`; one file per secret, mode 600. `HALE_VAULT_ADDR` names a vault's HTTP API instead |
-| `HALE_DNA_HEAD_STATE` | the project head's state (`${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` when unset) |
-
-The record and the day's work are both in memory; `hale dna ledger
-status` says where things stand.
-`hale dna secrets` lists every vault entry the organism needs.
+| Location | Contents |
+| --- | --- |
+| **Postgres (`dna_<record-identity>`)** | `record_rows` (signed append-only governance/mutation rows), `ledger_rows` (operational rows), `receipts` (content-addressed evidence; protected classes sealed under `HALE_DNA_RECEIPT_KEY`), `leases` (fenced leases including the body lease), and the knowledge/org graph under spine and head database roles. |
+| **`hale.toml` (`[dna] record`)** | The record's immutable identity (SHA-256 digest of its `record.genesis` row). |
+| **`.hale/dna/memory.env`** | Mode `0600` file (git-ignored) storing the derived Postgres head role DSN (`HALE_DNA_MEMORY_DSN_HEAD` and `HALE_DNA_MEMORY_FROM`), written by `hale habitat migrate` and `hale dna memory migrate`. |
+| **`refs/heads/dna/candidate/<mutation>`** | Git branch retaining each Mutation's candidate commit regardless of Review outcome (until dropped via `hale dna candidates drop`). |
+| **`refs/hale/remote/genome`** | Last fetched tip of the remote forge's default branch on a fleet node. |
+| **`.git/config`** | Local repository settings (`dna.trust`, `dna.unix.member`, `dna.oidc.*`, `dna.github.*`). |
+| **`.hale/dna/`** | Local clone scratch directory: `status.json`, `org.log`, `baseline.topology`, `embedded.digest`, seed build cache (`build/`), mutation sandboxes (`worktrees/`, `scratch/`), compiled leg binary (`legs/`), interactive human worktrees (`work/<attempt>/`), and temporary ingest checkouts (`ingest/<sha>/`). |
+| **`.hale/node/<name>/`** | Fleet node instance PID files and build artifacts. |
+| **NATS JetStream (`nerves`)** | One JetStream stream per organization, named after its uppercase stream token. |
+| **Local Habitat (`~/.local/share/hale/habitat/local`)** | Long-lived Docker Compose project (`hale-habitat-local-<h>`) running `memory-<id>`, `nerves-<id>`, and `senses-<id>` per organism (`<id>` = first 12 hex digits of the record identity). Per-allocation configs (`compose.yaml`, `ports.yaml`, `postgres.secrets`, `nats.conf`, `nats.secrets.conf`, `senses.yml`, `allocation.json`) live under `allocations/<id>/`. |
+| **Vault (`~/.cache/hale/vault`)** | Mode `0600` secret slot files under `HALE_VAULT_DIR` (or `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`), or an external HTTP Vault server at `HALE_VAULT_ADDR`. |
+| **`HALE_DNA_HEAD_STATE`** | Project head operational state and receipt logs (defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head`). |

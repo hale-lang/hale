@@ -1,261 +1,174 @@
-# Operations & debugging
+# Operations & Production Debugging
 
-Most of the time a Hale program either works or fails loudly. The
-two exceptions — the ones that send you here — are **a message that
-quietly doesn't arrive** and **resident memory that quietly grows**.
-Both are silent by design (the steady-state behavior is correct), so
-the runtime ships opt-in diagnostics you switch on with an
-environment variable or a build flag. This chapter is the operator's
-map: what each knob shows, and two worked triage walkthroughs.
+Hale binaries include built-in, zero-overhead hooks for diagnosing message drops, tracking arena memory residency, supervising OS subprocesses, and inspecting live processes with standard DWARF debuggers (`gdb`, `lldb`, `perf`). Every diagnostic environment variable and compiler report is observe-only and leaves program semantics unchanged.
 
-Nothing here changes behavior — every switch is observe-only. The
-canonical reference for each variable is `spec/runtime.md`; this is
-the pedagogical version.
+```hale
+fn on_tick() {
+    std::process::dump_arena_residency(); // Emits live arena sizes when LOTUS_ARENA_RESIDENCY=1
+    println("peak rss = ", std::process::rss_bytes() / 1048576, " MB");
+}
+```
 
-## Bus: "my publish isn't arriving"
+## Runtime Diagnostic Environment Variables
 
-A `publish` that compiles is not a `publish` that's delivered — the
-subject might match no subscriber, the payload might fail to
-deserialize, or the subscriber might be on a pool that never runs.
-The bus drops these silently because for an `on_unmatched: swallow`
-topic in steady state that *is* the right behavior. To see the
-drops, set one variable:
+Set these environment variables when launching a compiled Hale binary to inspect bus delivery, backpressure, arena memory, and live observation rings (see `spec/runtime.md` for the normative specification):
+
+| Environment Variable | Default | Purpose |
+|---|---|---|
+| `LOTUS_BUS_LOG_DROP=1` | Unset | Logs one stderr line for every dropped bus message (no matching subscriber, serialize/deserialize `<= 0`, or null post target). Implies `LOTUS_BUS_LOG_UNMATCHED=1` and `LOTUS_BUS_LOG_DESERIALIZE_DROP=1`. |
+| `LOTUS_BUS_LOG_UNMATCHED=1` | Unset | Logs keyed publishes (`where key == ...`) that matched zero subscribers, printing the subject, key, and per-topic subscriber counts. |
+| `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | Unset | Logs frames dropped by the `udp://` reader thread due to missing deserializers or size mismatches. |
+| `LOTUS_BUS_COUNTERS_DUMP=1` | Unset | Prints a summary line per remote binding at process exit: messages/bytes sent and delivered, send failures, link-down drops, `or wait` parks, listener re-arms, and reconnects. |
+| `LOTUS_BUS_QUEUE_CAP=<N>` | `8192` | Bounds the main dispatch queue, each pinned-locus mailbox, and each cooperative pool queue to `N` cells (~4.3 MB per queue at default `8192`). |
+| `LOTUS_ARENA_RESIDENCY=1` | Unset | Registers every top-level arena (locus regions, global arena, bus payload arena) with a creation backtrace for `std::process::dump_arena_residency()`. |
+| `LOTUS_NO_CHUNK_POOL=1` | Unset (`1` under ASAN) | Returns freed 64 KiB arena chunks directly to `libc` instead of caching them in the thread-local pool, allowing AddressSanitizer to trap `heap-use-after-free` immediately. |
+| `LOTUS_NO_DEBUGINFO=1` | Unset | Strips DWARF debug tables during `hale build`. |
+| `LOTUS_OBS=1` | Unset | Publishes the `/hale-obs-<pid>` shared-memory observation segment under `$XDG_RUNTIME_DIR/hale/` (or `/tmp/hale-obs/`) for [Iris](./iris.md). |
+| `LOTUS_OBS_RINGS=<N>` | `8` (`64` when recording) | Number of SPSC observation rings allocated per process. |
+| `LOTUS_OBS_SLOTS=<N>` | `4096` | Number of record slots per observation ring. |
+| `LOTUS_OBS_WIRE=1` | Unset | Embeds `(origin, seq)` headers in `udp://` and `unix://` (with `LOTUS_UNIX_STREAM=1`) frames to pair cross-process edges. Requires all communicating binaries to support the header. |
+| `LOTUS_OBS_RECORD=<path>` | Unset | Enables lossless flight recording to `<path>` for `hale replay` (implies `LOTUS_OBS=1`; stalls producers on full rings rather than dropping records). |
+
+## Diagnosing Bus Delivery & Backpressure
+
+### Tracing Undelivered Publishes
+
+For `on_unmatched: swallow` topics, publishing to a subject with no active subscriber silently drops the message by design. Run the binary with `LOTUS_BUS_LOG_DROP=1` to log every drop site to `stderr`:
 
 ```sh
 LOTUS_BUS_LOG_DROP=1 ./myapp
 ```
 
-`LOTUS_BUS_LOG_DROP` is the broad net — reach for it first. It
-prints one stderr line at every silent-drop site, naming the call
-site, subject, and size/index info: no-matching-subscriber,
-serialize-returned-≤0, deserialize-returned-≤0, and the
-"matched-but-no-post-target" case (mailbox / pool / queue all null).
-It *implies* the two narrower variables, which you can use on their
-own once you know which class you're chasing:
+If `LOTUS_BUS_LOG_DROP=1` prints nothing but a subscriber handler still never fires, the message was enqueued and the subscriber's worker pool is not draining:
+1. Call `std::process::dump_pool_residency()` to inspect pending and in-flight task counts per pool.
+2. Check whether a locus on the same cooperative pool is executing a blocking syscall or long `std::time::sleep` inside `run()`, starving sibling handlers (`hale check` warns on blocking calls in cooperative `run()` bodies).
+3. Verify that the subscriber locus was instantiated as a persistent field or top-level binding before the publisher fired, rather than as an unowned statement literal that dissolved immediately.
 
-| Variable | Surfaces |
-|---|---|
-| `LOTUS_BUS_LOG_DROP=1` | everything below, plus serialize-fail and no-post-target |
-| `LOTUS_BUS_LOG_UNMATCHED=1` | a keyed publish (`where key == …`) that matched no subscriber — prints subject, key, and the per-topic subscriber counts |
-| `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | the `udp://` reader thread dropping a frame (no deserializer registered, or a size-mismatched read) |
-| `LOTUS_BUS_COUNTERS_DUMP=1` | one line per remote binding at exit: messages/bytes sent and delivered, send failures, publishes dropped while a link was down, publishes that parked on `or wait`, listener re-arms, reconnects |
+### Bounding Queue Memory (`LOTUS_BUS_QUEUE_CAP`)
 
-**The shape that produces no line at all.** If `LOTUS_BUS_LOG_DROP`
-is silent but the handler still never fires, the message *was*
-delivered to the queue and the problem is downstream: the
-subscriber's pool isn't draining. The classic cause is a `run()` on
-a cooperative pool that blocks (a long `time::sleep`, a blocking
-syscall) and starves the handler — `hale check` warns on blocking
-syscalls in a cooperative `run()`, and `std::process::dump_pool_residency()`
-shows pending counts per pool so you can see work piling up unserved.
+When a fast publisher outpaces a consumer, queue depth is capped at `LOTUS_BUS_QUEUE_CAP` cells (default `8192`):
+- **Single-threaded cooperative producer**: Inline-drains the oldest queued handlers to free a slot before enqueuing.
+- **Cross-thread producer to a pinned mailbox**: Blocks on a condition variable until the pinned consumer drains a slot.
 
-## Memory: "my RSS is growing"
+No messages are dropped when the queue cap is reached. Lower `LOTUS_BUS_QUEUE_CAP` (`LOTUS_BUS_QUEUE_CAP=1024 ./myapp`) to reduce peak buffered memory, or raise it to absorb larger bursts without inline draining.
 
-Hale frees a locus's whole region on dissolve, so a *leak* is
-usually one of two things: an allocation that escapes to a
-long-lived arena (it never dissolves), or a queue/buffer whose
-high-water mark keeps climbing. Two layers of instrumentation pin it
-down — one at runtime, one at compile time.
+## Diagnosing Memory Growth & Arena Residency
 
-**Runtime residency.** Set `LOTUS_ARENA_RESIDENCY=1` to register
-every top-level arena (each locus's region, the global, the bus
-payload arena) with a construction backtrace. Then call
-`std::process::dump_arena_residency()` to emit one line per live
-arena — bytes, chunks, parent, label, and `used=`, the bytes its
-chunks actually hold — sorted by bytes descending, each with the
-backtrace of where it was created. `bytes=` moves a whole chunk at a
-time; `used=` moves by the byte, so two dumps a known number of
-requests apart say what each request leaves behind:
+### Runtime Arena Profiling
+
+To inspect live memory consumption in a long-running service, enable `LOTUS_ARENA_RESIDENCY=1` and call `std::process::dump_arena_residency()` from a periodic timer or heartbeat handler (calling it only at exit misses locus arenas that have already dissolved):
 
 ```hale
-// In a long-running daemon, sample from a heartbeat tick so locus
-// arenas are caught *while alive* — the atexit dump fires only
-// after every locus has torn down.
-fn on_tick() {
-    std::process::dump_arena_residency();   // → stderr, needs LOTUS_ARENA_RESIDENCY=1
-    println("rss=", std::process::rss_bytes() / 1048576, " MB");
+fn on_heartbeat() {
+    std::process::dump_arena_residency();
+    println("rss_mb=", std::process::rss_bytes() / 1048576);
 }
 ```
 
-`std::process::rss_bytes()` is the cheap top-line number — poll it
-to confirm growth before you go digging. `dump_pool_residency()` is
-the per-pool view (pending/in-flight work), useful when the growth
-is a queue rather than an arena.
+Each line printed by `dump_arena_residency()` reports:
+- `bytes=`: Total chunk capacity attached to the arena (grows in 64 KiB increments).
+- `used=`: Exact byte count currently occupied inside those chunks (compare `used=` across two heartbeats to measure exact per-request retention).
+- `chunks=`, `parent=`, `label=`, and the construction backtrace identifying the locus and birth site.
 
-One caveat on `rss_bytes()`: it is `getrusage`'s *peak*, and a
-process inherits its parent's peak through `fork` + `exec` — a
-worker your supervisor spawned reports at least the supervisor's
-RSS from its first instruction. Poll the delta over the life of
-the process rather than the absolute number, or read
-`/proc/self/statm` field two (current RSS, no inherited history)
-when the figure has to be this program's own. See
-[`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md)
-§ `std::process::rss_bytes()`.
+> [!NOTE]
+> `std::process::rss_bytes()` returns peak RSS (`getrusage.ru_maxrss`), which a child process inherits from its parent across `fork` + `exec`. Track the delta over time rather than the initial value, or read field 2 of `/proc/self/statm` on Linux for current instantaneous RSS.
 
-**Compile-time proofs.** Before the program even runs, three build
-flags report on allocation shape:
+### Compile-Time Allocation & Resource Flags
 
-| Flag | Reports |
+Before running a binary, use `hale check` flags to audit memory bounds and static system resources:
+
+| CLI Flag | Output / Behavior |
 |---|---|
-| *(default on every check/build)* | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings; `--no-warn-unbounded-alloc` opts out) |
-| `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict; plus each locus's storage shape (capacity slots, `@form`, projection cap) and the `self.<field>` / `self.<slot>` an allocation targets |
-| `--dump-resource-budget` | a static count of the threads placement spawns (pinned fields per replica and per live construction of `main`, plus adapters), worker pools, bus subjects and fd-acquisition sites, with what it does not count named (`--check-resource-budget <file>` gates it against declared ceilings) |
-| `--locality-report` | per-locus working-set size against cache-tier budgets |
+| *(default on `hale check` / `build`)* | Warns on allocations escaping to `self` in unbounded loops/handlers and growing `@form(vec)`/`@form(hashmap)` inserts (exempts run-to-exit scripts automatically). |
+| `--no-warn-unbounded-alloc` | Suppresses default unbounded-allocation warnings for the invocation. |
+| `--report-unbounded-use` | Lists every `@unbounded` and `@bounded_by(<name>)` annotation in user code and reached stdlib files (`crates/hale-stdlib/hl/<file>:<line>`), showing how many warnings each silences. |
+| `--dump-alloc-summary` | Prints every allocation site with its escape tag (`local`, `returned`, `stored-to-self`, `sent`), target `self.<field>` / slot, locus capacity shape, and boundedness verdict. |
+| `--dump-resource-budget` | Prints static counts of spawned threads (pinned replicas and adapters), worker pools, bus subjects, and file-descriptor acquisition sites. |
+| `--check-resource-budget <file>` | Verifies the program's static resource counts against ceiling limits declared in `<file>`. |
+| `--locality-report` | Compares each locus's working-set size against CPU cache-tier budgets. |
 
-The memory-bound warnings run **by default** on every `hale check`
-and `hale build`. Run-to-exit programs are exempt
-automatically: a binary whose `main` starts no `run` loop and
-subscribes no handler owes no memory-bound proof, so scripts and
-one-shot tools stay silent.
+To acknowledge intentional in-memory growth on a function or lifecycle hook, annotate it with `@bounded_by(<input_name>)` when bounded by a domain quantity, or `@unbounded` when operator-sized:
 
-For a long-lived service, the surface is:
+```hale
+type Snapshot { seq: Int; total: Int; }
 
-- **`@unbounded fn`** — the greppable in-source carve-out for an
-  acknowledged accumulation (an operator-sized cache, an
-  idempotency log). Silences that body's sites. Also valid on a
-  lifecycle hook (`@unbounded run { … }`).
-
-  ```hale
-  type Snapshot { seq: Int; total: Int; }
-
-  locus Aggregator {
-      // ... handlers checked for unbounded accumulation ...
-
-      @unbounded fn on_snapshot(s: Snapshot) {
-          // acknowledged: this cache is operator-sized on purpose.
-      }
-  }
-  ```
-
-- **`@bounded_by(<name>)`** — the same carve-out, for growth that
-  is understood: it names the input that bounds it
-  (`@bounded_by(record)` on an in-memory mirror of the record,
-  `@bounded_by(open_requests)` on a queue of them). `@unbounded`
-  means "not yet understood"; a fn carries one or the other.
-- **`--no-warn-unbounded-alloc`** — opts a whole run out.
-- **`--report-unbounded-use`** — prints one line per `@unbounded` or
-  `@bounded_by` fn or hook, with how many survey sites and hot-path
-  warnings it silences in this program, and the bound; the stdlib's
-  own decorators the program reaches are listed too, at
-  `crates/hale-stdlib/hl/<file>:<line>`. A decorator whose counts are 0 in every
-  program that compiles it acknowledges nothing and can go.
-- `@bounded locus L { … }` is now redundant with the default and
-  still accepted.
-
-The warnings are advisory — they print but don't fail the build. A
-warning here is the compile-time complement to the residency dump:
-it tells you *which site* can grow before you've watched it grow.
-
-## Bus backpressure: bounding a flood
-
-A producer that outruns its consumer used to grow the dispatch queue
-without limit. It no longer does — the queue, each pinned-locus
-mailbox and each cooperative pool's queue are capped at
-`LOTUS_BUS_QUEUE_CAP` cells (default 8192; a pinned mailbox or pool
-queue pre-allocates its cap, about 4.3 MB at the default):
-
-```sh
-LOTUS_BUS_QUEUE_CAP=1024 ./myapp   # tighter bound, more frequent drains
+locus Aggregator {
+    @unbounded fn on_snapshot(s: Snapshot) {
+        // Intentional operator-sized cache accumulation
+    }
+}
 ```
 
-Past the cap the producer **back-pressures** rather than buffering:
-a single-threaded cooperative producer inline-drains the queue
-(runs the oldest handlers) to make space; a cross-thread producer to
-a pinned mailbox blocks on a condvar until the consumer drains a
-slot. Every message is still delivered — only the timing and memory
-profile change. Lower the cap to tighten the memory bound; raise it
-to reduce drain bursts.
+## Subprocess Execution & Supervision (`std::process`)
 
-## Shelling out to other programs
+### Synchronous Execution (`run` and `run_with`)
 
-Ops glue often means running another tool. `std::process::run`
-does a synchronous fork + exec + wait and captures the result. The
-argument vector is **newline-separated** (no shell, no word
-splitting — each line is one `argv` entry):
+`std::process::run(argv)` forks, execs, and waits for a child process without invoking a shell. Arguments are passed as a **newline-separated** `String` (each line becomes one `argv` entry, capped at 64 KiB / 65,536 bytes total; exceeding 64 KiB raises `IoError { kind: "invalid", errno: 7 }` `E2BIG` before forking):
 
 ```hale,fragment
 let out = std::process::run("git\nstatus\n--short") or raise;
 println("exit ", to_string(out.code));
 println(out.stdout);
-if len(out.stderr) > 0 { println("stderr: ", out.stderr); }
+if len(out.stderr) > 0 {
+    println("stderr: ", out.stderr);
+}
 ```
 
-The returned `ProcessOutput` carries `code: Int` (the exit code,
-or `-1` if killed by a signal), `signal: Int` (the killing signal,
-`0` if it exited normally), and `stdout` / `stderr` as captured
-`String`s. `run` is `fallible(IoError)` — a missing binary or a
-fork failure raises rather than returning a bogus output.
+`ProcessOutput` contains:
+- `code: Int`: Exit status (`-1` if terminated by a signal or timeout).
+- `signal: Int`: Terminating POSIX signal number (`0` on normal exit).
+- `stdout: String` and `stderr: String`: Captured output streams.
+- `timed_out: Bool`: `true` if stopped by a `SpawnOptions` timeout.
 
-The argument vector is capped at **64 KiB** (65536 bytes, newlines
-included). A longer one fails `run` or `spawn` before anything is
-forked, with `IoError { kind: "invalid", errno: 7 }` (`E2BIG`). Bulk
-input belongs on the child's stdin or in a file, not in its arguments.
+Use `std::process::run_with(argv, opts)` (or `spawn_with(argv, opts)`) with `std::process::SpawnOptions` to configure working directory, environment variables, timeouts, and POSIX `rlimit` ceilings in the child before `exec`:
 
-For a long-running child you drive incrementally, the lower-level
-`spawn` / `wait` / `kill` / `write_stdin` / `close_stdin` /
-`read_stdout` / `read_stderr` surface over a `Child` handle is in
-[`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md).
-A child that reads its input to the end — `cat`, `sort`, a filter —
-finishes only when it sees EOF, and `close_stdin` is that EOF; until
-it, `wait` on such a child waits forever:
+```hale,fragment
+let opts = std::process::SpawnOptions {
+    cwd: "/srv/build",                 // "" inherits parent cwd
+    env: "CI=1\nLANG=C",               // newline-separated NAME=value overrides
+    unset_env: "HOME",                 // newline-separated variable names to remove
+    clear_env: false,                  // true starts from an empty environment
+    timeout: 30s,                      // 0ns disables timeout
+    cpu_seconds: 60,                   // RLIMIT_CPU
+    address_space: 512 * 1024 * 1024,  // RLIMIT_AS (bytes)
+    open_files: 64,                    // RLIMIT_NOFILE
+    file_size: 16 * 1024 * 1024,       // RLIMIT_FSIZE (bytes)
+};
+let out = std::process::run_with("make\ntest", opts) or raise;
+if out.timed_out {
+    println("make test exceeded 30s timeout");
+}
+```
+
+When `timeout` expires, the runtime sends `SIGTERM` to the child's process group, waits 100 ms, sends `SIGKILL`, reaps the child, and returns a normal `ProcessOutput` with `timed_out: true` and `code: -1`.
+
+### Incremental I/O and Single-Owner Supervision (`spawn` and `adopt`)
+
+For interactive or long-running child processes, use the `std::process::Child` handle operations:
+
+| Function | Behavior |
+|---|---|
+| `spawn(argv)` / `spawn_with(argv, opts)` | Forks and execs the child with piped `stdin`, `stdout`, and `stderr`. |
+| `write_stdin(c, data)` / `close_stdin(c)` | Writes to or closes the child's `stdin` pipe (`close_stdin` sends `EOF` to filters like `sort` or `cat`). |
+| `read_stdout(c)` / `read_stderr(c)` | Reads available output from the child's pipes. |
+| `wait(c)` | Blocks until the child exits (or hits its `SpawnOptions` deadline) and returns its exit code. |
+| `try_wait(c)` | Non-blocking poll: returns `-2` if still running, `-1` if killed by signal/timeout, or the exit code (`0..255`). |
+| `kill(c)` | Escalates `SIGTERM` -> grace period -> `SIGKILL` and reaps the child. |
+| `signal(c, sig)` | Sends a specific POSIX signal (e.g., `15` for `SIGTERM`, `1` for `SIGHUP`) without automatic `SIGKILL` escalation. |
+| `adopt(dest, spawned)` | Transfers ownership of `spawned`'s PID and pipe descriptors into `dest` (`self.child`). |
 
 ```hale,fragment
 let c = std::process::spawn("/usr/bin/sort") or raise;
 std::process::write_stdin(c, "b\na\n") or raise;
-std::process::close_stdin(c);           // sort reads EOF, sorts, exits
+std::process::close_stdin(c);
 let code = std::process::wait(c) or raise;
 let sorted = std::process::read_stdout(c) or "";
 ```
 
-### Where and how the child runs: `SpawnOptions`
-
-`run_with(argv, opts)` and `spawn_with(argv, opts)` are `run` and
-`spawn` under a `std::process::SpawnOptions` record. Every field
-defaults to "change nothing", so a literal names only what it sets:
-
-```hale,fragment
-let opts = std::process::SpawnOptions {
-    cwd: "/srv/build",                 // "" inherits ours
-    env: "CI=1\nLANG=C",               // NAME=value lines, set in the child
-    unset_env: "HOME",                 // names removed from what it inherits
-    timeout: 30s,                      // 0ns = none
-    cpu_seconds: 60,                   // RLIMIT_CPU
-    address_space: 512 * 1024 * 1024,  // RLIMIT_AS, bytes
-    open_files: 64,                    // RLIMIT_NOFILE
-    file_size: 16 * 1024 * 1024,       // RLIMIT_FSIZE, bytes
-};
-let out = std::process::run_with("make\ntest", opts) or raise;
-if out.timed_out { println("make test ran past 30s and was stopped"); }
-```
-
-`clear_env: true` starts the child from an empty environment (then
-`env`), for a tool that must see nothing of yours; give it a full
-path, since there is no `PATH` to search. All of it is applied in
-the forked child before its exec, so your own process's directory,
-environment and limits never change. A setup step that cannot be
-done — a `cwd` that does not exist, a limit above the hard one —
-fails the call with its `IoError`; the child never runs.
-
-The timeout is a result, not an error. `run_with` stops the child's
-process group at it (TERM, then KILL 100 ms later), reaps it, and
-returns what it wrote so far with `timed_out: true` and `code: -1`.
-A `spawn_with` handle carries its deadline: `wait` returns at it at
-the latest and `try_wait` past it, either one stopping and reaping
-the child, returning `-1` and setting the handle's `timed_out`.
-`close_stdin`, the reads and `adopt` work on it as on `spawn`'s.
-
-### Keeping the child: `adopt`
-
-A supervisor has to hold its subprocess past the method that started
-it, and `self.child = std::process::spawn(argv)` is **refused** — a
-locus-typed field takes only a locus literal, because a store would
-leave the field and the frame that produced the value both claiming
-the instance. `std::process::adopt` is the transfer: it moves the
-spawned handle's pid and pipe fds into the `Child` your field already
-owns, so there is only ever one owner.
+Because `Child` is a locus, assigning `self.child = std::process::spawn(argv)` directly is rejected to prevent dual ownership. Instead, initialize `child: std::process::Child = std::process::Child { }` in `params` and transfer the spawned process into the field with `std::process::adopt`:
 
 ```hale
-locus Job {
+locus Supervisor {
     params { child: std::process::Child = std::process::Child { }; }
 
     fn start(argv: String) {
@@ -272,218 +185,43 @@ locus Job {
 }
 ```
 
-Three things that follow from "one owner", and that you get without
-writing any of it:
+`std::process::adopt(self.child, spawned)` guarantees safe lifecycle management:
+- **Automatic stop on replace**: If `self.child` already holds a live process, `adopt` terminates (`SIGTERM` -> grace -> `SIGKILL`) and reaps it before installing the new descriptors.
+- **No descriptor-reuse races**: Old pipe descriptors remain open until the new child is spawned and adopted, preventing the kernel from reassigning those fd numbers to the new child.
+- **Clean failure handling**: Adopting an empty `Child { }` (from a failed `spawn`) clears `self.child`, and when `Supervisor` dissolves, `self.child` automatically closes its pipes and reaps its subprocess.
 
-- **`adopt` terminates what the field was holding** (TERM → grace →
-  KILL → reap), so restarting is just `start` again. Call
-  `wait`/`try_wait` first if you need the outgoing child's exit code.
-- **The replacement's pipes are never closed by the old handle.** The
-  field's descriptors stay open until `adopt` replaces them, so the
-  kernel cannot have handed their numbers to the new child — the
-  hazard that makes a hand-rolled version of this so easy to get
-  wrong.
-- **A failed spawn leaves the field empty**, not half-built: the `or`
-  disposition hands back an empty `Child { }`, and adopting it clears
-  the field. `try_wait` on an empty field answers "exited, code 0".
+### Process Self-Introspection
 
-Never copy `pid` / `stdin_fd` / … across by hand. Two `Child`s holding
-one descriptor triple both close it.
+- `std::process::pid() -> Int`: Returns the current OS process ID.
+- `std::process::uid() -> Int`: Returns the real user ID (matches the `uid:<n>` peer identity reported by `std::io::unix::Rpc`).
+- `std::process::exit(code: Int)`: Terminates the process immediately with `code`.
 
-Teardown rides on the owner: when the locus holding the field
-dissolves, the field's `dissolve` closes the pipes and reaps the
-child. A handle you only `let`-bind is owned by its binding: when
-the enclosing scope exits, its `dissolve` closes the pipes and reaps
-the child, as it would for a literal written there. A child that has
-to outlive the function that spawned it belongs in a field, whose
-owner gives it the longer teardown.
+## Live Observation, Recording & Native Debugging
 
-A supervising daemon reaps without blocking via
-`std::process::try_wait(c)` — `-2` means still running (poll again
-on your next tick), any other value is the exit code (`-1` =
-killed by a signal), and the child is reaped:
+### Live Observation & Flight Recording
 
-```hale
-locus Supervisor {
-    params { child: std::process::Child = std::process::Child { }; }
-
-    fn tick() {
-        let code = std::process::try_wait(self.child) or -2;
-        if code != -2 { self.on_child_exit(code); }
-    }
-
-    fn on_child_exit(code: Int) {
-        println("child exited: ", code);
-    }
-}
-```
-
-`std::process::signal(c, sig)` sends an arbitrary POSIX signal
-(15 = TERM, 1 = HUP for a config reload, …) when the fixed
-TERM→KILL escalation of `kill` is more than you want.
-
-Other process self-introspection: `std::process::pid()`,
-`std::process::uid()` (the real uid; a `unix::Rpc` peer is named `uid:<n>`,
-so it is what a program compares a caller's name against), `std::process::exit(code)`, and
-`std::process::rss_bytes()` (peak
-RSS — see [Memory](#memory-my-rss-is-growing) above).
-
-## Worked triage
-
-**"My subscriber's handler never runs."**
-
-1. `LOTUS_BUS_LOG_DROP=1 ./app`. A line at the publish? → the subject
-   or key doesn't match, or the payload won't deserialize. Fix the
-   subject/key or the payload type.
-2. No line, but still no delivery? → the message reached the queue;
-   the consumer isn't draining. Check the subscriber's pool: a
-   cooperative `run()` that blocks starves handlers. `hale check`
-   flags blocking syscalls; `dump_pool_residency()` shows the
-   pending pileup.
-3. Subscriber is an inline child or on `where async_io`? → confirm
-   it's instantiated as an owned param or top-level, not unowned in
-   a method body (which dissolves at scope exit before it can fire —
-   `hale check` errors on this).
-
-**"My RSS climbs over hours."**
-
-1. `rss_bytes()` from a heartbeat — confirm it's monotonic, not
-   sawtooth (sawtooth is healthy churn).
-2. `LOTUS_ARENA_RESIDENCY=1` + `dump_arena_residency()` from the same
-   heartbeat — find the arena whose `bytes` grows. The `label` and
-   backtrace name the locus and birth site.
-3. A `root`-kind arena growing is the leak; a `sub` arena recycles.
-   If it's the bus payload arena, the high-water is queue depth —
-   lower `LOTUS_BUS_QUEUE_CAP`. If it's a locus arena, you're
-   accumulating into a field: prefer in-place mutation
-   (`self.f.x = v`) over whole-value replace (`self.f = T{…}`), which
-   bump-allocates fresh each time. `--dump-alloc-summary` names the
-   site at compile time.
-
-## Observing a running system
-
-Set `LOTUS_OBS=1` and any hale binary publishes an observation
-segment — a shared-memory ring of records emitted from the
-runtime's own choke points: bus publishes and deliveries (each
-attributed to the publishing/subscribing locus), transport
-sends and deliveries (paired across processes by a
-`(sender-origin, sequence)` key so a message's send and its
-deliveries line up into a cross-process edge), and locus
-lifecycle (birth with parentage, dissolve, restart). It is
-**dormant by default**: with the env var unset every probe is a
-single predictable branch, and even enabled it writes only
-counters until an observer attaches (`observer_count` on the
-segment's control page). One SPSC ring per emitting thread; a
-late-attaching observer gets the live locus tree replayed as
-births so it can reconstruct the supervision graph.
-
-The segment lives at `/hale-obs-<pid>` with a registration file
-under `$XDG_RUNTIME_DIR/hale/` (or `/tmp/hale-obs/`). The wire
-layout is the iris observation protocol — the canonical contract
-is `spec/runtime.md` § *Native observation emission*; iris is
-the reference consumer and ships in the binary — `hale run
---observe prog.hl` runs the program with the segment published
-and an observer beside it (see [Iris](./iris.md)): one whose
-lifetime is bounded by that `hale`, and whose own output goes to
-stderr rather than into the program's stdout. Knobs:
-`LOTUS_OBS_RINGS` (default 8, or 64 when recording),
-`LOTUS_OBS_SLOTS` (default 4096).
-
-**Cross-process edges opt into the wire.** The `(origin, seq)`
-key that pairs a send with its deliveries travels *in the wire
-message* (a self-describing header on `udp://`; the frame header
-on `unix://` under `LOTUS_UNIX_STREAM=1`). That is a wire-format
-change a stale peer running an older binary cannot parse, so
-`LOTUS_OBS=1` **alone never touches the wire** — it gives you
-counters and single-process records with the wire byte-for-byte
-unchanged. To get cross-process edges, set `LOTUS_OBS_WIRE=1`
-across the whole fleet; every node must be on a build that
-understands the header. (A non-framed unicast transport carries
-no seq and falls back to a local delivery count even with the
-wire enabled.)
-
-**Recording a run.** `LOTUS_OBS_RECORD=<path>` turns the sampler
-into a flight recorder: every observation record is drained to
-`<path>`, and the disposition flips from "drop rather than stall"
-to "stall rather than drop" — a full ring blocks its producer
-until the drain catches up, and a run that *couldn't* record
-everything fails loudly instead of producing a silently
-incomplete file. It implies `LOTUS_OBS=1` and needs no observer
-attached. The recording captures each consumer's actual handler
-order, every queued publish's payload, and a journal of the
-nondeterministic reads (`std::time`, `std::rand`,
-`std::os::getrandom`, `std::env`). Recording changes your
-program's timing by design; don't leave it on in production. The
-file format is pre-stable (GH #296).
-
-**Replaying one.**
+Setting `LOTUS_OBS=1` exposes a lock-free SPSC observation ring per thread at `/hale-obs-<pid>`, allowing [Iris](./iris.md) (`hale run --observe app.hl`) to visualize the live locus hierarchy, bus traffic, and supervision events. Setting `LOTUS_OBS_RECORD=run.halerec` captures a deterministic recording that can be re-executed and diffed with `hale replay` (see [Record & Replay](./replay.md)):
 
 ```sh
-hale replay run.halerec app.hl            # re-execute it
-hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
-hale replay run.halerec app.hl --diff --json      # ...that verdict, machine-readable
-hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
-hale replay run.halerec app.hl --allow-truncated  # crashed run → replay the prefix
-hale replay run.halerec app.hl --feed     # inject the ingress tape into changed code
-hale replay run.halerec app.hl --dev      # the build options the recording was made under
+hale replay run.halerec app.hl --diff
 ```
 
-`replay` recompiles the program, so it takes `hale build`'s options
-— as `hale run` does — and needs the ones the recording was made
-under: they are part of the execution identity, so a recording from
-`hale run --dev` is refused by a default `hale replay` and admitted
-by `hale replay --dev`, and one made under `--env prod` needs `hale
-replay --env prod`. A binary from `hale build app.hl`, run with
-`LOTUS_OBS_RECORD` set, records a run that `hale replay ... app.hl`
-admits: a build and `hale run` give one program one identity. So does
-a directory build: the recording of `myapp/myapp` replays under
-`hale replay ... myapp/main.hl`.
+### Debugging with `gdb`, `lldb`, and `perf`
 
-The full story — admission by executable identity, the
-safe-by-default effect gate (`--allow-live-effects`), env-value
-redaction (`LOTUS_OBS_RECORD_ENV`), the hermetic wire and ingress
-injection, feed mode (backtesting), crash-truncated recordings,
-and what the comparator actually compares (a match names its
-coverage per category, and says which categories a recording never
-exercised) — has its own chapter:
-[Record & replay](./replay.md).
-
-## Debugging with the native toolchain
-
-Hale binaries carry full DWARF by default (zero runtime cost):
-line tables *and* variable info. That means real debugging — stop
-AND inspect:
+Hale binaries emit full DWARF debug information (source line tables, parameter types, local variables, `char*` strings, and struct member layouts) by default at zero runtime cost:
 
 ```sh
 hale build myservice
 gdb ./myservice
 (gdb) break myservice.hl:42
 (gdb) run
-(gdb) backtrace          # real .hl file:line frames, inline stacks
-(gdb) info args          # typed parameters: n = 21
-(gdb) info locals        # typed lets: doubled = 42, frac = 0.5
-(gdb) print msg          # Strings print their text: "hello!"
+(gdb) backtrace
+(gdb) info args
+(gdb) info locals
+(gdb) print msg
 ```
 
-Hale scalars map to proper DWARF base types (`Int`, `Float`,
-`Bool`, `Decimal`, `Time`, `Duration`), `String` is a `char*` so
-debuggers print the contents, and struct-typed values carry full
-member info — `p *r` prints `{key = "alpha!", n = 41, f = 2.5}`
-with nested structs as typed pointers. A variable can read `<optimized out>` after its
-last use — that's the optimizer, not missing debug info; `hale
-build --dev` keeps more of the frame live.
-
-`addr2line -e ./myservice 0x4a2f10` resolves crash-dump addresses
-to source lines, and ASAN reports carry file:line through both the
-Hale code and the runtime. One thing to know when chasing a
-suspected use-after-free: the runtime recycles a destroyed arena's
-64 KiB chunks through a thread-local pool, so a read from memory
-that was already reclaimed lands on bytes the process still owns
-and the sanitizer stays quiet — a wrong answer, not a report. Run
-with `LOTUS_NO_CHUNK_POOL=1` to hand every chunk straight back to
-libc; the same read then aborts with a `heap-use-after-free`
-naming where it was freed and where it was read. An
-AddressSanitizer build has this on by default. Profile with
-`perf record --call-graph dwarf` (frame pointers are deliberately
-not forced — they cost ~22% on runtime fast paths). Opt out of
-debug info with `LOTUS_NO_DEBUGINFO=1`.
+- **Preventing `<optimized out>` locals**: Build with `hale build --dev` when stepping through code interactively so `-O3` register allocation does not elide dead variables.
+- **Resolving crash addresses**: Run `addr2line -e ./myservice 0x4a2f10` to map instruction pointers directly to `.hl` file and line numbers.
+- **Detecting arena use-after-free**: Pass `LOTUS_NO_CHUNK_POOL=1` when running outside AddressSanitizer so destroyed 64 KiB arena chunks return immediately to `libc` rather than recycling in the thread-local pool.
+- **CPU profiling**: Use `perf record --call-graph dwarf ./myservice` (Hale omits forced frame pointers by default because they add ~22% overhead on runtime fast paths).

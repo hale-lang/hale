@@ -1,27 +1,53 @@
 # UDP & TLS
 
-[HTTP](./http.md) covers the request/response server. Below it sit
-two more transports: **UDP** for connectionless datagrams, and
-**TLS** for an encrypted client connection. Both are thin wrappers
-over the platform sockets — each call returns or takes a file
-descriptor (an `Int`).
+Below [`std::http`](./http.md), Hale provides low-level socket primitives in `std::io::udp`, `std::io::tls`, `std::io::tcp`, and `std::io::sockopt`. These modules wrap platform file descriptors (`Int`) and integrate with `where async_io` coroutine pools for non-blocking I/O.
 
-> For ordinary TCP request/response, prefer `std::http` or the
-> `std::io::tcp` `Listener` / `Stream` loci. This chapter is the
-> raw-datagram and TLS-client surface.
+```hale
+locus Ingest {
+    params {
+        r: std::io::udp::Reader =
+            std::io::udp::Reader { addr: "127.0.0.1", port: 9000, cap: 2048 };
+    }
+    run() {
+        while true {
+            let dg = self.r.next() or raise;   // parks until a datagram arrives, zero-alloc
+            println(len(dg));
+        }
+    }
+}
 
-## UDP datagrams — `std::io::udp`
+fn main() { }
+```
 
-Bind a socket, then send and receive datagrams. `bind` and the I/O
-calls are `fallible(IoError)`:
+> [!NOTE]
+> For TCP servers (`std::io::tcp::Listener`, `Acceptor`, `Connections`, `Stream`) and Unix domain socket listeners (`std::io::tcp::Acceptor { path: "/run/app.sock" }`), see [HTTP § Concurrent Serving](./http.md#2-concurrent-serving).
+
+---
+
+## Socket & Transport Summary
+
+| Module / Type | Primary Functions & Loci | Purpose |
+|---|---|---|
+| `std::io::udp` | `bind`, `send`, `recv_with_source`, `last_source_host`, `last_source_port`, `close`, `set_recv_timeout`, `join_group`, `set_multicast_ttl`, `set_multicast_loop` | Connectionless UDP datagram sockets and multicast |
+| `std::io::udp::Reader` | `Reader { addr, port, cap }`, `next()` | Event-driven, zero-allocation UDP datagram reader |
+| `std::io::tls` | `connect`, `connect_within`, `send_bytes`, `recv_bytes`, `recv_into`, `set_recv_timeout`, `close` | Client-side TLS 1.2+ connections (OpenSSL with SNI and system trust store) |
+| `std::io::tcp` | `connect`, `connect_within`, `connect_wait`, `set_nodelay`, `set_recv_timeout`, `set_send_timeout`, `set_rx_timestamps`, `stop`, `Listener`, `Acceptor`, `Connections`, `Stream` | Outbound TCP dialing with deadlines/retries, socket tuning, and TCP/Unix listeners |
+| `std::io::sockopt` | `SOL_SOCKET()`, `SO_REUSEADDR()`, etc. | Platform-independent socket option constants for `set_option_int` / `set_option_bool` / `get_option_int` |
+
+---
+
+## UDP Datagrams (`std::io::udp`)
+
+### Binding, Sending, and Receiving
+
+`bind` and UDP I/O calls are `fallible(IoError)` and operate on an integer file descriptor (`fd`):
 
 ```hale,fragment
 let fd = std::io::udp::bind("0.0.0.0", 9000) or raise;
 std::io::udp::send(fd, "127.0.0.1", 9001, "ping") or raise;
 ```
 
-To receive *and* learn who sent it, use `recv_with_source` and read
-the thread-local source cache immediately after:
+To receive a datagram and inspect the sender's address, call `recv_with_source` followed immediately by the thread-local accessors `last_source_host()` and `last_source_port()`:
 
 ```hale,fragment
 let msg  = std::io::udp::recv_with_source(fd, 1500) or raise;  // Bytes
@@ -32,17 +58,13 @@ println(host, ":", to_string(port), " sent ",
 std::io::udp::close(fd);
 ```
 
-Datagram boundaries are preserved — one `send` is one `recv`.
-Delivery is best-effort; layer acknowledgement or retry on top if
-you need it. Multicast is a `join_group` away (`set_multicast_ttl`
-/ `set_multicast_loop` tune it), and `set_recv_timeout(fd, 100ms)`
-bounds a quiet `recv`.
+- **Datagram boundaries**: Every `send` corresponds to a single `recv`. Delivery is best-effort.
+- **Receive timeouts**: Call `std::io::udp::set_recv_timeout(fd, 100ms) or raise` to bound blocking receives.
+- **Multicast**: Join a multicast group with `join_group` and configure multicast behavior with `set_multicast_ttl` and `set_multicast_loop`.
 
-### `Reader` — the ingest handle
+### Zero-Allocation Ingest (`std::io::udp::Reader`)
 
-For a signal reader that just wants each datagram with no per-message
-allocation, reach for `std::io::udp::Reader` instead of hand-managing
-a socket and a buffer:
+For high-rate UDP ingestion without per-message heap allocation, use `std::io::udp::Reader`:
 
 ```hale
 locus Ingest {
@@ -60,28 +82,20 @@ locus Ingest {
 // placement { ing_owner: cooperative(pool = ing) where async_io; }
 ```
 
-`Reader` bundles the bound socket and a single reused buffer. `next()`
-binds lazily on the first call, refills the buffer in place (no
-per-datagram allocation), and returns a **zero-copy view** aliasing it
-— valid until the next `next()`, so read or copy out before looping.
-On a `where async_io` pool `next()` parks on `EPOLLIN` (kernel-woken,
-no busy-poll, no timeout quantum): an idle signal costs zero CPU and a
-datagram wakes the worker in microseconds. It parks until data arrives,
-so its only failures are a bind failure (first call) or a broken
-socket — both exceptional, hence `or raise` (not `or discard`, which
-would throw the datagram away with the error). This is the event-driven, allocation-free
-ingest shape as a default you reach for rather than one you assemble.
+- **Buffer reuse & view lifetime**: `Reader` owns the UDP socket and a single buffer of capacity `cap`. `next()` binds lazily on the first call, overwrites the internal buffer in place, and returns a zero-copy view (`BytesView`). Because the view aliases the internal buffer, it remains valid only until the next `next()` call—parse or copy out any data you need to keep before the next iteration.
+- **`async_io` integration**: On a `where async_io` pool, `next()` parks on `EPOLLIN` (woken directly by the kernel with zero idle CPU and no polling interval).
+- **Error handling**: Because `next()` parks until a datagram arrives, it only fails on an initial `bind` error or a broken socket. Always handle it with `or raise` rather than `or discard`.
 
-> **UDP as a bus transport.** The raw socket above is *not* the
-> typed bus. To carry bus messages over UDP, use the
-> `udp://host:port` substrate transport instead (see
-> [the bus](../services/bus.md)) — same dispatch contract as
-> `unix://`.
+> [!TIP]
+> **UDP as a Bus Transport**: Raw `std::io::udp` sockets are distinct from Hale's typed message bus. To route bus topics over UDP or Unix domain sockets across processes, use the `udp://host:port` or `unix://` substrate transport bindings (see [The bus](../services/bus.md)).
 
-## TLS client — `std::io::tls`
+---
 
-`connect` does the TCP connection *and* the TLS 1.2+ handshake (SNI
-+ system trust store) in one call, via the platform OpenSSL:
+## TLS Client & TCP Dialing (`std::io::tls` and `std::io::tcp`)
+
+### Establishing a TLS Connection
+
+`std::io::tls::connect` performs a TCP connection and a TLS 1.2+ handshake (including SNI and certificate verification against the system trust store via platform OpenSSL) in a single call:
 
 ```hale,fragment
 let h = std::io::tls::connect("example.com", 443) or raise;
@@ -92,56 +106,41 @@ println(std::str::from_bytes(resp));
 std::io::tls::close(h);
 ```
 
-A connection nothing is listening for fails straight away — `connect`
-(here, and `std::io::tcp::connect`) makes one attempt, and a refused
-one comes back as `connection_refused`. If you are starting the peer
-yourself and it may not be listening yet, say how long to wait:
-`std::io::tcp::connect_wait(host, port, 2s)` retries a refused
-connect until then.
+`std::io::tls` is **client-side only** (there is no TLS server in the standard library).
 
-Hosts may be IPv4 or IPv6. An IPv6 address is written bare (`"::1"`)
-or bracketed (`"[::1]"`, as in a URL), for `connect`, `listen_socket`
-and the udp `bind` / `send` alike; `connect` to a name tries every
-address the name resolves to, so `localhost` reaches a server on
-either loopback. A listener on an IPv6 host is named with brackets,
-`[::1]:8080`, which is the name `std::io::tcp::stop` takes.
+### Connection Deadlines and Retries
 
-A host that never answers at all — a blackholed address, a firewall
-that drops the SYN — is different: nothing refuses, so a plain
-`connect` waits until the kernel gives up, about two minutes. Give the
-dial a deadline with `connect_within`:
+Plain `connect` (`std::io::tcp::connect` and `std::io::tls::connect`) makes a single connection attempt:
+- If no server is listening on the target port, `connect` fails immediately with `err.kind == "connection_refused"`.
+- If the remote host is blackholed or a firewall silently drops the `SYN` packet, plain `connect` waits for the OS kernel timeout (~2 minutes).
+
+Use `connect_within` and `connect_wait` to control dial behavior:
+
+| Function | Behavior |
+|---|---|
+| `std::io::tcp::connect(host, port)` | Single attempt; fails immediately on `connection_refused`, waits for OS timeout on silent drop |
+| `std::io::tcp::connect_within(host, port, deadline)` | Single attempt bounded by `deadline`; fails with `err.kind == "timeout"` on expiry or immediately on `connection_refused` |
+| `std::io::tcp::connect_wait(host, port, wait_duration)` | Retries `connection_refused` until `wait_duration` expires (useful when spawning a local peer process that is still starting up) |
+| `std::io::tls::connect_within(host, port, deadline)` | Bounds both the TCP connection and the TLS handshake by `deadline` (`err.kind == "timeout"` on expiry) |
 
 ```hale,fragment
 let fd = std::io::tcp::connect_within("10.0.0.7", 5432, 2s) or raise;
-let h = std::io::tls::connect_within("api.example.com", 443, 3s) or raise;
+let h  = std::io::tls::connect_within("api.example.com", 443, 3s) or raise;
 ```
 
-Past the deadline the call fails with `err.kind == "timeout"`; a
-refusal still answers at once. The tls one bounds the handshake too,
-and `connect_wait`'s wait bounds its whole dial the same way. On a
-`where async_io` pool a dial that is waiting parks its coroutine, so
-the rest of the pool keeps running.
+### IPv4, IPv6, and `async_io` Behavior
 
-On a `where async_io` pool a TLS connection waits the way a plain
-socket does: the handshake, `send_bytes` and every read park the
-coroutine until the socket is ready, so many connections share one
-pool's thread.
+- **IPv4 and IPv6**: All TCP, TLS, and UDP functions accept both IPv4 and IPv6 addresses. IPv6 literals may be written bare (`"::1"`) or bracketed (`"[::1]"`). Connecting to a hostname attempts every resolved address in order, so `"localhost"` connects to either IPv4 or IPv6 loopback. When stopping an IPv6 listener via `std::io::tcp::stop`, its default name uses brackets (`"[::1]:8080"`).
+- **Non-blocking `async_io` coroutines**: When executed on a `where async_io` pool, TCP dials (`connect_within`, `connect_wait`), TLS handshakes, `send_bytes`, and reads park only the calling coroutine while other coroutines on the pool continue running.
+- **TLS receive timeouts**: `std::io::tls::set_recv_timeout(h, 5s) or raise` bounds read operations. When a timeout is configured, `recv_into` returns the `-2` ("timed out, retryable") sentinel on timeout so long-lived clients can perform periodic keep-alive work.
 
-This is **client-side only** — there is no TLS *server* in the
-stdlib. `set_recv_timeout(h, d)` bounds a read; with one set,
-`recv_into` returns the `-2` "timed out, retryable" sentinel so a
-long-lived client can run keep-alive work instead of hanging. Like
-every socket setter here (the tcp and tls timeouts, `set_nodelay`,
-`set_rx_timestamps`), it can fail, so it takes an `or`:
-`std::io::tls::set_recv_timeout(h, 5s) or raise`. A bare call is a
-compile error that says so.
+---
 
-## Tuning sockets — `std::io::sockopt`
+## Socket Options (`std::io::sockopt`)
 
-The UDP `set_option_int` / `set_option_bool` / `get_option_int`
-calls take a `level` and `name`. `std::io::sockopt` names those
-constants as zero-argument functions, so you never hardcode a
-platform number:
+All socket option setters (`set_recv_timeout`, `set_send_timeout`, `set_nodelay`, `set_rx_timestamps`, `set_option_int`, `set_option_bool`) are `fallible(IoError)` and require an `or` handler at the call site.
+
+`std::io::sockopt` exposes platform-specific socket constants as zero-argument functions for use with `std::io::udp::set_option_int`, `set_option_bool`, and `get_option_int`:
 
 ```hale,fragment
 std::io::udp::set_option_bool(
@@ -149,8 +148,6 @@ std::io::udp::set_option_bool(
     std::io::sockopt::SO_REUSEADDR(), true) or raise;
 ```
 
-For TCP, `std::io::tcp::set_nodelay(fd, true)` is the common one
-(disable Nagle for latency).
+For TCP sockets, disable Nagle's algorithm with `std::io::tcp::set_nodelay(fd, true) or raise`.
 
-Next: hashing & encoding — [Hashing, encoding &
-randomness](./crypto.md).
+Next: [Hashing, encoding & randomness](./crypto.md).

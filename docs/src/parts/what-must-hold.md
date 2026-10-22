@@ -1,13 +1,19 @@
-# Saying what must hold
+# Part III: Static Verification & Architecture Laws
 
-By the end of the last part the compiler holds your whole program as one graph: every locus and who owns it, every topic and who reaches it, every call and what it touches. This part lets you write down what must stay true about that graph, and makes the build refuse a program that stops being so.
+Because `hale check` derives a complete, canonical graph of your program—every locus, ownership edge, bus publish/subscribe edge, function call, and side effect—you can state architectural and capability invariants in source code and enforce them at compile time with zero runtime overhead.
 
-There are three sizes of promise.
+## Three Levels of Static Contracts
 
-- **A function's** ([Effects & contracts](../effects.md)). `@no_syscall`, `@deterministic` and their kin say what a function never does. The compiler proves each over the whole call graph beneath it, through helpers, methods, imported seeds and the standard library. A violation is a build error that names the path to it.
-- **The program's** ([Claims & the law](../claims.md)). A claim is a named sentence over the assembled graph, such as "the storefront never reaches the books except through payments" or "one locus settles an order". It sits in the main locus's `claims { }` block, `hale check` evaluates it as an error, and it costs nothing at run time.
-- **Every program's that is deployed somewhere** ([Constitutions](../constitutions.md)). A constitution is a named set of claims written once and adopted by each entrypoint. `hale.toml` binds one to each environment. This is how an application states its own law, its dna, so that the next change, by a person or a model, cannot quietly take it apart.
+| Level | Construct | What It Enforces |
+|---|---|---|
+| **1. Function / Locus** | `@effects(...)`, `@no_syscall`, `@no_block`, `@deterministic`, `@budget(...)`, `@phase_effects(...)` | Proves transitively across the call graph (including imported libraries and interface conformers) which side effects or allocations a function or lifecycle phase can reach. |
+| **2. Application (`main locus`)** | `group` & `claims { ... }` | Enforces whole-program reachability, isolation (`forbid reaches`), mandatory interposition (`avoiding gate`), secret confinement (`require sealed`), effect attribution (`require attributed`), and topic cardinality (`count publishers`). |
+| **3. Organization / Environment** | `constitution` & `adopt` | Packages a reusable set of architectural claims (such as `std::law::Standard`) adopted across entrypoints or bound per deployment environment (`dev`, `prod`) in `hale.toml`. |
 
-None of this runs. Every promise here is decided before the program starts, from the source alone, and the witness the compiler prints is a path through your code, not a stack trace from production.
+When any contract or claim fails, `hale check` rejects the build and emits a concrete **witness path** naming every function call and topic hop that violated the rule.
 
-**What the next part adds.** [Systems control](./systems.md) goes the other way, from what the program must be to how it runs. It covers memory and lifetime, performance, the forms under a locus's collections, zero-copy messaging, C, WebAssembly, and the tools for watching and replaying a running program.
+## Chapters in Part III
+
+- **[Effect Contracts & Resource Budgets](../effects.md)** — Built-in and user-defined effect classes, domain-indexed effects, allocation ceilings (`@budget`), and lifecycle phase restrictions (`@phase_effects`).
+- **[Architectural Claims & Topology Proofs](../claims.md)** — Group declarations, reachability/gating/bound/coverage claims, secret confinement (`@sealed` + `std::secret`), and topology snapshot diffing (`--dump-topology`, `--check-topology`).
+- **[Constitutions & Multi-Environment Laws](../constitutions.md)** — Writing and extending `constitution` blocks, adopting `std::law::Standard`, and verifying multi-environment matrices (`hale check --matrix`).

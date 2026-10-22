@@ -1,96 +1,140 @@
 # JSON
 
-> **Coming from Python / Node?** There's no `JSON.parse` that
-> hands you a dynamic object you index freely. Hale's `std::json`
-> is field-oriented: you ask a JSON string for a named field and
-> a type (`find_string_field`, `find_int_field`, …), and you
-> build output with a streaming `Builder`. At v1 it's tuned for
-> flat objects and arrays — the common shapes for config and wire
-> messages.
+Hale provides two ways to work with JSON: compile-time generated struct codecs (`Type::from_json` and `Type::to_json`) for fixed schemas, and the `std::json` module for dynamic field extraction, streaming output construction, cursor iteration, and input validation.
 
-## Reading
+```hale
+type Order {
+    id: Int      `json:"id"`;
+    price: Int   `json:"px"`;
+    qty: Float   `json:"sz"`;
+    active: Bool `json:"on"`;
+    side: String `json:"side"`;
+    currency: String = "USD";
+}
 
-Pull individual fields out of a JSON string by name:
+fn parse_and_echo(body: String) -> String fallible(JsonError) {
+    let order = Order::from_json(body) or raise;
+    return Order::to_json(order);
+}
+
+fn main() {
+    let raw = "{\"id\":7,\"px\":100,\"sz\":2.5,\"on\":true,\"side\":\"buy\"}";
+    let out = parse_and_echo(raw) or "";
+    println(out);
+}
+```
+
+## API Summary
+
+| API | Signature / Type | Description |
+|---|---|---|
+| `Type::from_json` | `fn(String) -> Type fallible(JsonError)` | Single-pass parser generated for structs with `json:"..."` field tags |
+| `Type::to_json` | `fn(Type) -> String` | Infallible serializer generated for structs with `json:"..."` field tags |
+| `std::json::string_field` | `fn(String, String) -> JsonString` | Inspects a top-level field's JSON type (`kind`) and decoded string (`text`) |
+| `std::json::find_string_field` | `fn(String, String) -> String` | Extracts a top-level field as `String` (returns `""` if missing; coerces non-strings) |
+| `std::json::find_int_field` | `fn(String, String) -> Int` | Extracts a top-level field as `Int` (returns `0` if missing or non-numeric) |
+| `std::json::find_bool_field` | `fn(String, String) -> Bool` | Extracts a top-level field as `Bool` (returns `false` unless `true`) |
+| `std::json::find_field_raw` | `fn(String, String) -> String` | Returns the raw JSON substring of a top-level field (for nested objects/arrays) |
+| `std::json::array_first` / `array_next` | `ArrayIterSpan` cursor | Iterates elements of a JSON array (`it.element`, `it.done`) |
+| `std::json::object_first` / `obj_key_string` | `ObjectIterSpan` cursor | Iterates key-value pairs of a JSON object with dynamic keys |
+| `std::json::Builder` | Streaming builder locus | Incrementally constructs well-formed JSON objects and arrays |
+| `std::json::escape_string` / `unescape_string` | `fn(String) -> String` | Escapes and unescapes JSON string content (including `\uHHHH` and surrogate pairs) |
+| `std::json::valid` | `fn(String) -> Bool` | Zero-allocation strict JSON validator (up to 64 nesting levels) |
+| `std::json::valid_object` | `fn(String) -> Bool` | Validates a JSON object with up to 64 unique, unescaped top-level keys |
+
+---
+
+## Typed Struct Codecs (`from_json` and `to_json`)
+
+When parsing or serializing a known schema, annotate `type` fields with `` `json:"<key>"` `` metadata tags. The compiler generates a single-pass parser (`Type::from_json`) and serializer (`Type::to_json`). If a field omits the `json:` tag, the field's identifier is used as the JSON key.
+
+```hale,fragment
+type Addr {
+    city: String `json:"city"`;
+    zip: Int     `json:"zip"`;
+}
+
+type Person {
+    name: String `json:"name"`;
+    home: Addr   `json:"home"`;
+    role: String = "member";      // optional: uses default when key is absent
+}
+
+let p = Person::from_json(body) or raise;
+println(p.home.city);
+
+let encoded = Person::to_json(p);
+let roundtrip = Person::from_json(encoded) or raise;
+```
+
+### Decoding & Encoding Rules
+
+- **Single-pass scanning**: `Type::from_json(s) -> Type fallible(JsonError)` walks the JSON object once, dispatches matched keys to their target fields, and skips unknown keys (including nested objects or arrays under unknown keys).
+- **Required vs. optional fields**: A missing field raises `JsonError` (naming the missing field) unless the field declaration includes a default value (`role: String = "member"`).
+- **Error handling**: Because `from_json` is `fallible(JsonError)`, callers must address errors with `or raise`, `or <fallback>`, or an error handler. `Type::to_json(value)` is infallible and always returns a `String`.
+- **Supported field types**:
+  - **Scalars**: `Int`, `Float`, `Bool`, `String`, and `Decimal<S>`.
+  - **Exact decimals**: `Decimal<S>` serializes as an exact JSON number (`19.99`, without float approximation) and parses at scale `S`. Numbers with more fractional digits than `S` are rejected with `wrong_type` rather than truncated.
+  - **Nested structs**: Any field whose type is another `json:`-tagged `type` is parsed and serialized recursively.
+
+> [!NOTE]
+> `Type::from_json` does not support dynamically sized array fields because general sequences in Hale are locus-owned (`@form(vec)`). To parse a JSON array with `std::json`, extract the raw array slice with `find_field_raw` (if nested), iterate it with [`array_first` / `array_next`](#iterating-arrays-and-dynamic-objects), and `push` elements into a locus collection. (For RPC message types declared in an `api` surface, use fixed `[T; N]` or capacity-bounded `bounded[T; N]` array fields and `std::json::Value`—see [The API surface](../services/api.md).)
+
+---
+
+## Dynamic Field Extraction (`std::json`)
+
+For ad-hoc queries or configuration fragments where you only need a few fields, extract fields directly by key name:
 
 ```hale,fragment
 let doc = "{\"name\": \"Ada\", \"age\": 36, \"active\": true}";
 
-let name   = std::json::find_string_field(doc, "name");    // "Ada"
-let age    = std::json::find_int_field(doc, "age");        // 36
-let active  = std::json::find_bool_field(doc, "active");    // true
+let name   = std::json::find_string_field(doc, "name");   // "Ada"
+let age    = std::json::find_int_field(doc, "age");       // 36
+let active = std::json::find_bool_field(doc, "active");   // true
 ```
 
-Missing fields come back as the type's zero value (`""`, `0`,
-`false`) rather than failing — so for "is this really present?"
-semantics, use [`string_field`](#reading-a-field-that-may-be-null)
-below, which names the shape it found.
-`find_field_raw` returns the raw substring for a field, which is
-how you reach into a nested object:
+- **Top-level matching**: Field lookups match top-level keys only. A string value elsewhere in the document cannot shadow a key, and nested keys are not matched until you extract their parent object.
+- **Zero-value defaults**: Missing fields return the target type's zero value (`""`, `0`, `false`).
+- **Nested objects**: Call `std::json::find_field_raw` to retrieve the raw JSON substring of a nested object, then query fields on that substring:
 
 ```hale,fragment
 let inner = std::json::find_field_raw(doc, "address");
 let city  = std::json::find_string_field(inner, "city");
 ```
 
-The lookup matches the name **as a top-level key only** — a string
-*value* elsewhere in the document that happens to repeat the key's
-text can't shadow it, and a key that only exists deeper down isn't
-found until you chain into its parent (as above). When you iterate
-an object whose keys you *don't* know — a `dependencies` map, a
-registry's `versions` — read each key with
-`std::json::obj_key_string(it, doc)`: it decodes escapes the same
-way `obj_value_string` does, which hand-slicing
-`doc[it.key_start..it.key_end]` silently skips.
+### Handling Nullable and Optional Fields (`string_field`)
 
-## Reading a field that may be null
+`find_string_field` is permissive and coerces non-string tokens into strings, while `find_int_field` and `find_bool_field` coerce `null` or mismatched types to `0` and `false`:
 
-`find_string_field` hands back a `String` whatever the value was,
-which is convenient until the field is optional. `null` arrives as
-the four-character string `"null"` — a perfectly good name — and
-absent, empty, and a number all arrive as something a name-shaped
-field will happily accept:
+| Input JSON | `find_string_field(doc, "owner")` | `string_field(doc, "owner")` |
+|---|---|---|
+| `{"owner": "Ada"}` | `"Ada"` | `JsonString { kind: "string", text: "Ada" }` |
+| `{"owner": null}` | `"null"` | `JsonString { kind: "null", text: "" }` |
+| `{"owner": ""}` | `""` | `JsonString { kind: "string", text: "" }` |
+| `{}` | `""` | `JsonString { kind: "missing", text: "" }` |
+| `{"owner": 7}` | `"7"` | `JsonString { kind: "number", text: "" }` |
 
-```hale,fragment
-let a = std::json::find_string_field("{\"owner\": null}", "owner");     // "null"  (!)
-let b = std::json::find_string_field("{\"owner\": \"null\"}", "owner"); // "null"
-let c = std::json::find_string_field("{\"owner\": \"\"}", "owner");     // ""
-let d = std::json::find_string_field("{}", "owner");                    // ""
-let e = std::json::find_string_field("{\"owner\": 7}", "owner");        // "7"
-```
-
-`string_field` answers with the shape as well as the text, so you
-decide instead of guessing:
+When you need to distinguish `"null"` from `null`, or verify a field's type before reading it, use `std::json::string_field(doc, key) -> std::json::JsonString`:
 
 ```hale,fragment
 let owner = std::json::string_field(body, "owner");
 if owner.kind == "string" {
     println("owned by ", owner.text);
 } else if owner.kind == "null" || owner.kind == "missing" {
-    println("a root");                  // parentless — not named `null`
+    println("unassigned");
 } else {
     println("owner must be a string or null");
 }
 ```
 
-It returns a `std::json::JsonString`, which is two fields:
+`JsonString` contains two fields:
+- `kind`: One of `"string"`, `"null"`, `"missing"`, `"number"`, `"bool"`, `"array"`, `"object"`, or `"invalid"`.
+- `text`: Decoded string content (quotes stripped, escapes resolved) when `kind == "string"`, and `""` for all other kinds.
 
-- `kind` — one of `"string"`, `"null"`, `"missing"`, `"number"`,
-  `"bool"`, `"array"`, `"object"`, `"invalid"`.
-- `text` — the decoded string content (quotes stripped, escapes
-  resolved) **only** when `kind` is `"string"`. Every other kind
-  carries `""`, so forgetting to check `kind` gives you an empty
-  name rather than a plausible wrong one.
+`"missing"` means the document is a JSON object without that key. `"invalid"` means the document is not an object or the field value is syntactically malformed (such as an unterminated string or bare `NaN`). Duplicate keys within the same object resolve to the first occurrence.
 
-`"missing"` means the document is an object with no such member.
-`"invalid"` means the document is not an object at all, or the
-member's value is not something the scanner can name (an
-unterminated string, a bare `NaN`). A key repeated inside one
-object resolves to the first one — the same member
-`find_string_field` reads.
-
-The kind is not string-specific. An `Int` or `Bool` read has the
-same coercion problem (`null` becomes `0`, anything that isn't
-`true` becomes `false`), and the same gate fixes it:
+You can also use `string_field` to guard numeric or boolean reads:
 
 ```hale,fragment
 if std::json::string_field(body, "port").kind == "number" {
@@ -99,94 +143,15 @@ if std::json::string_field(body, "port").kind == "number" {
 }
 ```
 
-`find_string_field` is unchanged and stays permissive — existing
-callers keep the behaviour they have.
+`JsonString`, `ArrayIterSpan`, `ObjectIterSpan`, and `JsonFieldRange` are statically checked structs in `std::json`, so misspelled field names fail at compile time.
 
-The compiler knows what `string_field` returns, so a typo in the
-field name is a compile error rather than a silently empty read:
+---
 
-```text
-type error: no field `knd` on `std::json::JsonString`
-            — did you mean `kind`?
-```
+## Iterating Arrays and Dynamic Objects
 
-The same is true of the cursors below (`ArrayIterSpan`,
-`ObjectIterSpan`, `JsonFieldRange`) and of `std::http::parse_request`:
-each names a real type, so wrong fields, wrong argument counts and
-wrong argument types are all caught where you wrote them.
+### Array Iteration (`ArrayIterSpan`)
 
-## Parsing into a type
-
-Pulling fields one by one rescans the document per field. When you have
-a fixed shape, tag the fields with their JSON keys and the compiler
-generates a single-pass parser for you:
-
-```hale,fragment
-type Order {
-    id: Int      `json:"id"`;
-    price: Int   `json:"px"`;     // JSON key differs from the field name
-    qty: Float   `json:"sz"`;
-    active: Bool `json:"on"`;
-    side: String `json:"side"`;
-    currency: String = "USD";     // optional: default fills a missing key
-}
-
-let o = Order::from_json(body) or raise;
-println(o.price);
-```
-
-`Type::from_json(s) -> Type fallible(JsonError)` walks the object once,
-dispatches each key to the matching field, and reads the value by the
-field's declared type — no per-field rescan, and unmatched keys (and
-nested objects/arrays under them) are skipped. The `json:"<key>"` tag
-sets the JSON key; without it the field name is the key.
-
-A **missing field raises** `JsonError`, naming the field — *unless* the
-field declares a default (`currency: String = "USD"`), in which case the
-default fills it. Because `from_json` is `fallible`, you must address it
-(`or raise`, `or <fallback>`, …) like any other fallible call.
-
-A field whose type is **another `json:`-tagged struct** is parsed
-recursively — nest as deep as you like, and a missing field anywhere
-raises with that field's name:
-
-```hale,fragment
-type Addr   { city: String `json:"city"`; zip: Int `json:"zip"`; }
-type Person { name: String `json:"name"`; home: Addr `json:"home"`; }
-
-let p = Person::from_json(body) or raise;
-println(p.home.city);
-```
-
-The same tags drive the reverse direction — `Type::to_json(value)`
-serializes back to a JSON string (numbers and bools bare, strings escaped,
-nested structs recursed), so `from_json` / `to_json` round-trip:
-
-```hale,fragment
-let body = Order::to_json(o);          // -> {"id":7,"px":...}
-let o2   = Order::from_json(body) or raise;
-```
-
-`to_json` is not fallible — serialization always succeeds.
-
-The tag is general `key:"value"` metadata — `json:` is one consumer;
-other keys are free for future tools.
-
-Fields must be scalars — `Int` / `Float` / `Bool` / `String` /
-`Decimal<S>` — or nested `json:`-tagged structs. A `Decimal<S>` field
-crosses as a JSON number with its exact digits (`to_json` writes
-`19.99`, not a float's approximation) and is read back at the field's
-scale: a number with more places than the scale holds is refused as the
-field's `wrong_type` rather than truncated. **Array fields are not supported**, by design:
-Hale sequences are locus-owned (there is no heap-owning value list to put
-in a struct). To read a JSON array, walk it with the [array
-cursor](#arrays) and `push` each element into a `@form(vec)` cell on a
-locus — `from_json` handles the flat/nested record shape, arrays stay an
-explicit, locus-owned step.
-
-## Arrays
-
-Walk a JSON array with the iterator pair:
+Walk a JSON array using `std::json::array_first` and `std::json::array_next`:
 
 ```hale,fragment
 let arr = "[10, 20, 30]";
@@ -198,14 +163,17 @@ while !it.done {
 }
 ```
 
-`array_first` returns an iterator with the first `element` and a
-`done` flag; `array_next` advances it.
+`array_first` returns an `ArrayIterSpan` containing the first `element` substring and `done: Bool`. `array_next` advances the cursor.
 
-## Writing
+### Dynamic Object Iteration (`ObjectIterSpan`)
 
-The `Builder` is a streaming assembler — it tracks open scopes
-and inserts separators for you, so you can't produce malformed
-JSON by forgetting a comma:
+When iterating a JSON object whose keys are not known ahead of time (such as a `dependencies` or `versions` map) with `object_first`, read each key using `std::json::obj_key_string(it, doc)` and values using `obj_value_string`. Unlike manual slicing (`doc[it.key_start..it.key_end]`), `obj_key_string` decodes JSON escape sequences in keys. To compare a key without allocating, use `obj_key_eq`.
+
+---
+
+## Building JSON (`std::json::Builder`)
+
+`std::json::Builder` is a streaming JSON writer that tracks open object/array scopes, escapes strings, and inserts commas automatically into a single growing byte buffer:
 
 ```hale,fragment
 let b = std::json::Builder { };
@@ -214,130 +182,61 @@ b.string_field("name", "Ada");
 b.int_field("age", 36);
 b.bool_field("active", true);
 b.end_object();
-let out = b.result();      // {"name": "Ada", "age": 36, "active": true}
+let out = b.result();   // {"name": "Ada", "age": 36, "active": true}
 ```
 
-Nest objects and arrays by pairing `begin_*` / `end_*`
-(`begin_object_field` / `begin_array_field` open one as a named
-field). `string_field` and `string_value` quote and escape per the
-JSON spec for you; plain `field(name, value)` writes `value` as
-raw, already-formatted JSON, so it is the one to use for a
-fragment you built yourself — not for text. If you need to escape
-or unescape a string by hand, `std::json::escape_string` and
-`unescape_string` are there.
+| Builder Method | Description |
+|---|---|
+| `begin_object()` / `end_object()` | Opens and closes a JSON object (`{` ... `}`) |
+| `begin_array()` / `end_array()` | Opens and closes a JSON array (`[` ... `]`) |
+| `begin_object_field(name)` | Writes `"name": {` and opens a nested object scope |
+| `begin_array_field(name)` | Writes `"name": [` and opens a nested array scope |
+| `string_field(name, value)` | Writes `"name": "escaped_value"` |
+| `int_field(name, value)` | Writes `"name": 123` |
+| `bool_field(name, value)` | Writes `"name": true` or `false` |
+| `string_value(value)` | Writes a quoted, escaped string element inside an array |
+| `field(name, raw_json)` | Writes `"name": <raw_json>` for pre-formatted JSON fragments |
+| `result() -> String` | Returns an independent copy of the accumulated JSON string |
 
-`result()` hands back a copy, so it is a snapshot rather than a
-window: keep building after it and the `String` you already took
-does not change.
+### String Escaping and Unescaping
 
-The Builder and both helpers accumulate into one growing byte
-buffer, so the cost of a document is one pass over its own
-bytes. You can assemble a multi-megabyte payload a field at a
-time without watching memory climb.
-
-## Escapes
-
-`\uHHHH` decodes to the character it names, so an escaped
-literal and a plain one are the same value:
+For manual string escaping, use `std::json::escape_string(s)` and `std::json::unescape_string(s)`:
 
 ```hale,fragment
 let a = std::json::unescape_string("hale.v\\u0031");
-println(a == "hale.v1");        // true
+println(a == "hale.v1");                               // true
 println(std::json::unescape_string("\\u00e9"));        // é
 println(std::json::unescape_string("\\u4e2d"));        // 中
 println(std::json::unescape_string("\\ud83d\\ude00")); // 😀
 ```
 
-The last one is a *surrogate pair*: JSON has no way to write a
-character above U+FFFF in one escape, so it writes two, and
-`unescape_string` puts them back together.
+`unescape_string` resolves standard escapes (`\"`, `\\`, `\n`, `\t`, etc.), `\uHHHH` hex escapes, and UTF-16 surrogate pairs for code points above `U+FFFF`.
 
-Two inputs have no character to decode to, and both become `�`
-(U+FFFD, the replacement character):
+- **Unpaired surrogates** and **`\u0000`** decode to `` (`U+FFFD`). Because Hale strings are NUL-terminated internally, replacing `\u0000` with `U+FFFD` prevents silent string truncation.
+- **Unrecognized escapes** (such as `\uZZZZ`) pass through unchanged.
 
-- **An unpaired surrogate** — half of a pair, with nothing to
-  join it. It is not a character on its own.
-- **`\u0000`** — a Hale `String` ends at its first zero byte, so
-  a real NUL would silently cut the value short and let a prefix
-  compare equal to the whole. A visible `�` is the safer answer.
+---
 
-Anything else that isn't a real escape passes through as it was
-written — `\uZZZZ` stays `\uZZZZ` — on the principle that a
-malformed byte somewhere in a document shouldn't cost you the
-rest of it.
+## Validating Untrusted Input
 
-## Validating
-
-The readers above are forgiving on purpose: `find_string_field`
-answers with what it finds and doesn't mind a missing brace. When
-the bytes come from somewhere you don't control — a request body,
-a file on disk, a line of somebody's journal — ask first:
+Because `find_*_field` helpers are forgiving by design, validate untrusted payloads at system boundaries before extracting fields:
 
 ```hale,fragment
 if !std::json::valid(body) {
     return Response { status: 400, body: "not JSON" };
 }
+
+if !std::json::valid_object(row) {
+    return Response { status: 400, body: "expected flat record object" };
+}
 ```
 
-`std::json::valid` is true for exactly one well-formed JSON
-value, and nothing after it. Whitespace around the value is fine;
-a second value, a stray brace or trailing text is not, and the
-empty string is not a document. The number rules are JSON's, which
-are stricter than most languages': `01`, `1.`, `.5`, `1e` and
-`+1` are all refused, while `-0`, `1e5` and `-1.25e-3` are fine.
+| Validator | Guarantees & Limits |
+|---|---|
+| `std::json::valid(doc)` | Exactly one well-formed JSON value (RFC 8259 numbers: rejects `01`, `1.`, `.5`, `1e`, `+1`; accepts `-0`, `1e5`, `-1.25e-3`), valid UTF-8, no trailing tokens, no lone surrogates or `\u0000`, maximum nesting depth of **64 levels**. Zero heap allocations (~10 ms/MB). |
+| `std::json::valid_object(doc)` | All guarantees of `valid(doc)`, plus the top-level value must be an object with at most **64 top-level keys**, all keys must be **unique**, and no key may contain escape sequences (preventing `"\u0061"` vs `"a"` lookup mismatches). |
 
-Most gates want a bit more than "is it JSON":
+> [!TIP]
+> For JSON maps with more than 64 top-level keys, validate syntax with `std::json::valid(doc)` and iterate keys with `object_first` / `obj_key_eq`. For high-throughput binary formats, see [Zero-copy bus](../systems/zero-copy-bus.md) and [Performance](../systems/performance.md).
 
-```hale,fragment
-// A record: an object, with each field named once.
-if !std::json::valid_object(row) { return false; }
-```
-
-`valid_object` is `valid` plus "the top level is an object whose
-keys are unique and unescaped". Both extras are about
-*agreement*, not taste. JSON's grammar permits
-`{"a":1,"a":2}` — last-one-wins is a convention, not a rule — so
-two readers of those bytes can disagree about the record. And
-`{"\u0061":1}` spells the key `a`, but `find_int_field(row, "a")`
-looks for the literal text `"a"` and won't find it: the field
-would be present and unfindable at once. Refusing both up front
-means everything downstream can trust what it reads.
-
-Three inputs are refused even though a pedantic reading of the
-spec allows them, and they are the same three the escape rules
-above have no character for: text that isn't valid UTF-8, a lone
-surrogate escape, and `\u0000`. A validator's job is admission,
-so it says no rather than handing on a `�`.
-
-Two limits are worth knowing, because both answer `false` rather
-than working harder:
-
-- **Nesting stops at 64 levels.** Deeper input is refused, not
-  scanned — a document made of ten thousand `[` costs you a
-  constant amount of work.
-- **`valid_object` checks uniqueness over at most 64 top-level
-  fields.** Past that it answers `false`. That bound is what lets
-  it check keys without building anything: it compares them where
-  they sit in your string. Plain `valid` has no such limit, and
-  nested objects are only checked for syntax, so a map of a
-  thousand keys is still checkable as JSON — walk its keys with
-  `object_first` / `obj_key_eq` if you need them unique too.
-
-Validating is a pass over the bytes and allocates nothing at all
-— no substring, no set of keys, nothing left in the arena
-afterwards — about 10 ms per megabyte. It is cheap enough to run
-on every inbound message rather than hoping.
-
-## When the shape is deep
-
-`std::json` at v1 is built for flat objects and top-level arrays
-— the great majority of config files and API messages. For
-deeply-nested documents you walk level by level with
-`find_field_raw`, treating each nested object as its own flat
-document. If you're parsing a genuinely complex or
-performance-critical format, the [zero-copy binary
-techniques](../systems/zero-copy-bus.md) and the systems-tier
-[performance](../systems/performance.md) chapter cover building
-your own parser over `Bytes`.
-
-Next: serving and calling over the network — [HTTP](./http.md).
+Next: [HTTP](./http.md).

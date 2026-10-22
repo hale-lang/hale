@@ -1,8 +1,39 @@
-# Control flow
+# Control Flow
 
-> Choosing, repeating, and matching.
+Hale provides `if`/`else` branches, exhaustive `match` expressions, `while` loops, and `for` range/collection loops. Both `if` and `match` are expressions that can return values directly when all arms produce the same type.
+
+```hale
+fn classify(n: Int) -> String {
+    return match {
+        n < 0   -> "negative",
+        n == 0  -> "zero",
+        n < 10  -> "small",
+        else    -> "large",
+    };
+}
+
+fn main() {
+    for i in 0..=3 {
+        let parity = if i % 2 == 0 { "even" } else { "odd" };
+        println(f"{i}: {parity} ({classify(i)})");
+    }
+}
+```
+
+## Control-Flow Summary
+
+| Construct | Syntax | Can Produce a Value? | Key Rules |
+|---|---|---|---|
+| Conditional | `if cond { ... } else { ... }` | Yes (when `else` is present) | Both arms must have the same type in expression position |
+| Value match | `match expr { pat -> res, _ -> def }` | Yes | Must be exhaustive; `_` is the wildcard pattern |
+| Condition match | `match { c1 -> r1, else -> def }` | Yes | Evaluates boolean guards top-to-bottom; `else` is the catch-all |
+| Conditional loop | `while cond { ... }` | No (`()`) | Use `while true { ... }` for unbounded loops; exit with `break;` |
+| Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`) |
+| Block expression | `{ stmt; expr }` | Yes (if final expression omits `;`) | Final expression without `;` becomes the block's value |
 
 ## `if` / `else`
+
+`if` branches on a `Bool` condition and chains with `else if` and `else`:
 
 ```hale,fragment
 if score >= 90 {
@@ -14,18 +45,13 @@ if score >= 90 {
 }
 ```
 
-`if` is also an *expression* — it produces a value, so you can
-assign with it. In expression position it needs an `else`, and
-both arms must produce the same type:
+### `if` as an Expression
+
+When an `if` has an `else` branch and both branches evaluate to the same type, it can be used as an expression:
 
 ```hale,fragment
 let grade = if score >= 90 { "A" } else { "B" };
-```
 
-Because an `if` is an expression, it can be an arm of another
-`if` and the value flows out through both:
-
-```hale,fragment
 let band = if score >= 90 {
     if score >= 97 { "A+" } else { "A" }
 } else {
@@ -33,19 +59,12 @@ let band = if score >= 90 {
 };
 ```
 
-One small trap: when the condition ends in a bare name, an
-*empty* body won't parse — `done { }` reads as a struct literal,
-and a comment inside doesn't change that. If you genuinely want a
-branch that does nothing, wrap the condition in parentheses or
-restructure it:
+> [!NOTE]
+> When an `if` condition ends in a bare identifier, an **empty** `{ }` body (`if done { }`) is parsed as a struct literal `done { }`, even if the braces contain a comment. If you need an empty branch body, parenthesize the condition: `if (done) { }`.
 
-```hale,fragment
-if (done) {
-    // nothing to do yet
-}
-```
+## `while` and `for` Loops
 
-## `while` and `loop`
+Use `while` to repeat a block while a condition holds, or `while true` for an explicit loop terminated by `break;`:
 
 ```hale,fragment
 let mut i = 0;
@@ -53,11 +72,7 @@ while i < 5 {
     println(i);
     i = i + 1;
 }
-```
 
-`while true { ... }` repeats forever until you `break`:
-
-```hale,fragment
 let mut n = 0;
 while true {
     n = n + 1;
@@ -65,55 +80,40 @@ while true {
 }
 ```
 
-`break` exits the nearest loop; `continue` skips to the next
-iteration.
+Inside any loop, `break;` exits the innermost loop immediately, and `continue;` skips to the next iteration.
 
-## `for`
-
-`for` iterates over a range or a collection:
+Use `for` to iterate over integer ranges or collections (covered in [Collections](../everyday/collections.md)):
 
 ```hale,fragment
 for i in 0..5 {
-    println(i);            // 0 1 2 3 4
+    println(i);            // 0, 1, 2, 3, 4 (exclusive upper bound)
+}
+
+for i in 0..=5 {
+    println(i);            // 0, 1, 2, 3, 4, 5 (inclusive upper bound)
 }
 ```
 
-(`0..5` is exclusive of the upper bound; `0..=5` includes it.)
-You'll use `for` over real collections once you meet lists and
-maps in [Everyday programs](../everyday/collections.md).
+## Pattern Matching (`match`)
 
-## `match`
-
-`match` compares a value against patterns and runs the first
-that fits:
+`match` compares a value against a list of patterns using `->` arms and runs the first matching arm:
 
 ```hale
 fn describe(n: Int) -> String {
     return match n {
-        0       -> "zero",
-        1       -> "one",
-        _       -> "many",
+        0 -> "zero",
+        1 -> "one",
+        _ -> "many",
     };
 }
 ```
 
-`_` is the wildcard — "anything else." Matches must be
-*exhaustive*: the compiler rejects a `match` that doesn't cover
-every possibility. For a `Bool` that means both `true` and
-`false`; for open-ended types it means a `_` arm. This is a
-safety feature — you can't forget a case and have it silently
-fall through. It is also why a function may end with a `match` whose
-every arm `return`s: no path reaches the end of the function.
+- **Exhaustiveness:** Every `match` is checked for exhaustiveness at compile time. Matching a `Bool` requires both `true` and `false`; matching an `enum` or set type ([Records & Data](../everyday/records.md)) requires covering every variant; matching open-ended types (`Int`, `String`) requires a `_` wildcard arm. Because `match` is exhaustive, a function can end with a `match` statement whose arms all `return`.
+- **Statement vs. expression:** `match` works as both a statement and an expression. Arms can be single expressions or `{ ... }` blocks (block-bodied arms still take a trailing comma).
 
-`match` shines on enums (a type that's one of several named
-shapes), which you'll meet in
-[Records & data](../everyday/records.md). The arms can bind the
-data carried by each variant.
+### Condition `match` (Scrutinee-less `match`)
 
-### Matching on conditions instead of a value
-
-Sometimes there's no single value to match on — you just want the
-first true condition out of several. Leave the scrutinee out:
+Omit the value after `match` to test a sequence of boolean conditions top-to-bottom, using `else` as the catch-all arm:
 
 ```hale,fragment
 let size = match {
@@ -123,16 +123,7 @@ let size = match {
 };
 ```
 
-Arms are tried top to bottom and the first true one wins, so order
-matters. `else` is the catch-all.
-
-This is the same `match` — it's shorthand for
-`match true { _ if n < 10 -> ..., _ -> ... }` — so everything above
-still applies: it works as a statement or an expression, arms can be
-blocks, and a block-bodied arm still needs its trailing comma.
-
-Reach for it when you're writing a ladder of `if`/`else if` that all
-produce the same kind of answer:
+Scrutinee-less `match` is shorthand for `match true { _ if n < 10 -> ..., _ -> ... }` and is ideal when routing or classifying across multiple predicates that return the same type:
 
 ```hale,fragment
 return match {
@@ -142,28 +133,19 @@ return match {
 };
 ```
 
-## Blocks have values
+## Block Values and Statement Rules
 
-A `{ ... }` block's last expression — written without a trailing
-`;` — is the block's value. That's why `if`/`match` can be used
-as expressions, and why a function can end in a bare expression
-instead of `return`. A block whose last item *does* end in `;`
-has no value, so it can't stand where one is expected.
+A `{ ... }` block evaluates to its final expression when that expression omits the trailing semicolon `;`:
 
 ```hale,fragment
 let label = {
     let base = compute();
-    base + 1               // block evaluates to this
+    base + 1               // no semicolon: block evaluates to `base + 1`
 };
 ```
 
-The other side of that rule: a statement has to *do* something.
-A call (whose value, if any, is dropped), a locus literal, or an
-`or` over a fallible call can stand on its own followed by `;`. An
-expression that only computes a value cannot — `total + 1;` or
-`p.name;` throws its value away, which is almost always a slip, and
-the compiler says so at the expression: *this expression's value is
-unused*. Bind it, assign it, or delete it.
+A block whose final item ends with `;` has no value (`()`) and cannot be used where a value is expected.
 
-That's the whole control-flow surface. Next we look at working
-with text: [Strings & text](./strings.md).
+Conversely, a standalone statement terminated by `;` must perform an action—such as a function or method call (whose return value, if any, is discarded), a locus instantiation, or an `or` clause on a fallible call. Writing a pure value expression as a statement (`total + 1;` or `p.name;`) fails compilation with `this expression's value is unused`.
+
+Next: [Strings & Text](./strings.md).

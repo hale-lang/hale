@@ -1,21 +1,43 @@
 # Perspectives
 
-A **perspective** is a live-rebindable handle to a *contract*. You
-program against the contract — a set of method signatures — and
-reach the real implementation only through an indirection the
-system can re-point underneath you. It's the seam that lets you
-swap a component's implementation without the code that calls it
-changing.
+A **perspective** is a program-wide, live-rebindable contract slot. Loci program against the contract's method signatures and bus subscriptions through `perspective(Name)`, while the deployment designates a concrete locus that `serves` the contract—and can hot-swap the active implementation at runtime via `reperspective` while preserving live state.
 
-> This chapter covers what ships today: declaring a contract, an
-> implementation that `serves` it, calling through the slot, and
-> the live swap — re-pointing the slot at a new implementation
-> while the program runs, via `reperspective` (last section).
+```hale
+perspective Router {
+    fn route(code: Int) -> Int;
+    fn health() -> Int;
+}
 
-## The contract
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int { return code + 100; }
+    fn health() -> Int { return 1; }
+}
 
-A `perspective` declares bodyless method signatures — the stable
-ABI a holder programs against:
+locus Gateway {
+    params {
+        router: perspective(Router) = RouterV1 { };
+    }
+    fn handle(code: Int) -> Int {
+        return self.router.route(code);
+    }
+}
+```
+
+## Interface or Perspective
+
+Hale provides three distinct boundary mechanisms depending on whether you are decoupling method callers, swapping a singleton subsystem, or exposing child state to a parent supervisor:
+
+| Construct | Scope & Cardinality | Dispatch & Representation | Primary Use Case |
+|---|---|---|---|
+| **`perspective`** | Single program-global slot shared by all holders of `perspective(P)` | `{ data, vtable }` slot; 1 pointer load + 1 indirect call; supports live vtable hot-swap via `reperspective` | Subsystem seams (routers, storage engines, policies) configured at assembly or hot-swapped in place. |
+| **`interface`** | Per-value fat pointer; many implementations can coexist simultaneously | Structural satisfaction (any locus with a superset of methods satisfies `I`, no `serves` clause needed) | Heterogeneous collections, per-instance plugins, polymorphic `accept(j: Job)` parent hooks. |
+| **`contract { expose; consume; }`** | Parent-child depth edge (`H4`/`H5`) | Direct static field access checked between a parent's `accept(c: Child)` and `Child` | Declaring which internal fields a child locus exposes to its supervising parent. See [Parents & Children](./parents-children.md). |
+
+## Declaring & Serving a Perspective
+
+### The Contract (`perspective`)
+
+A `perspective` declaration lists bodyless method signatures (and optional bus subscriptions) that form the contract's ABI:
 
 ```hale
 perspective Router {
@@ -24,13 +46,9 @@ perspective Router {
 }
 ```
 
-## Serving a contract
+### The Implementation (`serves`)
 
-A locus `serves` a perspective by providing every method it
-declares — matching argument and return types, and `fallible` on
-both or on neither. The compiler checks
-this structurally, the way it checks interfaces; there's no
-separate registration:
+A locus implements a perspective by adding `: serves <Perspective>` to its header and providing every method and bus subscription declared by the perspective:
 
 ```hale
 locus RouterV1 : serves Router {
@@ -39,48 +57,19 @@ locus RouterV1 : serves Router {
 }
 ```
 
-Miss a method, or get a signature wrong, and it's a compile error
-pointing at the `serves` clause. `serves` shares the locus header's
-post-`:` list with annotations, so `locus RouterV1 : serves Router,
-tier 2` is fine.
+- **Structural signature verification**: Parameter types, return types, and `fallible` annotations must match the perspective declaration exactly. Missing methods or mismatched signatures fail at compile time at the `serves` clause.
+- **Combining with annotations**: `serves` shares the post-colon header list with locus annotations (e.g., `locus RouterV1 : serves Router, tier 2`).
+- **Cross-seed perspectives**: A locus can serve a perspective imported from another library seed using a qualified path:
+  - Header: `locus RouterV1 : serves lib::Router`
+  - Parameter type: `perspective(lib::Router)`
+  - Live swap: `reperspective self.router as lib::RouterV2;`
 
-The contract can live in another seed: `serves` takes a qualified
-path, so a locus in your program can implement a perspective an
-imported library declares — `locus RouterV1 : serves lib::Router`,
-with `perspective(lib::Router)` for the slot and `reperspective
-self.router as lib::RouterV2` for the swap. Conformance is checked
-against the imported contract exactly as it is against a local one,
-and an alias path that names nothing is an error at the path.
+## Holding, Designating, and Calling a Slot
 
-## Holding and calling through a perspective
+Holders declare a parameter of type `perspective(Router)` (using a bare `Router` as a type is a compile error):
 
-A holder programs against `perspective(Router)` — never a concrete
-implementation. It designates the slot with a conforming impl
-(by default at its own declaration, or from whoever constructs it —
-see below), then calls through it:
-
-```hale
-locus Gateway {
-    params {
-        router: perspective(Router) = RouterV1 { };
-    }
-    fn handle(code: Int) -> Int {
-        return self.router.route(code);   // dispatched through the slot
-    }
-}
-```
-
-The handle's type is always `perspective(Router)`: a bare `Router`
-in a type position is refused, naming the slot type. And the handle
-reaches the impl through the contract's methods only — reading or
-storing a field through it (`self.router.hits = 0;`) is refused;
-give the contract a method that does it. A contract method declared
-`fallible` cannot be called through the slot yet (a perspective call
-does not carry a failure), so the checker refuses that call too.
-
-The locus that *assembles* a `Gateway` can pick the impl instead of
-taking the declaration's default, the same way it can fill any
-interface-typed field:
+- **Designating the implementation**: Providing a default or override initializer (`router: perspective(Router) = RouterV1 { };` or `Gateway { router: RouterV2 { } }`) constructs the implementation and binds the program-global `Router` slot to it.
+- **Overriding at assembly**: A parent or `main locus` can substitute any locus that `serves Router` when constructing the holder:
 
 ```hale
 locus RouterV2 : serves Router {
@@ -90,86 +79,44 @@ locus RouterV2 : serves Router {
 
 main locus App {
     params {
-        gw: Gateway = Gateway { router: RouterV2 { } };  // not RouterV1
+        gw: Gateway = Gateway { router: RouterV2 { } };
     }
 }
 
 fn main() { App { }; }
 ```
 
-`RouterV2` must `serves Router`; a locus that doesn't is refused
-right there with the `serves` clause it needs. One thing to keep in
-mind: the slot is program-global, so this chooses the *program's*
-router, not this Gateway's — if two holders are constructed with
-different impls, the last designation wins, just as it would with
-two different defaults. Tests assemble a fake, deployments assemble
-the real one, and the holder's source never changes.
-
-A holder that should *use* the program's router without choosing one
-leaves the field without an initializer. That field **holds** the slot:
-constructing the holder builds no impl and re-points nothing, and its
-calls go wherever the program designated. This is how a child created
-on the fly reaches the impl its assembly picked:
+- **Holding without designating**: Omitting the default initializer (`params { router: perspective(Router); }`) binds the field to the program's existing `Router` slot without constructing a new instance or re-pointing the slot. This allows dynamically spawned children to call through the implementation designated by `main`:
 
 ```hale
 locus Attempt {
-    params { router: perspective(Router); }   // hold, don't designate
+    params { router: perspective(Router); }   // holds the global slot without re-designating
     run() { println(self.router.route(1)); }
 }
 
 locus Work {
     accept(a: Attempt) { }
-    run() { Attempt { }; Attempt { }; }       // each routes through RouterV2
+    run() { Attempt { }; Attempt { }; }       // both calls route through RouterV2
 }
 
 main locus App {
     params {
-        router: perspective(Router) = RouterV2 { };   // the designation
+        router: perspective(Router) = RouterV2 { };   // designates RouterV2 for the program
         w: Work = Work { };
     }
 }
 ```
 
-A holder may still be given an impl at its construction (`Attempt {
-router: RouterV1 { } }`), which designates as any override does. The
-build refuses a program in which something holds a perspective and
-nothing that is built designates it; and a call through a held slot
-that runs before any designation has (a field born ahead of the
-designating one, say) stops the program with the perspective named.
+### Slot Constraints & Diagnostics
 
-`self.router.route(...)` doesn't call `RouterV1` directly — it goes
-through the perspective's **slot**. That indirection is the whole
-point: it's the seam a redeploy re-points.
+1. **Program-global singleton slot**: Every `perspective(Router)` handle in the binary references the same underlying slot. If multiple holders designate different implementations at construction, the most recently constructed designation wins program-wide.
+2. **Must be designated before use**: `hale check` rejects any program where a locus holds `perspective(P)` with no initializer unless at least one constructed locus designates `P`. At runtime, calling through an undesignated slot (for example, from an earlier sibling parameter born before the designating parameter) aborts the process naming the perspective.
+3. **Methods-only encapsulation**: Callers can only invoke methods declared on the `perspective`. Direct field reads or writes through the slot (`self.router.hits = 0;`) are rejected at compile time.
+4. **No `fallible` calls through slots**: While a `perspective` signature and `serves` implementation must agree on `fallible`, calling a `fallible` method through a `perspective(P)` slot is currently rejected at compile time because perspective dispatch does not propagate a value-error channel.
 
-## One slot, not many handles
+## Live Redeployment (`reperspective`)
 
-Unlike an interface value (which is a fat pointer copied into each
-holder), a perspective has exactly **one** program-global slot.
-Every holder of `perspective(Router)` funnels through it. That's a
-deliberate design choice: because there's a single indirection and
-the compiler sees every call site, re-pointing that one slot will
-redirect the entire program at once — a single pointer flip, no
-matter how many holders. That live re-point is the `reperspective`
-statement — see [Live redeploy](#live-redeploy-reperspective) below.
-
-The cost is one load plus one predicted indirect call per call into
-a perspective — near-direct. A program that declares no
-perspectives pays nothing.
-
-## Interface or perspective?
-
-Both let you program against a set of method signatures. Reach for
-an **interface** when you want many implementations coexisting, each
-value carrying its own — a heterogeneous collection, a plugin list.
-Reach for a **perspective** when there's one current implementation
-behind a stable seam that the *system* owns and may redeploy — a
-router, a storage engine, a policy. Interface is a value; a
-perspective is a deployment slot.
-
-## Live redeploy: `reperspective`
-
-The whole point of the slot is that it can be re-pointed while the
-program runs. `reperspective` does exactly that:
+The `reperspective` statement hot-swaps the active implementation behind a perspective slot at runtime with a single vtable pointer store:
 
 ```hale
 perspective Router {
@@ -188,81 +135,48 @@ locus RouterV2 : serves Router {
 locus Gateway {
     params { router: perspective(Router) = RouterV1 { }; }
     run() {
-        println(self.router.route(1));        // 101 — RouterV1
+        println(self.router.route(1));        // prints 101 (RouterV1)
         reperspective self.router as RouterV2;
-        println(self.router.route(1));        // 201 — RouterV2, same call site
+        println(self.router.route(1));        // prints 201 (RouterV2)
     }
 }
 
 fn main() { Gateway { }; }
 ```
 
-The `self.router.route(...)` call didn't change. What changed is
-what's behind the slot: `reperspective` stored `RouterV2`'s code
-into the slot, over the state `RouterV1` was running on. Because every holder shares
-the one slot, that single flip redirects the entire program at
-once — no matter how many places call through the perspective.
+### `reperspective` Rules
 
-A few rules:
-
-- **You swap what you own.** `reperspective self.<field>` runs on
-  the locus holding the slot; the new impl must `serve` the same
-  perspective. A caller that merely *uses* a perspective can't
-  redeploy it — redeployment authority is ownership.
-- **State carries over.** The slot holds `{ data, vtable }` — the
-  data *is* the running state, the vtable is the code. A swap
-  replaces only the vtable, so the new impl picks up right where the
-  old one left off, on the same live state:
-
+- **Ownership authority**: `reperspective self.<field> as NewImpl;` can only be executed by a locus that holds the perspective slot in `self.<field>`, and `NewImpl` must declare `: serves <Perspective>`.
+- **Live state preservation & identical footprint**: A perspective slot stores `{ data, vtable }`. Executing `reperspective` swaps only the `vtable` pointer, leaving `data` untouched so the new implementation continues running on the live state accumulated by the previous implementation:
   ```hale,fragment
-  self.counter.bump();  self.counter.bump();   // count = 2 (V1)
-  reperspective self.counter as CounterV2;      // redeploy
-  println(self.counter.get());                  // still 2 — carried
+  self.counter.bump();
+  self.counter.bump();                          // count == 2 under CounterV1
+  reperspective self.counter as CounterV2;      // swaps vtable only
+  println(self.counter.get());                  // still 2 under CounterV2
   ```
+  To guarantee memory layout compatibility across swaps, **every locus that `serves` a given perspective must declare an identical `params` footprint** (same field names and types). Adding, removing, or retyping a parameter field across versions is a compile error.
+- **Zero-allocation swap**: Nothing is re-allocated, `birth()` is not re-run, and `dissolve()` is not called during `reperspective`.
 
-  This is sound because every impl of a perspective must share the
-  same **footprint** (same params, same types). A version that
-  *changes* the footprint — adds a field, changes a type — can't
-  reinterpret the old state, so it's a compile error: that's the
-  `migrate` case, which isn't supported yet.
-- **Cost.** A swap is a single pointer store (the vtable). Nothing
-  is re-instantiated and nothing is torn down — the state was never
-  the code.
+## Bus Subscriptions in Perspectives
 
-## Contracts can declare a bus surface
-
-A perspective reached over the bus dispatches to *the current
-impl's mailbox* — so the contract, the thing a swap is checked
-against, can name its bus edges too, not just its sync methods:
+A `perspective` can include a `bus { }` block alongside its synchronous methods so that both synchronous calls and asynchronous bus deliveries are governed by the contract:
 
 ```hale
 type Order { id: Int; }
 
 perspective OrderRouter {
-    fn health() -> Int;                            // sync ABI
+    fn health() -> Int;
     bus { subscribe "orders" as on_order of type Order; }
 }
 ```
 
-A `serves` impl must provide every declared edge — the methods
-*and* the bus subscriptions — checked structurally, the same way
-it must provide the `fn`s. This keeps a perspective's full ABI in
-one place.
+- **Structural bus checking**: Any locus that `: serves OrderRouter` must declare the matching `bus { subscribe "orders" as on_order of type Order; }` entry and handler method.
+- **Live bus handler re-pointing**: Executing `reperspective self.router as OrderV2;` tombstones the previous implementation's bus subscriptions on the shared slot state and registers `OrderV2`'s handlers over the same state:
+  ```hale,fragment
+  "orders" <- Order { id: 1 };            // dispatched to OrderV1::on_order
+  reperspective self.router as OrderV2;   // hot-swaps sync vtable and bus handlers
+  "orders" <- Order { id: 2 };            // dispatched to OrderV2::on_order
+  ```
+- **Deterministic swap boundary**: Because cooperative bus publishing captures the target handler at the moment `<-` executes, messages published before `reperspective` are processed by the old handler and messages published after `reperspective` are processed by the new handler.
 
-And `reperspective` re-points the bus edges too. The swap
-tombstones the current impl's subscriptions on the shared slot
-state and re-registers the new impl's handlers on that same state,
-so a message published *after* the swap lands on the new handler
-while state the old handler accumulated carries across — the async
-counterpart of the sync vtable flip:
-
-```hale,fragment
-"orders" <- Order { id: 1 };            // → the old impl's handler
-reperspective self.router as OrderV2;   // redeploy, live
-"orders" <- Order { id: 2 };            // → the new impl's handler
-```
-
-Cooperative bus dispatch is deferred (a publish enqueues a cell
-capturing the handler current at that moment; handlers run when
-the queue drains), so each message runs on whichever impl was live
-when it was published — the swap boundary is respected.
+Next: [Parents & Children](./parents-children.md).

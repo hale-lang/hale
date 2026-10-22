@@ -1,102 +1,40 @@
-# Performance
+# Performance & Zero-Allocation Hot Paths
 
-> **Coming from Rust / C++?** You're used to controlling
-> allocation and watching it. Hale's arena model makes most code
-> allocation-bounded by construction — a per-method scratch region
-> absorbs intermediate allocations and frees them at method exit —
-> but a few patterns can still grow a long-running process. This
-> chapter is the shape of that growth and how to keep it flat.
+Hale bounds most memory growth automatically through per-method scratch regions and whole-field replacement retirement. For latency-critical or high-throughput services, the compiler provides a layered enforcement ladder—from default escape warnings to `@hot`, `@budget(alloc_per_call = N)`, and transitive `@effects` proofs—to guarantee zero-allocation execution on hot paths.
 
-## The default is already bounded
-
-Inside any locus method, a *scratch sub-region* opens on entry
-and is destroyed on return. Transient allocations — string
-concatenations, JSON parsing, format building — land in scratch
-and are reclaimed when the method returns. Values you *persist*
-(`self.field = ...`) are deep-copied into the locus's own arena
-first, so they outlive the scratch. The net effect: a hot
-`run()` loop that allocates transiently doesn't grow the locus's
-lifetime arena. You get this without doing anything.
-
-So the question isn't "how do I free?" — it's "which patterns
-defeat the automatic bounding?"
-
-## The pattern that bites: accumulating in a loop
-
-```hale
-fn render_row(i: Int) -> String {
-    return f"row {i}\n";
-}
-
-fn render(rows: Int) -> String {
-    let mut out = "";
-    let mut i = 0;
-    while i < rows {
-        out = out + render_row(i);     // a fresh String each iteration
-        i = i + 1;
-    }
-    return out;
+```hale,fragment
+@no_block @no_syscall @deterministic @no_recursion @hot
+@budget(alloc_per_call = 0)
+fn on_tick(a: Int, b: Int) -> Int {
+    return a + b;
 }
 ```
 
-Each `out + ...` allocates a new string and copies the whole of
-`out` into it, and nothing frees the old one until `render` returns:
-scratch holds every intermediate at once. That is memory quadratic in
-the result, not merely more of it. Measured with 500-byte rows, as the
-growth of the process's peak resident set:
+## What Is Allocation-Free vs. What Accumulates
 
-| result | rows | `out = out + row` | `BytesBuilder` |
-|---|---|---|---|
-| 500 KB | 1 000 | +250 MB | +2 MB |
-| 1 MB | 2 000 | +990 MB | +4 MB |
-| 2 MB | 4 000 | +3.9 GB | +8 MB |
+Inside any locus method or bus handler, a scratch sub-region opens on entry and resets on return. Intermediate values—such as temporary string concatenations, formatted strings, and parsed JSON tokens—allocate in scratch and free automatically when the activation returns.
 
-Because the cost is memory rather than time, this one is not only a
-hot-path concern: a single large response or query result is enough.
-(`std::http::Server` itself assembled request bodies this way until
-2026-10-18, when a 12 MiB request held about 9.5 GB before any handler
-ran.) The fix is an accumulator that grows *one* buffer in place:
+| Pattern | Allocation Behavior | Steady-State Arena Growth |
+|---|---|---|
+| Transient values inside a method or handler | Allocated in per-call scratch region; freed on return | Zero |
+| Scratch-local free `fn` (primitives/`String` in and out, no structs, arrays, or method calls) | Uses its own function-local scratch region | Zero |
+| Scalar field or array-element write (`self.x = v`, `self.arr[i] = v`) | Overwritten in place | Zero |
+| Whole-field replace in a method or handler (`self.latest = Thing { ... }`) | Old `String`/`Bytes` and nested records/tuples/arrays retire at return and recycle | Bounded by peak value size |
+| Fixed scalar scratch array (`let mut t: [Int; 16] = [0; 16];` indexed via `t[i]`) | Allocated on CPU stack frame (up to 8 KiB per function) | Zero |
+| String concatenation in a loop (`out = out + row`) | Allocates and copies prefix on every iteration | Quadratic within scratch |
+| Growing `@form(vec)` / `@form(hashmap)` in an unbounded loop or handler | Appends to locus capacity slot until dissolve | Unbounded (flagged by `hale check`) |
+| `let`-bound locus or `BytesBuilder` constructed inside a loop or handler | Allocates a new region or heap buffer per iteration | Unbounded in loops / high churn |
+| `accept(c: Conn)` without `release(c: Conn)` on a daemon | Accepted child arena stays resident until parent dissolves | Unbounded with connection count |
 
-```hale
-fn render_row(i: Int) -> String {
-    return f"row {i}\n";
-}
+### Whole-Field Replacement vs. In-Place Mutation
 
-fn render(rows: Int) -> String {
-    let b = std::bytes::BytesBuilder { };
-    let mut i = 0;
-    while i < rows {
-        b.append_str(render_row(i));
-        i = i + 1;
-    }
-    return std::str::from_bytes(b.finish() or raise);
-}
-```
+When a method or handler replaces a field on `self`—whether a struct (`self.latest = Thing { ... }`), tuple, array, payload enum (`self.state = State::Ready(name)`), or a `String`/`Bytes` field whose length changes between writes—the runtime retires the displaced heap blocks at the activation boundary and recycles them at their size-class capacity on subsequent stores. Steady-state replacements therefore hold the locus arena flat.
 
-`BytesBuilder` is the canonical accumulator — one extensible
-buffer instead of N throwaway strings. Use it (or
-`std::json::Builder` for JSON output) anywhere you build a result
-incrementally.
+In-place scalar mutation (`self.latest.field = v`, `self.arr[i] = v`) remains faster because it skips the clone-and-retire cycle altogether. In-place mutation is also required when mutating state inside a long-running `run()` loop, which does not cross a method activation boundary between iterations.
 
-Reading has the mirror image. A loop that consumes a text by slicing
-off the rest after each line (`rest = rest[(nl + 1)..len(rest)]`)
-copies the remainder every time and holds every copy: 1 MB in 2 000
-lines grew the peak by 984 MB. Walk it by position over one
-`std::str::bytes_view` and slice out only the line, and the same
-input costs under 1 MB ([Strings & text](../basics/strings.md#reading-line-by-line)
-shows the loop). The style guide states both as rules, S15 and S16.
+### Stack-Allocated Fixed Scratch Tables
 
-The same goes for a locus built in such a loop. A locus with no
-`birth()` that writes its own arena gets no arena at all and borrows
-its caller's, so a fresh String you build it with (`W { name:
-f"made {i}" }`) lives until that calling frame ends, not until the
-instance goes away. In a loop that runs inside one long call, that is
-one more value per iteration, returned when the call returns.
-
-## A fixed scratch table is free
-
-A helper often wants a small fixed table — a lookup, a histogram,
-a seen-set. Written the obvious way it costs nothing:
+A fixed-size scalar array bound to a local variable and accessed exclusively via index reads and writes (`counts[i]`) lives on the function's CPU stack frame rather than in an arena:
 
 ```hale
 fn top_bucket(samples: [Int; 64]) -> Int {
@@ -119,39 +57,65 @@ fn top_bucket(samples: [Int; 64]) -> Int {
 }
 ```
 
-`counts` lives in this function's stack frame and is gone when it
-returns. That matters because a free `fn` has no arena of its own
-unless it is scratch-local (Strings and numbers in and out, no
-struct, no array, no method call; see Verification) — its values
-bump into the *caller's* region, so before this rule
-a fixed table inside a helper was per-call growth that nothing
-reclaimed until the calling loop finished. 200,000 calls to a
-helper holding a `[0; 1024]` table cost 1.69 GB.
+Because a non-scratch free `fn` allocates from its caller's region, stack placement prevents per-call arena growth when calling helpers in a loop. An array stays on the stack frame only when all of the following hold:
+- Every use of the binding is a direct index read or write (`t[i]`). Passing the array to a function, returning it, storing it in a field, aliasing it with `let`, or iterating over it with `for` moves it to the arena.
+- The element type is a scalar primitive.
+- Total stack-table storage in the function does not exceed 8 KiB (cooperative coroutine stacks are 64 KiB). Larger tables remain valid but allocate on the arena.
 
-The rule is narrow on purpose. The array stays on the frame only
-while every use of the name is `t[i]` — an element read or an
-element write. Pass it to another function, return it, store it
-in a field, alias it with a second `let`, or walk it with `for`,
-and it goes back to the arena, because then something outside the
-frame could still be holding it. Two more limits: the element has
-to be a scalar, and one function's tables may take at most 8 KiB
-of frame in total (a cooperative-pool coroutine stack is 64 KiB).
-A bigger table is still correct — it just allocates.
+## Avoiding Loop Accumulation
 
-## Resolve keyed handles at boot
+### Building Strings and Buffers Incrementally (`BytesBuilder`)
 
-If a hot path looks something up by string key in another locus,
-every call carries the key across and allocates a search temp.
-Resolve the handle once, before the hot path starts, and keep it
-as a field — `std::metrics` is built for exactly this:
+Concatenating strings in a loop (`out = out + render_row(i)`) allocates a fresh string on every iteration while keeping all previous intermediates alive in scratch until the function returns. This produces quadratic memory usage even in a single call:
+
+| Output Size | Rows (500 B each) | `out = out + row` Peak RSS | `BytesBuilder` Peak RSS |
+|---|---|---|---|
+| 500 KB | 1,000 | +250 MB | +2 MB |
+| 1 MB | 2,000 | +990 MB | +4 MB |
+| 2 MB | 4,000 | +3.9 GB | +8 MB |
+
+Use `std::bytes::BytesBuilder` (or `std::json::Builder` for JSON) to grow a single extensible buffer in place (Styleguide rule S15):
+
+```hale
+fn render_row(i: Int) -> String {
+    return f"row {i}\n";
+}
+
+fn render(rows: Int) -> String {
+    let b = std::bytes::BytesBuilder { };
+    let mut i = 0;
+    while i < rows {
+        b.append_str(render_row(i));
+        i = i + 1;
+    }
+    return std::str::from_bytes(b.finish() or raise);
+}
+```
+
+### Zero-Copy Views (`StringView` and `BytesView`)
+
+The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..len(rest)]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#reading-line-by-line)).
+
+`StringView` and `BytesView` (and `BytesBuilder.view()` / `.text_view()`) borrow underlying storage without copying:
+- A view over a reused buffer or `BytesBuilder` is valid only until the buffer is next modified, reset, or overwritten. Accessing a stale view traps immediately at runtime.
+- To persist a slice beyond the current buffer turn, copy it explicitly with `std::str::clone`.
+- Inside loops, prefer `b.view()` or `b.text_view()` over `b.snapshot()` or `b.finish()`, which allocate and copy the builder's contents.
+
+### Loci Constructed in Loops
+
+A lightweight locus that declares no `birth()` hook borrows its caller's arena rather than allocating its own. If you construct such a locus inside a long loop with dynamically allocated fields (`Worker { name: f"made {i}" }`), those field allocations remain in the caller's region until the enclosing function returns. Hoist reusable loci to fields on `self`, or use statement-level fire-and-forget literals when appropriate.
+
+### Resolving Keyed Handles at Boot
+
+Looking up a metric or registry item by string key on a hot path allocates search temporaries on every call. Resolve handles once at initialization and store them in `params`:
 
 ```hale
 type Msg { n: Int; }
 
 locus Service {
-    params { ticks: std::metrics::Counter; }   // resolved once, in main
+    params { ticks: std::metrics::Counter; }
     fn dispatch(m: Msg) {
-        self.ticks.inc();                       // no key crosses per call
+        self.ticks.inc();
     }
 }
 
@@ -162,138 +126,50 @@ fn main() {
     };
     s.dispatch(Msg { n: 1 });
     s.dispatch(Msg { n: 2 });
-    print(reg.render());    // demo_ticks_total 2
+    print(reg.render());
 }
 ```
 
-The handle is threaded in where the service is built: a
-locus-typed field takes a literal or a param, not a factory's
-result assigned later in `birth`.
+### Reclaiming Per-Connection Children (`release`)
 
-## Reclaim per-connection state
+If a server accepts a child locus per connection via `accept(c: Conn)` without declaring `release(c: Conn)`, each child remains resident until the server dissolves, causing RSS to climb with total historical connections. Always pair `accept(c: Conn)` with `release(c: Conn)` for flow children so each connection's arena frees as soon as its `run()` exits.
 
-The other place growth hides is a daemon that
-[accepts a child per connection](../services/parents-children.md).
-If those children are *residents*, their regions live until the
-(never-dissolving) parent does, and memory climbs with connection
-count. Make them **flows** — declare `release(c: Conn)` on the
-parent — so each child's region is reclaimed when its connection
-ends. If RSS tracks connection count, this is almost always why.
+## The Compiler Enforcement Ladder
 
-## Catching it at compile time
+Hale enforces memory and hot-path discipline through a five-stage opt-in ladder:
 
-The growth patterns above — a per-message handler that allocates
-into `self`, a connection child left resident — have a static
-shape, and `hale check` flags them before you ever measure RSS.
-These are advisory warnings, not build failures:
+| Stage | Mechanism | Severity | What It Enforces |
+|---|---|---|---|
+| 1. Default survey | `hale check` / `hale build` | Advisory warning | Flags values escaping to `self` in unbounded loops, growing `@form(vec)`/`@form(hashmap)` inserts, `let`-bound loci/builders/factories in loops or handlers, allocating `recv` in loops, and `accept` without `release` on daemons. |
+| 2. Bound annotations | `@bounded_by(<name>)` / `@unbounded` | Silences warning | Documents that an accumulation is intentionally bounded by an external input (`@bounded_by(open_requests)`) or operator-sized (`@unbounded`). |
+| 3. Hot-path mode | `@hot` | Compile error | Promotes all Stage 1 advisories in the function to hard errors, and rejects `.snapshot()`/`.finish()` in loops and whole-struct `self` field replacements. |
+| 4. Allocation budget | `@budget(alloc_per_call = N)` | Compile error | Statically verifies that the function performs at most `N` heap/arena allocations per invocation. |
+| 5. Effect contracts | `@effects(none: { ... })` / `@no_block` / `@no_syscall` / `@deterministic` / `@no_recursion` | Compile error | Proves transitively across the call graph that the function cannot block, invoke syscalls, read non-deterministic sources, or recurse. |
 
-- `hale check app.hl` flags (by default — no flag needed) an allocation that
-  accumulates without bound: a struct / array / bytes value created
-  in a per-message bus handler (or a runtime-bounded loop) that
-  escapes into `self`, where it lives until the locus dissolves.
-  The classic instance — a whole-value replace `self.latest =
-  Thing{…}` allocating a fresh value each message — is largely
-  closed since v0.11.3: inside a method or handler, the replaced
-  value's String and Bytes clones — and its nested records, tuples
-  and arrays, with everything in them — retire at the activation
-  boundary and recycle on the next store (the struct's own bytes were
-  already overwritten in place), so a steady-state replace holds the
-  arena flat. A tuple, array or payload-enum field replaced whole
-  (`self.state = State::Ready(name)`) does too. The same holds for a single `String` or `Bytes` field whose
-  length changes from write to write — a message's payload one time,
-  the empty value a control frame leaves the next: the old value is
-  retired whatever the new one is. A `String` field's next values
-  reuse those blocks whatever their lengths (each is kept at its size
-  class's full capacity), so the field's memory stays bounded by its
-  largest value, and the survey does not report such a replace. **In-place mutation**
-  (`self.latest.field = v`, `self.arr[i] = v`) is still the faster
-  idiom — a same-length write skips the clone-and-retire cycle
-  entirely — and remains the fix for what retirement doesn't
-  cover: stores looping inside `run()` itself (no activation
-  boundary). For genuinely unbounded growth, reach for the moves
-  from this chapter — a capacity-bounded `@form`, route it over
-  the bus, or a per-iteration child. A `while i < N { … }` counter with a constant
-  bound is *proven* bounded and left alone. Run-to-exit programs (a
-  `main` with no `run` loop and no bus handler) are exempt
-  automatically — a script that allocates and exits owes nothing.
-  Opt out of a run with `--no-warn-unbounded-alloc`. Annotating a
-  long-lived locus `@bounded` is now redundant with the default —
-  the check already runs on every `hale check` — but it's still
-  accepted. Use `@unbounded` (on a `fn` or a lifecycle hook) to
-  acknowledge an intentional accumulation and silence it.
-- The same check flags an **insert into a growing collection** —
-  `v.push(x)` / `m.set(x)` where `v` / `m` is a `@form(vec)` or
-  `@form(hashmap)` — when it runs in an unbounded context. The backing
-  buffer grows with population and frees only at dissolve, so a push
-  per message accumulates. A `@form(ring_buffer)` / `@form(lru_cache)`
-  is cap-bounded and never flagged; switching to one (or bounding the
-  loop) is the fix. (Detection reads the receiver's *declared* type, so
-  it sees `fn f(v: IntVec)` and `self.buf: IntVec` but not an untyped
-  `let`.)
-- It also flags **hot-path allocations** (also advisory): a **locus** or
-  a `std::bytes::BytesBuilder` instantiated *inside a loop* — or
-  *anywhere in a bus handler*, which runs per message (a fresh arena /
-  heap buffer every iteration or frame — hoist it to a reused field);
-  and an **allocating `recv`** (`recv` / `recv_bytes` /
-  `recv_with_source`) in a loop (use `recv_into` with a reused
-  `BytesBuilder`). A plain value struct/type literal isn't flagged, and
-  an instantiation outside a loop in a plain method reclaims at method
-  exit — only the per-iteration / per-message cases, the unambiguous
-  ones, warn.
+### Stage 1: Default Escape & Hot-Path Survey
 
-  This covers **factory calls**, not just literals: `let m =
-  zeros(r, c)` in a loop allocates a fresh `Matrix` — its own arena —
-  every iteration exactly as `Matrix { }` would. That case matters more
-  than it looks, because a method can't return a locus, so any codebase
-  that factors construction out is calling free-fn factories
-  everywhere. Only the **`let`-bound** form warns: an unbound factory
-  result is reclaimed at the statement, which is why "drop the binding
-  if you're only passing the value on" is one of the suggested fixes.
-  The factory is the function the call reaches, imported seeds'
-  included (`mat::zeros` through its alias), so a function of yours
-  never stands in for a standard library call, whatever its name.
+By default, `hale check` analyzes all long-lived programs (any binary with a `run()` loop or bus subscriber; run-to-exit scripts and `while i < N` loops with constant bounds are automatically exempt). Pass `--no-warn-unbounded-alloc` to disable the survey for a run.
 
-  A `module { … }` hides none of this. A module is a namespace, not an
-  analysis boundary, so a fn or a locus method declared inside one —
-  however deeply nested — is checked exactly as if it sat at the top
-  level, with the same findings and the same `@hot` severity.
+The default survey warns on:
+- **Unbounded escapes into `self`**: Allocations inside a runtime-bounded loop that accumulate in `self` without retirement.
+- **Unbounded collection growth**: Calling `.push(x)` on `@form(vec)` or `.set(x)` on `@form(hashmap)` in an unbounded loop or handler (where the receiver has a declared type). Replace with capacity-bounded `@form(ring_buffer)` or `@form(lru_cache)`.
+- **Per-iteration / per-message heavy allocations**: Instantiating a `let`-bound locus literal, calling a factory function that returns a locus (`let m = zeros(r, c)` or `mat::zeros(r, c)`), or creating a `std::bytes::BytesBuilder` inside a loop or bus handler. (Unbound statement-level calls reclaim immediately and do not warn.)
+- **Allocating socket reads in loops**: Calling `recv`, `recv_bytes`, or `recv_with_source` inside a loop. Use `recv_into` with a hoisted `BytesBuilder` instead.
+- **Missing `release` on daemon parents**: Declaring `accept(c: C)` without `release(c: C)` on a locus whose `run()` loops indefinitely.
 
-  The lint reads the same allocation summary the other analyses do, so
-  it sees every place that summary does: a locus built in a loop inside
-  a publish (`Topic <- Child { … }.value()`) or inside a bare `{ … }`
-  block warns too.
-- One structural warning: **`accept` without `release` on a locus whose
-  `run()` loops forever**. Without a `release(c: C)` declaration every
-  accepted child is *resident* — it lives until the accepting locus
-  dissolves — so a daemon accepting connections forever grows without
-  bound. Declaring `release` makes each child a *flow*, reclaimed when
-  its `run()` completes. Run-to-exit programs that accept a bounded
-  batch of children are fine and stay silent.
+> [!NOTE]
+> `module { ... }` blocks are purely namespace boundaries; functions and locus methods inside modules undergo the exact same escape and `@hot` analysis as top-level declarations.
 
-When a path really is hot — a per-frame handler, a tight decode loop, a
-10k/s ingest — **certify it** and have the compiler hold the line.
-That's layered, so the strictness lands only where you ask for it:
+### Stage 2: `@bounded_by` and `@unbounded`
 
-`@hot` on a fn or handler promotes the advisory findings above to
-**hard errors** inside that fn, and turns on two stricter perf hints
-that would nag as defaults: `.snapshot()` / `.finish()` in a loop (each
-call copies the builder's whole contents — prefer the zero-copy
-`.view()` / `.text_view()`), and a whole-struct self-field replace
-(reclaimed since v0.11.3, but each store still pays a clone + retire
-per String field where in-place scalar mutation is allocation-free).
+When a function or lifecycle hook intentionally accumulates state in memory:
+- Prefer **`@bounded_by(<name>)`** when the growth is bounded by a known domain quantity (for example, `@bounded_by(record)` or `@bounded_by(open_requests)`).
+- Use **`@unbounded`** when the growth is operator-sized or not yet bounded by a named input.
+- Run `hale check --report-unbounded-use` to audit every `@bounded_by` and `@unbounded` annotation in your program and see how many warnings each silences. (`@bounded` on a locus is accepted for backward compatibility but redundant with the default check.)
 
-`@budget(alloc_per_call = N)` on a fn (free or method) is the counted
-contract on top: the fn allocates at most `N` times per call, enforced
-as a **hard error** (this is the one allocation check that fails the
-build — because you asked for it). The two stack:
-`@hot @budget(alloc_per_call = 0) fn send(...)`.
+### Stages 3–5: `@hot`, `@budget`, and `@effects`
 
-## Certifying a hot path
-
-A hot path is worth more than a comment saying it's hot. Hale lets you
-state what a function may **do** — no syscalls, no blocking, no
-allocation, no clock — and have the compiler prove it over the call
-graph, so the property survives the next refactor:
+Stack `@hot`, `@budget(alloc_per_call = 0)`, and effect shorthands on critical functions to make performance regressions fail the build:
 
 ```hale,fragment
 @no_block @no_syscall @deterministic @no_recursion @hot
@@ -301,122 +177,44 @@ graph, so the property survives the next refactor:
 fn on_tick(a: Int, b: Int) -> Int { ... }
 ```
 
-That one line is the full hot-path certificate: nothing that waits,
-nothing that reaches the kernel, nothing non-deterministic, no
-unbounded stack, no allocation. Each part is checked, and a violation
-names the call chain that reaches it.
+If any callee in the transitive call graph violates an effect contract or exceeds the allocation budget, `hale check` fails and prints the exact offending call chain. See [Effects & Contracts](../effects.md) for the full effect system, including `@phase_effects(birth: {alloc}, run: {})` on a locus.
 
-The whole surface — the effect classes, `@budget`'s other dimensions,
-per-lifecycle-phase contracts, and what the compiler infers on its own
-— is taught in **[Effects & contracts](../effects.md)**.
+### Locality & Allocation Reports
 
-## Knobs for when it's not your code
+Use compiler reporting flags to inspect memory layout and working-set sizes at build time:
+- `hale check --locality-report <dir>`: Reports each locus's working-set size against CPU cache-tier budgets (L1/L2/L3).
+- `hale check --dump-alloc-summary <dir>`: Lists every allocation site, its escape classification (`local`, `returned`, `stored-to-self`, `sent`), its target `self.<field>` or capacity slot, and its boundedness verdict.
 
-The substrate exposes diagnostics and glibc tuning via
-environment variables — `LOTUS_ARENA_RESIDENCY=1` to dump live
-arena sizes from a heartbeat, `LOTUS_ARENA_LOG_CHUNK_ATTACH=N` to
-trace which arena is growing, `LOTUS_CHUNK_POOL_STATS=1` for
-chunk-pool hit rates, and the `MALLOC_*` family for glibc's
-trim/arena behavior. The full table is in `spec/runtime.md`
-(*Diagnostic + tuning env vars*), and the styleguide's leak-hunt
-appendix walks through using them. The workflow:
-smaps-diff over a window → if it's `[heap]`, check 30s deltas →
-bursty 64KB steps mean chunk-pool overflow (a loop accumulator)
-→ fix with `BytesBuilder`.
+## Hot-Path I/O & Runtime Assertions
 
-## Hot-path I/O primitives
+The standard library provides zero-allocation networking and diagnostic primitives for latency-sensitive paths:
 
-For latency-sensitive sockets, the stdlib exposes the knobs you'd
-reach for in C, without an FFI shim:
+| Primitive | Purpose |
+|---|---|
+| `std::io::udp::Reader { addr, port, cap }` | Event-driven, zero-copy UDP ingest handle. Calling `r.next() or raise` parks on `EPOLLIN` on a `where async_io` pool (zero idle CPU) and returns a `BytesView` over a single reused buffer. |
+| `std::io::tcp::set_nodelay(fd, true)` | Disables Nagle's algorithm (`TCP_NODELAY`; also available on `std::io::tls`) so small writes flush immediately without 40 ms coalescing delays. |
+| `recv_stamped_into` + `last_recv_kernel_ns()` | Reads into a reused `BytesBuilder` while capturing the kernel RX timestamp from `recvmsg` for wire-to-handler latency measurement. |
+| `std::io::MirrorRing` | Double-maps a circular virtual memory region so slices crossing the ring wrap boundary remain contiguous in memory without copying. |
+| `std::diag::heap_alloc_count()` | Returns the thread's cumulative heap allocation count; assert a delta of `0` across a steady-state test loop. |
+| `std::diag::syscall_count(name)` | Returns the count of a named syscall (e.g., `"recv"`) to verify exact I/O batching in tests. |
 
-- **Event-driven datagram ingest** — `std::io::udp::Reader { addr,
-  port, cap }` is the zero-copy, reused-buffer ingest handle. `let dg =
-  r.next() or raise` parks on `EPOLLIN` on a `where async_io` pool
-  (kernel-woken, no busy-poll, no timeout quantum — an idle signal
-  costs zero CPU) and hands back a zero-copy view of the datagram
-  aliasing a single reused buffer. It's the hand-rolled "bind +
-  `BytesBuilder` + `recv_into` + `.view()`" fast path in one handle, so
-  the allocation-free event-driven shape is the default you reach for
-  rather than the one you have to remember to assemble; unlike the
-  allocating `recv` it copies no per-datagram payload.
-- **Disable Nagle** — `std::io::tcp::set_nodelay(fd, true)` (and the
-  `std::io::tls` sibling) so small writes hit the wire immediately
-  instead of waiting ~40ms to coalesce. The first thing a
-  request/response or market-data socket wants.
-- **Wire-arrival timestamps** — `recv_stamped_into` is `recv_into`
-  plus a kernel RX timestamp captured in the same `recvmsg`; read it
-  with `last_recv_kernel_ns()` right after. True wire time, not the
-  post-scheduling receipt clock — for measuring real I/O latency.
-- **Wrap-free parsing** — `std::io::MirrorRing` double-maps a buffer
-  so any window is one contiguous slice even across the wrap point; a
-  stream parser never special-cases the seam. Opt-in (it costs 2×
-  address space) — for the ordinary case a `BytesBuilder` accumulator
-  is the right tool.
+For live arena residency profiling (`LOTUS_ARENA_RESIDENCY=1`, `LOTUS_ARENA_LOG_CHUNK_ATTACH=N`, `LOTUS_CHUNK_POOL_STATS=1`), see [Operations & Debugging](./operations.md).
 
-And the run-time complement to the compile-time unbounded-alloc
-check: `std::diag::heap_alloc_count()` and
-`std::diag::syscall_count(name)` let a test *assert* a steady-state
-region did what you think — read the counter before and after and
-check the delta is zero ("this loop allocated nothing", "exactly one
-`recv` per poll").
+## Build-Time Optimization Flags
 
-## Build-time tuning
+By default, `hale build` compiles native binaries at `-O3` targeting the host CPU architecture (`--target-cpu native`), enabling host-specific SIMD autovectorization (such as AVX2 or AVX-512).
 
-`hale build` already tunes to the machine you build on: native
-builds compile for the **host CPU** at **O3**, so generated code
-autovectorizes to whatever the host supports (AVX2, AVX-512, …).
-Two knobs matter when that default isn't what you want:
+| Option / Variable | Effect | When to Use |
+|---|---|---|
+| `--target-cpu native` *(default)* | Optimizes and vectorizes for the build machine's exact CPU. | Local execution (`hale run`) and homogeneous production hosts. |
+| `--target-cpu baseline` | Targets portable `x86-64-v3` (AVX2 + BMI2 + FMA). | Shipping compiled binaries across mixed hardware fleets. |
+| `LOTUS_LTO=1` | Enables full Link-Time Optimization across generated code and the C runtime (requires `lld` on `PATH`; links ~3–4x slower). | Release and benchmark builds (`LOTUS_LTO=1 hale build myservice/`). |
 
-- **`--target-cpu baseline`** — pins a portable **`x86-64-v3`**
-  target (AVX2 + BMI2 + FMA) instead of the host. Reach for this
-  when you **ship a binary to other machines**: the default
-  host-tuned build may use instructions an older CPU lacks.
-  `--target-cpu native` (the default) is right for `hale run` and
-  for binaries you execute on the build host (e.g. a service on
-  hardware you control).
-- **`LOTUS_LTO=1`** — an opt-in full-LTO build that inlines the
-  lotus runtime (the arena allocator, string helpers, shm ring)
-  *into your code* across the compile boundary it otherwise can't
-  cross. A few percent on allocation- and coordination-heavy
-  programs — exactly the shape Hale is built for — and it keeps
-  the host vectorization, so there's no loop it slows down. It's
-  off by default because the link is ~3–4× slower and needs
-  `lld` on PATH; turn it on for release/perf builds, not the
-  edit-compile loop:
+## Runtime Performance Profile
 
-  ```sh
-  LOTUS_LTO=1 hale build myservice/
-  ```
+Hale's codegen and runtime are optimized around message dispatch, `@form` collections, and tight numerical loops:
+- **Subject-keyed bus dispatch**: Static devirtualization and lock-free queues outperform Go channels by ~2.4x and hand-written C dispatch tables by ~1.9x on matched fan-out workloads. `where async_io` subscribers reuse coroutine stacks from a bounded per-worker pool.
+- **Tight loops and `@form` access**: Native LLVM codegen matches `clang -O3` within ±15% on arithmetic loops, `@form(vec)` reads, and `@form(hashmap)` lookups, while contended `@form(hashmap)` writes run ~1.3–1.4x faster than hand-rolled C tables.
+- **Known overheads**: Cross-function call protocol (~1.25x behind C/Rust), locus instantiation (2–3x due to arena setup), and heap-payload copying. Resolve handles at boot, keep hot state in `@form` slots, and spawn loci at topology changes rather than per message.
 
-## Where Hale earns its overhead
-
-Where Hale *leads* is where the design bet lives:
-**subject-keyed dispatch** — the lock-free bus plus
-static-dispatch devirtualization turned message dispatch from
-several-times-behind into an outright lead (ahead of Go ~2.4×,
-and ahead of *hand-written C* ~1.9× on the same workload) — and
-**contended `@form` writes** (hashmap set ~1.3–1.4× vs a
-hand-rolled C table). On the fan-out path, dispatch to a
-`where async_io` subscriber reuses coroutine stacks from a
-bounded per-worker pool rather than allocating one per delivery.
-
-The tight loop caught up too: pure arithmetic used to be where
-the substrate showed through, but native codegen closed it to
-**parity with `clang -O3` C** (loops, vec reads, hashmap reads
-all sit in the ±15% band).
-
-And the honest column: the per-op overheads that remain are
-free-fn **call protocol** (~1.25× behind C and Rust),
-**locus instantiation** (2–3× — region setup is a cost you pay
-at spawn, not a place Hale wins), and heap-payload dispatch.
-The design guidance follows directly: resolve handles at boot
-and keep hot paths on the bus and in `@form` storage (styleguide
-S1/S12), spawn loci at topology changes rather than per message
-(the compiler warns), and the overheads sit outside the paths
-that repeat.
-
-Current benchmark numbers and methodology live in
-[hale-lang/bench](https://github.com/hale-lang/bench).
-
-Next: what `@form` actually compiles to — [Forms under the
-hood](./forms.md).
+Full benchmark suites and methodology are maintained in [hale-lang/bench](https://github.com/hale-lang/bench).

@@ -1,19 +1,6 @@
-# Designing an API's messages
+# Designing API Messages
 
-[Build an API](./build-an-api.md) grows a program from an empty file to
-a served surface with roles. This page is about the part a caller
-actually touches: the records a surface carries. It builds one small
-status service whose messages use each shape the codec offers (a
-default, an optional field, a map, an enum and a typed error with
-error classes), serves
-it over HTTP, adds a member without breaking anyone, and streams the
-same records as Server-Sent Events. Every output below is what the
-commands printed.
-
-## The messages
-
-A status service answers "how are my dependencies?" and lets an
-operator restart one:
+An API surface's wire contract is determined directly by the Hale types used in its `rpc` rows. By choosing specific record field patterns, enum shapes, and error class annotations, you control how the compiler encodes JSON and Protobuf payloads, validates requests, generates OpenAPI/JSON Schema specifications, and maps domain errors to HTTP and gRPC status codes.
 
 ```hale,fragment
 role operator;
@@ -42,46 +29,40 @@ api Ops requires: [operator] {
 }
 ```
 
-Each field's shape is a decision about what a caller can say:
+---
 
-- **`verbose: Bool = false` is a default.** A caller that leaves it out
-  has said `false`, and nothing needs to tell "not sent" from "sent
-  `false`". Most optional inputs are this. A default may be of any
-  type, an enum's (`scope: Scope = Scope::key`) or a record's as much as
-  a literal: the field is left out of the description's `required`, and
-  a payload without it gets the default. A default reads only constants
-  and the module's items, never the scope where the record is written,
-  so the decoder can always build it.
-- **`since` with `has_since` is a presence pair.** Here "not sent" means
-  something different from any time: give me everything. The caller may
-  leave `since` out or send `null`, and the handler reads `has_since`.
-  Both fields have defaults, so a literal that has nothing to say names
-  neither. The flag never crosses the wire.
-- **`checks` is a map.** `indexed_by name` makes the list an object keyed
-  by each check's `name` on the wire, which is how a caller wants to
-  look one up. In the program it is still a bounded list, in order.
-- **`Status` is an enum.** It crosses as `"Up"` or `{"Degraded":
-  "cold"}`, and the description lists the variants, so a client knows
-  every state there is. A `String` status would let any text through.
-- **`Problem` is the error.** `restart` fails with `NotFound(name)` or
-  `Busy`, and a caller branches on which one, instead of parsing a
-  message. Each variant also declares its **error class**, which tells
-  every transport what kind of failure it is: `@not_found` is a `404`
-  over HTTP and `NOT_FOUND` over gRPC, `@unavailable` a `503` and
-  `UNAVAILABLE`. The others are `@conflict` (409, `ABORTED`), `@invalid`
-  (422, `INVALID_ARGUMENT`) and `@forbidden` (403, `PERMISSION_DENIED`).
-  A variant with no class is the handler error's plain `422` and
-  `FAILED_PRECONDITION`.
-- **`requires: [operator]` on the surface** is every row's default.
-  `health` overrides it with `requires: []`, so anyone the transport
-  authenticates may ask. It is the same table, with the same digest, as
-  writing the roles on each row.
+## Wire Modeling Patterns
 
-The handlers are ordinary methods over those types. They never see
-JSON:
+| Pattern | Hale Declaration | Wire Representation & Behavior |
+|---|---|---|
+| **Field Default** | `verbose: Bool = false;` | Omitted from JSON Schema `required`. If omitted by the caller, the decoder substitutes the default value. Defaults may be literals, enums (`Scope::key`), or records, and may reference module constants/items. |
+| **Presence Pair** | `since: Time = ...;`<br>`has_since: Bool = false;` | Distinguishes "omitted or `null`" (`has_since == false`) from a provided value (`has_since == true`). `has_since` is never sent on the wire; when encoding, the field is omitted if `has_<field>` is `false`. |
+| **Keyed Map** | `checks: bounded[Check; 16] indexed_by name;` | Stored in Hale as an ordered `bounded[Check; 16]` list, but encoded on the wire as a JSON object keyed by each element's `name` field (`{"db": {"status": "Up"}}`). |
+| **Enum** | `enum { Up, Degraded(String), Down }` | Unit variants encode as strings (`"Up"`). Payload variants encode as single-key objects (`{"Degraded": "cold"}`). |
+| **Error Class** | `@not_found NotFound(String)` | Maps `fallible(E)` enum variants to transport status codes (`404` / gRPC `NOT_FOUND`) and sets the `Hale-Error-Class` response header. |
+| **Surface Default Role** | `api Ops requires: [operator] { ... }` | Sets the default `requires` list for every row in the surface. Individual rows can override it (e.g., `requires: []` to allow any authenticated caller). Produces the exact same contract digest as spelling roles on each row. |
+
+### Error Class Status Mappings
+
+When a handler fails with a `fallible(E)` enum variant, the variant's decorator selects the transport status code:
+
+| Decorator | HTTP Status | gRPC Status | `Hale-Error-Class` Header |
+|---|---|---|---|
+| *(none)* | `422 Unprocessable Content` | `FAILED_PRECONDITION` | *(omitted)* |
+| `@not_found` | `404 Not Found` | `NOT_FOUND` | `not_found` |
+| `@conflict` | `409 Conflict` | `ABORTED` | `conflict` |
+| `@invalid` | `422 Unprocessable Content` | `INVALID_ARGUMENT` | `invalid` |
+| `@forbidden` | `403 Forbidden` | `PERMISSION_DENIED` | `forbidden` |
+| `@unavailable` | `503 Service Unavailable` | `UNAVAILABLE` | `unavailable` |
+
+---
+
+## Writing the Handlers
+
+Handlers operate on decoded Hale structs and enums without manual JSON parsing:
 
 ```hale,fragment
-/// The health of every dependency (a stand-in for real probes).
+/// Builds a health snapshot (stand-in for live dependency probes).
 fn snapshot(n: Int) -> Health {
     let mut h = Health { };
     push(h.checks, Check { name: "db", status: Status::Up }) or discard;
@@ -111,11 +92,11 @@ locus Probe {
 }
 ```
 
-## What a caller is told
+---
 
-`hale check --api` prints, without running anything, what a client is
-generated from. The JSON Schema export shows each decision above as the
-caller will see it (trimmed):
+## Inspecting Generated Schemas
+
+Run `hale check --api` with `--json-schema` to verify how your message types project to external schemas without starting the service:
 
 ```sh
 hale check --api status.hl --surface Ops --json-schema
@@ -140,14 +121,15 @@ hale check --api status.hl --surface Ops --json-schema
 }
 ```
 
-The map is an object with at most 16 entries keyed by `name`; `note`
-may be a string or `null` and is not required; the error is one of the
-enum's variants, with the class each declares.
+- `checks` is described as an object with `maxProperties: 16` and `"x-hale-key": "name"`.
+- `note` is optional and nullable (`string` or `null`).
+- `Problem` lists its variants alongside `"x-hale-error-classes"`.
 
-## Serving it
+---
 
-The surface goes on an HTTP listener, with a bearer token naming the
-caller and a role table giving that caller `operator`:
+## Serving and Exercising the Wire Contract
+
+Bind `Ops` to an `http::Rpc` exposure with bearer authentication and a static role table:
 
 ```hale,fragment
 locus Tokens {
@@ -176,8 +158,7 @@ fn main() {
 }
 ```
 
-`hale describe` reads the served description and prints the shape of
-each request, the optional field marked as one:
+Inspect the served surface with `hale describe`:
 
 ```text
 $ hale describe http://127.0.0.1:8794 --bearer t-ops
@@ -187,8 +168,9 @@ caller: bearer ops; roles: operator
   Probe::restart(name: String) -> Health, error Problem  requires: operator
 ```
 
-A call is a `POST /call/<member>` with the request as its body. Each of
-these went to `Probe::health` with `Authorization: Bearer t-ops`:
+### Presence Pair & Timestamp Validation
+
+Sending different payloads to `POST /call/Probe::health` (with `Authorization: Bearer t-ops`) demonstrates how presence pairs and strict timestamp parsing behave:
 
 ```text
 {}                                        200 {"checks":{"db":{"status":"Up"},"cache":{"status":{"Degraded":"cold"}}}}
@@ -197,10 +179,12 @@ these went to `Probe::health` with `Authorization: Bearer t-ops`:
 {"since": "2026-10-18T09:00:00+01:00"}    400 {"refusal":{"kind":"malformed","reason":"wrong_type: since"}}
 ```
 
-Leaving `since` out and sending `null` are the same absence, so there is
-no `note`. A time with an offset is refused at the edge rather than
-guessed at: the handler only ever sees a value that decoded. The error
-answers with its variant as the body and its class as the status:
+- Omitting `since` or sending `{"since": null}` leaves `has_since` set to `false`, so `h.has_note` stays `false` and `note` is omitted from the response.
+- `Time` values on the wire must be UTC RFC 3339 strings ending in `Z`. Non-UTC offsets (`+01:00`) are rejected at the transport boundary with `400` (`wrong_type: since`).
+
+### Distinguishing Classified Handler Errors from Transport Refusals
+
+When `Probe::restart` fails with `Problem::NotFound("queue")`, the exposure responds with HTTP `404` and the `Hale-Error-Class: not_found` header:
 
 ```text
 $ curl -si -X POST localhost:8794/call/Probe::restart -H 'Authorization: Bearer t-ops' -d '{"name": "queue"}'
@@ -214,27 +198,22 @@ Connection: close
 {"NotFound":"queue"}
 ```
 
-A refusal can share a status with a class (403, 409 and 503 are both),
-so the class is also named in `Hale-Error-Class`, which no refusal
-carries. That is how a client tells "the handler said no" from "the
-exposure refused the call", and the generated clients and `hale call`
-read it for you:
+Because some error classes share HTTP status codes with transport refusals (`403`, `409`, `503`), the `Hale-Error-Class` header unambiguously marks the response as a domain handler error rather than an exposure refusal. Both `hale call` and generated clients inspect this header automatically:
 
 ```text
 $ hale call http://127.0.0.1:8794 Probe::restart --name queue --bearer t-ops
 handler error (not_found): {"NotFound":"queue"}
 ```
 
-(It exits 1, a handler error. Over a Unix socket the reply line carries
-`"class": "not_found"` beside the error; over gRPC the call ends with
-`NOT_FOUND` and the error in its details.)
+`hale call` exits with code `1` (handler error). Over a Unix socket, the reply line includes `"class": "not_found"` alongside the error payload; over gRPC, the call returns `NOT_FOUND` with the encoded error in `grpc-status-details-bin`.
 
-## Growing without breaking anyone
+---
 
-Callers will be built against this surface: generated clients, scripts,
-an MCP host. Each member has a digest of its own, folded from that
-member's row alone, and the clients send it on every call. Add a member
-and only the surface's digest moves:
+## Evolving a Surface Without Breaking Clients
+
+Every `api` surface computes a **surface digest** over all of its rows, plus an individual **member digest** for each `rpc` row (`spec/api.md` § The contract digest). Generated clients send the member digest on every request, and the exposure admits any request matching either the current surface digest or that specific member's digest.
+
+Adding a new `rpc` row changes the overall surface digest, but leaves existing member digests untouched:
 
 ```text
 before:  Ops                fnv1a64:95d08b7e7dd9f4de
@@ -248,23 +227,19 @@ after adding rpc Probe::uptime requires: [];
          Probe::uptime      fnv1a64:f233238323e2aec6
 ```
 
-A client of `Probe::health` built before `uptime` existed keeps being
-admitted. Change `Health` itself (a field renamed or retyped), or the
-class a `Problem` variant declares, and every client naming the old
-digest is refused `digest_mismatch` instead of being handed a contract
-it was not built for. So grow a surface by adding
-members, and make an incompatible change a new member (`health_v2`)
-served beside the old one until its callers have moved.
+Existing clients calling `Probe::health` or `Probe::restart` continue working without regeneration. Conversely, if you rename or retype a field in `Health` or change an error class on `Problem`, the member digest changes and outdated clients are rejected with `digest_mismatch`.
 
-## Streaming the same records
+> [!TIP]
+> **Safe API Evolution Rule**: Grow a surface by adding new `rpc` members. When making a breaking change to an existing operation's request, response, or error type, introduce a new member (e.g., `Probe::health_v2`) alongside the existing one until all callers have migrated.
 
-A dashboard wants health as it changes, not on request. A plain
-`std::http::Server` handler can stream it as Server-Sent Events, and
-`Health::api_encode` writes each event in exactly the shape the
-surface's callers already parse:
+---
+
+## Streaming Wire Records as Server-Sent Events (SSE)
+
+Every record and enum eligible for an API surface provides a compiler-generated `<Type>::api_encode` method. You can use `T::api_encode` inside a standard `std::http::Server` handler to stream Server-Sent Events using the exact same JSON wire format as your RPC surface:
 
 ```hale,fragment
-/// Streams three snapshots as Server-Sent Events, one a second.
+/// Streams three health snapshots as Server-Sent Events, one per second.
 locus Watch {
     fn handle(req: std::http::Request) -> std::http::Response {
         let w = std::http::SseWriter { conn_fd: req.conn_fd };
@@ -280,10 +255,7 @@ locus Watch {
 }
 ```
 
-In `App`, the server is a param placed on an `async_io` pool, so each
-stream parks on its own coroutine and a slow subscriber holds nobody
-else up. It also caps what a request may cost, and answers an oversized
-one in the API's own error shape:
+Declare the HTTP server as a parameter on `App`, place it on an `async_io` pool so each SSE connection parks on its own coroutine, and configure `max_request_bytes` and `too_large` to cap incoming request sizes:
 
 ```hale,fragment
 events: std::http::Server = std::http::Server {
@@ -295,6 +267,8 @@ events: std::http::Server = std::http::Server {
 // …
 placement { events: cooperative(pool = events) where async_io; }
 ```
+
+Connecting with `curl -sN` streams the `Health::api_encode` payloads:
 
 ```text
 $ curl -sN localhost:8795/
@@ -311,8 +285,7 @@ id: 2
 data: {"checks":{"db":{"status":"Up"},"cache":{"status":{"Degraded":"cold"}}}}
 ```
 
-A 5,000-byte request to the same port is answered before its body is
-read:
+If the client disconnects early, `w.event(ev)` fails, breaking out of the loop and closing the stream via `w.end()`. Any request exceeding `max_request_bytes` (e.g., a 5,000-byte request) is rejected before reading the body:
 
 ```text
 HTTP/1.1 413 Content Too Large
@@ -323,17 +296,8 @@ Connection: close
 {"error":"request too large"}
 ```
 
-`w.event` fails only when the subscriber has gone away, which is the
-cue to stop and return `w.end()`. Encoding with `Health::api_encode`
-rather than building the JSON with `+` keeps the stream and the surface
-on one codec: when `Health` gains a field, both carry it.
+## Related Reference
 
-## Where each piece is specified
-
-- The codec's shapes (optional fields, enums, maps, sets) and its
-  refusals: `spec/api.md` § Codecs. The digests: § The contract digest.
-  Error classes and each transport's status for them: § Error classes.
-- Streamed responses and the Server's request cap: `spec/stdlib.md`,
-  `std::http`. The chapter: [HTTP](../everyday/http.md#streaming-a-response).
-- The style guide's rules for choosing between these shapes:
-  `spec/styleguide.md` 2.11, and C10 for the HTTP edge.
+- **Codec Shapes, Digests & Error Classes**: [The API Surface](./api.md) and [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md) (§ Codecs, § The contract digest, § Error classes).
+- **HTTP Streaming & Request Caps**: [HTTP](../everyday/http.md#streaming-a-response) and [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) (`std::http`).
+- **Style Guide Rules**: `spec/styleguide.md` (§ 2.11 for API message shapes, C10 for HTTP edge limits).

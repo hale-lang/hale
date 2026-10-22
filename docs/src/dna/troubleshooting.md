@@ -1,24 +1,22 @@
-# Troubleshooting
+# Operational Troubleshooting Guide
 
-Each entry starts with what the organism prints, word for word, with
-`…` where a name, a number or a digest goes. Then the cause, then what
-to do. The entries are grouped by the part that owns the failure.
+This guide indexes exact diagnostic messages printed by `hale dna`, `hale habitat`, and `hale node`, grouped by subsystem, along with their root cause and remediation steps.
 
-A verb that fails prints `hale dna: ` and the reason. A running body
-prints its lines as `hale dna run: ` or `hale dna dev: `, and a node as
-`hale node <name>: `.
+- One-shot CLI verbs print errors prefixed with `hale dna: <reason>`.
+- Running body processes prefix log lines with `hale dna run: ` or `hale dna dev: `, and fleet node agents prefix lines with `hale node <name>: `.
 
-Four verbs answer with nothing running, and most questions start with
-one of them:
+Four read-only commands work offline (even when no organism body is running) and are the primary starting point for diagnosing state:
 
 ```sh
-hale dna status            # the projection: organism, journal, reviews, body, memory
-hale dna board             # what waits on the Board, secrets missing, the latest violations
-hale dna history t1        # every row about one entity, by its causal links
-hale dna secrets           # every secret the organism needs, and whether the vault holds it
+hale dna status            # status projection: organism lease, journal chain, reviews, body, memory
+hale dna board             # items awaiting Board action, missing vault secrets, and recent violations
+hale dna history t1        # causal event chain for a specific Task, Work, attempt, or Review
+hale dna secrets           # required vault secret slots and whether each is populated
 ```
 
-## The record
+---
+
+## The Record
 
 ### Nothing is running here
 
@@ -26,30 +24,19 @@ hale dna secrets           # every secret the organism needs, and whether the va
 organism:   not running — reading the Journal
 ```
 
-`status` says this when no body in this clone holds the record's
-lease. It is not an error: `status`, `history`, `board`, `review <id>`
-and `ui` read the record. Asking for work needs an organism to answer.
-The record is memory's, so an ask from this clone reaches a body
-wherever one runs. When no body anywhere holds the record's lease, an
-ask that waits for its answer is refused before anything is written:
-
-```text
-the organism is not running (no body holds the record's lease); start it with `hale dna run`, or ask with --no-wait to leave the ask in the record
-```
-
-Nothing would answer it. Start a body here with `hale dna run` (or
-`hale dna dev`) in another terminal, or ask with `--no-wait`: the ask
-stays in the record and the body answers it when it starts.
+- **Cause:** `hale dna status` prints this when no body process currently holds the record's lease. Read-only commands (`status`, `history`, `board`, `review <id>`, `ui`) still function normally by reading the Postgres record directly.
+- **When submitting tasks:** If you run a command that waits for the organism to respond (such as `hale dna task create`) while no body holds the record lease anywhere, the CLI refuses before writing:
+  ```text
+  the organism is not running (no body holds the record's lease); start it with `hale dna run`, or ask with --no-wait to leave the ask in the record
+  ```
+- **Fix:** Start a body (`hale dna dev` or `hale dna run`) in another terminal, or pass `--no-wait` to record the request in Postgres so the organism processes it the next time a body starts.
 
 ```text
 requested intent …, but the organism journaled no answer in time (record revision …)
 ```
 
-`hale dna task create` wrote the ask and no admission or refusal came
-back in time. The ask stays in the record. Check that a body is
-running (`hale dna body`), and look at its terminal for a `no nerves:`
-line ([The nerves](#the-nerves)): a body that hears no nerves relays
-nothing.
+- **Cause:** `hale dna task create` wrote the request row, but no admission or refusal row arrived before the timeout. The request remains in the record.
+- **Fix:** Verify that a body is running (`hale dna body`) and inspect its terminal output for a `no nerves:` warning ([The nerves](#the-nerves))—a body disconnected from NATS JetStream cannot relay or receive requests.
 
 ### No record, or a toolchain that moved
 
@@ -57,39 +44,33 @@ nothing.
 no record in memory for … (run `hale habitat graft`)
 ```
 
-The directory has DNA files but no record in memory. Graft it from the habitat:
-`hale habitat graft . --attach`. In a second clone of a project whose record exists, the
-pin in `hale.toml` names it; run `hale habitat migrate` (or `hale
-dna upgrade` with the owner's DSN) so the clone keeps the head's DSN.
+- **Cause:** The directory contains DNA files, but its record schema does not exist in Postgres memory.
+- **Fix:** For a new or unattached checkout, run `hale habitat graft . --attach`. For a second clone of an existing project whose record identity is already pinned in `hale.toml`, run `hale habitat migrate` (or `hale dna upgrade` with `HALE_DNA_MEMORY_DSN_OWNER` set) to write the head DSN into `.hale/dna/memory.env`.
 
 ```text
 this clone holds a record an earlier toolchain kept on git (refs/dna/journal), and records are not carried forward: re-init a fresh record — delete the old refs (…), remove the `[dna] record` line from hale.toml if it has one, and run `hale habitat graft . --attach`
 ```
 
-A graft and `upgrade` refuse a clone that still has the record an
-earlier toolchain kept under `refs/dna/`. There is no migration: delete
-the old refs, remove the `[dna] record` line from `hale.toml` if it has
-one, and run `hale habitat graft . --attach` for a fresh record:
-
-```sh
-git for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git update-ref -d
-```
+- **Cause:** `hale habitat graft` and `hale dna upgrade` reject clones containing legacy Git-backed journal refs (`refs/dna/journal`).
+- **Fix:** Delete the legacy Git refs, remove `[dna] record` from `hale.toml` if present, and re-graft the directory:
+  ```sh
+  git for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git update-ref -d
+  hale habitat graft . --attach
+  ```
 
 ```text
 … holds the head's DSN and is readable by others (mode …): `chmod 600 …`, or remove it and run `hale habitat migrate …`
 ```
 
-`.hale/dna/memory.env` keeps the head's DSN and a verb refuses it while
-group or others can read it. Run the `chmod 600` the line names.
+- **Cause:** `.hale/dna/memory.env` contains the Postgres head role DSN, and its file permissions allow group or world access.
+- **Fix:** Restrict permissions with `chmod 600 .hale/dna/memory.env` (or delete the file and re-run `hale habitat migrate`).
 
 ```text
 embedded dna: … (hale …); vendor/dna was materialized from … — run `hale dna upgrade`
 ```
 
-The first line of `status`. The toolchain you are running embeds a
-different DNA source from the one `vendor/dna` was copied from. Run
-`hale dna upgrade`, which copies this toolchain's core into
-`vendor/dna` again.
+- **Cause:** Your installed `hale` binary embeds a newer DNA core digest than the one materialized in `vendor/dna/`.
+- **Fix:** Run `hale dna upgrade` to synchronize `vendor/dna/` and `hale.lock`.
 
 ### The chain does not verify
 
@@ -97,12 +78,8 @@ different DNA source from the one `vendor/dna` was copied from. Run
 journal:    … event(s), chain BROKEN at …
 ```
 
-A row's digest is `sha256(prev|kind|entity|body)` of the row before
-it, and a reader checks the chain it loads. `status` found a row whose
-`prev` or digest does not match: `record_rows` was changed by something
-other than `record_append`, which no role is granted to do. Compare the
-rows with a backup of the schema, and see [Memory and the
-record](./memory.md).
+- **Cause:** Every row in `record_rows` hashes its predecessor (`sha256(prev|kind|entity|body)`). A reader detected a digest or `prev` mismatch, indicating `record_rows` was modified outside the append-only `record_append` stored procedure.
+- **Fix:** Compare the affected rows against a database backup ([Memory and the record](./memory.md)).
 
 ### A connection that cannot be made
 
@@ -110,14 +87,14 @@ record](./memory.md).
 connect: … could not be read (…); nothing was changed
 ```
 
-The URL is wrong or unreachable from here, or the other record has
-published no card on its nerves (`hale dna nerves migrate` there
-publishes it).
+- **Cause:** The target NATS URL is unreachable, or the peer record has not published its identity card to its stream.
+- **Fix:** Verify network connectivity and run `hale dna nerves migrate` on the target record to publish its card.
 
-## Memory
+---
 
-Working memory is Postgres. [Memory and the record](./memory.md)
-covers the ledger, the roles and protected evidence.
+## Memory (Postgres)
+
+Working memory and the record reside in Postgres ([Memory and the record](./memory.md)).
 
 ### The ledger does not answer
 
@@ -125,10 +102,8 @@ covers the ledger, the roles and protected evidence.
 memory:     record + ledger (operations and leases live in memory; THE LEDGER IS UNREACHABLE (…): what is read here is the last projection, and nothing is admitted until it answers)
 ```
 
-The `memory:` line of `status`, on an organism that adopted the
-ledger. What you read is the last projection this clone built, and no
-work is admitted until memory answers. A head's write made meanwhile
-is refused, not queued: run the verb again once memory is back.
+- **Cause:** Postgres is unreachable. `hale dna status` falls back to the last cached local projection, and all new task admissions and head writes are refused until Postgres responds.
+- **Fix:** Restore Postgres connectivity (or run `hale habitat migrate` to start local habitat containers) and retry the command.
 
 ### The body has no memory
 
@@ -136,32 +111,23 @@ is refused, not queued: run the verb again once memory is back.
 hale dna run: no memory: HALE_DNA_MEMORY_DSN_SPINE is not set (`hale dna dev` hands the host the spine's DSN of memory that `hale habitat migrate` migrated, from HALE_DNA_MEMORY_DSN_OWNER or the organism's allocation in the local habitat); nothing is projected or admitted
 ```
 
-Under `hale dna run` the body is given the spine role's DSN, which
-`hale dna memory migrate` prints. Set it. Under `hale dna dev`, memory
-is the organism's allocation in the local habitat, which `dev` never
-brings up, and a line before this one says why it is not there:
-
 ```text
 hale dna dev: the organism's memory allocation in the local habitat (memory-…) is not up: `hale habitat migrate …` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own
 hale dna dev: the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale habitat graft` pins one)
 ```
 
-Run `hale habitat migrate` on the organism (it needs `docker compose`
-on `PATH`). It is idempotent, so running it when memory is already up
-and migrated changes nothing.
-
-A clone's kept head DSN that came from anywhere but the organism's own
-memory is removed, and the verb that found it says so:
-
 ```text
-…/.hale/dna/memory.env held a DSN derived from …, not from the organism's memory in the local habitat (…) (GH #1653), and is removed: run `hale habitat migrate …`, which brings the organism's memory up and migrates it
+…/.hale/dna/memory.env held a DSN derived from …, not from the organism's memory in the local habitat (…), and is removed: run `hale habitat migrate …`, which brings the organism's memory up and migrates it
 ```
-
-A body without memory does not start:
 
 ```text
 hale dna run: this record's operations live in the ledger (adopted at …), and no memory is named here (HALE_DNA_MEMORY_DSN_SPINE); a body without its memory admits nothing — set it, or run under `hale dna dev`
 ```
+
+- **Cause:**
+  - Under `hale dna run`: `HALE_DNA_MEMORY_DSN_SPINE` is unset in the environment.
+  - Under `hale dna dev`: the organism's `memory-<id>` container in the local habitat is stopped, or `.hale/dna/memory.env` pointed to a stale DSN.
+- **Fix:** Run `hale habitat migrate` (requires `docker compose` on `PATH`) to start and migrate the local habitat allocation, or export `HALE_DNA_MEMORY_DSN_SPINE` (printed by `hale dna memory migrate`) when running `hale dna run`.
 
 ### The schema is another toolchain's
 
@@ -169,16 +135,12 @@ hale dna run: this record's operations live in the ledger (adopted at …), and 
 hale dna run: memory: memory schema … is at version …; this toolchain needs version …; run `hale habitat migrate <organism>` (with HALE_DNA_MEMORY_DSN_OWNER for a Postgres of your own)
 ```
 
-Also `… has no schema version …` when nothing migrated it. Run `hale
-habitat migrate` on the organism, with `HALE_DNA_MEMORY_DSN_OWNER` set
-when memory is a Postgres of your own; no other command migrates. A
-migration never goes backwards:
-
 ```text
 … memory schema … is at version …, newer than this toolchain's …; it is not migrated back
 ```
 
-Upgrade the toolchain instead.
+- **Cause:** The Postgres schema version for this record is behind (or ahead of) the installed `hale` binary.
+- **Fix:** If the schema is behind, run `hale habitat migrate <organism>` (with `HALE_DNA_MEMORY_DSN_OWNER` set if using an external Postgres server). Schema migrations never downgrade; if the database schema is newer than your binary, upgrade `hale`.
 
 ### A context package would be stale
 
@@ -186,15 +148,12 @@ Upgrade the toolchain instead.
 memory's projection is at row …, before the record's knowledge row …; the spine applies it on its tick
 ```
 
-A piece of work asked memory for its context, and memory had not yet
-applied a knowledge row the record holds. It waited 20 seconds, then refused
-rather than hand over a stale package. Check that a body is running
-with memory and that its sync completes. A body that cannot share the
-record says so:
-
 ```text
 hale dna run: memory: projection waits for the record to be shared (the sync did not complete)
 ```
+
+- **Cause:** A worker requested a Work's context package (`hat`), but the Postgres knowledge graph projection was still behind a knowledge row in the record after waiting 20 seconds.
+- **Fix:** Ensure an organism body (`hale dna dev` or `hale dna run`) is running with database connectivity so its tick loop projects pending knowledge rows.
 
 ### A write the ledger refused
 
@@ -202,21 +161,12 @@ hale dna run: memory: projection waits for the record to be shared (the sync did
 hale dna: `… …` was not written to the ledger: …
 ```
 
-Memory's insert function refused the row, and the rest of the line
-says why. The reasons include:
-
-- `… retired from this organism (person.retired at row …)`: the person
-  named has left.
-- `task … is handed to …, not to …`: only the assignee closes their
-  task.
-- `fenced: the lease … is not held`, or `… expired at … (epoch …) and
-  was not renewed`: the write named a body lease that is no longer
-  live.
-- `the role … does not write as …: a head writes as its owner's
-  members`: over a shared record, this head's DSN is another owner's.
-  Check which `HALE_DNA_MEMORY_DSN_HEAD` it was given.
-- `` `…` is a row of the record, not the ledger ``: a record kind was
-  asked of the ledger.
+- **Cause & Fix by Refusal Reason:**
+  - `… retired from this organism (person.retired at row …)`: The specified user has been retired via `hale dna retire`.
+  - `task … is handed to …, not to …`: Only the assigned person can mark a handed Task `done`.
+  - `fenced: the lease … is not held` / `… expired at … (epoch …) and was not renewed`: The body lease fencing token is stale or expired.
+  - `the role … does not write as …: a head writes as its owner's members`: On a multi-owner shared record, the head's `HALE_DNA_MEMORY_DSN_HEAD` belongs to a different organization than the caller.
+  - `` `…` is a row of the record, not the ledger ``: Internal routing mismatch; `record_rows` kinds cannot be inserted into `ledger_rows`.
 
 ### Protected evidence
 
@@ -224,31 +174,25 @@ says why. The reasons include:
 no receipt key: memory keeps no protected evidence until hale dna memory migrate with HALE_DNA_RECEIPT_KEY
 ```
 
-A customer or confidential body was filed or read, and memory holds no
-key to seal it under. Run `hale dna memory migrate` with
-`HALE_DNA_RECEIPT_KEY` (sixteen characters or more) in the owner's
-environment. A second, different key is refused, because what the
-first sealed would no longer open:
-
 ```text
 memory already seals protected evidence under another receipt key; bodies sealed under it would no longer open, so it is not replaced
 ```
-
-A body the record redacted cannot come back, in git or in memory:
 
 ```text
 receipt file: … was redacted; a redacted body is not filed again
 … was redacted …; a redacted body is not kept again
 ```
 
-A `receipt.withheld` row where you expected `receipt.classified`
-means a protected body was produced where no memory was named. The
-record keeps its digest and class; no body exists anywhere. Produce the
-evidence again where memory is.
+- **Cause & Fix:**
+  - **Missing receipt key:** Filing or reading `customer` or `confidential` evidence requires an encryption key in Postgres memory. Run `hale dna memory migrate` with `HALE_DNA_RECEIPT_KEY` set (at least 16 characters). Once set, the key cannot be replaced with a different one.
+  - **Redacted body:** Once a receipt digest is redacted via `hale dna receipt redact`, its plaintext body can never be re-filed.
+  - **`receipt.withheld` instead of `receipt.classified`:** Protected evidence was generated when no Postgres memory was configured; only the digest and class were recorded. Re-generate the evidence while connected to memory.
+
+---
 
 ## The nerves
 
-The nerves are NATS JetStream. See [The nerves](./nerves.md).
+The **nerves** are backed by NATS JetStream ([The nerves](./nerves.md)).
 
 ### The body hears nothing
 
@@ -256,22 +200,18 @@ The nerves are NATS JetStream. See [The nerves](./nerves.md).
 hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` hands the host the spine's URL of nerves whose stream `hale habitat migrate` created, on HALE_DNA_NATS_URL_OWNER or the organism's allocation in the local habitat); the organization hears nothing the record asks
 ```
 
-The body runs, and every ask stays unanswered. Under `hale dna run`,
-set the two variables `hale dna nerves migrate` prints. Under
-`hale dna dev`, which never brings the nerves up, a line before this
-one says why they are not there:
-
 ```text
 hale dna dev: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate …` brings it up and creates the stream)
 ```
 
-Run `hale habitat migrate` on the organism.
-
-A server of your own must run JetStream:
-
 ```text
 nerves migrate: the server does not run JetStream (start it with -js)
 ```
+
+- **Cause & Fix:**
+  - Under `hale dna dev`: run `hale habitat migrate` to start the `nerves-<id>` container and create the JetStream stream.
+  - Under `hale dna run`: export `HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG` (printed by `hale dna nerves migrate`).
+  - External NATS servers must be started with JetStream enabled (`nats-server -js`).
 
 ### The organization does not come to read
 
@@ -279,11 +219,8 @@ nerves migrate: the server does not run JetStream (start it with -js)
 hale dna run: the organization did not come to read the nerves within 20s; the facts wait in the stream
 ```
 
-The organization's connection cannot reach the server, or its user
-may not read its durable consumer (`spine`, or `spine_<owner>` over a
-shared record; the nerves allocation's `nats.conf` lists the users). Its log,
-`.hale/dna/org.log`, says which. Nothing is lost: the facts wait in the
-stream until it connects.
+- **Cause:** The `dna/org` child process failed to connect to NATS or lacks permission to consume its durable consumer (`spine`, or `spine_<owner>` on a shared record).
+- **Fix:** Inspect `.hale/dna/org.log` and the NATS allocation's `nats.conf`. Queued messages remain safely in the JetStream stream until the connection succeeds.
 
 ### A publish the stream did not take
 
@@ -291,12 +228,8 @@ stream until it connects.
 hale dna run: nerves: …; stopping for the unit to start this node again
 ```
 
-The stream did not acknowledge a publish in time. The body records a
-`violation.recorded` row (`adapter_undeliverable`), stops and exits
-75. A provisioned body's systemd unit starts it again, and every
-request still unanswered is relayed again. Under `hale dna dev` there
-is no unit: start it again yourself. If the stream itself is gone,
-`hale dna nerves migrate` makes it.
+- **Cause:** NATS JetStream failed to acknowledge a published message before the timeout. The body logs `violation.recorded` (`adapter_undeliverable`) and exits with code `75`.
+- **Fix:** Under a provisioned systemd service, the unit restarts the body automatically and replays unanswered requests. Under `hale dna dev`, restart the command manually (and run `hale dna nerves migrate` if the stream was deleted).
 
 ### The heart's pull is refused
 
@@ -304,14 +237,14 @@ is no unit: start it again yourself. If the stream itself is gone,
 hale dna run: the heart's pull on its durable … was refused … time(s) while the connection held: the durable, or its stream, is gone; it is made again
 ```
 
-Recorded once per outage as `violation.recorded` (`pulse_stopped`).
-The body makes the durable again and goes on. `hale dna board` lists
-the latest five violations.
+- **Cause:** The application heart's durable consumer or stream was missing while the NATS connection stayed up.
+- **Fix:** The body automatically recreates the durable consumer, logs `violation.recorded` (`pulse_stopped`) once per outage, and continues. Inspect the latest 5 violations with `hale dna board`.
 
-## The spine
+---
 
-See [The spine](./spine.md) for the budget, the workflow engine and
-the body lease.
+## The Spine
+
+See [The spine](./spine.md) for budgets, workflows, and leases.
 
 ### The budget is spent
 
@@ -319,113 +252,72 @@ the body lease.
 … budget exhausted (spent … of … micro-dollars this day in … call(s))
 ```
 
-`task create` is refused with this, `history` shows
-`budget.exhausted`, and nothing model-backed runs until the window
-turns. The Leader's decision on a Review is refused by the same gate
-(`attempt.allowance_refused` on `review:<id>`), so the Review waits
-for the Board; answer it yourself with `hale dna review <id> approve`.
-A leg's allowance is refused the same way. The allowance is
-`org_budget()` in `dna/org/models.hl`:
-
-```hale,fragment
-fn org_budget() -> dna::BudgetPolicy {
-    return dna::BudgetPolicy { window: "day", allowance_micros: 25000000 };
-}
-```
-
-Raise it in a reviewed change, or wait for the next window.
+- **Cause:** Cumulative model spend in the current budget window reached `allowance_micros`. New tasks (`hale dna task create`), worker spend allowances (`hale dna work allowance`), and Leader Review evaluations (`attempt.allowance_refused` on `review:<id>`) are refused until the window resets.
+- **Fix:** Approve pending Reviews manually as the Board (`hale dna review <id> approve`), wait for the next window, or increase `org_budget()` in `dna/org/models.hl` via a reviewed change:
+  ```hale,fragment
+  fn org_budget() -> dna::BudgetPolicy {
+      return dna::BudgetPolicy { window: "day", allowance_micros: 25000000 };
+  }
+  ```
 
 ### An intent noted and never re-offered
-
-`history` shows `intent.unrecovered`:
 
 ```text
 offered before a restart and no Task was born; not re-admitted — ask again
 ```
 
-Work may already have run for it, so it is never offered twice. Ask
-again with `hale dna task create` if you still want it.
+- **Cause:** `hale dna history` shows `intent.unrecovered` when an intent was offered immediately prior to a restart before a `task.born` row was committed. To prevent duplicate side effects, the spine never re-offers it automatically.
+- **Fix:** Re-run `hale dna task create` if the work is still needed.
 
 ### An effect whose outcome is unknown
 
-An attempt claimed by an `uncertain` performer that never reported is
-`unresolved`: its effect may or may not have happened, and no program
-retries it. A person decides:
+- **Cause:** An attempt claimed by an `uncertain` performer failed to settle or let its lease expire (`attempt.unresolved`). Automated retries are halted because external tools may have already acted.
+- **Fix:** Inspect the attempt's history and resolve it manually:
+  ```sh
+  hale dna effect resolve attempt:<id> --outcome ok|failed
+  ```
 
-```sh
-hale dna effect resolve attempt:<id> --outcome ok|failed
-```
+---
 
-## The heart and the body
+## The Heart and the Body
 
 See [The heart and the body](./heart.md).
 
 ### The body lease is held elsewhere
 
-A record admits one body. A body that starts while another holds the
-lease stops at once, with exit code 3:
-
 ```text
 hale dna run: a body for this record is live on … (ticked …, lease expires in …s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone
 ```
-
-`hale dna body` says who holds it. If that body is gone (its machine
-died, its process was killed), take the lease:
-
-```sh
-hale dna body claim --force
-```
-
-Without `--force`, a claim on a live lease is refused:
 
 ```text
 hale dna: body: live on …, ticked … ago; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)
 ```
 
-The body that lost its lease stops when it next asserts it:
-
 ```text
 hale dna run: the body lease is no longer mine: held by …; a record admits one body — stopping
 ```
-
-Releasing another clone's lease also needs `--force`:
 
 ```text
 hale dna: body: the lease is held by …, not this clone (…); `hale dna body release --force` releases another's
 ```
 
-A body that cannot reach memory does not start, because it cannot prove
-a lease (the lease is memory's):
-
 ```text
 hale dna run: memory cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove
 ```
 
+- **Cause:** Each record permits at most one active body process (enforced via a fenced lease in Postgres memory). Starting a second body exits with code `3`.
+- **Fix:** Run `hale dna body` to see which machine/clone holds the lease. If the previous body crashed or its host is gone, take over the lease with:
+  ```sh
+  hale dna body claim --force
+  ```
+  (Or release it with `hale dna body release --force`.) Any displaced body process automatically halts the next time it checks its lease token.
+
 ### A change that did not survive
 
-A Mutation that `rolled_back`: `history` shows `expression.crashed`
-with the exit code (on a fleet, the instance and node), then
-`mutation.rolled_back`. The expression exited inside its observation
-window; the genome is back at the base and the old expression runs.
-
-```text
-…: never expressed by …
-```
-
-A touched instance never reported `instance.up` at the new revision in
-time. Look at that node's terminal: the revision may not have fetched,
-or the seed may not build there.
-
-```text
-…: denied: candidate breaks the fleet
-```
-
-The candidate's services compose, but a claim the fleet makes over
-them fails. The `mutation.deny` row names the failing steps.
-
-`mutation.refused` with `candidate moved after review: … != …`: the
-sandbox's commit changed between the review and the apply. Nothing was
-applied; ask again, and the new candidate gets its own Review.
+- **Rolled-back mutation (`mutation.rolled_back`):** `hale dna history` shows `expression.crashed` (with exit code, fleet instance, and node) followed by `mutation.rolled_back`. The newly expressed application exited during the post-deploy observation window, so the host automatically rolled the genome back to the base revision.
+- **`…: never expressed by …`:** A fleet instance failed to report `instance.up` at the new revision within the timeout. Check the `hale node <name>` terminal output for Git fetch or build errors.
+- **`…: denied: candidate breaks the fleet`:** The candidate compiled individually, but `hale fleet check` failed a cross-service claim (`mutation.deny` lists the failing step).
+- **`mutation.refused` with `candidate moved after review: … != …`:** The sandbox commit changed between Review approval and genome application. Re-submit the task to open a fresh Review.
 
 ### No fleet
 
@@ -433,11 +325,12 @@ applied; ask again, and the new candidate gets its own Review.
 no `[dna] fleet = "<name>"` in hale.toml: the DNA expresses no fleet here
 ```
 
-`hale dna fleet`, `deploy` and `rollback` need to know which declared
-fleet to express. Add the section to `hale.toml`; see
-[The heart and the body](./heart.md).
+- **Cause:** `hale dna fleet`, `hale dna deploy`, and `hale dna rollback` require a fleet seed name in `hale.toml`.
+- **Fix:** Add `[dna] fleet = "<name>"` to `hale.toml` ([The heart and the body](./heart.md)).
 
-## Senses and reflexes
+---
+
+## Senses and Reflexes
 
 See [Senses and reflexes](./senses.md).
 
@@ -446,25 +339,21 @@ hale dna senses up: the local habitat's senses' store runs under docker compose,
 hale dna senses url: the organism's senses' store in the local habitat is not up (`hale habitat migrate …` brings it up)
 ```
 
-The senses' store is the organism's `senses-<id>` allocation in the
-local habitat. `hale habitat migrate` and `hale dna senses up` bring it
-up; `hale dna senses url` and `hale dna dev` only read it. Under `hale
-dna dev` the reason comes as `hale dna dev: senses: …`, and nothing else
-stops for it.
-
 ```text
 reflexes: HALE_DNA_NATS_URL_REFLEXES, HALE_DNA_NATS_VAULT_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto
 reflexes: no store (HALE_DNA_SENSES_URL); nothing to read
 reflexes: the vault holds no credential … (`hale dna upgrade` provisions the organism's secrets)
 ```
 
-The reflexes refuse to start without their nerves, their store, or
-their credential. `hale dna nerves migrate` prints the first three
-variables, and `hale dna senses up` the store's URL.
+- **Cause & Fix:**
+  - Start the local Prometheus-compatible senses store (`senses-<id>`) with `hale habitat migrate` or `hale dna senses up` (requires `docker compose` on `PATH`).
+  - When running reflexes standalone, export `HALE_DNA_NATS_URL_REFLEXES`, `HALE_DNA_NATS_VAULT_REFLEXES`, and `HALE_DNA_NATS_ORG` (from `hale dna nerves migrate`), `HALE_DNA_SENSES_URL` (from `hale dna senses up`), and run `hale dna upgrade` if vault credentials are missing.
 
-## The skin
+---
 
-See [The skin](./skin.md) for the vault and its slots.
+## The Skin (Vault and Secrets)
+
+See [The skin](./skin.md).
 
 ### A secret is missing
 
@@ -473,27 +362,18 @@ See [The skin](./skin.md) for the vault and its slots.
   MISSING  model-OPENAI_API_KEY  the model's key OPENAI_API_KEY — a person supplies it: `hale dna secret set OPENAI_API_KEY`
 ```
 
-`hale dna secrets` lists every secret the organism needs and marks the
-ones the vault lacks. A secret the organism draws itself (memory's
-roles, the nerves' accounts, a loopback OIDC client) says
-`` — `hale dna upgrade` draws it ``. A slot is yours to fill, from
-stdin:
-
-```sh
-hale dna secret set OPENAI_API_KEY
-```
-
-Add `--body <user@host>` to fill the vault where the body runs. The
-board repeats what is missing:
-
 ```text
 body: no credential for the model (none of … is in the vault where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there
 secret: the forge's token is not in the vault (forge-token); `hale dna secret set FORGE_TOKEN` fills it
 ```
 
-A model key is read from its vault slot `model-<NAME>` only, never
-from the environment. With none, a call is refused before it is made,
-and the `model.called` row in `history` says `credential not present`.
+- **Cause:** Required vault slots are empty. Remember that model API keys are read strictly from vault slots (`model-<NAME>`), never from environment variables.
+- **Fix:** Populate human-supplied secrets via `stdin` (pass `--body <user@host>` for a remote body):
+  ```sh
+  hale dna secret set OPENAI_API_KEY
+  hale dna secret set FORGE_TOKEN
+  ```
+  For machine-generated secrets (Postgres roles, NATS accounts, loopback OIDC secrets), run `hale dna upgrade`.
 
 ### A secret the verb will not take
 
@@ -503,8 +383,7 @@ secret set: the value never goes on the command line (it would sit in every shel
 secret rotate: … was never set (`hale dna secret set …` first)
 ```
 
-Name the slot alone, give the value on stdin, and set a secret before
-you rotate it.
+- **Fix:** Pass only a recognized slot name (`hale dna secrets` lists valid names), pipe or type the secret on `stdin` (never as a CLI argument), and run `secret set` before `secret rotate`.
 
 ### A drawn secret is gone
 
@@ -513,9 +392,7 @@ nerves migrate: the vault holds no credential for the nerves' … (`hale dna upg
 the memory allocation's password is not provisioned (postgres-owner-… in the vault, and its file beside the allocation; `hale dna upgrade` provisions them, `hale dna secrets` lists them)
 ```
 
-Run `hale dna upgrade`, which draws what the vault lacks. The password
-files (`postgres.secrets`, `nats.secrets.conf`) live beside the
-organism's allocations in the local habitat, never in your checkout.
+- **Fix:** Run `hale dna upgrade` to regenerate missing infrastructure passwords in the vault and the local habitat allocation directory (`~/.local/share/hale/habitat/local/allocations/<id>/`).
 
 ### Violations
 
@@ -523,16 +400,13 @@ organism's allocations in the local habitat, never in your checkout.
 violations: … recorded, each absorbed by its owner (the latest last)
 ```
 
-A `violation.recorded` row is a closure a part absorbed and went on
-from: `adapter_undeliverable` and `pulse_stopped`
-([The nerves](#the-nerves)), `lease_unsettled` ([Legs](#legs)).
-`hale dna board` shows the latest five.
+- **Cause:** A `violation.recorded` row indicates a runtime fault absorbed by a supervisor closure (`adapter_undeliverable`, `pulse_stopped`, or `lease_unsettled`). `hale dna board` displays the 5 most recent violations.
+
+---
 
 ## Legs
 
-`hale dna work` prints one JSON object per verb; a refusal has
-`"state": "refused"` and the reason. See [Legs, hands and
-voice](./legs.md).
+See [Legs, hands and voice](./legs.md).
 
 ### A performer with no effect class
 
@@ -540,10 +414,7 @@ voice](./legs.md).
 hale dna work: dna/org/work.hl: the … performer declares no effect class; every performer declares one: effect_free, idempotent or uncertain
 ```
 
-Every performer in `dna/org/work.hl` declares `effect_free`,
-`idempotent` or `uncertain`. Until it does, the verbs that claim or
-hand back an outcome refuse to start; the others still read, settle,
-file friction and drain.
+- **Fix:** Add `effect: "effect_free"`, `"idempotent"`, or `"uncertain"` to every performer constructed in `dna/org/work.hl`.
 
 ### Nothing to claim
 
@@ -551,11 +422,7 @@ file friction and drain.
 no admitted attempt awaits a … leg with capabilities `…`: … of that kind outstanding, …
 ```
 
-`hale dna work next` found nothing it may take, and says why for each
-attempt it passed over: performed in the organism, awaiting the owner,
-needing a capability the leg lacks, `not admitting a performer of
-effect class …`, of a data class the leg may not see, or `unresolved`
-([An effect whose outcome is unknown](#an-effect-whose-outcome-is-unknown)).
+- **Cause:** `hale dna work next` found no claimable attempt matching your `--as` position, `--kind`, `--capabilities`, `--classes`, and performer effect class. The refusal message breaks down why each outstanding attempt was skipped.
 
 ### The lease is gone
 
@@ -565,29 +432,22 @@ stale: the lease on attempt … is …'s at token …, not …'s at token …
 the lease on attempt … was taken as a performer of effect class `…`; an outcome under it names that class, not `…`
 ```
 
-An outcome, a renewal or an allowance under a lease that is no longer
-this leg's. Renew before the lease ends (`hale dna work renew`). An
-outcome names the effect class the lease was taken with.
-
-When a lease expires with no outcome, the owner records a
-`violation.recorded` row (`lease_unsettled`) once for that lease, and
-asks the attempt again:
-
 ```text
 the lease … held at token … expired at … with no outcome; the attempt is asked again
 ```
 
-### No allowance
+- **Cause:** The attempt lease expired before `submit` or `renew`, was claimed by another worker token, or `submit --effect` did not match the claim's effect class. When a lease expires without an outcome, the spine logs `violation.recorded` (`lease_unsettled`) once and re-queues the attempt (unless the performer was `uncertain`, which transitions to `unresolved`).
 
-The budget's one gate answers `hale dna work allowance`. On a spent
-window it refuses with `budget exhausted (…)`
-([The budget is spent](#the-budget-is-spent)). Within an attempt, a
-call that would pass what is left is not made:
+### No allowance
 
 ```text
 the call would cost … micro-dollars, past what is left of the attempt's allowance (… of …): no call was made
 the attempt's allowance of … micro-dollars is spent (…); the budget gate admits no further call
 ```
+
+- **Cause:** The attempt exhausted its per-attempt spend allowance or the organization's daily budget window ([The budget is spent](#the-budget-is-spent)).
+
+---
 
 ## Schedules
 
@@ -595,31 +455,20 @@ See [Schedules](./schedules.md).
 
 ```text
 hale dna: schedule declare: refused: schedule …: …
-```
-
-The organization refused the declaration and said why. The reasons
-are:
-
-- `` nobody holds position:…: it convenes nothing until someone does (`hale dna fill … <holder>`) ``:
-  fill the convening position first.
-- `` no definition `…` in the catalog ``: `hale dna definitions` lists
-  the catalog.
-- `` … takes `…`, which the inputs do not name ``: pass every input the
-  definition takes in `--args`.
-- `its inputs are a JSON object`: `--args` is a JSON object.
-- `` cron `…`: a cron expression has five fields (minute hour day-of-month month day-of-week), not … ``.
-- `… holds neither the Board nor position:…: declaring a schedule is
-  the Board's, or the convener's own holder's`.
-
-```text
 hale dna: schedule declare: --every … is no interval (a number and ms, s, m, h or d)
 hale dna: schedule pause: no schedule `…` is declared in the record
 ```
 
-`hale dna schedule` lists what the record declares, with each
-schedule's occurrences, skips and misses.
+- **Common refusal reasons:**
+  - `` nobody holds position:…: it convenes nothing until someone does (`hale dna fill … <holder>`) ``: Assign and ratify a holder for the convener position first.
+  - `` no definition `…` in the catalog ``: Run `hale dna definitions` to list valid workflow definitions.
+  - `` … takes `…`, which the inputs do not name `` / `its inputs are a JSON object`: Provide all required definition inputs as a JSON object in `--args`.
+  - `` cron `…`: a cron expression has five fields (minute hour day-of-month month day-of-week), not … ``: Fix the 5-field UTC cron syntax.
+  - `… holds neither the Board nor position:…: declaring a schedule is the Board's, or the convener's own holder's`: Run `--as` a user who holds `position:board` or the convener position.
 
-## The head and the face
+---
+
+## The Head and the Face
 
 See [The head and the face](./head.md).
 
@@ -627,32 +476,20 @@ See [The head and the face](./head.md).
 
 ```text
 hale dna ui: trusted-local is a fixture's mode (HALE_DNA_TRUSTED_LOCAL=1); a project serves its head under OIDC: `git config dna.principal oidc` with dna.oidc.issuer, dna.oidc.client and dna.oidc.member (dna/face/start.sh sets them up with the stub provider, dna/oidc)
-```
-
-A head needs a principal source and refuses to start without one.
-Name the OIDC issuer in the record's git config, and put the client's
-secret in the vault:
-
-```sh
-git config dna.principal oidc
-git config dna.oidc.issuer https://issuer.example
-git config dna.oidc.client acme-head
-git config dna.oidc.redirect https://head.example/callback
-git config --add dna.oidc.member "<subject>=alice"
-hale dna secret set OIDC_CLIENT_SECRET
-```
-
-The secret goes to the vault as `oidc-client-<client>`. The head checks
-its configuration before it serves:
-
-```text
 hale dna ui: dna.principal is oidc, so dna.oidc.issuer, dna.oidc.client and dna.oidc.redirect must be set
 hale dna ui: the issuer must be https (plain http only on this machine): …
 hale dna ui: the issuer … is not usable: …
 ```
 
-An issuer on the loopback is not usable until the record pins its key
-(`git config dna.oidc.key <SubjectPublicKeyInfo, base64>`).
+- **Fix:** Start the local head via `hale dna head <project>` (which configures the local stub OIDC provider automatically), or configure an HTTPS OIDC issuer (or a loopback issuer with a pinned `dna.oidc.key`):
+  ```sh
+  git config dna.principal oidc
+  git config dna.oidc.issuer https://issuer.example
+  git config dna.oidc.client acme-head
+  git config dna.oidc.redirect https://head.example/callback
+  git config --add dna.oidc.member "<subject>=alice"
+  hale dna secret set OIDC_CLIENT_SECRET
+  ```
 
 ### A verdict refused
 
@@ -660,59 +497,33 @@ An issuer on the loopback is not usable until the record pins its key
 review … refused the verdict: …
 ```
 
-The Review did not admit the verdict, and says why:
-
-- `digest mismatch: … != …`: the verdict named a candidate other than
-  the one under review (the sandbox changed, or a `--digest` was
-  stale). Render it again with `hale dna review <id>` and answer the
-  digest it shows.
-- `authority … does not satisfy …`: the Review needs a higher
-  authority (`board` for a Board-class change).
-- `reviewer … authored the candidate`: someone other than the change's
-  author signs it. A governance proposal requiring the Board (a fill, an
-  opening) admits its author; a change to the work never does.
-- `reviewer … holds no position this Review requires (…)`: a routed
-  Review admits only holders of the positions `hale dna route` names.
-
-```text
-hale dna: review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)
-```
-
-A verdict does not carry gate evidence. The host reads each gate's run
-at the forge.
+- **Refusal causes & fixes:**
+  - `digest mismatch: … != …`: The candidate digest changed or `--digest` was stale. Re-run `hale dna review <id>` and approve the current digest.
+  - `authority … does not satisfy …`: Pass an `--authority` that meets or exceeds the Review's required authority (`board` for Board-level Reviews).
+  - `reviewer … authored the candidate`: Code changes require two-person review (someone other than the candidate's author must approve).
+  - `reviewer … holds no position this Review requires (…)`: The Review is routed (`hale dna route`); only holders of the required signer positions may approve it.
+- **`hale dna: review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)`:** Remove `--evidence`; CI gate runs are observed automatically from the forge.
 
 ### Every Review needs the Board
 
-`status` shows `[pending] needs board — …` on each Review. That is the
-default posture: an ask is an `application` change, and the Leader's
-grant in `dna/org/main.hl` covers `refactor docs`. Decide with
-`hale dna review <id> approve`, or widen the grant in a reviewed
-change; see [Shaping and governing it](./shaping.md).
+- **Cause:** By default, tasks without an explicit class are planned as `application` changes, while the default `dna::Grant` in `dna/org/main.hl` only delegates `"refactor docs"` to the Leader.
+- **Fix:** Approve Reviews as the Board (`hale dna review <id> approve`), or widen `grant.classes` in `dna/org/main.hl` via a reviewed change ([Shaping and governing it](./shaping.md)).
 
 ### A person's task that never settles
 
-A handed Task closes only when its assignee reports it with
-`hale dna task done <id> --as <them>`, carrying the evidence or the
-authorized exception its acceptance practice requires. A restart does
-not close it, and neither does anyone else's report. `hale dna board`
-lists the tasks waiting.
+- **Cause:** A human-assigned Task only settles when its assignee runs `hale dna task done <id> --as <assignee>` with any required evidence (`--evidence <digest>`) or third-party exception (`--exception <why> --authorized-by <who>`). Inspect open human tasks with `hale dna board`.
 
-## Starting over
+---
 
-A record is memory's, and `git log` still holds every change it
-applied to the genome. To begin a fresh record from the program as it
-is now, remove the `[dna] record` line from `hale.toml` and graft it again,
-which keeps the files already there and composes a new record with a
-new identity, in a schema of its own. The old record's schema stays in
-Postgres until you drop it:
+## Starting Over with a Fresh Record
 
-```sh
-hale habitat graft . --attach
-```
+Because the record lives in a dedicated Postgres schema (`dna_<record-identity>`) while applied code changes remain in `git log`, you can reset a project to a clean record without losing its source code:
 
-A clone that still holds a record an earlier toolchain kept on git
-needs its old refs deleted first ([No record, or a toolchain that
-moved](#no-record-or-a-toolchain-that-moved)).
+1. Remove the `record = "…"` line under `[dna]` in `hale.toml`.
+2. (If the clone still has legacy `refs/dna/` Git refs, delete them—see [No record, or a toolchain that moved](#no-record-or-a-toolchain-that-moved).)
+3. Re-graft the existing directory to provision a fresh record identity and Postgres schema:
+   ```sh
+   hale habitat graft . --attach
+   ```
 
-Where each piece of state lives is in the
-[Reference](./reference.md#where-things-live).
+See [Reference: Where things live](./reference.md#where-things-live) for a complete map of all state locations.

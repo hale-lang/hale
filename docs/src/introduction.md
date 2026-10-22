@@ -1,80 +1,64 @@
 # Introduction
 
-Hale is a compiled, general-purpose language. Every piece of state has one
-owner, and the parts of a program talk only over declared, typed message
-channels. That shape lets the compiler check a program's architecture the
-way it checks its types. It runs natively with no garbage collector and no
-borrow checker, and its concurrency has no locks and no data races.
+Hale is an LLVM-compiled systems and service programming language designed around **hierarchical arena ownership**, **actor-like components (`locus`)**, **typed message channels (`topic`)**, and **compile-time architectural verification (`claims`)**.
 
-A complete Hale program can be three lines: a `fn main()` that reads an
-argument and prints. You can write useful Hale, such as CLI tools, file and
-JSON work, and HTTP clients and servers, without declaring a lifecycle, a
-topic, a placement or a claim. Those arrive when the program's growth earns
-them, and nothing you wrote earlier changes when they do.
+Hale compiles directly to native machine code (or WebAssembly) with no garbage collector, no borrow checker, and no shared mutable state across threads:
 
-Most languages pick a level and live there. Python and JavaScript sit high:
-fast to write, far from the metal. Go sits in the middle, with concurrency
-in the language and a runtime underneath. Rust and C++ sit low: you own
-memory and layout, and you pay attention to both.
+- **Single-tree memory ownership:** Every stateful component is a `locus` that owns a contiguous memory arena. Child loci allocate from their parent's arena and free their entire region in $O(1)$ time when they dissolve.
+- **Data-race-free concurrency:** Loci communicate either vertically (parent calling child methods) or laterally via a typed pub/sub message bus (`topic`). Payloads are copied into the receiving locus's arena or passed across zero-copy shared-memory rings (`shm_ring`).
+- **Deployment separated from logic:** Thread assignment (`placement`), cross-process transports (`bindings`), and architectural invariants (`claims`) are declared on the entrypoint (`main locus` or `fleet locus`) rather than hardcoded inside components.
+- **Whole-program static verification:** Because component ownership, message routing, and side effects are first-class syntax, `hale check` derives a complete graph of the program (`ApplicationModel`) and checks reachability laws, effect budgets, and memory bounds at compile time.
 
-Hale is one language you can write at any of those levels, moving between
-them without switching tools. The same file can read like a script at the
-top and like a systems program at the bottom. There is one construct, the
-**locus**, and the only thing that changes as you go deeper is how much of
-it you choose to see.
+> **Interactive Playground:** Run and edit Hale programs directly in your browser at [play.hale-lang.org](https://play.hale-lang.org/), or browse runnable examples in the [example gallery](https://hale-lang.org/play/).
 
-> **Try it now:** the [playground](https://play.hale-lang.org/) compiles and
-> runs your Hale in the browser, with the same compiler you would install.
-> The [example gallery](https://hale-lang.org/play/) walks curated programs
-> chapter by chapter.
+---
 
-## Hale's words, in familiar terms
+## Mental Model for Experienced Programmers
 
-Hale uses a small vocabulary of its own. Each word names something you
-already know, with one difference worth knowing:
+| If you know... | How Hale compares |
+|---|---|
+| **Go** | Replace goroutines + channels + mutexes with `locus` + `topic`. Thread pools (`cooperative`, `pinned`, `where async_io`) are configured once in `main`'s `placement { }` block. Errors use `fallible(E)` + `or` instead of `if err != nil`. |
+| **Rust** | Memory is managed by hierarchical arenas tied to locus lifetimes (`birth` $\to$ `run` $\to$ `dissolve`) and per-call scratch regions, avoiding lifetime annotations and borrow checking while remaining GC-free. |
+| **Erlang / Elixir (OTP)** | A `locus` is a statically typed process/actor with built-in supervision (`closure` invariants + `on_failure { restart; }` policies) and native C-speed execution. |
+| **TypeScript / Python** | Simple scripts start with a 3-line `fn main()`, first-class `Decimal` and `Duration` literals, built-in JSON/HTTP/SQLite/Postgres support, and type inference on local bindings. |
 
-| Hale says | You may know it as | The difference |
-| --- | --- | --- |
-| **locus** | an actor, a small service, an object nobody else can reach into | it is the only kind of component, so the compiler sees who owns what and who talks to whom |
-| **topic** | a pub/sub topic, as in Kafka or NATS | it is declared in source with its payload type, so the compiler knows every sender and receiver |
-| **main locus** | `main()` plus a deployment manifest | where each part runs and how each channel travels is one block in `main` |
-| **claim** | an architecture test | a sentence about the whole program, checked over every path and compiled to no code |
-| **witness** | a counterexample | the concrete path that breaks a rule, in your own names |
-| **organism** | an application with its own pipeline, operations and audit log | all of it is one Hale program next to your code, and it changes only under review |
+---
 
-The [glossary](https://hale-lang.org/glossary) has every term.
+## Core Language Vocabulary
 
-## How this guide is laid out
+Every Hale program is built from a small, orthogonal set of declarations:
 
-The guide comes in six parts. Each opens with a page that says what the
-layer is and what the next one adds:
+| Construct | Purpose | Equivalent Concept |
+|---|---|---|
+| `type` | Pure value record or union passed by value; has fields and methods, no lifecycle | `struct` / `enum` / data class |
+| `locus` | Stateful component with an arena, `params`, methods, lifecycle hooks, and bus wiring | Actor / service / state machine |
+| `@form(...)` | Compiler-specialized data structure (`vec`, `hashmap`, `set`, `ring_buffer`, `lru_cache`, `heap`) backed by a locus's arena | `Vec<T>`, `HashMap<K,V>`, `BTreeSet<T>` |
+| `topic` | Named, typed pub/sub channel (`Topic <- msg;`, `subscribe Topic as handler;`) | Typed Kafka/NATS subject or Go channel |
+| `seam` | Linear typed pipeline routing a set of message types across loci and methods | Typed middleware / railway pipeline |
+| `@repo(T)` | Locus managing keyed persistence (`get`, `create`, `put`, `remove`) with state effect tracking | Repository / DAO with compile-time CRUD effects |
+| `api` | Typed RPC/streaming contract served over HTTP, REST, Unix sockets, gRPC, MCP, or WebSockets | Protobuf / OpenAPI service definition |
+| `fallible(E)` | Value-level error channel on a function signature, handled at the call site with `or` | `Result<T, E>` with mandatory handling |
+| `closure` & `on_failure` | Runtime state invariant on a locus + parent supervision policy (`restart`, `bubble`) | OTP supervisor strategy |
+| `@effects` & `@budget` | Transitive compile-time bounds on syscalls, blocking, allocations, and domain effects | Static capability / effect system |
+| `claims` & `constitution` | Compile-time architectural assertions (isolation, gating, cardinality) over the program graph | Zero-cost static architecture tests |
+| `main locus` | Process entrypoint specifying child `placement`, transport `bindings`, and `claims` | `main()` + thread & transport wiring |
+| `fleet locus` | Multi-binary composition specifying host placement, cross-process bindings, and fleet claims | Type-checked Docker Compose / K8s manifest |
 
-- **The language:** values, math, functions, control flow, failure as a
-  value, and everyday files, JSON, HTTP and tests. Hale at the level you
-  would use Python or Node for.
-- **The locus model:** loci that run over time, with a lifecycle, a typed
-  message bus, placement, supervision, and programs split across binaries.
-  Hale where you would use Go.
-- **Saying what must hold:** effect contracts, claims over the whole
-  program graph, and constitutions, which are promises the build checks
-  before anything runs.
-- **Systems control:** memory, layout, lifetime, zero-copy I/O, C,
-  WebAssembly, and watching a program run. Hale where you would use Rust or
-  C++.
-- **The organism:** an application that is governed. It proposes its own
-  changes, proves them, asks the people with authority, and applies
-  exactly what they approve.
-- **The habitat:** the design for what several organisms and their people
-  share.
+---
 
-Each part expands on the one before it and contradicts none of it. The
-function you wrote in *the language* still works in *systems control*; you
-have only learned to see more of what was always there.
+## Code Tour: From Script to Service
 
-## A taste
+A minimal Hale program requires only `fn main()`:
 
-Here is a small service. Each phrase you would say out loud has a place to
-live, so the keywords can wait.
+```hale
+fn main() {
+    let unit_price = 19.99d;
+    let total = unit_price * 3.0d;
+    println("Total: $", total);
+}
+```
+
+When your program needs long-lived state and reactive messaging, you define data with `type`, channels with `topic`, and components with `locus`:
 
 ```hale
 type Player    { id: String; name: String; }
@@ -103,28 +87,21 @@ locus Matchmaker {
 }
 ```
 
-*"A matchmaker"* is `locus Matchmaker`. *"That receives players"* is
-`subscribe JoinQueue`. *"And announces matches"* is `publish
-MatchReady`. *"When enough are queued"* is the `if`. The code keeps the
-shape of the sentence.
+`Matchmaker` does not know whether `JoinQueue` arrives from an in-memory queue, a Unix domain socket, a shared-memory ring buffer, or NATS JetStream, nor which CPU core or thread pool it runs on. Those decisions live in `main locus`, so the component itself stays portable across single-binary tools, multi-process daemons, and WebAssembly targets.
 
-The gap between how you describe a system and what you type does not have
-to be there; Hale is built on that bet. The [design](./the-design.md)
-chapter explains why one shape works across the whole range, and across
-people, language models and the machine.
+---
 
-## How to read this
+## Documentation Map
 
-Readers new to programming, or to systems languages, can start at **The
-language** and go in order. Readers who already program can skim it for
-the parts that differ from what they know (the failure model and the money,
-time and unit types are worth a look), then jump to the part that matches
-the program they want to write. Many chapters open with a short *"Coming
-from X?"* box to orient you.
+1. **[Part I: Language & Standard Library](./parts/language.md)** — Primitive types, `Decimal` money and `Duration` time, physical units, functions, control flow, `fallible(E)` error handling, records, `@form` collections, and standard library packages (files, JSON, HTTP, sockets, crypto, CLI, logging, metrics, testing).
+2. **[Part II: Concurrency, Services & APIs](./parts/locus-model.md)** — Locus lifecycle (`birth`, `run`, `drain`, `dissolve`), the typed bus, thread placement (`cooperative`, `pinned`, `async_io`), parent-child supervision, seams, `@repo(T)` repositories, `api` surfaces (RPC, REST, MCP, gRPC, WebSockets), and multi-binary `fleet locus` deployments.
+3. **[Part III: Static Verification & Architecture Laws](./parts/what-must-hold.md)** — Effect annotations (`@effects`, `@no_syscall`, `@no_block`, `@deterministic`), whole-program `claims`, and reusable `constitution` rules.
+4. **[Part IV: Systems Programming & Runtime Internals](./parts/systems.md)** — Arena memory layouts, zero-allocation hot paths (`@hot`, `@budget`), zero-copy `shm_ring` messaging, C FFI (`@ffi("c")`), WebAssembly, live topology inspection (`hale iris`), and deterministic replay (`hale replay`).
+5. **[Part V: DNA (Autonomous & Governed Applications)](./parts/organism.md)** — Building self-governing applications with durable PostgreSQL + Git state, NATS event routing, Prometheus health reflexes, Vault secret confinement, and sandboxed agent/human task workflows.
+6. **[Part VI: Multi-Record Control Plane (Habitat)](./parts/habitat.md)** — Managing local and remote multi-service environments with `hale habitat`.
 
-The [reference](./reference.md) points into `spec/`, the canonical
-contract the compiler enforces, for the exact rules behind the tour.
+### Next Steps
 
-Head to [Install](./getting-started/install.md) to set up the toolchain,
-then [Your first run](./getting-started/first-run.md) to put a program on
-screen.
+- **[Install the Toolchain](./getting-started/install.md)** — Download a prebuilt binary or build from source.
+- **[Quickstart & Toolchain](./getting-started/first-run.md)** — Compile and run your first `.hl` program and explore the CLI.
+- **[Tutorial: Build a Job Queue](./tutorial/job-queue.md)** — Evolve a 10-line script into a multi-process service in four steps.

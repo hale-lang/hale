@@ -1,12 +1,6 @@
 # Testing
 
-A test in Hale is just an ordinary program. There's no framework to
-learn, no annotations, no test classes — a test is a `.hl` file whose
-`fn main()` runs some assertions, and `hale test` finds and runs them.
-
-## Writing a test
-
-Name a file `*_test.hl` and write assertions in `main`:
+A test in Hale is an ordinary standalone `.hl` file named `*_test.hl` whose `fn main()` runs assertions from `std::test`. `hale test` discovers all `*_test.hl` files, compiles each to a native binary in a temporary directory, and executes them in parallel.
 
 ```hale
 // arith_test.hl
@@ -17,50 +11,62 @@ fn main() {
 }
 ```
 
-`std::test` ships four primitives, all written in Hale itself:
+---
 
-| Assertion | Passes when… |
+## Assertions & CLI Reference
+
+### `std::test` Assertions
+
+| Assertion Function | Signature | Pass Condition & Failure Output |
+|---|---|---|
+| `std::test::assert` | `fn(Bool, String)` | Passes when `cond` is `true`; prints `ASSERTION FAILED: <msg>` on `false` |
+| `std::test::assert_eq_int` | `fn(Int, Int, String)` | Passes when `actual == expected`; prints `expected` vs. `actual` diff on mismatch |
+| `std::test::assert_eq_str` | `fn(String, String, String)` | Passes when `actual == expected`; prints quoted `expected` vs. `actual` diff on mismatch |
+| `std::test::assert_near` | `fn(Float, Float, Float, String)` | Passes when `actual == expected` or `\|actual - expected\| <= tolerance` (`NaN` always fails) |
+
+### Toolchain Commands & Environment Variables
+
+| Command / Variable | Description |
 |---|---|
-| `assert(cond, msg)` | `cond` is `true` |
-| `assert_eq_int(actual, expected, msg)` | `actual == expected` (with an `expected / actual` diff on failure) |
-| `assert_eq_str(actual, expected, msg)` | `actual == expected` (the same diff, quoted) |
-| `assert_near(actual, expected, tolerance, msg)` | the two `Float`s are equal or `\|actual - expected\| <= tolerance` (the failure shows both values, the difference and the tolerance; a NaN never passes) |
+| `hale test [dir]` | Discovers, compiles, and runs all `*_test.hl` files under the current directory or `dir` |
+| `hale test -run <substr>` | Runs only test files whose path contains `<substr>` |
+| `hale test --json` | Outputs one JSON record per file (`file`, `status`, `elapsed_ms`, and `message` on failure) |
+| `hale test -j <N>` / `HALE_TEST_JOBS=N` | Runs at most `N` test files in parallel (default: one worker per CPU core) |
+| `HALE_TEST_KEEP_VAULT=1` | Preserves each test's isolated `HALE_VAULT_DIR` and `XDG_DATA_HOME` after completion and prints its path |
+| `hale check --workspace <dir>` | Typechecks every seed and every `*_test.hl` file as its own standalone program |
+| `hale bench [dir]` | Runs `*_bench.hl` benchmarks (`bench_<name>` functions), reporting calibrated `ns/op` and `allocs/op` |
+| `hale verify <dir>` | CI gate: runs `hale check` analysis and fails with a non-zero exit code on any finding |
+| `hale fmt [--check] <path>` | Formats `.hl` files into canonical layout (or verifies formatting in CI with `--check`) |
+| `hale doc` | Renders API documentation from `///` doc comments |
 
-The contract is exit-code based, and it's the whole model:
+---
 
-- **Pass** — the program runs to completion and exits `0` with nothing
-  on stdout. A silent test has passed. Only stdout is inspected: what
-  the program writes to stderr (`eprintln`) is diagnostic output and
-  doesn't count, so print progress there if you want it.
-- **Fail** — the first failing assertion prints
-  `ASSERTION FAILED: <msg>` (and, for `assert_eq_*`, the expected and
-  actual values) and the program exits non-zero. There's no "collect
-  all failures" — the first one stops the run.
+## Test Execution Model & Seed Isolation
 
-Because a test is an ordinary binary, you can also just run it
-directly: `hale run arith_test.hl` passes silently or prints the
-failure.
+### Pass / Fail Contract
 
-Each test file is a program of its own: the file and what its imports
-reach. It is never part of the seed of the directory it sits in, so
-`main_test.hl` beside `main.hl` does not clash with the program's
-`main`, and two tests in one `tests/` directory do not clash with each
-other. A test reaches the code it tests by importing it
-(`import ".." as app;` from `tests/`). `hale check <dir>` checks the
-seed without its tests and says how many it left out; `hale check
---workspace <dir>` checks every seed and then every test as its own
-program.
+- **Pass**: The test binary runs to completion and exits with status `0` while writing **nothing to `stdout`**. Output written to `stderr` (`eprintln`) is treated as diagnostic output and does not fail a quiet test.
+- **Fail**: The first failing assertion prints `ASSERTION FAILED: <msg>` (plus `expected` and `actual` values for `assert_eq_*` / `assert_near`), stops further test assertions, unwinds active loci, and exits with status `1`.
+- **Direct execution**: Because every test file is a standard Hale program, you can also run a test file directly with `hale run arith_test.hl`.
 
-## A failing test still cleans up after itself
+### Seed Isolation & Imports
 
-"The first failure stops the run" doesn't mean the program is shot
-where it stands. A failing assertion prints its line, records the
-failure, and then `main` **exits the way it always does** — pools
-joined, bus drained, and every locus you `let`-bound in `main`
-dissolved in reverse order — before the process returns `1`.
+Each `*_test.hl` file is compiled as its own independent program (the test file plus the modules reached by its `import` statements) and is **never** bundled into the seed of its enclosing directory:
+- Placing `main_test.hl` alongside `main.hl` does not conflict with `main.hl`'s `fn main()`.
+- Multiple `*_test.hl` files inside a `tests/` directory do not share top-level scope or conflict with one another.
+- To test code in a parent directory from `tests/`, import the parent seed: `import ".." as app;`.
+- `hale check <dir>` typechecks the seed excluding `*_test.hl` files (and reports the count of excluded test files); `hale check --workspace <dir>` typechecks every seed and every `*_test.hl` file.
 
-That matters the moment a test owns something real. Suppose a test
-starts a server under test and writes into a scratch directory:
+---
+
+## Teardown & Resource Cleanup on Failure
+
+When an assertion fails, the process does **not** abort immediately. After printing the failure diagnostic, `main` unwinds through its normal shutdown sequence (`spec/testing.md` § "What runs after a failed assertion"):
+1. Worker pools are joined and the message bus drains.
+2. Every locus `let`-bound in `main` (as well as the `main locus`, its fields, and `pinned` children) executes its `dissolve()` hook in reverse declaration order.
+3. The process exits with code `1`.
+
+Place external resource cleanup (killing spawned child processes, removing temporary directories or lock files) inside a guard locus's `dissolve()` block so failed tests always clean up after themselves:
 
 ```hale
 locus Sandbox {
@@ -69,8 +75,7 @@ locus Sandbox {
         pid: Int = -1;
     }
     dissolve() {
-        // Runs on every exit from main — including a failed
-        // assertion. Cleans exactly what this test created.
+        // Runs on every exit from main, including after a failed assertion
         let _stop = std::process::run(f"sh\n-c\nkill {self.pid}; rm -rf {self.dir}")
             or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
     }
@@ -92,107 +97,37 @@ fn main() {
 }
 ```
 
-If `assert_eq_str` fails, `Sandbox.dissolve()` still runs: the server
-is stopped and the scratch directory is gone. The next run starts
-clean. Put cleanup in a `dissolve()` and you never need a hand-rolled
-exit watcher.
+### Teardown Rules & Edge Cases
 
-Three edges are worth knowing:
+- **Explicit cleanup**: `dissolve()` only cleans up what your code tells it to clean up; the runtime does not automatically terminate child processes spawned via `std::process::spawn`.
+- **Failures outside `fn main()`**:
+  - An assertion failing inside a helper `fn`, a locus method, or a synchronous `run()` unwinds and dissolves all loci owned by `main` before exiting `1`.
+  - An assertion failing on a `pinned` thread or separate worker pool finishes executing the current handler body (with subsequent assertions in that body acting as no-ops) and halts the test at `main`'s next `sleep` or `yield`.
+- **`SIGKILL` (`kill -9`)**: If the operating system or an external watchdog sends `SIGKILL`, the kernel terminates the process immediately without running `dissolve()` or `atexit` handlers.
 
-- **Only what you own.** `dissolve()` is your code; it cleans your
-  child, your directory, your lock file. Nothing cleans up on your
-  behalf.
-- **Anywhere is fine.** An assertion that fails inside a helper
-  `fn`, a locus method or a `run()` tears the program down the same
-  way: nothing after it runs, and every locus `main`'s teardown would
-  reach — what `main` and the bodies under it `let`-bound, the main
-  locus and its fields, the pinned children — dissolves before the
-  process returns `1`. One that fails on a pinned thread or a pool
-  stops the test at `main`'s next `sleep` or `yield`; the body that
-  failed runs on to its end, with its later assertions doing nothing.
-- **`kill -9` is different.** If something SIGKILLs the test process,
-  nothing runs — not `dissolve()`, not an atexit hook. That's the
-  platform, not Hale; an external reaper is the only answer.
+---
 
-`spec/testing.md` § "What runs after a failed assertion" is the
-normative version of this.
+## Running Suites, Isolation & Determinism
 
-## Running the suite
+### Temporary Build Artifacts & `--json` Output
 
-```sh
-hale test               # discover + run every *_test.hl under the cwd
-hale test tests/        # ...under a directory
-hale test -run concat   # only files whose path contains a substring
-hale test --json        # machine-readable results (one record per file)
-hale test -j 1          # one file at a time (default: one per core)
-```
+- **Clean working tree**: `hale test` compiles all test binaries and object files inside a private temporary directory under `$TMPDIR` (`hale-test-<pid>-…`, mode `0700`) and deletes it when the run completes (`hale run` and `hale replay` similarly use `hale-run-…` and `hale-replay-…`). To keep a compiled binary on disk, use `hale build ... -o <path>`.
+- **Canonical `--json` paths**: In `hale test --json`, each record's `file` field is the canonical absolute path (symlinks resolved, no `..`), matching `hale check --json` so results from both commands can be joined by path. Interactive terminal output (`ok` / `FAIL`) preserves the relative path spelling you passed on the command line.
 
-Each `--json` record carries `file`, `status`, `elapsed_ms` and — on
-a failure — `message`. The `file` is that test's **canonical** path
-(absolute, symlinks resolved, no `..`), whatever spelling you typed,
-so records from `hale test --json` and `hale check --json` join on
-it; the `ok` / `FAIL` lines you read on a terminal keep the spelling
-you typed.
+### Parallel Execution & Isolated Vaults / Habitats
 
-`hale test` compiles each discovered file to a native binary and runs
-it, reporting which passed and which failed. It's the same binary that
-`hale build` produces — there's no separate test runtime.
+- **Parallel execution**: `hale test` compiles and runs test files in parallel (`-j N` or `HALE_TEST_JOBS=N`), buffering output per test and printing results in deterministic sorted file order. Avoid hardcoded TCP ports or fixed `/tmp` filenames that could collide across concurrent test processes.
+- **Per-test vault and habitat**: For each test file, `hale test` creates a fresh private directory for `HALE_VAULT_DIR` (used by `std::secret`) and sets `XDG_DATA_HOME` inside it. Any secrets created or organisms birthed/migrated during a test are isolated to that temporary habitat, and any compose projects started by the test are torn down when the vault is removed. Set `HALE_TEST_KEEP_VAULT=1` to retain the vault and habitat directories for inspection.
 
-Those binaries never land in your tree. Each `hale test` run makes one
-private directory under `$TMPDIR` (`hale-test-<pid>-…`, mode 0700),
-builds every test binary and its object files into it, and removes the
-whole directory when the run ends, pass or fail. The same holds for
-`hale run` and `hale replay`, which build into a directory of their own
-(`hale-run-…`, `hale-replay-…`). To keep a binary, use `hale build ...
--o <path>`.
+### Deterministic Single-Pool Scheduling
 
-Files compile and run **in parallel**, one per available core unless
-you say otherwise with `-j N` (or `HALE_TEST_JOBS=N`). The report does
-not depend on it: the lines come out in sorted file order once every
-file is done, and whatever a test prints stays with that test. What
-parallelism does ask of a test is that it own what it touches — a
-test that listens on a fixed port or writes a fixed path under `/tmp`
-can collide with its neighbour. Take a free port and a per-run
-scratch directory instead.
+A test whose loci all run on the default `main` scheduler (with no `placement { }` block or additional pools) is **deterministic by construction**: a single pool runs on a single thread and executes bus handlers to completion, so every message publish and delivery occurs in the exact same order on every run.
 
-Each test file also gets a **vault of its own**: `hale test` points
-`std::secret` at a fresh private directory (`HALE_VAULT_DIR`) for the
-file's run and removes it afterwards, so a test that draws or stores a
-secret never touches yours, and never sees one you hold. The file gets
-its own local habitat too (`XDG_DATA_HOME` inside the vault's
-directory), so an organism a test births or migrates is a tenant of
-that habitat and never of yours; its compose projects come down with
-the vault, and no test's teardown touches your own habitat. Run with
-`HALE_TEST_KEEP_VAULT=1` to keep each file's vault and habitat and see
-where they are.
+If a single-pool test exhibits flakiness, the nondeterminism comes from an external input (wall-clock time, OS entropy, environment variables, or network I/O). Annotate functions under test with [`@deterministic`](../effects.md) to have `hale check` statically reject any dependency on nondeterministic effects.
 
-One property comes free with that binary: **a test whose loci all
-run on the main scheduler is deterministic.** No `placement`, no
-extra pools — then every publish and every delivery happens in the
-same order on every run, by construction (one pool is one consumer
-thread; handlers run to completion). A flaky single-pool test is
-never the scheduler's fault: look for a real input — time, entropy,
-environment, the network — feeding the assertion instead. If you
-want the compiler to prove there isn't one, mark the code under
-test [`@deterministic`](../effects.md).
+---
 
-## Testing what runs over time
+## Runtime Invariants (`closure`) & Benchmarks (`hale bench`)
 
-The assertions above check *values*. For a long-running locus, the
-property you want to hold isn't a single value but an **invariant** —
-"debits always equal credits," "the buffer never exceeds capacity."
-Those are [closures](../services/failure.md#declaring-an-invariant-closure):
-you declare the invariant on the locus, and the runtime audits it as
-the program runs. Closures are part of Hale's
-[verification](../verification.md) story, not its testing library —
-but they're how you assert the things a unit test can't reach.
-
-The rest of the toolchain rides alongside: `hale bench` runs
-`*_bench.hl` benchmarks (`bench_*` fns, self-calibrated ns/op +
-allocs/op; a `bench_<name>(f: T)` gets its fixture from
-`setup_<name>() -> T`, built before each batch and never timed),
-`hale verify` is the CI gate (identical
-analysis to `check`, but *any* finding fails), `hale fmt` keeps
-everything canonical (`--check` in CI), and `hale doc` renders API
-references from `///` comments. Everything ships in the one
-binary.
+- **Continuous runtime invariants**: Unit tests assert point-in-time values. To assert stateful invariants that must hold continuously across a locus's lifetime (such as `"debits == credits"` or `"len <= capacity"`), declare [invariant closures](../services/failure.md#declaring-an-invariant-closure) on the locus (see [Verification](../verification.md)).
+- **Microbenchmarks (`hale bench`)**: Name benchmark files `*_bench.hl` and define `bench_<name>` functions. `hale bench` calibrates iteration counts automatically and reports `ns/op` and `allocs/op`. If a benchmark function takes a fixture parameter (`fn bench_parse(f: Fixture)`), define a matching `fn setup_parse() -> Fixture`; the runner builds the fixture before each batch outside the timed region.

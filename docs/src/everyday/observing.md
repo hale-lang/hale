@@ -1,33 +1,6 @@
 # Observing a program
 
-A running program can be seen four ways: its logs, its metrics, its
-health, and the events of its own structure. Each is its own chapter's
-detail; this one says what comes out with nothing declared, how to turn
-each backend on, and what they cost.
-
-## With nothing declared
-
-- **Logs.** A `std::log` sink writes one [logfmt](./logging.md#records-the-format-a-sink-writes)
-  record per event on stdout (`HALE_LOG_FORMAT=json` or `text` picks
-  another; `HALE_LOG` sets the threshold).
-- **The runtime's diagnostics.** A socket that failed, a TLS handshake,
-  a drain that ran out of time come out on stderr as records of the same
-  format, their `logger` naming the part (`lotus.tcp`, `lotus.tls`,
-  `lotus.drain`). One collector reads the program's logs and the
-  runtime's alike.
-- **Shared memory.** `LOTUS_OBS=1` makes any binary publish its locus
-  tree and traffic to a segment the local [observer](../systems/iris.md)
-  attaches to (`hale run --observe`). It is the local default and needs
-  no code.
-
-Nothing is served on a port, and nothing is sent anywhere.
-
-## Backends are params of main
-
-The three network backends are params of the main locus, placed with
-`placement { }` as any other param. The compiler recognizes each by its
-type: there is no syntax, a program holds at most one of each kind, and
-a construction of the main locus cannot supply one.
+Hale programs expose four observability surfaces: structured application and runtime logs, Prometheus metrics (`std::observe::Scrape`), HTTP health and queue-capacity probes (`std::observe::Probes`), and OpenTelemetry lifecycle events (`std::observe::Otlp`). The three network backends are declared as `params` on your `main locus` and incur zero binary or runtime cost when omitted.
 
 ```hale
 main locus App {
@@ -50,9 +23,37 @@ main locus App {
 fn main() { App { }; }
 ```
 
-Each section below shows one of them alone.
+---
 
-## The metrics scrape
+## Observability Surfaces Summary
+
+| Surface / Backend | Activation | Endpoints / Output | Purpose |
+|---|---|---|---|
+| **Application & Runtime Logs** | `std::log` sinks + automatic runtime `stderr` | `stdout` / `stderr` / `FileSink` (`HALE_LOG`, `HALE_LOG_FORMAT`) | Structured `logfmt`, `json`, or `text` records for app events and `lotus.*` runtime diagnostics |
+| **Local Shared Memory** | `LOTUS_OBS=1` or `hale run --observe` | Shared-memory segment read by [Iris](../systems/iris.md) | Live inspection of the locus tree and bus traffic with zero code changes |
+| **`std::observe::Scrape`** | `main locus` param | `GET /metrics` (default `127.0.0.1:<port>`) | Prometheus text exposition of all `std::metrics::Registry` instances and `hale_*` runtime metrics |
+| **`std::observe::Probes`** | `main locus` param | `GET /healthz`, `/readyz`, `/capacity` (`0.0.0.0:<port>`) | Liveness (queue stall detection), readiness, and queue utilization JSON |
+| **`std::observe::Otlp`** | `main locus` param | `POST <endpoint>` (OTLP/HTTP JSON logs) | Exports `hale.start`, `locus.birth`, `locus.dissolve`, `locus.restart`, and `locus.failure` |
+
+---
+
+## Default Behavior (With Nothing Declared)
+
+When a program declares no `std::observe::*` parameters on its `main locus`, no network ports are opened and no telemetry is sent over the network:
+
+- **Application logs**: Any configured `std::log` sink writes one [logfmt](./logging.md#output-formats-hale_log_format) record per event to `stdout` (`HALE_LOG_FORMAT=json` or `text` changes the format; `HALE_LOG` filters severity).
+- **Runtime diagnostics**: Failed sockets, TLS handshake errors, and drain timeouts are written to `stderr` in the format selected by `HALE_LOG_FORMAT`, with `logger` identifying the runtime subsystem (`lotus.tcp`, `lotus.tls`, `lotus.drain`).
+- **Local shared-memory telemetry (`LOTUS_OBS=1`)**: Setting `LOTUS_OBS=1` (enabled automatically by `hale run --observe`) publishes the live locus tree and bus traffic to a local shared-memory segment that the [local observer](../systems/iris.md) attaches to.
+
+---
+
+## Main-Locus Observation Backends
+
+`std::observe::Scrape`, `std::observe::Probes`, and `std::observe::Otlp` are declared as `params` on the `main locus` and scheduled via `placement { }`. The compiler recognizes each backend by its type:
+- A program may declare **at most one** parameter of each backend type.
+- Callers constructing the `main locus` cannot pass an override for a backend parameter.
+
+### Prometheus Metrics Scrape (`std::observe::Scrape`)
 
 ```hale
 main locus App {
@@ -65,15 +66,11 @@ main locus App {
 fn main() { App { }; }
 ```
 
-`GET /metrics` on `127.0.0.1:9100` answers the Prometheus text
-exposition of every live `std::metrics::Registry` and of the runtime's
-own `hale_*` series (memory, the drain, live loci, restarts, failures,
-each pool's queue, each topic's traffic). `port` is required; `host` and
-`path` have defaults. A scrape is a listener of its own, and `pinned`
-gives it a thread. Detail: [Metrics](./metrics.md#the-programs-scrape),
-`spec/runtime.md` § Observe backends.
+- Serves `GET /metrics` on `127.0.0.1:9100` (`port` is required; `host` defaults to `"127.0.0.1"` and `path` defaults to `"/metrics"`).
+- Renders the Prometheus text exposition of every live `std::metrics::Registry` in the program alongside the runtime's own `hale_*` series (resident memory, drain status, live loci count, restarts, failures, per-pool queue depth, and per-topic traffic).
+- Place `Scrape` with `pinned` to run its listener on a dedicated thread. For full details, see [Metrics § Process-Wide Scrape Server](./metrics.md#process-wide-scrape-server-stdobservescrape) and `spec/runtime.md` § Observe backends.
 
-## Health and capacity probes
+### Health and Capacity Probes (`std::observe::Probes`)
 
 ```hale
 main locus App {
@@ -88,20 +85,17 @@ main locus App {
 fn main() { App { }; }
 ```
 
-The runtime serves, on that port and every interface, from a thread of
-its own that no placement applies to:
+`Probes` binds `<port>` on all network interfaces (`0.0.0.0`) and runs on its own dedicated runtime thread (no `placement` entry is needed or applied):
 
-| path | answers |
-|---|---|
-| `/healthz` | `200 ok`, or `503` naming a queue that has held work its consumer has not touched for ten seconds (`LOTUS_PROBES_STALL_MS`) |
-| `/readyz` | `503 starting` until the main locus's births are done, `200 ready`, then `503 draining` |
-| `/capacity` | JSON: each queue's waiting cells, capacity and stalled time |
+| Path | HTTP Status & Payload | Description |
+|---|---|---|
+| `/healthz` | `200 ok` or `503` | Returns `503` naming any queue that has held unprocessed work for more than 10 seconds (configurable via `LOTUS_PROBES_STALL_MS`) |
+| `/readyz` | `503 starting`, `200 ready`, or `503 draining` | Returns `503 starting` until all `main locus` births complete, `200 ready` during normal execution, and `503 draining` once drain begins |
+| `/capacity` | `200` (`application/json`) | Reports waiting messages, total capacity, and stalled duration for every runtime queue |
 
-The probes do not serve `/metrics`. Detail:
-[Multi-binary systems](../services/multi-binary.md), `spec/semantics.md`
-§ Probes.
+`Probes` does not serve `/metrics`. For multi-process supervision details, see [Multi-binary systems](../services/multi-binary.md) and `spec/semantics.md` § Probes.
 
-## Lifecycle events to a collector
+### Lifecycle Events Exporter (`std::observe::Otlp`)
 
 ```hale
 main locus App {
@@ -116,31 +110,15 @@ main locus App {
 fn main() { App { }; }
 ```
 
-Every locus birth, dissolve, restart and failure is sent as an OTLP/HTTP
-JSON log record (`locus.birth`, `locus.dissolve`, `locus.restart`,
-`locus.failure`), a batch every `interval` (one second), under a
-resource carrying the build's model hash. The first batch opens with a
-`hale.start` record. An empty `endpoint` is read from
-`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`
-plus `/v1/logs`; with none at all, every batch is dropped and counted.
-Nothing waits on the collector: a full ring or a refused batch drops
-events and counts them (`hale_otlp_dropped_total` on a scrape the
-program also holds). Detail: [Logging](./logging.md#the-runtimes-events-to-a-collector).
+- Exports runtime lifecycle events (`locus.birth`, `locus.dissolve`, `locus.restart`, and `locus.failure`, preceded by an initial `hale.start` record in the first batch) as OTLP/HTTP JSON log records every `interval` (`1s` default). Every batch carries the build's model hash in its OpenTelemetry resource attributes.
+- If `endpoint` is empty, `Otlp` resolves `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, or `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/logs`. If no endpoint is configured, batches are dropped and counted.
+- Exports never block application execution: if the internal ring fills or the collector fails/times out (`timeout_ms`, default 2000 ms), records are dropped and counted in `hale_otlp_dropped_total` on the `Scrape` page. See [Logging § Exporting Runtime Lifecycle Events](./logging.md#exporting-runtime-lifecycle-events-stdobserveotlp).
 
-## Combining them
+---
 
-They are independent. Hold any subset, in any order of declaration; a
-program with a scrape and an `Otlp` shows the exporter's drops on its
-page. Holding a scrape or an `Otlp` runs the runtime's counters without
-the shared-memory segment, so nothing can attach and nothing is
-published unless `LOTUS_OBS=1` also asks for it. Logs stay on the
-sinks; the OTLP backend carries lifecycle events, not `std::log` records.
+## Combining Backends & Zero-Overhead Guarantee
 
-## Observing nothing costs nothing
-
-A program that holds no backend param does not get the backends' source,
-registries never register anywhere, the runtime's series table and event
-ring are not linked, and the binary is the one it would be without the
-feature (`spec/runtime.md` § Observe backends). A program with `Probes`
-alone samples its queues once a second on the probe thread and nothing
-on its own paths.
+- **Independent composition**: Declare any subset of `Scrape`, `Probes`, and `Otlp` in any order. When both `Scrape` and `Otlp` are present, `hale_otlp_dropped_total` is automatically exposed on `/metrics`.
+- **No unintended shared memory**: Declaring `Scrape` or `Otlp` enables internal runtime counters without creating the local shared-memory segment; external local tools cannot attach unless `LOTUS_OBS=1` is also set.
+- **Separation of logs and lifecycle events**: `std::log` records remain on `std::log` sinks; `Otlp` carries only structural locus lifecycle transitions.
+- **Zero cost when unused**: If a program declares no `std::observe::*` backend parameters, backend implementations, global registry tables, and the lifecycle event ring are excluded from compilation and linking (`spec/runtime.md` § Observe backends). A program declaring only `Probes` samples its queues once per second on the probe thread with zero instrumentation on hot paths.

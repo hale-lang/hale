@@ -1,17 +1,6 @@
-# Parents & children
+# Parents & Children
 
-> **Coming from Go?** This is structured concurrency — closer to
-> an `errgroup` or a supervised tree than to bare goroutines. A
-> parent locus *accepts* child loci; the children live inside the
-> parent's scope, the parent sees their progress through a typed
-> contract, and when the parent shuts down its children shut down
-> first. No detached goroutine outliving the thing that spawned
-> it.
-
-## A parent accepts children
-
-A locus declares it can parent a child type by implementing
-`accept`:
+Hale organizes loci into a strict parent-child ownership hierarchy where every child's memory region is nested inside its parent's arena. Parents can hold static children in `params` or dynamically admit children at runtime via `accept(c: Child)`, inspect child state through `contract { expose; consume; }`, and automatically reclaim per-connection children upon completion via `release(c: Child)`.
 
 ```hale
 type Player { name: String; }
@@ -22,48 +11,40 @@ locus GameSession {
 
 locus Room {
     accept(g: GameSession) {
-        // runs once g's params are built, before g's birth().
-        // It admits g; it cannot turn it away.
+        // runs after g's params are initialized, before g.birth()
     }
 
     fn on_join(p: Player) {
-        // instantiating a child inside a parent method attaches it
-        GameSession { host: p };
+        GameSession { host: p };   // attaches to Room via accept()
     }
 }
 ```
 
-When `GameSession { ... }` is evaluated inside `Room`'s body, the
-runtime allocates the child's region *inside* the parent's, builds
-its params, runs `Room.accept(g)`, then births and runs it.
-`accept` sees the child's params but not its running state, and
-whatever it does, the child is admitted. The
-parent's `self.children` holds its accepted children (with
-`self.children.count` and `self.children.is_empty` for quick
-summaries).
+## Child Ownership Modes
 
-`children` is one of three names every locus already carries —
-the others are `k_max` (the displacement bound) and `draining`
-(the drain flag) — and `self.<name>` always means the built-in
-one. So they're reserved: naming a params field, a method, or a
-capacity slot `children` is an error at the declaration ("rename
-it"), not a confusing type mismatch wherever you read it back.
-A `type`'s struct field may still be called `children` — only
-loci carry the synthetic members.
+| Child Kind | Declaration on Parent | Lifetime & Arena Reclamation | Typical Use Case |
+|---|---|---|---|
+| **Static child** | `params { db: Pool = Pool { }; }` | Constructed with parent; lives until replaced (`self.db = Pool { }`) or parent dissolves. | Fixed subsystem components, connection pools, co-located counters. |
+| **Dynamic resident** | `accept(c: Worker) { }` *(no `release`)* | Constructed dynamically; stays alive after `c.run()` returns until `c` calls `terminate;` or parent dissolves. | Long-lived dynamic entities (rooms, actors, subscribed shards). |
+| **Dynamic flow** | `accept(c: Conn) { }` + `release(c: Conn) { }` | `c.run()` *is* its lifetime; when `c.run()` returns, the runtime immediately drains, calls `release(c)`, dissolves `c`, and frees its arena. | Per-connection TCP/WebSocket handlers, short-lived request tasks. |
 
-A locus accepts **one** child type. Writing a second `accept` is a
-compile error that points at both clauses; if a parent needs to own
-two kinds of children, one of them belongs under a different owner
-(or the same owner one level down) — or both satisfy one interface,
-and the parent accepts that (below). The other direction is fine:
-several parent types may accept the *same* child type, and each
-child's `release` fires on the parent that actually accepted it,
-running that parent's own `release` body.
+## Accepting Dynamic Children (`accept`)
 
-### Accepting through an interface
+A locus declares that it can parent dynamic instances of `Child` by implementing `accept(c: Child)`:
 
-The type `accept` names may be an [interface](./perspectives.md#interface-or-perspective).
-The parent then accepts every locus that satisfies it:
+1. When `GameSession { host: p };` is evaluated inside `Room` (or a descendant of `Room`), the runtime allocates the child's arena inside `Room`'s arena and initializes `g`'s `params`.
+2. The runtime invokes `Room.accept(g)` before `g.birth()` runs. `accept` can inspect `g`'s initialized `params` and update parent state, but cannot reject the child.
+3. The runtime executes `g.birth()` and `g.run()`.
+
+### `self.children` and Single-Clause Rule
+
+- **Built-in `self.children` tracking**: Every locus exposes `self.children.count` and `self.children.is_empty` to query currently live accepted children.
+- **Reserved locus identifiers**: `children`, `k_max` (the displacement bound), and `draining` (the shutdown flag) are synthetic fields on every locus. Naming a locus parameter, method, or capacity slot `children` is a compile error (plain data `type` structs may still declare a field named `children`).
+- **One `accept` clause per parent**: A locus can declare at most one `accept` clause. Multiple parent locus types may declare `accept` for the same child type; each child instance's lifecycle hooks (`accept` and `release`) dispatch to the specific parent instance that admitted it.
+
+### Polymorphic Acceptance via an Interface
+
+To parent multiple child locus types under a single supervisor, declare `accept(j: Interface)` (and optionally `release(j: Interface)`) using an [interface](./perspectives.md#interface-or-perspective):
 
 ```hale
 interface Job { fn weight() -> Int; }
@@ -75,120 +56,44 @@ locus Pool {
     params { load: Int = 0; }
     accept(j: Job) { self.load = self.load + j.weight(); }
     fn fill() {
-        Small { w: 3 };        // accepted: Small is a Job
-        Big { w: 5 };          // accepted: so is Big
+        Small { w: 3 };   // accepted via Job
+        Big { w: 5 };     // accepted via Job
     }
 }
 ```
 
-Nothing about this is decided at run time. Every locus is built from
-a literal of one concrete type, so the compiler knows which accepted
-type each child is: it compiles the `accept` body once for `Small` and
-once for `Big`, and `j.weight()` is an ordinary direct call in each.
-In exchange the body may use only what the interface promises — the
-interface's methods, which every accepted type has — so `j.w` is a
-compile error even though both happen to have a `w`. `release(j: Job)`
-works the same way, and makes every `Job` a flow.
+- **Compile-time specialization**: The compiler specializes `accept(j: Job)` for each concrete child type (`Small` and `Big`), turning `j.weight()` into a direct call.
+- **Interface-only member access**: Inside `accept(j: Job)`, only methods declared on `Job` are accessible (`j.w` is a compile error even if every concrete child has a `w` field).
+- **Collection queries**: `self.children.count` and `self.children.is_empty` count all accepted children across concrete types, whereas iterating with `for c in self.children` is rejected when `accept` takes an interface because the children do not share a single concrete type.
 
-The children are kept one type at a time. `self.children.count` and
-`self.children.is_empty` count all of them, but `for c in
-self.children` is refused: the children share no element type. Keep
-what you need from each child in `accept`, as `Pool` keeps the load.
+## Ancestor Bubbling
 
-Ownership doesn't care which kind of clause it meets: the nearest
-ancestor whose `accept` takes the child's type owns it, whether the
-clause names that type or an interface the type satisfies.
-
-## Bubbling: the nearest accepting ancestor collects the child
-
-`accept` isn't limited to *direct* children. If you instantiate a
-child where the enclosing locus doesn't accept its type, the child
-doesn't become a detached throwaway — it **bubbles up to the
-nearest ancestor that does** accept it.
+When a locus instantiates a child whose type the immediate enclosing locus does not `accept`, ownership **bubbles up the locus tower to the nearest ancestor that accepts it**:
 
 ```hale
 locus Ship { params { hull: Int = 0; } }
 
 locus World {
-    accept(s: Ship) { }          // a top-level registry of ships
+    accept(s: Ship) { }          // top-level owner of all Ship instances
 }
 
 locus Fleet {
     fn spawn() {
-        Ship { hull: 100 };      // Fleet doesn't accept Ship...
-    }                            // ...so this Ship bubbles to World
+        Ship { hull: 100 };      // Fleet has no accept(s: Ship), so Ship bubbles up to World
+    }
 }
 ```
 
-`World` collects every `Ship` spawned anywhere beneath it — through
-a `Fleet` that never mentions ships — with no manual registration.
-It's the structural counterpart to the [bus](./bus.md): the bus
-carries ephemeral *messages*; this carries ephemeral *ownership* —
-a live collection the ancestor holds and cleans up.
+### Bubbling Rules
 
-A few rules keep it predictable:
+- **Nearest accepting ancestor wins**: If multiple ancestors accept `Ship` (either directly or via an interface `Ship` satisfies), the innermost ancestor takes ownership.
+- **Transient local fallback**: If no ancestor in the enclosing tower accepts the type, the instance behaves as an unowned local scoped to the statement or function.
+- **Bubbling during parent `params` initialization**: If a parameter of `World` (such as `Fleet`) spawns `Ship` instances during its inline `run()` while `World` is still initializing its `params`, `World.accept(s)` runs normally because `World`'s state and `self.children` are initialized before its first parameter is built. Declare any parent parameter mutated by `accept` (such as a counter) *before* the parameter that spawns children so the counter's default initializer does not overwrite the updated value.
+- **Cross-pool bubbling**: When a worker on one thread/pool spawns a child owned by an ancestor on a different thread/pool, the child is constructed on the owner's thread. Consequently, cross-pool spawns must be written as bare fire-and-forget statements (`Ship { hull: 100 };`). `hale check` rejects binding a cross-pool spawn to a local variable (`let s = Ship { ... };`), storing it via a `params` default (`s: Ship = Ship { ... }`), or constructing it in a default function/method argument (`fn take(s: Ship = Ship { ... })`), `const`, or `type` field default that executes off the owner's thread. If a worker locus has one instance on the owner's thread and another on a separate pool, bare `Ship { ... };` works in both; keeping the value or spawning toward an owner with multiple instances is rejected.
 
-- **Nearest wins.** If several ancestors accept the type, the
-  innermost one gets the child. A direct parent that accepts it is
-  the nearest of all — so nothing about ordinary parent/child
-  attachment changes; bubbling only fills the gap where a child
-  *had* no owner.
-- **No owner is fine.** A child whose type no ancestor accepts is
-  just a transient local — bubbling is opt-in via `accept`, and the
-  absence of an owner is never an error.
-- **Still vertical.** Bubbling travels *up* the tower to an
-  ancestor; it never reaches sideways. The child's region still
-  lives inside its owner's, so the whole "[flow is vertical
-  only](#flow-is-vertical-only)" cleanup story holds — the owner is
-  just possibly a grandparent, not always the direct parent.
-- **Even while the owner is being built.** If `World`'s own params
-  hold a `Fleet` whose `run()` spawns ships, those ships reach
-  `World` before `World`'s literal has finished. That's fine:
-  `self.children` and the rest of `World`'s own state exist before
-  its first param is built, so the ships are accepted, stay
-  accepted, and are torn down with `World` like any others. Only
-  the params themselves still come one at a time, in order: a
-  counter param that `accept` bumps should be declared before the
-  field whose child gets accepted, or its default resets it when
-  its turn comes.
+### Bus Subscribers Created in Handlers Require an Owner
 
-When the owner lives on a **different thread** — a `main locus`
-registry collecting entities that workers spawn on their own pools —
-the child is created over on the owner's thread, so the spawning
-side can't hold onto it. There a cross-pool spawn is
-**fire-and-forget**: write it as a bare statement, not
-`let s = Ship { ... }`. `hale check` points at the literal if you
-try to keep the value. That includes a `Ship` built in another
-locus's `params` default: the default is built wherever that locus
-is instantiated without the field, so when a worker builds a
-`Holder { }` whose `s: Ship = Ship { ... }` default it leaves
-alone, the default's `Ship` is a cross-pool spawn used as
-`Holder`'s field, and `hale check` points at it in the default.
-A function's or a method's argument default works the same way, one
-call at a time: `fn take(s: Ship = Ship { ... })` builds its `Ship`
-at each call that leaves `s` out, in the caller, so a worker's
-`take()` is refused at that call, while `take(ship)` and a `take()`
-made on the owner's own thread are fine. A `const` or a type's field
-default that builds a `Ship` is built wherever it is used, so it is
-refused where it is written as soon as some worker would spawn a
-`Ship` across pools.
-
-"A different thread" counts instances, not types. A worker nested
-inside a pinned or pool-placed locus runs on that locus's thread,
-so its spawns are cross-pool even though the worker itself has no
-placement entry. And when one worker type has an instance on the
-owner's thread and another off it, the same `Ship { ... };` line
-does the right thing in each: born directly where it can be, handed
-over where it can't. Keeping the value at such a line, or spawning
-toward an owner that has several instances, is refused with a
-message that lists where each instance runs.
-### A subscriber born in a handler needs an owner
-
-There is one place where "no owner is fine" stops being true. A bus
-handler returns after every message, so a locus it creates and nobody
-owns dissolves at that return — and if that locus subscribes to the
-bus itself, its subscription can never fire for a later message. The
-compiler refuses that shape:
+Because a bus handler returns after processing each message, an unowned locus instantiated inside a bus handler dissolves immediately when the handler exits—meaning any bus subscriptions on that locus would never fire for future messages. `hale check` rejects unowned bus subscribers instantiated inside handlers:
 
 ```hale,refused
 type Ping { n: Int = 0; }
@@ -202,7 +107,7 @@ locus Watcher {
 locus Hub {
     bus { subscribe Tick as on_msg; }
     fn on_msg(p: Ping) {
-        Watcher { };   // error: instantiated unowned in a bus handler
+        Watcher { };   // error: bus subscriber instantiated without an accepting owner in handler
     }
 }
 
@@ -212,39 +117,15 @@ main locus App {
 }
 ```
 
-Owning it fixes it: `accept(w: Watcher)` on `Hub`, or on any ancestor
-of `Hub` — the nearest accepting ancestor collects it, exactly as
-bubbling does anywhere else. What counts is the *declaration* the
-`accept` names, not the spelling. `accept(w: W)` with `type W =
-Watcher` owns it; an `accept(w: lib::Watcher)` that names another
-seed's `Watcher` doesn't own yours, however alike the last segment
-reads. For a generic subscriber the specialization must match:
-`accept(c: Cell<Int>)` owns a birth declared `Cell<Int>`, not one
-declared `Cell<String>`. If two loci share a name, the compiler judges
-the first one declared and says which it judged.
+To fix this error, declare `accept(w: Watcher)` on `Hub` or on an ancestor of `Hub` that encloses `Hub` on **every** construction path:
 
-The ancestor has to be there on *every* path that builds `Hub`. If
-`App` accepts `Watcher` and holds a `Hub` as a field, but `fn main`
-also builds a `Hub { }` of its own, that second `Hub` has no parent to
-collect what it births — so the compiler still refuses the birth, and
-its note points at the `Hub` that `main` builds. The same goes for a
-`Hub` built somewhere the compiler can't follow: inside a plain
-function, or in a locus whose placement it can't work out. An owner it
-can't see is not an owner it can count on.
+- Type aliases (`type W = Watcher`) resolve to the underlying locus declaration, whereas a similarly named locus from another seed (`lib::Watcher`) or a different generic specialization (`Cell<Int>` vs. `Cell<String>`) does not match.
+- If `App` accepts `Watcher` and holds one `Hub` in `params`, but `fn main()` also constructs a standalone `Hub { }` outside `App`, `hale check` still rejects `Watcher { };` and points to the unparented `Hub` in `fn main()`.
+- Subscribers instantiated inside `birth()`, `run()`, or non-handler methods (or in library seeds with no entry point, or with `--allow-unowned-subscriber`) are permitted.
 
-Where the compiler can't tell who owns the child, it stays quiet
-rather than guess. A library seed with no entry point can't be judged,
-because its consumer may supply the owner. Neither can a generic
-subscriber whose specialization nothing declares. A subscriber
-created in `run()`, `birth()` or an ordinary method is fine too: it
-lives for that scope and hears what's published meanwhile. And if you
-manage its lifetime some other way, `--allow-unowned-subscriber` lets
-the shape through.
+## Parent-Child Contracts (`contract { expose; consume; }`)
 
-## The contract: what crosses the boundary
-
-A child declares what its parent may see in a `contract`, and a
-parent declares what it reads:
+A child locus declares which parameters its parent may inspect in a `contract { expose ...; }` block, and the parent declares which fields it reads in `contract { consume ...; }`:
 
 ```hale
 type SessionState = enum { Lobby, Playing, Over };
@@ -252,55 +133,32 @@ type SessionState = enum { Lobby, Playing, Over };
 locus GameSession {
     params { tick: Int = 0; state: SessionState = SessionState::Lobby; }
     contract {
-        expose tick: Int;          // the parent may read this
+        expose tick: Int;
         expose state: SessionState;
     }
 }
 
 locus Room {
-    contract { consume tick: Int; }        // what Room reads from a session
+    contract { consume tick: Int; }
     accept(g: GameSession) {
-        if g.tick > 1000 { /* ... */ }     // reading an exposed field
+        if g.tick > 1000 { /* ... */ }
     }
 }
 ```
 
-`expose` is what the child offers its parent; `consume` is what
-the parent reads from the child type it accepts. The compiler
-checks the two against each other: every name a parent consumes
-must be one its child type exposes, with the same type, and a
-parent that consumes with no `accept` to bind against is an
-error. The check is on the declarations: a parent's direct read
-of a field the child did not expose (`g.secret`) still compiles
-today, so treat the contract as the boundary you have declared
-and checked, not as a wall around the rest.
+`hale check` verifies that the parent declares an `accept` clause and that every field listed in `consume` is listed in the accepted child's `expose` block with the exact same type. (Note: `contract` checks the declared `expose`/`consume` pairs; use `@sealed` on a locus when you want the compiler to forbid all external field access.)
 
-## Flow is vertical only
+## Flow Is Vertical Only
 
-The rule the whole tower rests on: **a locus talks up to its
-parent and down to its children — never sideways.** Two sibling
-sessions don't reference each other; if they need to coordinate,
-they route through their shared parent (the `Room` is exactly the
-place that should know how sessions relate), or over the
-[bus](./bus.md). No sibling pointer, no cousin back-channel.
+In Hale's ownership hierarchy, references flow strictly vertically—from parent to child and child to parent—never sideways between siblings. When sibling loci need to coordinate, they route through their shared parent or publish over the [bus](./bus.md).
 
-This is what makes cleanup sound: a child's memory is a
-sub-region of its parent's, no pointer ever crosses sideways, so
-when a locus dissolves its whole subtree frees wholesale — no
-garbage collector, no per-object bookkeeping. A parent that
-accepts children tracks every one of them for exactly this moment,
-whether or not it ever reads `self.children`: when the parent goes
-— at shutdown, or because the field holding it was reassigned —
-each accepted child is torn down first, its bus subscriptions
-deregistered, before the memory it lived in is freed.
+Because child memory arenas are sub-regions of their parent's arena and no lateral pointers exist across siblings, tearing down a parent locus safely tears down every accepted child, deregisters all child bus subscriptions, and frees the entire memory subtree wholesale without garbage collection.
 
-## Flow children vs residents
+## Flow Children vs. Resident Children (`release` and `terminate;`)
 
-Here's the piece that matters for any long-running parent — a
-server that accepts one child per connection. By default an
-accepted child lives until its *parent* dissolves. For a daemon
-whose parent never dissolves, that means per-connection children
-pile up forever. Two shapes fix it:
+By default, an accepted child is a **resident**: when its `run()` returns, the child stays alive in the parent's arena (for example, to continue handling bus messages) until the parent dissolves.
+
+For a long-lived server that accepts a new child per client connection, keeping children as residents until the server exits would accumulate memory indefinitely. Declaring **`release(c: Conn)`** on the parent marks `Conn` as a **flow**:
 
 ```hale
 locus Conn {
@@ -309,60 +167,22 @@ locus Conn {
         let stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
         while true {
             let chunk = stream.recv(4096) or "";
-            if len(chunk) == 0 { return; }   // client closed → run() ends
-            // ... handle chunk
+            if len(chunk) == 0 { return; }   // client closed connection -> run() returns
         }
     }
 }
 
 locus Server {
     accept(c: Conn)  { }
-    release(c: Conn) { }   // ← declaring release marks Conn a *flow*
+    release(c: Conn) { }   // marks Conn as a flow child
 }
 ```
 
-- Declaring **`release(c: Conn)`** on the parent marks `Conn` a
-  **flow**: its `run()` *is* its lifetime. When `run()` returns
-  (the recv loop ends on close), the runtime reclaims the child
-  right then — drains it, calls the parent's `release` for a
-  final look, dissolves it, frees its region — while the server
-  keeps running. The connection's memory ends with the
-  connection.
-- A child no parent `release`s is a **resident**: its `run()`
-  returning means "ready," and it lives until the parent
-  dissolves. That's the right shape for a fixed cohort of
-  long-lived workers spun up at boot.
-- Flow or resident is a **type-wide** fact. `release(c: T)`
-  declared on *any* parent in the program — including one that is
-  never instantiated, or one in an imported seed — makes every `T`
-  a flow, whoever accepted it. Removing the clause from one owner
-  does not make its children residents while another owner still
-  declares it; if a child you meant to keep is reclaimed when its
-  `run()` returns, `hale check --flows` lists every `release(c: T)`
-  in the program, imported seeds included, with its file and line.
-- What a handler hands a resident is copied or refused, never left
-  dangling. The payload and anything the handler builds belong to
-  that dispatch and are reclaimed when the handler returns. A
-  String, a row or a payload field handed to the resident is copied
-  into its own storage as it is stored. A container that is a locus
-  (a `@form(vec)` the handler built) would be a borrow that dies
-  with the dispatch, so `hale check` refuses it at the argument; the
-  resident copies the rows into a `@form(vec)` of its own in
-  `birth()` instead.
-- A locus can also end *itself* early with **`terminate;`** —
-  the locus analogue of `return`. It exits the method and lets
-  the runtime tear the locus down. For a resident that is the
-  handler-driven end (an `on_close` handler that `terminate`s):
-  it drains and dissolves when the handler returns, and no
-  `release` fires, since no parent releases its type. Otherwise a
-  resident ends in its parent's dissolve cascade. Neither is a
-  flow's completion.
+### Flow vs. Resident Semantics
 
-The same "`run()` returned" event means "reclaim me" for a flow
-and "I'm ready" for a resident — disambiguated by whether the
-parent declared `release`, never guessed. If you accept a child
-per connection and memory climbs with connection count, you have
-a resident that should be a flow.
+- **Automatic flow reclamation (`release`)**: For a flow child, `run()` *is* its lifetime. As soon as `c.run()` returns, the runtime drains `c`, invokes the parent's `release(c)` hook, runs `c.dissolve()`, and frees `c`'s memory arena immediately while `Server` continues running.
+- **Program-wide flow classification (`hale check --flows`)**: Declaring `release(c: T)` on *any* locus in the program (including uninstantiated loci or imported seeds) classifies `T` as a flow type everywhere in the program. Run `hale check --flows` to inspect every `release(c: T)` declaration across your project and its imports.
+- **Passing handler data to residents**: When a bus handler spawns or updates a resident child, scalar values, `String`s, and record fields are deep-copied into the resident's arena so they remain valid after the handler returns. Passing a handler-local locus collection (`@form(vec)`) by reference is rejected at compile time because the handler's frame dissolves on return; instead, copy the elements into the resident's own `@form(vec)` inside `birth()`.
+- **Self-termination (`terminate;`)**: Any child (resident or flow) can end its own lifecycle from inside a method or bus handler by executing `terminate;`. On a resident child, `terminate;` exits the current method and runs `drain() → dissolve()` upon handler return without invoking `release`.
 
-Next: what happens when a child breaks — [When things
-fail](./failure.md).
+Next: [Failure & Supervision](./failure.md).

@@ -1,28 +1,6 @@
-# The API surface
+# The API Surface
 
-A service that is authoritative over something ends up wanting a
-surface that tools can plug into: a command line, a dashboard, an
-MCP host. You could write an HTTP server, a JSON codec per message
-and a routing table for it. You do not have to.
-
-A program says what it exposes in rows: a **surface** is a table of
-operations, each naming a handler and the roles a caller must hold
-(`spec/api.md`). The compiler checks the rows, folds each surface into
-a contract digest and prints what a caller can learn, without running
-anything. `api::serve` puts a surface on a transport (a Unix socket, an
-HTTP listener, an MCP endpoint, a WebSocket hub), and a client needs no
-code of its own: a served exposure describes itself, and `hale api call`,
-`hale watch`, `hale admin` and `hale mcp --app` read only that
-description. To see the pieces combined into one program, built step by
-step from an empty file to an API with roles, read
-[Build an API](./build-an-api.md); for choosing the shapes of its
-messages, and streaming them, [Designing an API's
-messages](./api-messages.md).
-
-## Surfaces
-
-An `api` block names a surface and lists its rows. Each `rpc` line is
-one row: a member fn of a locus, and the roles a caller needs.
+Hale programs declare their external RPC and streaming interfaces as **API surfaces** (`api` blocks and `@rpc` annotations). From a surface declaration, the compiler generates strict request/response codecs, computes cryptographic contract digests, serves self-describing endpoints over multiple transports (`unix::Rpc`, `http::Rpc`, `http::Rest`, `mcp::Rpc`, `grpc::Rpc`, `ws::Hub`), and produces typed clients and OpenAPI/Protobuf specifications.
 
 ```hale
 role trader;
@@ -69,17 +47,36 @@ locus Orders {
 fn main() { }
 ```
 
-A handler takes its request as one parameter, and may take a trailing
-`ctx: std::api::Context`, which is not part of the request. What it
-returns is the response, and its error type decides what a caller sees
-when it fails: `cancel` fails with an `OrderError` the caller receives
-as the handler error, with that type's schema; `place` may violate a
-closure, so (as any value-returning method that may violate) it is
-`fallible(ClosureViolation)`, and its failure reaches a caller as the
-server error, which carries nothing of the violation.
+For a step-by-step tutorial, see [Build an API](./build-an-api.md). For guidance on designing wire types and evolving schemas safely, see [Designing API Messages](./api-messages.md).
 
-The same row can be written on the handler instead. `@rpc` contributes
-it to the seed's **default surface**, named after the seed:
+---
+
+## Ecosystem Overview
+
+| Area | Construct / Tool | Purpose |
+|---|---|---|
+| **Declaring Surfaces** | `api <Name> { rpc Locus::fn; }`<br>`@rpc` / `@rpc(requires: [...])` | Declares a table of callable operations, their required roles, and optional HTTP REST routes. |
+| **Serving Exposures** | `api::serve(Surface, Transport, ...)` | Binds a surface to a listener (`unix::Rpc`, `http::Rpc`, `http::Rest`, `mcp::Rpc`, `grpc::Rpc`, `ws::Hub`, or `std::api::test::Rpc`). |
+| **Streaming Hubs** | `ws::Hub`, `udp::Hub`<br>`bindings { Topic: self.hub ... }` | Streams internal bus topics to external WebSocket or UDP subscribers with role checks and bounded queues. |
+| **Auth & Context** | `role`, `std::api::Context`,<br>`BearerSource`, `RoleSource`, `StaticRoles` | Authenticates callers (Unix kernel credentials or bearer tokens), checks role grants, and passes caller metadata to handlers. |
+| **CLI Inspection & Driving** | `hale check --api`, `hale describe`,<br>`hale call`, `hale watch`, `hale admin`, `hale mcp` | Inspects static inventories, queries live descriptions, calls endpoints, tails streams, serves a web admin UI, or bridges to MCP. |
+| **Spec & Client Codegen** | `hale api export`<br>`hale api client --lang hale\|ts\|js` | Exports OpenAPI, JSON Schema, MCP, and `.proto` specs, or generates zero-dependency Hale, TypeScript, and JavaScript clients. |
+| **Consuming External APIs** | `hale api import`, `api::client`,<br>`VaultPrincipals`, `hale api drift` | Imports external OpenAPI (JSON/YAML) or MCP specs into typed `api::Client` handles tracked by the `client(Surface)` effect class. |
+
+---
+
+## Surfaces
+
+### Declaring `api` Blocks and `@rpc` Methods
+
+An `api` block names a surface and lists its operations as `rpc` rows. Each row references a locus method and optionally specifies role requirements (`requires: [...]`) or HTTP routes (`at "METHOD /path"`).
+
+- **Handler Signature**: Each handler takes one request parameter and may accept a trailing `ctx: std::api::Context` (or `ctx: std::api::ServedContext`), which is supplied by the transport and omitted from the wire request schema.
+- **Return Value & Errors**: The return type is the wire response. If the handler is `fallible(E)`:
+  - When `E` is a user record or enum (like `OrderError` above), failures are returned to the caller as a structured `HandlerError` matching `E`'s schema.
+  - When the handler may `violate` an inline closure, it must declare `fallible(ClosureViolation)`. If a violation occurs, the owner's `on_failure` policy runs first and the caller receives an opaque `ServerError` containing no internal violation state.
+
+Instead of writing a separate `api` block, you can annotate locus methods with `@rpc` to add them to the seed's **default surface** (named after the seed):
 
 ```hale,fragment
 locus Orders {
@@ -90,41 +87,34 @@ locus Orders {
 }
 ```
 
-Both spellings feed one table, and nothing else about the locus is
-read: a handler is an operation because a row says so, not because it
-subscribes a topic or returns a value. A handler can sit in several
-surfaces, each with its own `requires`, and two versions of one API
-over one set of handlers are two surfaces.
+Both forms compile to the same internal surface representation. A single handler method can appear in multiple `api` surfaces (for example, to expose different role requirements or versioned surfaces over the same implementation).
 
-When most rows of a surface require the same roles, say so once on the
-surface. Its `requires` is the default of every row that writes none,
-and a row that writes its own (`requires: []` for none) holds that
-instead:
+### Surface-Level Default Roles & Cross-Seed Roles
+
+When most rows in a surface share the same role requirement, declare `requires:` on the `api` header. Rows without an explicit `requires:` inherit the surface default; a row with `requires: []` overrides the default to allow any authenticated caller:
 
 ```hale,fragment
 api Admin requires: [operator] {
-    rpc Ledger::rebalance;               // operator
-    rpc Orders::cancel;                  // operator
-    rpc Orders::status requires: [];     // anyone
+    rpc Ledger::rebalance;               // requires operator
+    rpc Orders::cancel;                  // requires operator
+    rpc Orders::status requires: [];     // requires no role (any authenticated caller)
 }
 ```
 
-The rows hold the roles, so this is the same table, and the same
-digest, as the surface written row by row.
+This produces the exact same surface table and contract digest as spelling `requires: [operator]` on each row.
 
-Roles are one vocabulary for the whole program, whichever seed declares
-them. A role a library declares is named through its import alias —
-`requires: [lib::reader]`, `@rpc(requires: [lib::writer])`, a hub
-stream's `requires:`, or `role boss includes lib::writer;` — and is the
-library's `reader`: the description and the refusals say `reader`.
+Roles form a single program-wide vocabulary across seeds. A role declared in an imported library is referenced via its import alias (`requires: [lib::reader]`, `@rpc(requires: [lib::writer])`, or `role boss includes lib::writer;`) and appears in descriptions and refusals under its base name (`reader`, `writer`).
 
-### What the check refuses
+### Compile-Time Surface Validation
 
-The rows are checked before anything is served. A row that names no
-handler, a handler that takes two requests, a member listed twice in
-one surface, a role no `role` declares, a type the JSON codec cannot
-carry, and a handler returning nothing that may violate without saying
-so are each an error at the row:
+`hale check` validates every `api` row at compile time and rejects:
+
+- A row naming a nonexistent locus or method (with a did-you-mean suggestion).
+- A handler taking zero or more than one request parameter, or a `Drain<T>` batch handler.
+- A method listed more than once in the same surface.
+- An undeclared role name in `requires:` (with a did-you-mean suggestion).
+- A request, response, or error type containing a field the wire codec cannot serialize (such as `Bytes`, an unbounded `[T]` slice, or a locus).
+- A void-returning handler that may `violate` a closure without declaring `fallible(ClosureViolation)`:
 
 ```text
 rpc `Orders::plcae`: `Orders` declares no fn `plcae`; did you mean `place`?
@@ -133,232 +123,18 @@ rpc `Ledger::dump`: its response `Export` has a field `raw: Bytes`, which the JS
 rpc `Orders::flush` may violate (`violate stale`) and returns nothing: an rpc handler that may violate is `fallible(ClosureViolation)`, so its caller receives the server error instead of a result
 ```
 
-### Lists and pages
+### Contract Digests (Surface and Member Digests)
 
-A list crosses as a field of a record, and its type says how long it
-may be: a `bounded[T; N]` field is a JSON array of up to `N` elements,
-a `[T; N]` field one of exactly `N`. "List my items" returns a page,
-which is a record:
+The compiler hashes every surface into a 64-bit FNV-1a **contract digest** (`fnv1a64:<hex>`):
 
-```hale,fragment
-type Item { id: Int; title: String; }
-type Page { items: bounded[Item; 50]; more: Bool; }
+- **Surface Digest**: Computed over all rows in member order, folding each member's name, the recursive shape hashes of its request, response, and error types (`spec/model.md` § The shape of a type), its error classes, its HTTP route (if any), and its required roles. It is unaffected by the surface's name, where it is served, or build flags.
+- **Member Digest**: Computed over a single `rpc` row in isolation. Generated clients send the target member's digest on every call, and the server admits any request matching either the surface's current digest or that member's digest.
 
-locus Shelf {
-    params { items: bounded[Item; 500]; }
-    fn list(q: ListQuery) -> Page {
-        let mut page = Page { more: false };
-        for item in self.items {
-            push(page.items, item) or { page.more = true; break; };
-        }
-        return page;
-    }
-}
-```
+Because admission checks member digests, adding a new `rpc` row to a surface changes the surface digest without invalidating clients compiled against existing members. Modifying an existing member's request/response types, error classes, route, or roles changes its member digest, causing outdated clients to be rejected with `digest_mismatch`.
 
-A `bounded` field may be left out of a request, and is then empty; a
-fixed array is always sent whole. The description states the bound
-(`"maxItems": 50`, and `"minItems"` for a fixed array), the `.proto`
-makes the field `repeated`, and the generated clients type it
-(`bounded[Item; 50]` in Hale, `Array<Item>` in TypeScript). A request
-whose list is longer than the field holds is refused `malformed` with
-`too_long` (a fixed array sent short, `too_short`): the handler never
-sees a list cut to fit. An unbounded `[T]` is not carried, since an
-unbounded collection belongs to a locus (`@form(vec)`), not to a value
-that crosses a boundary; neither is a list of lists, nor a request or
-response that is a bare list.
+### Inspecting the Static API Inventory (`hale check --api`)
 
-### Maps
-
-A list of records that each carry a name can cross as an object keyed by
-that name. Say which field is the key with `indexed_by`:
-
-```hale,fragment
-type Check { name: String; status: String; }
-type Health { checks: bounded[Check; 16] indexed_by name; }
-```
-
-On the wire `checks` is `{"db": {"status": "up"}, "cache": {"status":
-"down"}}`: each record's `name` becomes its key and is left out of its
-value, and comes back when the request is read. In the program it is
-still the bounded list it was, in the order the request listed it. A
-request that repeats a key is refused `malformed` with `duplicate_key`,
-and one with more entries than the list holds with `too_long`. The key
-must be a `String` field of a struct, as a `@form(hashmap)` cell's key
-is named; the `.proto` makes the field a `map<string, Check>`.
-
-When each entry is one value, name it after an arrow, and the map
-carries the values alone:
-
-```hale,fragment
-type Check { name: String; status: String; }
-type Health { checks: bounded[Check; 16] indexed_by name -> status; }
-```
-
-Now `checks` is `{"db": "ok", "nats": "unavailable"}`, and in the
-program it is still a list of `Check`s, each the key and its status.
-The record holds those two fields and no others, and the value is a
-scalar, a `Time` or an enum without payloads. Without the arrow, the
-same record would cross as `{"db": {"status": "ok"}}`: the arrow is
-what says the value is the map's. The `.proto` makes it a
-`map<string, string>`.
-
-### Free-form JSON
-
-Some fields hold JSON the program never reads into a type of its own: a
-seat's configuration, a change's before and after. Declare them
-`std::json::Value`:
-
-```hale,fragment
-type Seat { name: String; config: std::json::Value; }
-```
-
-`config` crosses as whatever JSON the caller sent, and comes back out
-byte for byte: key order, spacing and `2.50` stay as written. The
-value must be well-formed JSON, at most 64 levels deep and 64 KiB long.
-In the program it is its text: read it with `std::json`'s cursors
-(`std::json::find_field_raw(seat.config.text, "theme")`), and build a new
-one with `std::json::Value::parse(text) or …`, which holds the text to
-the same rules. That is the only way to make one (besides
-`std::json::Value::null()`): a literal and `seat.config.text = …` are
-refused, so a value you hold is always JSON. The description marks the field `{"x-hale-any": true}`,
-the `.proto` makes it a `string`, and the TypeScript client types it
-`unknown`.
-
-### Instants and durations
-
-A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:
-`"2026-10-12T03:04:05.123456789Z"` (trailing zeros of the fraction
-dropped, `"2026-10-12T03:04:05Z"` when there is none). A request must
-say `Z`: a time with no zone or with an offset is refused `malformed`
-rather than guessed at, and so is one past `Time`'s range (it ends in
-2262). A `Duration` crosses as its count of nanoseconds, as every
-quantity crosses as its count: `1500000000` is `1.5s`. The description
-marks a `Time` `"format": "date-time"` and a `Duration` with its unit,
-`q(ns)`; the `.proto` carries both as `int64` nanoseconds.
-
-### Optional fields
-
-Hale has no optional type, so a field that may be missing says so with a
-partner: a `Bool` named `has_` and the field's name.
-
-```hale,fragment
-type Reply { text: String; has_text: Bool; reason: String; has_reason: Bool; }
-```
-
-On the wire `text` is a key the caller may leave out or send as `null`;
-either way `has_text` is `false` and `text` is its default (here `""`).
-Sent with a value, `has_text` is `true`. The flag is never a key of its
-own: the encoder writes `text` only when `has_text` is set and never writes
-`has_text`, and a request that sends `has_text` has it skipped like any
-unknown key. A list may be optional too, and then JSON tells "sent an empty
-list" (`[]`) from "left it out". The description marks the field as one
-that may be `null` and does not require it; the `.proto` carries both
-fields as they are declared.
-
-Give both fields defaults (`text: String = ""; has_text: Bool = false;`)
-and a literal that has nothing to say names neither. Reach for a pair
-only when "not sent" must stay distinguishable: when leaving a field out
-means the same as one value, a plain default (`limit: Int = 50`) says so
-with one field.
-
-A PATCH needs three answers from one field: leave it as it is, clear it,
-or set it. Add a third partner, a `Bool` named `clear_` and the field's
-name:
-
-```hale,fragment
-type Edit { note: String = ""; has_note: Bool = false; clear_note: Bool = false; }
-```
-
-Now a caller that leaves `note` out sets neither flag, one that sends
-`"note": null` sets `clear_note`, and one that sends a value sets
-`has_note`. The encoder writes `null` back for a cleared field. Without
-`clear_note`, `null` means the same as leaving the key out. The
-description marks the field `"x-hale-null": "clear"`, and the TypeScript
-client types it `note?: string | null`.
-
-### Enums
-
-An enum crosses as the variant it holds. A variant with no values is its
-name; one with a value is an object keyed by the variant; one with
-several values holds them in an array:
-
-```hale,fragment
-type Status = enum { Open, Closed };
-type Change = enum { Renamed(String), Moved(Int, Int), Archived };
-```
-
-```text
-"Open"                  {"Renamed": "Q3 plan"}
-{"Moved": [3, 7]}       "Archived"
-```
-
-An enum can be a field, the element of a list (when no variant has
-values), a whole request or response, or a handler's error type, which
-is how a handler says which of several things went wrong:
-`fallible(Problem)` with `type Problem = enum { NotFound(String),
-Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. Such a
-variant may also declare an error class (`@not_found NotFound(String)`),
-which picks each transport's status for it ([Error
-classes](#error-classes)). An
-unknown variant, the wrong shape for a variant or the wrong number of
-values is refused `malformed` with `wrong_type`, naming the field. An
-enum field has no default the codec reads, so leaving one out is
-`missing_field`, unless the field is optional. The
-description lists the variants; the `.proto` makes an enum with no
-values a proto3 `enum` and one with values a message with a `oneof`.
-
-A [set](../everyday/records.md#sets--one-of-several-types) crosses as the
-enum it is underneath, each member's type name its variant:
-`type Inbound = NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`.
-
-### Calling the codec yourself
-
-The codec a surface speaks is yours to call, served or not. A program that
-reads a request body itself, a hand-written router over a surface say,
-decodes it into the row's request type and encodes the answer the same way:
-
-```hale,fragment
-let order = PlaceOrder::api_decode(body) or {
-    return std::http::Response { status: 400, body: err.kind + ": " + err.field };
-};
-let reply = PlaceReply::api_encode(desk.place(order));
-```
-
-`T::api_decode` is as strict as a served row: the same `wrong_type`,
-`missing_field` and `too_long` refusals, with the field named (`payload`
-for an enum read whole). `T` is a record or an enum the codec carries
-whole; anything else is refused where you call it.
-
-### The digest
-
-Each surface folds into a **contract digest**: its rows in member
-order, each its member, the shape hashes of its request, response and
-error types, and its roles. It moves when a member, a shape, an error
-type or a role changes, and for nothing else: not the surface's name,
-not where it is served, not the build. A shape hash is deep, so a field
-changed inside a nested type moves it too (`spec/model.md` § The shape
-of a type). `hale check --dump-model` prints the surfaces with their
-digests and rows.
-
-Each member has a digest of its own as well, folded from that member's
-row alone: its name, its request, response and error shapes, and its
-roles. It moves when that member's contract moves, and for nothing
-else, so a client built against `Orders::place` keeps being admitted
-after the surface gains `Orders::amend`. The description lists each
-member's digest beside its name, the generated clients send their
-member's digest on every call, and a request naming either the
-surface's current digest or that member's own is admitted. Changing a
-member's shape refuses the clients that name its old digest
-(`digest_mismatch`), which is why a surface grows by adding members: a
-new capability is a new row, and an incompatible change is a new member
-served beside the old one.
-
-### What a caller can learn
-
-`hale check --api` prints the program's **inventory** from the rows:
-every surface with its digest and rows, every place the program serves
-one, and the JSON Schema of every type they name.
+Pass `--api` to `hale check` to emit the program's complete API inventory as JSON (all surfaces, digests, exposures, and JSON Schemas) without running the program:
 
 ```text
 $ hale check --api desk.hl
@@ -376,35 +152,149 @@ $ hale check --api desk.hl
 }
 ```
 
-A caller fetches a **description** scoped to the one exposure it
-reaches, filtered by the roles it holds there. What a caller holds is
-its role source's to say when the program runs, so the check takes it
-as an input:
+You can also simulate the filtered description a specific caller will receive on a named exposure, or export specification formats for a surface:
 
-```text
-$ hale check --api desk.hl --exposure public --caller bob
-$ hale check --api desk.hl --exposure public --caller alice --holds trader
+```sh
+# Preview exposure description filtered by caller roles
+hale check --api desk.hl --exposure public --caller bob
+hale check --api desk.hl --exposure public --caller alice --holds trader
+
+# Export surface specifications to stdout
+hale check --api desk.hl --surface Public --openapi
+hale check --api desk.hl --surface Public --json-schema
+hale check --api desk.hl --surface Public --mcp
+hale check --api desk.hl --surface Public --proto
 ```
 
-`bob` sees `Orders::place` alone; `alice`, holding `trader`, sees
-`Orders::cancel` too. A row whose error type is `ClosureViolation`
-lists the string `"ClosureViolation"` in place of an error schema, and
-the check says so on stderr beside it.
+---
 
-The same rows project to the other forms a client is generated from,
-one per surface, each carrying the digest:
+## Request/Response Codec & Wire Shapes
 
-```text
-$ hale check --api desk.hl --surface Public --openapi
-$ hale check --api desk.hl --surface Public --json-schema
-$ hale check --api desk.hl --surface Public --mcp
+Every type reachable from an `rpc` row is encoded and decoded strictly. Unknown fields in incoming JSON objects are ignored, while wrong field types, out-of-bounds lists, and missing required fields are rejected with `malformed` before the handler is invoked.
+
+| Hale Type / Pattern | JSON Wire Format | Protobuf (`.proto`) Format | Refusal Conditions (`malformed`) |
+|---|---|---|---|
+| `Int`, `Float`, `Bool`, `String` | Standard JSON primitives | `optional int64`, `double`, `bool`, `string` | `wrong_type`, `missing_field` (if no default) |
+| `distinct T` / `quantity Int in u` | Underlying scalar value (`Int` count for quantities) | Underlying scalar (`// Hale: Type, q(u)`) | `wrong_type` |
+| `Time` | UTC RFC 3339 string ending in `Z` (`"2026-10-12T03:04:05.123456789Z"`) | `optional int64` (nanoseconds) | Non-UTC offset, missing `Z`, or past year 2262 (`wrong_type`) |
+| `Duration` | Integer nanoseconds (`1500000000` = `1.5s`) | `optional int64` (nanoseconds) | `wrong_type` |
+| `bounded[T; N]` | JSON array of `0..=N` elements (optional on input; defaults to `[]`) | `repeated T` | Length > `N` (`too_long`) |
+| `[T; N]` | Fixed JSON array of exactly `N` elements | `repeated T` | Length > `N` (`too_long`), length < `N` (`too_short`) |
+| `bounded[T; N] indexed_by k` | JSON object keyed by `T.k` (`{"db": {"status": "up"}}`) | `map<string, T>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
+| `bounded[T; N] indexed_by k -> v` | JSON object mapping `T.k` to `T.v` (`{"db": "ok"}`) | `map<string, V>` | Length > `N` (`too_long`), repeated key (`duplicate_key`) |
+| `std::json::Value` | Arbitrary well-formed JSON (<= 64 levels deep, <= 64 KiB) | `optional string` | Invalid JSON, depth > 64, or size > 64 KiB |
+| Presence pair (`x` + `has_x: Bool`) | Optional field; omitted or `null` sets `has_x = false` | Both fields declared as-is | `wrong_type` if non-null value fails to decode |
+| Clear triple (`x` + `has_x` + `clear_x`) | Omitted -> neither; `null` -> `clear_x = true`; value -> `has_x = true` | All three fields declared as-is | `wrong_type` if non-null value fails to decode |
+| `enum { A, B(T), C(T, U) }` | `"A"`, `{"B": val}`, `{"C": [v1, v2]}` | `enum` (unit-only) or `message` with `oneof` | Unknown variant, wrong payload shape/arity (`wrong_type`), `missing_field` |
+| Type set (`type U = A \| B;`) | Tagged object by type name (`{"B": {...}}`) | `message` with `oneof` | Unknown variant or wrong inner shape (`wrong_type`) |
+
+### Lists and Pagination
+
+Lists must be fields of a record and have a static bound (`bounded[T; N]` or fixed `[T; N]`). Unbounded `[T]` slices, nested lists, and top-level bare list requests/responses are rejected at compile time.
+
+```hale,fragment
+type Item { id: Int; title: String; }
+type Page { items: bounded[Item; 50]; more: Bool; }
+
+locus Shelf {
+    params { items: bounded[Item; 500]; }
+    fn list(q: ListQuery) -> Page {
+        let mut page = Page { more: false };
+        for item in self.items {
+            push(page.items, item) or { page.more = true; break; };
+        }
+        return page;
+    }
+}
 ```
 
-### Serving
+### Keyed Maps (`indexed_by`)
 
-An *exposure* puts one surface on one transport for the instances that
-answer it. It is a param of the locus that holds it, and its literal is
-the serve call:
+A `bounded[T; N]` list of structs containing a `String` key field can be serialized on the wire as a JSON object using `indexed_by <key_field>`:
+
+```hale,fragment
+type Check { name: String; status: String; }
+type Health { checks: bounded[Check; 16] indexed_by name; }
+```
+
+On the wire, `checks` is encoded as `{"db": {"status": "up"}, "cache": {"status": "down"}}`—each element's `name` field becomes its property key and is omitted from the inner object, then restored in order when decoded.
+
+When the element struct has **only** two fields (the `String` key and a scalar, `Time`, or unit-enum value), use `indexed_by <key> -> <value>` to serialize the values directly without a wrapper object:
+
+```hale,fragment
+type Check { name: String; status: String; }
+type Health { checks: bounded[Check; 16] indexed_by name -> status; }
+// Wire format: {"db": "ok", "nats": "unavailable"}
+```
+
+In both Hale and generated TypeScript clients, an `indexed_by` field remains a list of `Check` records (`Check[]` in TypeScript), with the client converting to and from the wire map automatically.
+
+### Free-Form JSON (`std::json::Value`)
+
+Use `std::json::Value` for opaque JSON subtrees that your program passes through or inspects dynamically:
+
+```hale,fragment
+type Seat { name: String; config: std::json::Value; }
+```
+
+`std::json::Value` preserves the exact bytes sent by the caller (including key ordering, whitespace, and trailing decimal zeros like `2.50`). It must be valid JSON at most 64 levels deep and 64 KiB long. Inside Hale, read `.text` using `std::json` cursor functions (`std::json::find_field_raw(seat.config.text, "theme")`), and construct new values using `std::json::Value::parse(text) or ...` or `std::json::Value::null()` (direct struct literals and mutating `.text` are rejected by the compiler).
+
+### Optional Fields (`has_<field>` and `clear_<field>`)
+
+Because Hale does not have an `Option<T>` wrapper type, optional wire fields use companion boolean flags:
+
+1. **Default Value (`limit: Int = 50;`)**: Use when omitting a field has the same meaning as passing a default value.
+2. **Presence Pair (`text: String = ""; has_text: Bool = false;`)**: Use when you must distinguish an omitted/null field from a default value (or distinguish an empty list `[]` from an omitted list). When `text` is omitted or `null`, `has_text` is `false`. On output, `text` is only written when `has_text` is `true`, and `has_text` itself never appears on the wire.
+3. **PATCH Clear Triple (`note: String = ""; has_note: Bool = false; clear_note: Bool = false;`)**: Use for PATCH endpoints that distinguish "leave unchanged" (omitted -> both `false`), "clear to null" (`"note": null` -> `clear_note = true`, encoded as `null` on output), and "set to value" (`"note": "hi"` -> `has_note = true`). Marked `"x-hale-null": "clear"` in the schema and typed `note?: string | null` in TypeScript.
+
+### Enums and Type Sets
+
+Enums serialize as a string for unit variants (`"Open"`), a single-key object for single-value variants (`{"Renamed": "Q3 plan"}`), and a single-key object holding an array for multi-value variants (`{"Moved": [3, 7]}`):
+
+```hale,fragment
+type Status = enum { Open, Closed };
+type Change = enum { Renamed(String), Moved(Int, Int), Archived };
+```
+
+Type sets (`type Inbound = NewOrder | Cancel;`) serialize as enums keyed by each member's type name (`{"Cancel": {"id": 1}}`).
+
+### Error Classes
+
+When a handler's error type in `fallible(E)` is an enum, its variants can carry an error class annotation to select the transport status code:
+
+```hale,fragment
+type OrderError = enum { @not_found Missing, @conflict Taken(String), Closed };
+```
+
+| Error Class Annotation | HTTP Status Code | gRPC Status Code | `Hale-Error-Class` Header |
+|---|---|---|---|
+| *(unannotated)* | `422 Unprocessable Content` | `FAILED_PRECONDITION` | *(omitted)* |
+| `@not_found` | `404 Not Found` | `NOT_FOUND` | `not_found` |
+| `@conflict` | `409 Conflict` | `ABORTED` | `conflict` |
+| `@invalid` | `422 Unprocessable Content` | `INVALID_ARGUMENT` | `invalid` |
+| `@forbidden` | `403 Forbidden` | `PERMISSION_DENIED` | `forbidden` |
+| `@unavailable` | `503 Service Unavailable` | `UNAVAILABLE` | `unavailable` |
+
+Because HTTP status codes `403`, `409`, and `503` can also be returned by transport-level refusals, classified handler errors include the `Hale-Error-Class` HTTP header (and `"class"` field on Unix sockets). Error classes are recorded in the schema (`x-hale-error-classes`), passed to custom `std::api::Rpc` transports via `std::api::Outcome::HandlerError(body, class)`, and folded into the contract digest.
+
+### Direct Codec Invocation (`T::api_decode` and `T::api_encode`)
+
+You can call the compiler-generated wire codec directly on any API-eligible record or enum `T`, even outside `api::serve`:
+
+```hale,fragment
+let order = PlaceOrder::api_decode(body) or {
+    return std::http::Response { status: 400, body: err.kind + ": " + err.field };
+};
+let reply = PlaceReply::api_encode(desk.place(order));
+```
+
+`T::api_decode` applies the exact same validation rules as a served exposure (`wrong_type`, `missing_field`, `too_long`, `too_short`, `duplicate_key`), reporting the offending field name in `err.field` (or `"payload"` when decoding a top-level enum).
+
+---
+
+## Serving Exposures (`api::serve`)
+
+An **exposure** (`api::Exposure`) binds an `api` surface to a transport listener inside a locus's `params` block:
 
 ```hale,fragment
 params {
@@ -414,154 +304,29 @@ params {
 }
 ```
 
-Like any param it is born with its holder, after the params declared
-before it (the receivers it binds are declared first, so they are born
-before it; both are the holder's, born, drained and dissolved in
-declaration order), and it dissolves with the holder. The param is
-also the handle: `self.public.wait()` parks until the exposure is stopped
-or the process drains, `self.public.stop()` stops it. (Before GH #1565 a
-serve site was an expression in a body, `let public = api::serve(…);`;
-the compiler now refuses that form and shows the param to write.)
+### Lifecycle, Receivers, and Execution Order
 
-A library can ship a surface for an application to serve: the library
-declares `api Svc { … }` and the loci its rows name, and the application
-holds the receivers and names the surface by its path under the import
-alias, `api::serve(lib::Svc, …)`. The exposure describes it as `Svc`,
-its declared name.
+- **Declaration & Birth Order**: `api::serve` must be the default initializer of a locus `params` field (calling `api::serve` inside a method body is a compile error). Declare receiver loci *before* the `api::Exposure` param so they are born before the exposure starts accepting calls.
+- **Receiver Binding (`receivers:`)**: Maps each locus type referenced in the surface to a locus instance held by the enclosing locus. When the holder has exactly one instance of a receiver type, `receivers:` can be omitted; if two instances of the same type exist, omitting `receivers:` is a compile error.
+- **Imported Surfaces**: To serve a surface declared in an imported library seed, pass `lib::SurfaceName` to `api::serve(lib::Svc, ...)`. The live description reports its base name (`Svc`).
+- **Lifecycle Controls**:
+  - `self.public.wait()` (or `std::api::run_until_stopped(self.public)`) parks until the exposure stops or the process begins draining. If `main locus` omits `run()`, the compiler generates this wait automatically.
+  - `self.public.stop()` stops accepting new requests, refuses queued requests as `shutting_down`, waits for in-flight handlers to finish, and closes the listener.
+- **Admission Order**: Every incoming request is checked in a fixed sequence before touching receiver state:
+  1. Caller authentication (`unauthenticated`)
+  2. Surface or member digest match (`digest_mismatch`)
+  3. Member existence (`malformed`)
+  4. Role authorization (`unauthorized`)
+  5. Payload decoding (`malformed`)
+  6. Exposure queue capacity (`full` when `bound` is reached under `on_full: refuse`)
+- **Per-Receiver Serialization**: Transports read and write connections concurrently, but an exposure dispatches at most one call at a time to each receiver instance in FIFO order. Calls targeting different receiver instances run concurrently. If a receiver is draining, restarting, or replaced, calls to that receiver return `unavailable` while other receivers on the exposure continue serving.
 
-The transport is a locus that implements `std::api::Rpc`: it listens,
-frames a request, and writes each outcome in its protocol's terms. The
-standard library ships five today. `std::api::test::Rpc` has no socket: a
-test hands it requests and reads the answers, through the same
-admission, dispatch and completion every transport uses. `unix::Rpc` is
-a Unix socket, `http::Rpc` an HTTP listener, `mcp::Rpc` an MCP server and
-`grpc::Rpc` a gRPC one over HTTP/2. The sources are fields of the
-transport's literal, `principals:` for who a bearer token is and
-`roles:` for who holds a role; grants belong to the source the serve
-site names, never to a role's name, so one program can serve a surface
-twice under two sources.
+### Listener Placement and Child Server Loci
 
-Inside the receiver, a call is a [seam](./seams.md)
-the compiler writes for you: one decoder turns the body into the row's
-request (JSON, or protobuf on gRPC), the receiver's dispatch hands it to
-your method with its context last, and one encoder writes the answer,
-your error, or the server error a violating handler gets. Each row is its
-own path even when two rows take the same request type, and none of the
-plumbing shows up in the description or the generated clients.
+Socket transport listeners (`unix::Rpc`, `http::Rpc`, `http::Rest`, `mcp::Rpc`, `grpc::Rpc`) run their accept and connection loops on an `async_io` coroutine pool:
 
-### Serving over a Unix socket
-
-`unix::Rpc` takes a `path:` and a `roles:`. Who is calling is the peer's
-kernel credentials, so it has no bearer source: the caller is `uid:1000`,
-and a role source says what `uid:1000` holds. The desk of the witness
-serves its `Admin` surface to its operator this way:
-
-```hale,fragment
-main locus Desk {
-    params {
-        admin_roles: Grants = Grants { operator: "uid:1000" };
-        orders: Orders = Orders { };
-        ledger: Ledger = Ledger { };
-        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
-    }
-    run() {
-        self.admin.wait();
-        self.admin.stop();
-    }
-}
-```
-
-`self.admin.wait()` (or `std::api::run_until_stopped(self.admin)`, the
-same call) is the holder's wait: it returns when the exposure is stopped
-or the process drains, and until then it parks, waking the moment a call
-arrives for the main thread, so a call is answered in the time the work
-takes. A `run()` that does periodic work of its own keeps its `while
-!self.draining { … sleep(…); }` loop; it works, and a call waits for the
-loop's next slice. A main locus that writes no `run()` at all serves until
-its exposures stop or the process drains: the compiler gives it the
-wait.
-
-The socket is bound when the program boots, so a path it cannot bind (a
-missing directory, a socket another program is serving) stops the
-program with a diagnostic instead of running without it. (An empty `path`
-is not a path it cannot bind: it binds nothing, and the exposure has no
-socket. A program that finds its path is another process's to hold passes
-none.) Its accept and
-read loops park, so they run on an `async_io` pool: the compiler adds the
-listener to the main locus as a param of its own and places it where the
-exposure's row says (`admin: cooperative(pool = io) where async_io;` in
-`placement { }`), or, with no row, on a pool every unplaced Unix exposure
-shares (see *Where an exposure's listener runs* below). A client writes
-one JSON object per line and reads one
-per reply, each carrying the `id` it was sent with, the `request_id` the
-exposure assigned, and who the exposure took the caller to be:
-
-```text
-{"call": "Orders::cancel", "payload": {"order": 41}, "id": "c-1", "digest": "fnv1a64:40381db6685c9f75"}
-{"request_id": 1, "id": "c-1", "ok": true, "value": {"order": 41, "was_open": true}, "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
-{"describe": true}
-```
-
-A `describe` answers with the exposure's whole description for this
-caller: its identity, listener, the roles the caller holds, the members
-it may call with their schemas, the outcome encoding and the notes,
-from the same rows and the same sources the next request is checked
-against, so what it lists is what it admits. A connection that
-breaks (an EOF, a line that is not an object, a reply that cannot be
-written) is closed alone: the listener and the other connections go on.
-`admin.stop()` answers what is executing, refuses what is queued as
-`shutting_down`, and closes the socket after the replies. A program that
-ends without calling it releases its sockets too, but a caller with a
-request in flight then sees the connection end instead of a reply.
-
-The exposure is the handle: `self.public.stop()` stops accepting, refuses
-what is queued, lets what is executing finish and releases the listener,
-and the holder's own teardown does the same if you never call it.
-`receivers:` names the instance of each locus the surface's rows
-call; when the holder holds exactly one instance of a type, it
-is inferred, and two with no binding is an error naming both. A
-request is checked in a fixed order before the handler's state can tell
-it arrived (who is calling, the surface digest, the member, the roles
-the row requires, the shape of the payload, then the exposure's
-bound), and the caller sees one of five outcomes: the result, the
-handler's own error, a refusal (which says whether the call ran: only
-`unavailable` and `shutting_down` mean it did not), a server error when
-a handler that may violate did, or a broken connection. A handler that
-may violate is declared `fallible(ClosureViolation)`; the owner's
-`on_failure` runs first and the caller is told only that the server
-failed. A receiver that is draining, restarting or replaced is
-`unavailable`, per receiver: the exposure's other members serve on. A
-handler that wants to know which exposure a call came through, and which
-generation of its receiver admitted it, declares `ctx:
-std::api::ServedContext` where it would declare `std::api::Context`.
-
-A receiver answers one call at a time. The transports read and write
-their connections concurrently, but the exposure hands each receiver one
-call and holds the rest in its queue, in the order they were accepted,
-so fifty one-second calls to one receiver take fifty seconds wherever
-it is placed; that is what lets `stop()` and a failed receiver refuse
-exactly what never ran. Calls to different receivers run at once. To
-answer a surface's work concurrently, bind its members to several
-receivers — instances of different types, each placed where its work
-belongs — or serve the surface through more than one exposure, each with
-a receiver of its own.
-
-### Where an exposure's listener runs
-
-A socket transport's listener and the connections it starts run on an
-`async_io` pool, where an accept or a read parks a coroutine instead of
-a thread. Only the main locus places, so the listener is a param of the
-main locus the compiler adds, and `placement { }` says where it runs:
-
-- an exposure the main locus holds is placed by its own row, `public:
-  cooperative(pool = io) where async_io;`. The row places the listener; the
-  exposure stays with the main locus, beside the sources it calls. A row
-  that is not a named pool `where async_io` is refused, saying so;
-- an unplaced exposure's listener shares a pool with every unplaced
-  exposure of its transport, as it always did.
-
-A server can be a locus of its own, holding its receivers, its sources
-and its exposure, and the main locus places it like any other child:
+- **Direct Placement on `main locus`**: Add a placement row naming the exposure (`public: cooperative(pool = io) where async_io;`). The listener and its connections run on `io`, while the exposure state remains with `main locus`. Unplaced exposures share a default per-transport `async_io` pool.
+- **Encapsulated Child Server Loci**: You can group receivers, auth sources, and an `api::Exposure` inside a child server locus and place that child from `main locus`:
 
 ```hale,fragment
 locus AdminServer {
@@ -578,61 +343,48 @@ main locus App {
 }
 ```
 
-The server, its receivers and its exposure run on `io`, and so does the
-listener: a server's listener runs where the main locus places the param
-the server sits under, a level down or several, when that row hosts
-`async_io`, and on the shared pool otherwise (a server on the main thread,
-or pinned). Two servers on two pools are two params with two rows. The
-main locus holds the listener, so it holds each server once (a server held
-twice, or placed as replicas, would serve one exposure twice and is
-refused). A listener whose address reads the server (`bind:
-self.bind`) is born after the server and reads it off the server as it
-was built, so a construction that overrides it (`App { server: Server {
-bind: "127.0.0.1:9000" } }`) is the address the listener binds; one whose
-address reads nothing of the server is born before it. An unplaced
-server's `run()` runs on the main thread while `App` is being built
-(birth order is load-bearing, see [Lifecycle](./lifecycle.md)), so a
-server whose address reads it must finish being built before its
-listener exists: its params, the children it holds (their `run()`s run
-where they are born), its `birth()` and, unplaced, its `run()`, and the
-params of `App` before it, as the program actually builds them (a field
-a literal supplies replaces its default, which is then not run; a locus
-built anywhere in a param's value counts). What a construction runs
-without being written counts too:
+When `admin` is placed on an `async_io` pool, the server locus, its receivers, and its transport listener all run on `io`. A server locus holding an exposure may only be instantiated once (instantiating it twice or with `replicas` is rejected).
 
-| run without being written | counted |
-|---|---|
-| a locus literal's left-out params | their defaults, and the locus's `birth()`, `birth_check`, `run()` and subscription keys |
-| a record literal's left-out fields (`Setup { }`) | their defaults, through any record or locus they build |
-| a record-typed param with no value | the `Cfg { }` the compiler builds for it |
-| a call's left-out arguments | their defaults, run where the call is |
-| a const that is not a literal | its value, run where it is read (unless a local or a parameter of the same name shadows it there) |
+> [!NOTE]
+> **Dynamic Bind Addresses & Initialization Checks**: If a child server's transport address reads a field of the server locus (e.g., `bind: self.bind`), the compiler births the listener *after* the server finishes initializing so constructor overrides (`App { server: Server { bind: "127.0.0.1:9000" } }`) take effect. Because an unplaced child's `birth()` and `run()` execute on the main thread during `App` construction, the compiler statically verifies that every step prior to listener birth—including omitted param/field defaults, `birth()`, `birth_check`, subscription key expressions, and any unplaced `run()`—returns without blocking, looping (`while`), recursing, yielding, or waiting on the exposure.
 
-Enum payloads, generic parameters, `@form` and capacity arguments, array
-sizes and scalar ranges are constants and run nothing. Any of those
-that may not return is refused:
-one that waits on its exposure (itself, or through a fn it calls), sleeps,
-reads, or loops in a `while`, wherever the loop sits; one that recurses
-(even a recursion with a base case: the check cannot prove it ends);
-one that publishes over a socket, an adapter or a blocking ring, or to a
-topic whose handler on the main thread would itself be refused (a
-subscriber on another pool runs there, and does not hold `App` up); one that `yield`s; and one
-that restarts a child. A step that
-returns, like `run() { println("started"); }`, is fine. Place a server
-whose `run()` waits, wait in `App`'s `run()`, or give the listener an
-address that reads nothing of the server. Either way the address the listener was bound to is
-told to the exposure, so a server's description names the port the
-kernel gave it. `App` above writes no `run()`; it serves until SIGTERM.
+---
 
-### Serving over HTTP
+## RPC Transports
 
-`http::Rpc` takes a `bind:` (`host:port`), a `codec:` (`json`, the one v1
-has), a `principals:` and a `roles:`. A caller is a bearer: the request
-carries `Authorization: Bearer <token>`, the `principals:` source says who
-the token is (a name it does not know is nobody, and the request is
-refused `unauthenticated`), and the `roles:` source says what that name
-holds. The witness serves `Public` this way, twice, to two sets of people
-on two ports:
+### 1. Unix Domain Sockets (`unix::Rpc`)
+
+`unix::Rpc` serves newline-delimited JSON over a local Unix stream socket and authenticates callers using kernel peer credentials (`uid`, `gid`, `pid`).
+
+```hale,fragment
+main locus Desk {
+    params {
+        admin_roles: Grants = Grants { operator: "uid:1000" };
+        orders: Orders = Orders { };
+        ledger: Ledger = Ledger { };
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
+    }
+    run() {
+        self.admin.wait();
+        self.admin.stop();
+    }
+}
+```
+
+- **Parameters**: `path: String` (passing `""` leaves the exposure unbound without a socket) and `roles: RoleSource`.
+- **Wire Protocol**: Clients send one JSON object per line and read one JSON object per reply:
+
+```text
+{"call": "Orders::cancel", "payload": {"order": 41}, "id": "c-1", "digest": "fnv1a64:40381db6685c9f75"}
+{"request_id": 1, "id": "c-1", "ok": true, "value": {"order": 41, "was_open": true}, "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
+{"describe": true}
+```
+
+Sending `{"describe": true}` returns the caller-filtered JSON description document.
+
+### 2. HTTP RPC (`http::Rpc`)
+
+`http::Rpc` serves JSON RPC calls over HTTP/1.1 using bearer token authentication:
 
 ```hale,fragment
 locus Tokens {
@@ -662,22 +414,10 @@ main locus Desk {
 }
 ```
 
-The listener is bound when the program boots (an address it cannot bind
-stops the program with a diagnostic) and, like the Unix socket's, runs on
-an `async_io` pool: `public`'s row puts its listener and connections on
-`io`, and `partner`, unplaced, takes the pool every unplaced HTTP exposure
-shares. The
-description it serves states the address it was bound to: a
-`bind: "127.0.0.1:0"` lets the kernel pick a port, and a client that
-reads `/.description` sees `127.0.0.1:<that port>`, not `:0`. Both are the
-same listener `std::http::Server` is built from (see
-[HTTP](../everyday/http.md)): it accepts, hands each connection over the
-bus, and a connection nothing takes is closed. A call is
-`POST /call/<member>` whose body is the payload, with the digest you
-generated against in `Hale-Surface-Digest` (it is optional: the surface's,
-or the member's own, which stays valid while the surface gains members); the
-outcome is the status and the body of the contract, one request to a
-connection:
+- **Parameters**: `bind: "host:port"` (`"127.0.0.1:0"` binds an ephemeral kernel port and reports the assigned port in `/.description`), `codec: json`, `principals: BearerSource`, `roles: RoleSource`, and optional `cors: "origin1, origin2"` (or `"*"`).
+- **Endpoints & Headers**:
+  - `POST /call/<member>` with `Authorization: Bearer <token>`, `Content-Type: application/json`, and optional `Hale-Surface-Digest: <digest>`.
+  - `GET /.description` returns the caller's filtered description document.
 
 ```text
 POST /call/Orders::place HTTP/1.1
@@ -693,70 +433,16 @@ Content-Type: application/json
 {"order":41,"notional":125000}
 ```
 
-A handler's own error is `422` with the error as the body (or, when its
-variant declares an error class, that class's status and a
-`Hale-Error-Class` header: see *Error classes* below); a refusal is
-`400`, `401`, `403`, `409`, `429` or `503` with `{"refusal": {"kind": …,
-"reason": …}}` (a digest mismatch also carries the `served` digest and an
-unauthorized call the roles it `requires`); a handler that violated is
-`500` and `{"refusal": {"kind": "server"}}`. `GET /.description` answers
-the caller's whole description, from the same rows and the same sources the
-next call is checked against. A request that is neither is refused
-`malformed`; one that is cut off, or whose client goes away, ends its
-connection alone, and the listener and the other connections go on.
-`public.stop()` refuses what is queued, answers what is executing and
-closes the listener after the replies.
+- **HTTP Status Mapping**:
+  - `200 OK`: Handler returned a result.
+  - `422` (or `@not_found` `404`, `@conflict` `409`, `@forbidden` `403`, `@unavailable` `503` with `Hale-Error-Class`): Handler returned a declared `fallible(E)` error.
+  - `400` (`malformed`), `401` (`unauthenticated`), `403` (`unauthorized`), `409` (`digest_mismatch`), `429` (`full`), `503` (`unavailable` / `shutting_down`): Exposure refused the call; body is `{"refusal": {"kind": "...", "reason": "..."}}`.
+  - `500 Internal Server Error`: Handler triggered a `ClosureViolation`; body is `{"refusal": {"kind": "server"}}`.
+- **Browser CORS (`cors:`)**: Setting `cors: "https://app.example.com, http://localhost:5173"` (or `"*"`) answers browser `OPTIONS` preflight requests from listed origins with `204 No Content` (`Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: POST, GET, OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest`, `Access-Control-Max-Age: 600`) and attaches `Access-Control-Allow-Origin` to all responses (including refusals) for listed origins. Unlisted origins receive `403` on preflight and no CORS headers.
 
-#### Error classes
+### 3. HTTP REST Routing (`http::Rest` and `fallback`)
 
-A variant of the error type can say what kind of failure it is, and each
-transport answers it with its own status for that kind:
-
-```text
-type OrderError = enum { @not_found Missing, @conflict Taken(String), Closed };
-```
-
-`fail OrderError::Missing` is now `404` with `"Missing"` as the body,
-`Taken` is `409`, and `Closed`, which declares no class, stays `422`. The
-classes are `@not_found` (404, gRPC `NOT_FOUND`), `@conflict` (409,
-`ABORTED`), `@invalid` (422, `INVALID_ARGUMENT`), `@forbidden` (403,
-`PERMISSION_DENIED`) and `@unavailable` (503, `UNAVAILABLE`). A refusal
-can share a status with one of them, so a classed error also names its
-class in the header `Hale-Error-Class`, which no refusal carries; the
-generated clients and `hale call` read it for you. The class is part of the contract: the description shows it on the
-type (`x-hale-error-classes`), and adding one moves the surface's digest.
-A transport you write yourself sees it as the second value of
-`std::api::Outcome::HandlerError(body, class)`.
-
-#### Calls from a web page: `cors`
-
-A page served from another origin can call the exposure only if the
-exposure answers CORS for that origin. `cors:` lists the origins,
-comma-separated (`"*"` for any); without it nothing changes:
-
-```hale,fragment
-public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles, cors: "https://app.example.com, http://localhost:5173" }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
-```
-
-The browser's preflight (`OPTIONS /call/<member>` or `OPTIONS
-/.description`, sent with no credential) from a listed origin is answered
-`204` with that origin in `Access-Control-Allow-Origin`, the methods
-(`POST, GET, OPTIONS`), the headers a call sends (`Authorization,
-Content-Type, Hale-Surface-Digest`) and a ten-minute `Max-Age`; it never
-reaches a receiver. Every response to a listed origin, refusals included,
-carries `Access-Control-Allow-Origin`, so the page can read why a call was
-refused. Any other origin's preflight is `403` with no CORS header, and its
-calls carry none, so the browser stops the page. CORS is the browser's
-guard and not authentication: a call is still admitted by its bearer and
-its roles, whatever origin it came from.
-
-### Serving routes: `http::Rest`
-
-`http::Rpc` serves every row at `POST /call/<member>`. A program that has
-to answer paths a client or a load balancer already knows (`GET /healthz`,
-`POST /v1/chat/completions`, `DELETE /v1/items/42`) says so on the rows
-and serves the same surface with `http::Rest`, the transport routed by
-method and path. It takes the fields `http::Rpc` takes.
+When external callers or load balancers expect custom HTTP methods and URL paths (`GET /healthz`, `GET /v1/items/{id}`, `DELETE /v1/items/{id}`), annotate surface rows with `at "<METHOD> <path>"` and optional `status: <code>`, then serve the surface using `http::Rest`:
 
 ```hale,fragment
 type Health { status: String; }
@@ -778,45 +464,21 @@ locus Svc {
 }
 ```
 
-A route is `METHOD /path`, the path's `{id}` a whole segment naming a
-field of the request (`ItemKey.id`), written into it as the field's type.
-The request is built from three places: the path parameters, the query
-(`?limit=3` fills a scalar field `limit`), and the JSON body, whose
-members are laid beside them. `status:` is the success status (`200` when
-it is left out; a `204` has no body). A path no route serves is `404`, a
-path that takes other methods `405` with `Allow`, `OPTIONS` is answered
-from the table, `HEAD` is the `GET` without its body, and `cors:` is
-answered per route. Everything else is `http::Rpc`'s: the bearer, the
-roles a row `requires`, the digest header, the queue, the handler error
-by its class.
+- **Request Assembly**: `http::Rest` populates the handler's request struct from three sources simultaneously:
+  1. Path segment parameters (`{id}` populates field `id`, parsed as the field's declared type).
+  2. URL query parameters (`?limit=3` populates scalar field `limit`).
+  3. JSON request body fields.
+- **Routing & HTTP Semantics**:
+  - `status:` sets the HTTP success status (`200` by default; `204` omits the response body).
+  - Unmatched paths return `404`; matched paths called with an unsupported method return `405 Method Not Allowed` with an `Allow` header; `HEAD` executes `GET` and omits the body; `OPTIONS` and `cors:` are handled per route.
+  - Rows without `at "..."` remain reachable at `POST /call/<member>`.
+  - Static segments take precedence over `{param}` segments (`GET /items/open` alongside `GET /items/{id}` is valid), whereas ambiguous overlapping patterns (`GET /p/{a}/x` vs `GET /p/y/{b}`) are rejected at compile time.
+  - Routes are folded into both the surface and member contract digests.
+- **Unauthenticated Probes (`anonymous:`)**: Setting `anonymous: "public"` assigns principal `"public"` when a request omits the `Authorization` header (requests with an invalid token still receive `401`). Protected rows (`requires: [operator]`) still refuse `"public"` unless the role source grants `"public"` that role.
 
-The check refuses a route that is malformed, a parameter that names no
-field of the request (with a did-you-mean), and two routes that could
-match one path unless one is the more specific: `GET /items/open` may sit
-beside `GET /items/{id}`, `GET /p/{a}/x` and `GET /p/y/{b}` may not.
+#### Custom Non-RPC Endpoints (`fallback:`)
 
-A health probe has no token. `anonymous: "public"` gives a request that
-sends no `Authorization` header at all a caller of that name; the role
-source decides what it holds, so a row with `requires: [operator]` still
-refuses it, and a request with a wrong token is still `401`.
-
-A row with no route is served at `POST /call/<member>`, as ever. The OpenAPI
-form (`hale api export --surface Gateway`) lists each routed row at its
-method and path, and `hale api call http://127.0.0.1:8080 'GET
-/v1/items/42'` calls one by it (flags are the query, `--json` the body of a
-`POST`, `PUT` or `PATCH`). A route is part of the row's contract: it is in the member's and the
-surface's digest and in the description, so a client whose digest matches
-never meets a path that moved. A surface without routes keeps its digest;
-`http::Rpc` and the Unix socket serve a routed surface by member.
-
-#### Routes of your own beside the rows: `fallback`
-
-Some endpoints are not calls: an event stream, a token stream relayed
-from a model, a WebSocket that takes the connection over. Serving them
-from a second `std::http::Server` puts them on another port and another
-origin, and a UI that talks to both now needs CORS. Instead, give the
-REST transport a `fallback`, a `std::http` handler you own, and it
-answers every path no row serves on the same listener:
+To serve raw HTTP endpoints (such as Server-Sent Events, raw streaming proxies, or custom WebSocket upgrades) on the **same port and origin** as `http::Rest`, pass a locus implementing `std::http::Handler` (`fn handle(req: std::http::Request) -> std::http::Response`) as `fallback:`:
 
 ```hale,fragment
 locus DataPlane {
@@ -843,51 +505,23 @@ main locus Svc {
 }
 ```
 
-The handler is any locus with `fn handle(req: std::http::Request) ->
-std::http::Response`, the one a `std::http::Server` takes, and it gets the
-request exactly as it arrived: method, path with its query, headers,
-body, and `req.conn_fd`. Whatever works in a Server's handler works here:
-a `BodyWriter` or `SseWriter`, a `takeover`. Name anything else and the
-check says it `does not satisfy interface std::http::Handler`.
+Rules for `fallback`:
 
-Three things to know:
+1. **Unmatched paths only**: Any path claimed by a surface route stays owned by `http::Rest` for all HTTP methods (e.g., `POST /healthz` on a `GET /healthz` route returns `405`, never reaching `fallback`).
+2. **Independent authentication**: `fallback` bypasses the exposure's `principals`, `anonymous`, `roles`, and `cors` checks; it receives the raw `std::http::Request` and performs its own header inspection.
+3. **Same pool placement**: `fallback` executes directly on the listener's connection coroutines and must be placed on the exact same `async_io` pool as the exposure (`edge` above).
+4. **Field reference only**: When used inside a child server locus, `fallback:` must reference a param field (`self.front`) or `self`, never a method call (`self.make()`).
 
-- **Only unmatched paths reach it.** A path a row serves stays the
-  transport's for every method: `POST /healthz` when the row is `GET` is
-  still `405` with `Allow`, and its `OPTIONS` and CORS are still
-  answered from the table. Everything else, by any method, is the
-  fallback's, including its own `404`.
-- **It is not behind the exposure's gate.** The bearer, `anonymous`,
-  the roles and `cors:` judge the rows. The fallback sees the
-  `Authorization` header like any other and decides for itself, so a
-  route there that needs a token checks it.
-- **Place it with the listener.** It runs on the listener's connections,
-  so it goes on the pool the exposure's placement row names, as above. A
-  handler on another pool is refused as a cross-pool alias. On a `where
-  async_io` pool each connection is a coroutine, so a long stream holds
-  only its own.
-- **In a locus below main, it is read off that locus.** An exposure a
-  locus your main holds serves keeps its fallback: a field of that locus
-  (`fallback: self.front`), or the locus itself when it is its own handler
-  (`fallback: self`). A method call there (`fallback: self.make()`) is
-  refused at the serve site; hold the handler as a param instead.
+### 4. Model Context Protocol Server (`mcp::Rpc`)
 
-Without a `fallback`, a path no row serves is `404`, as before.
-
-### Serving to an MCP host
-
-`mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the
-surface as an MCP server over HTTP: a JSON-RPC message in `POST /mcp`,
-its answer in the response. The tools are the rows the caller may call
-(`tools/list` is the caller's description, filtered, each tool named as
-its member with `::` written `__`; an identifier's own underscores are
-escaped where they would run into that, as the spec says), and
-`tools/call` is a call, through
-the same admission as an HTTP body:
+`mcp::Rpc` exposes a surface directly as an MCP server over HTTP (`POST /mcp` speaking JSON-RPC 2.0):
 
 ```hale,fragment
 public: api::Exposure = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
+
+- `tools/list` returns the caller's authorized rows as MCP tools, replacing `::` with `__` (`Orders__place`, escaping identifier underscores where necessary).
+- `tools/call` validates arguments and invokes the handler:
 
 ```text
 POST /mcp HTTP/1.1
@@ -898,36 +532,17 @@ Authorization: Bearer t-alice
 {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"order\":41,\"notional\":125000}"}],"structuredContent":{"order":41,"notional":125000},"isError":false}}
 ```
 
-A handler's own error and every refusal come back as a JSON-RPC error
-object (`code`, `message`, and the error or the refusal as `data`): `-32001`
-for the handler's error, `-32602` for a payload that does not decode,
-`-32005` for a call the role forbids, `-32603` for a handler that violated;
-an unauthenticated caller also gets HTTP `401`. The listener, its limits and
-its failure behaviour are `http::Rpc`'s, since it is the same listener.
-Not served: resources over streams, MCP over stdio, and a client that
-needs a session or an event stream. `hale mcp` is a server for the
-toolchain on stdio and is not a client of this endpoint.
+- **JSON-RPC Error Codes**: `-32001` (`HandlerError`), `-32602` (`malformed` payload), `-32005` (`unauthorized` role), `-32603` (`ServerError` / closure violation). Unauthenticated requests return HTTP `401`.
 
-### Serving over gRPC
+### 5. gRPC over HTTP/2 (`grpc::Rpc`)
 
-`grpc::Rpc` takes a `bind:`, a `principals:` and a `roles:` (and, as
-`http::Rpc` does, `codec: json`, the row's JSON codec) and serves unary
-calls over HTTP/2, cleartext, many calls to a connection, in protobuf or in
-JSON as each caller asks:
+`grpc::Rpc` serves unary RPCs over cleartext HTTP/2 (powered by built-in `nghttp2` on the `async_io` pool), accepting both Protobuf (`application/grpc` or `application/grpc+proto`) and JSON (`application/grpc+json`) framing on the same listener:
 
 ```hale,fragment
 public: api::Exposure = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
-A call is `POST /<Surface>/<rpc>`, the rpc the member written as an MCP
-tool is (`Orders__place` for `Orders::place`; `Orders.place` still names it),
-with `content-type: application/grpc` or `application/grpc+proto` for
-protobuf, or `application/grpc+json` for the row's JSON, one gRPC message
-(a zero byte, four bytes of length, the message) in and one out, answered in
-the codec it came in. The
-credential is the `authorization: Bearer <token>` metadata, and the digest
-you generated against, if you send one, is the `hale-surface-digest`
-metadata. The status is gRPC's:
+- **Path & Metadata**: Calls use `:path /<Surface>/<Locus>__<method>` (or `/<Surface>/<Locus>.<method>`), `authorization: Bearer <token>`, and optional `hale-surface-digest: <digest>`.
 
 ```text
 :method POST   :path /Public/Orders__place   content-type application/grpc+json
@@ -939,23 +554,8 @@ message {"order":41,"notional":125000}
 trailers grpc-status 0
 ```
 
-The same call as protobuf is the message `OrderRequest` of the generated file
-(`symbol = 1`, `qty = 2`, `limit = 3`) and answers an `OrderResponse`.
-
-#### The `.proto`, and finding the surface
-
-The `.proto` is not written by hand: it is generated from the rows, like the
-other forms, and `hale api export` writes it beside them.
-
-```text
-$ hale api export --surface Public --out api/public desk.hl
-wrote api/public/Public.description.json
-wrote api/public/Public.openapi.json
-wrote api/public/Public.json-schema.json
-wrote api/public/Public.mcp.json
-wrote api/public/Public.proto
-wrote api/public/DIGEST
-```
+- **Generated `.proto` & Server Reflection**:
+  - `hale api export` (or `hale check --api --surface Public --proto`) generates a proto3 definition with deterministic field numbers matching declaration order and `optional` scalars so missing fields are distinguished from zero values:
 
 ```protobuf
 service Public {
@@ -972,63 +572,19 @@ message OrderRequest {
 }
 ```
 
-A message is a record the rows reach and its fields are numbered in the order
-the struct declares them, so the numbers hold as long as the surface digest
-does; every scalar is `optional` so an absent field is told from a zero one
-(and a field with no default that is absent is the same `missing_field`
-refusal the JSON codec gives). The header of the file states the five
-outcomes in these terms: a handler's error is the detail of its status, an
-`Any` of the error's message, and a refusal is the detail `HaleRefusal`. `hale
-check --api --surface Public --proto` prints the file, and `hale api export
---check` refuses a committed copy that drifted. Two fields of a record whose
-default JSON names are the same (`a_b` and `aB`, or `a` and `_a`, which
-protoc compares without regard to case) make a file `protoc` refuses, so the
-record is refused instead, naming both fields; a `json:` tag on one of them
-renames it. A record with the surface's own name (`api Todo` over a `type
-Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
-scope, and the service keeps the surface's name because it is the gRPC path.
+  - If two fields in a Hale struct collide under proto3's case-insensitive camelCase rules (`a_b` and `aB`, or `a` and `_a`), the compiler rejects the struct unless one field is renamed with a `` `json:"..."` `` tag. If a record shares the surface's name (`api Todo` with `type Todo`), its proto message is named `TodoMessage`.
+  - Every `grpc::Rpc` listener serves **gRPC Server Reflection** (`grpc.reflection.v1`) and `hale.api.Description/Describe` (authenticated by the `authorization` metadata), allowing tools like `grpcurl` to discover schemas without local `.proto` files.
+- **gRPC Status & Error Details**:
+  - `HandlerError`: Returns `FAILED_PRECONDITION` (or the `@not_found` / `@conflict` / `@invalid` / `@forbidden` / `@unavailable` gRPC status) with a `google.rpc.Status` payload in `grpc-status-details-bin` packing the error message (or JSON) in `Any`.
+  - `Refusal`: Returns `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (digest mismatch), `UNAUTHENTICATED`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, or `UNAVAILABLE` with `HaleRefusal` in `grpc-status-details-bin`.
+  - `ServerError`: Returns `INTERNAL`.
+  - Calling `public.stop()` drains in-flight calls, sends `GOAWAY` on all HTTP/2 connections, and closes the listener. Calling `std::io::tcp::stop("127.0.0.1:8070")` closes the listener while allowing active connections to continue.
 
-A client is whatever generates stubs from a `.proto`; `hale api client`
-makes Hale, TypeScript and JavaScript clients and none speaks gRPC (a
-browser's `fetch` cannot, and no client carries an HTTP/2 stack). The server also
-answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
-have the file finds the surface through the server: it lists three services
-(the surface, `hale.api.Description` and the reflection service itself) and
-answers the descriptor of the file that declares any of them, the file a
-compiler makes of the `.proto`. A reflection call is one stream: each request
-is answered as it arrives, and the call stays open until the tool ends its
-side. Reflection is for a caller the bearer source
-names, so pass the `authorization` metadata to the tool as to a call.
+---
 
-A handler's own error is `FAILED_PRECONDITION` (or the code of the error
-class its variant declares, *Error classes* above) with the error in
-`grpc-status-details-bin` (a `google.rpc.Status` whose detail is the error's
-message, `OrderError` for `Orders::cancel`, or the error's JSON for a caller
-that asked in JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a
-digest mismatch), `UNAUTHENTICATED`, `PERMISSION_DENIED`,
-`RESOURCE_EXHAUSTED` or `UNAVAILABLE`, its reason in `grpc-message` and the
-refusal object in the details; a handler that violated is `INTERNAL`. Each
-is a trailers-only response, the status in the headers. The description is
-the call `hale.api.Description/Describe`, answered for the caller the bearer
-names. A stream the client resets, or a connection that fails, is that
-stream's or that connection's alone, and `public.stop()` answers what is
-executing, refuses what is queued, says `GOAWAY` on every connection and
-closes the listener. The HTTP/2 itself, its windows, pings and settings,
-is the runtime's built-in nghttp2, a library with no threads of its own,
-read from a socket parked on the same `async_io` pool the other transports
-use. The listener is the same one the HTTP transport's is (see
-[HTTP](../everyday/http.md)): it accepts, hands each connection over the
-bus to a connection locus of its own, and a connection nothing takes is
-closed; `std::io::tcp::stop("127.0.0.1:8070")` closes the listener by its
-address while the connections it accepted go on being served.
+## Streaming Hubs (`ws::Hub` and `udp::Hub`)
 
-### Streams: a topic bound to a hub
-
-A stream is a topic bound to a **hub**, and the binding row carries what a
-subscriber is promised: who may read it (`requires`), how many frames its
-queue holds (`bound`) and what the queue sheds when it is full (`on_full`,
-`drop_old` or `drop_new`; a subscriber that cannot keep up loses events,
-never the subscription, so `refuse` is not a stream's policy).
+To stream internal bus topics to external subscribers, declare a `ws::Hub` (WebSocket) or `udp::Hub` (UDP datagrams) in `params` and bind topics to it in a `bindings { }` block:
 
 ```hale,fragment
 main locus Desk {
@@ -1043,26 +599,11 @@ main locus Desk {
 }
 ```
 
-The hub is a param: `ws::Hub` speaks WebSocket and `udp::Hub` datagrams.
-Its default is the hub (the compiler numbers it and gives it its rows
-there), so a construction that supplies the param, `Desk { hub: … }`, is
-refused.
-Its `bind:` address is bound when the program boots (one it cannot bind
-stops the program with a diagnostic), `principals:` and `roles:` are the
-two sources, and `as:` names the exposure, once among the program's. The
-compiler adds the listener to the main locus and a binding for each
-topic, so anything in the program that publishes `Fills` publishes to the
-hub's subscribers; an event has to fit the bus frame (65,536 bytes
-encoded, header included). `hale check --api` prints the hub as an
-exposure of its stream rows, `hub@<stream digest>/fills`, and the
-description a caller fetches from the hub's address
-(`GET /.description`, with its credential) lists only the streams that
-caller may subscribe to.
+### Hub Protocol and Queue Semantics
 
-A client presents its credential at the upgrade (`Authorization: Bearer
-<token>`, or `?access_token=<token>`), is named once by the bearer
-source, and subscribes with a frame; the hub answers `subscribed` or a
-`refusal`, then sends `event`s:
+- **Configuration**: A hub param must keep its default constructor literal (overriding `Desk { hub: ... }` is rejected). Published events must fit within the 65,536-byte bus frame limit (including header).
+- **Queue Shedding (`on_full`)**: Stream bindings require `on_full: drop_old` or `on_full: drop_new` (`refuse` is not valid for streams because slow subscribers shed events rather than blocking publishers). Every event offered to a subscription increments `seq`, so any gap in received `seq` numbers indicates the exact number of shed frames.
+- **WebSocket Frame Protocol**: Clients authenticate during the HTTP upgrade (`Authorization: Bearer <token>` or `?access_token=<token>`) and send a subscribe frame:
 
 ```text
 {"type": "subscribe", "topic": "Fills"}
@@ -1071,206 +612,196 @@ source, and subscribes with a frame; the hub answers `subscribed` or a
 {"type": "refusal", "topic": "Fills", "refusal": {"kind": "unauthorized", "reason": "Fills requires operator", "requires": ["operator"]}}
 ```
 
-A caller who may not read a stream is refused and nothing is queued for
-it. Every event offered to a subscription takes the next `seq`,
-delivered or shed, so a gap in `seq` is exactly the frames its queue shed
-(after `drop_new` the gap shows at the next frame that arrives). The
-subscription does not outlive its authority: when the credential expires,
-or a role source announces a revision (it publishes a `std::api::Revision`
-on `"__api.roles.revision"`, or a program tells the hub with
-`self.hub.announce(n)`) after which the row's `requires` no longer holds,
-the hub sends one `{"type": "unauthorized", "topic": "Fills", "reason":
-"expired"}` (or `"revoked"`) and drops what that subscription had queued;
-nothing published after the revision reaches a subscriber who lost the
-grant. `hub.stop()` sends `{"type": "closed", "reason": "shutting_down"}`
-after what was queued, and a connection that ends without it is a
-transport failure. The program can ask the hub `subscribers()`,
-`connections()` and `events()`. The WebSocket hub's listener is the one
-the HTTP transport's is (see [HTTP](../everyday/http.md)), named by its
-bound address: each connection is handed over the bus to a locus of its
-own, a connection nothing takes is closed, and
-`std::io::tcp::stop("127.0.0.1:9000")` closes the listener while the
-connections it accepted keep their subscriptions until `hub.stop()`.
+- **Live Credential Expiry & Role Revocation**: If a subscriber's credential expires, or if the role source announces a policy revision (by publishing `std::api::Revision` to `"__api.roles.revision"` or calling `self.hub.announce(n)`) under which the subscriber no longer holds the required role, the hub immediately sends `{"type": "unauthorized", "topic": "Fills", "reason": "expired"}` (or `"revoked"`) and drops all queued frames for that subscription.
+- **Inspection & Shutdown**: Call `self.hub.subscribers()`, `self.hub.connections()`, and `self.hub.events()` to inspect hub metrics. Calling `self.hub.stop()` flushes queued events and sends `{"type": "closed", "reason": "shutting_down"}`.
+- **Multiplexing RPC over `ws::Hub`**: You can also pass a `ws::Hub` as the transport in `api::serve(Public, self.hub, as: "desk", ...)`. Clients can then send `{"type": "call", "id": "c1", "call": "Orders::place", "payload": {...}}` frames and receive `{"type": "reply", "id": "c1", "ok": true, "value": ...}` frames interleaved with stream events on the same WebSocket connection.
+- **UDP Streams (`udp::Hub`)**: Carries streams only. Subscribers send a UDP datagram with a client-chosen `id` and bearer token; lost datagrams appear as gaps in `seq`.
 
-A hub can also be the transport a surface is served over,
-`api::serve(Public, self.hub, as: "desk", …)`: a call is a frame `{"type":
-"call", "id": "c1", "call": "Orders::place", "payload": {…}}` on the same
-connection, authenticated by the same credential, and the reply is a
-`{"type": "reply", "id": "c1", "ok": true, "value": …}` frame between the
-events. `udp::Hub` carries streams only: a subscriber is an address and an
-`id` it chooses (every datagram carries it, and the credential rides the
-subscribe), and a datagram lost on the way is a gap in `seq` like a shed
-one. The contract is `spec/api.md` § Streams.
+---
 
-## The clients
+## Authentication, Authorization & Refusals
 
-You never write a client for a Hale program by hand, because a served
-exposure describes itself and a surface generates its clients. `{"describe": true}` on the socket, `GET /.description`
-over HTTP and on a hub's address return the same kind of document: the
-exposure's identity and digest, where it listens, who the caller is and
-which roles it holds, the members it may call with their schemas, the
-streams it may subscribe to, how an outcome is encoded, and two notes
-that say what a role check is and is not. Five verbs read only that
-document:
+### Refusal Kinds
+
+A transport refusal rejects a request before the handler runs:
+
+```text
+{"request_id": 4, "id": 4, "ok": false, "refusal": {"kind": "malformed", "reason": "wrong_type: qty"}}
+```
+
+| Refusal Kind | HTTP Status | gRPC Status | Cause |
+|---|---|---|---|
+| `malformed` | `400` | `INVALID_ARGUMENT` | Invalid JSON/frame, unknown member, missing required field (`missing_field`), wrong field type (`wrong_type`), list bound violation (`too_long` / `too_short`), or duplicate map key (`duplicate_key`). |
+| `unauthenticated` | `401` | `UNAUTHENTICATED` | Missing or unrecognized credential (bearer source returned empty name, or kernel peer credentials unavailable). |
+| `unauthorized` | `403` | `PERMISSION_DENIED` | Authenticated caller does not hold a role listed in the row's `requires:` (includes `"requires": [...]`). |
+| `digest_mismatch` | `409` | `FAILED_PRECONDITION` | Client's ` digest` matches neither the surface digest nor the member's digest (includes `"served": "<digest>"`). |
+| `full` | `429` | `RESOURCE_EXHAUSTED` | Exposure has reached its `bound` of in-flight requests under `on_full: refuse`. |
+| `unavailable` | `503` | `UNAVAILABLE` | Target receiver is draining, restarting, or replaced. |
+| `shutting_down` | `503` | `UNAVAILABLE` | Exposure is stopping (`stop()` called); queued request did not run. |
+
+### Caller Context (`std::api::Context`)
+
+Any RPC handler can inspect the caller and transport by declaring a second parameter of type `std::api::Context` (or `std::api::ServedContext` to also read the exposure name and receiver generation):
+
+```hale
+type RefundRequest { order_id: Int; amount: Int; }
+type RefundResponse { ok: Bool; by: String; }
+
+locus Billing {
+    fn refund(req: RefundRequest, ctx: std::api::Context) -> RefundResponse {
+        // ctx.caller is the authenticated Principal;
+        // ctx.via is "unix", "http", "ws", "mcp", or "local" for direct in-process calls.
+        return RefundResponse { ok: true, by: ctx.caller.name };
+    }
+}
+
+fn main() { }
+```
+
+`std::api::Context` provides:
+
+- `ctx.caller`: `std::api::Principal` (`mode`, `name`, `uid`, `gid`, `pid`).
+- `ctx.request_id`: Monotonic `Int` assigned by the exposure.
+- `ctx.via`: Transport identifier (`"unix"`, `"http"`, `"ws"`, `"mcp"`, or `"local"` when invoked directly inside Hale).
+- `ctx.role`: The first role from the row's `requires:` held by the caller (`""` if the row requires no roles).
+
+### Role Sources (`std::api::RoleSource` and `StaticRoles`)
+
+Role requirements (`requires: [refund_support]`) are declared on surface rows, while role hierarchy (`role owner includes refund_support;`) is declared at top level:
+
+```hale,fragment
+role refund_support;
+role auditor;
+role owner includes refund_support;
+
+api Billing {
+    rpc Billing::refund requires: [refund_support];
+    rpc Billing::ledger requires: [auditor];
+}
+```
+
+Who holds a role at runtime is determined by the `roles:` locus passed to the transport, which must satisfy `std::api::RoleSource` (`fn holds(p: std::api::Principal, r: String) -> Bool`; the exposure walks `includes` automatically):
+
+```hale,fragment
+locus RecordRoles {                      // satisfies std::api::RoleSource
+    params { root: String = "."; }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        return r == "owner" && p.name == "uid:1000";
+    }
+}
+
+main locus Head {
+    params {
+        roles: RecordRoles = RecordRoles { };
+        local: api::Exposure = api::serve(Billing, unix::Rpc { path: "/run/head.sock", roles: self.roles }, as: "head", bound: 64, on_full: refuse);
+    }
+    run() {
+        self.local.wait();
+        self.local.stop();
+    }
+}
+
+fn main() { Head { }; }
+```
+
+For static or environment-driven deployments, use `std::api::StaticRoles`, which reads a semicolon-separated grant table (`role=member,member;...`) from its `table` parameter or the `LOTUS_API_ROLES` environment variable:
+
+| `StaticRoles` Member Pattern | Matches |
+|---|---|
+| `uid:<n>` | Unix socket peer with user ID `<n>`. |
+| `gid:<n>` | Unix socket peer with primary or supplementary group ID `<n>`. |
+| `user:<name>` | Unix socket peer with account `<name>` (resolved once at startup). |
+| `group:<name>` | Unix socket peer in group `<name>` (resolved once at startup). |
+| `bearer:<name>` | HTTP, MCP, or Hub caller whose `BearerSource` returned principal `<name>`. |
+| `*` | Any authenticated caller on any transport. |
+
+Unix account patterns (`uid:`, `gid:`, `user:`, `group:`) never match bearer callers, and `bearer:` patterns never match Unix socket peers.
+
+---
+
+## CLI Driving & Client Code Generation
+
+### Driving Live Exposures from the Terminal
+
+Five built-in CLI commands interact with any live exposure by reading its self-description (`{"describe": true}` on Unix sockets, `GET /.description` on HTTP and WebSocket hubs):
 
 ```sh
-hale describe /run/desk/admin.sock                  # the description the exposure serves this caller
+# 1. Inspect caller-visible description
+hale describe /run/desk/admin.sock
 hale describe http://127.0.0.1:8080 --bearer t-alice
+
+# 2. Invoke RPC members (flags per field, or raw JSON)
 hale call /run/desk/admin.sock Orders::cancel '{"order": 41}'
 hale call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 10 --limit 12500 --bearer t-alice
-hale watch ws://127.0.0.1:9000 Fills --token t-dave # frames, one JSON line each
-hale admin /run/desk/admin.sock                     # a page on 127.0.0.1:7473 over the description
-claude mcp add desk -- hale mcp --app http://127.0.0.1:8080 --token t-alice   # every member a tool
+echo '{"book": "desk"}' | hale api call unix:/run/desk/admin.sock Ledger::rebalance --json -
+
+# 3. Call HTTP REST routes directly
+hale api call http://127.0.0.1:8080 'GET /v1/items/42'
+
+# 4. Subscribe to WebSocket hub streams
+hale watch ws://127.0.0.1:9000 Fills --token t-dave
+
+# 5. Launch loopback web dashboard or MCP stdio bridge
+hale admin /run/desk/admin.sock
+claude mcp add desk -- hale mcp --app http://127.0.0.1:8080 --token t-alice
 ```
 
-`hale describe` and `hale call` are the short forms of `hale api describe`
-and `hale api call` (below), with two conveniences: a bare path is
-`unix:<path>`, and a bare JSON payload after the member is `--json`. Their
-endpoint is a socket path, or `http://host:port` (the caller is whoever the
-`--bearer` token is, or `HALE_API_BEARER`). `hale watch` takes a
-`ws://host:port` hub and `hale mcp --app` also `mcp://host:port`. A call
-reads the description first, so a member the caller may not call is not
-offered, and it names the **digest** it read, so a program that changed under
-the client refuses the call with `digest_mismatch` and the digest it serves.
-`hale watch` prints `subscribed` and then each
-`event` until the hub closes the connection.
+- **Typed Flags vs. `--json`**: `hale call` validates `--<field>` flags against the exposure's JSON Schema before sending (exiting with code `5` on client-side schema mismatch). Passing `--json '{...}'` (or `--json -` for stdin) sends raw JSON directly to the server.
+- **Reserved Flags**: `hale call` reserves `--json`, `--bearer`, `--digest`, `--raw`, and `--request-id` (defaults to `hale-<pid>`). If a request payload has a field matching one of those five names, pass it via `--json` (a field named `id` can be passed normally as `--id 5`).
+- **Exit Codes**: `0` (`Result` on stdout), `1` (`HandlerError` on stderr), `2` (`Refusal` on stderr), `3` (`ServerError` on stderr), `4` (`Lost` / connection failure), `5` (client-side refusal before sending). Passing `--raw` prints the full wire envelope to stdout while preserving the exit code.
 
-`hale check --api desk.hl` prints the same document from the rows, with no
-program running, and the forms a client is generated from
-(`--surface Public --openapi`, `--json-schema`, `--mcp`). The description
-carries what the exposure was given (its address) and what it
-established (the caller), and nothing of the deployment beyond that.
+### Exporting Specification Bundles (`hale api export`)
 
-### Driving a program from a terminal
-
-`hale api describe` and `hale api call` are the verbs for an operator and for
-scripts. They drive a running program over a Unix socket or HTTP, read the
-description it serves, and turn each outcome into an exit code. Against the
-desk of this chapter:
-
-```sh
-$ hale api describe http://127.0.0.1:8080 --bearer t-alice
-Public@fnv1a64:a8930d6e7998e986/public  [http 127.0.0.1:8080]
-caller: bearer alice; roles: trader
-  Orders::cancel(order: Int (OrderId)) -> CancelResponse, error OrderError  requires: trader
-  Orders::place(symbol: String, qty: Int, limit: Int (Money, q(cent))) -> OrderResponse, error ClosureViolation  requires: -
-
-$ hale api call http://127.0.0.1:8080 Orders::place --symbol ACME --qty 3 --limit 125 --bearer t-alice
-{"order":41,"notional":375}
-$ hale api call http://127.0.0.1:8080 Orders::cancel --order 999 --bearer t-alice
-{"code":"unknown_order","reason":"no order 999"}
-$ echo $?
-1
-$ echo '{"book": "desk"}' | hale api call unix:/run/desk/admin.sock Ledger::rebalance --json -
-{"moved":1500}
-```
-
-Each member's payload is built from one flag per field, typed by the schema
-the description gave: an integer or a quantity's count (`--qty 3`), a number,
-`true` or `false`, a string (`--symbol ACME`), and JSON for a record or a list
-(`--items '[1, 2]'`). A flag that does not fit its field, a missing required
-field and a flag that names no field are refused before anything is sent, with
-the field's schema in the message. `--json '{…}'` (or `--json -` for stdin)
-sends a payload as given, unchecked: the server's answer is then the check.
-The verb keeps five flags for itself, `--json`, `--bearer`, `--digest`, `--raw`
-and `--request-id` (the call's id, `hale-<pid>` by default); a payload field
-with one of those names goes in `--json`. A field named `id` is an ordinary
-flag: `--id 5`.
-
-A result prints its value on stdout and exits 0. Everything else prints what the
-wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,
-`digest_mismatch`, `malformed` and the rest, with their reason), a server error
-3, a connection that broke or never answered 4, a call the verb would not send
-5. `--raw` prints the whole outcome on stdout instead, and the exit code stays.
-The endpoint is `unix:<path>` or `http://host:port`; `grpc://` and `mcp://`
-are refused with that message. Against an `http::Rest` listener the member
-may be a route, `'GET /v1/items/42'`: the flags are then the query. The caller over HTTP is `--bearer T` (or
-`HALE_API_BEARER`); over a socket it is the peer. See *Driving a served
-program* in `spec/api.md` for the full table.
-
-### Generated specs and clients
-
-The rows carry everything a client needs (the shapes, the five outcomes,
-the digest, the roles of each member, the stream rows), so a surface's
-specs and clients are generated from them:
+`hale api export` writes all specification artifacts for a surface to a directory deterministically:
 
 ```sh
 hale api export --surface Public --out api/public desk.hl
+hale api export --surface Public --check api/public desk.hl   # exits 1 on drift in CI
+```
+
+Generated files in `api/public/`:
+
+- `Public.description.json`: Full surface description, schemas, exposures, and hubs.
+- `Public.openapi.json`: OpenAPI 3.0 specification.
+- `Public.json-schema.json`: Standalone JSON Schema bundle.
+- `Public.mcp.json`: MCP tool definitions.
+- `Public.proto`: Protobuf v3 service and message definitions for `grpc::Rpc`.
+- `DIGEST`: The surface contract digest and compiler version.
+
+### Generating Typed Clients (`hale api client`)
+
+Generate standalone, zero-dependency client modules for Hale, TypeScript, or JavaScript (ES module with JSDoc types):
+
+```sh
 hale api client --surface Public --lang hale --out client/desk.hl desk.hl
 hale api client --surface Public --lang ts   --out client/desk.ts desk.hl
-hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exit 1 on drift
+hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exits 1 on drift
 hale api client --surface Public --lang js   --out web/desk.js desk.hl
 ```
 
-`export` writes a bundle: `Public.description.json` (every member with its
-roles, the exposures that serve it, the hubs, the schemas),
-`Public.openapi.json`, `Public.json-schema.json`, `Public.mcp.json`,
-`Public.proto` (the messages and the service a `grpc::Rpc` exposure speaks;
-see Serving over gRPC) and `DIGEST` (the digest and the compiler's version).
-Every file is a function
-of the rows alone, so two runs and two checkouts write the same bytes, and
-an imported type is named as the library declares it (`Item`), never by a
-path of the machine; only when the program declares an `Item` of its own,
-or a generated form declares the name for itself (a client's `FillsEvent` for
-the stream `Fills`, its `OrdersPlaceOutcome` for `Orders::place`), is the
-imported one `lib.Item`, after the alias you import it by. `--check DIR` writes nothing and exits 1,
-naming the digest that moved and the files that differ, so a committed
-bundle cannot go stale unnoticed.
+| Target | Supported Transports | RPC Return Shape | Stream Shape |
+|---|---|---|---|
+| **Hale (`--lang hale`)** | `unix:PATH`, `http://`, `ws://` | `<Member>Outcome` enum: `Result(T)`, `HandlerError(E)`, `Refusal(R)`, `ServerError`, `Lost(String)` | Subscription locus (`start()`, `next()` -> `Event(seq, payload)` \| `Expired` \| `Revoked` \| `Closed`) |
+| **TypeScript (`--lang ts`)**<br>**JavaScript (`--lang js`)** | `http://`, `ws://` | Tagged union: `result`, `handler_error`, `refusal`, `server_error` (throws `TransportError` if connection drops mid-call) | Async iterable (`for await (const ev of ...)`) |
 
-A client is typed by the rows. The Hale one is a module with a fn per member
-(`orders_place(endpoint, bearer, request)`), whose answer is an enum of the
-outcomes (`Result`, `HandlerError` when the row declares an error, `Refusal`
-with its kind, reason and the roles it names, `ServerError`, `Lost`), and a
-subscription locus per stream (`start`, then `next` yields each `Event(seq,
-payload)` until `Expired`, `Revoked` or `Closed`). The TypeScript one is a
-single file that needs only `fetch` and `WebSocket`: an async function per
-member answering a tagged union (`result`, `handler_error`, `refusal`,
-`server_error`; a connection that never answered is thrown as a
-`TransportError`, because that request may have run) and an async iterable
-per stream. The JavaScript one is that same client as an ES module a page
-loads as it is, with no compile step: the same functions by the same names,
-typed in JSDoc, so an editor (or `tsc --checkJs`) still checks a caller
-against the rows. Every client sends its member's digest on every call, so a
-program that changed that member under it refuses it `digest_mismatch`, while
-one that only gained other members keeps answering it; each names the
-surface's digest in a constant, and `--check` refuses a committed copy made
-against another one.
+Every generated client embeds the per-member digest on each call and exposes the surface digest as a constant.
 
-Every shape the codec carries reaches the clients. An optional field is
-its `has_` flag in Hale and an optional property in TypeScript. An enum is
-the server's enum in Hale, and in TypeScript the union of what the wire
-writes for it:
+---
 
-```text
-export type Shape = "Empty" | { Circle: number } | { Rect: [number, number] };
-```
+## Consuming External APIs
 
-A wire map stays a list of records on both sides (`bounded[Check; 16]
-indexed_by name` in Hale, `Check[]` in TypeScript); the client keys it
-into the wire's object on the way out and back into records on the way in.
-A map of values does the same, each record's value alone on the wire.
+### Importing OpenAPI and MCP Specifications (`hale api import`)
 
-A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
-`ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
-`.proto` to its own language's stub generator, or finds the surface through
-server reflection.
-
-## Consuming a surface
-
-Everything above is a surface the program *serves*. A program also calls
-other people's APIs, and the same `api` block declares one of those: its
-rows name the shape of each operation instead of a handler. You do not
-write it by hand. `hale api import` reads it from the service's OpenAPI
-document or, for an MCP server, from its tool list:
+Use `hale api import` to generate a typed Hale `api` declaration from an external OpenAPI 3.x document (JSON or YAML, local file or URL) or a live MCP server:
 
 ```sh
 hale api import https://shelf.example/openapi.json --as Shelf --out shelf.hl
-hale api import ./vendor/shelf.json --as Shelf          # a local file
-hale api import ./vendor/shelf.yaml --as Shelf          # YAML is read too
-hale api import http://127.0.0.1:8931/mcp --as Tools    # an MCP endpoint
+hale api import ./vendor/shelf.json --as Shelf
+hale api import ./vendor/shelf.yaml --as Shelf
+hale api import http://127.0.0.1:8931/mcp --as Tools
 ```
 
-and writes a file like this one:
+This generates a source file declaring the external surface and its wire types:
 
 ```hale
 // Generated by `hale api import` from openapi ../shelf.json (OpenAPI 3.0.3: Shelf 1.0.0).
@@ -1300,39 +831,12 @@ type ShelfNewItem {
 }
 ```
 
-The document may be JSON or YAML, told by its content (JSON opens with
-`{`), its `.yaml` or `.yml` name, or the `application/yaml` or `text/yaml`
-type a URL answers with; `hale api drift` reads it the same way. The YAML
-reader covers what an OpenAPI document is written in: block and flow
-mappings and sequences, plain and quoted scalars, `|` and `>` block
-scalars, comments, and one document with its `---` marker. Scalars follow
-the YAML 1.2 core schema, so `on` and `yes` are strings. It refuses, naming
-the line, anchors and aliases (`&`, `*`), merge keys (`<<`), tags (`!`),
-complex keys (`?`), duplicate keys and more than one document; write such a
-value out where it is used.
+- **Mapping Rules**: Operations map to snake_case `rpc` rows with `wire: "METHOD /path?query_param"`. Non-required properties generate `has_<field>` presence pairs; non-identifier JSON keys use `` `json:"..."` `` tags; schemas that cannot map to fixed Hale structs (`oneOf`, unbounded arrays without `maxItems`, free-form objects, or schemaless MCP outputs) fall back to `std::json::Value` with an explanatory comment.
+- **Supported YAML Subset**: The built-in YAML reader follows the YAML 1.2 Core Schema (so `on` and `yes` are strings, not booleans) and supports block/flow mappings and sequences, plain/quoted scalars, `|` and `>` block scalars, comments, and a single `---` document marker. Anchors/aliases (`&`, `*`), merge keys (`<<`), tags (`!`), complex keys (`?`), duplicate keys, and multi-document streams are rejected with a line-numbered diagnostic.
 
-`from openapi "…"` says where the surface came from. Each row is named
-after the operation's `operationId` (or its method and path when it has
-none, or the MCP tool's name), in snake case, and `wire:` keeps the name
-the service itself uses, with an operation's query parameters named after a
-`?` (`"GET /items?limit"`) so a client knows which fields are the query. The records are the document's schemas: a
-property the schema does not require is a presence pair, a JSON key that is
-not a Hale name keeps its key in a `json:"…"` tag, and anything the codec
-cannot carry (a `oneOf`, an array with no `maxItems`, a free-form object) is
-a `std::json::Value`, with a comment saying why. An MCP tool with no
-`outputSchema` answers a `std::json::Value` too.
+### Calling External Surfaces (`api::client` and `VaultPrincipals`)
 
-The checker admits the block like any surface, and `hale check --api`
-describes it, but nothing serves it: a serve site of `Shelf` is refused, and
-so is a block that mixes handler rows with shape rows. It is called (see
-Calling it, below). Commit the file; to
-change it, run the import again (the same document always writes the same
-bytes) rather than editing it.
-
-### Calling it
-
-A surface you consume is called through a **client**: a param, like an
-exposure, whose literal says which surface and over what:
+Bind an imported `api` surface (or a Hale `api` surface served by another process) to an `api::Client` param using `http::Client` or `mcp::Client`:
 
 ```hale,fragment
 locus Desk {
@@ -1352,56 +856,22 @@ locus Desk {
 }
 ```
 
-Every row is a method of the client, named as the row, taking the row's
-request and answering one enum of the five outcomes, `<Surface><Row>Outcome`.
-The compiler fills the operation's path and query from the request
-(`GET /items/7`), and reads the answer the way a Hale server would write
-it: a `404` from the shelf is a `HandlerError` whose `class` is
-`not_found`, a `401` a refusal, a `5xx` the server error. There is no
-JSON to build and none to pick apart.
-
-The other transport is `mcp::Client { url, principals }`, for a surface
-imported from an MCP server: each row is a `tools/call`, and the client
-opens the session itself. A surface written in Hale and served by another
-program binds too, over either transport: declare its rows (or import the
-library that declares them) and call `api::client(Shop, http::Client { …
-})`; then `HandlerError` carries the handler's own error enum, so a caller
-matches `OrderError::Missing` exactly as the server failed with it.
-
-`principals:` is who you are to the other side, as an exposure's
-`principals:` is who is calling you. `std::api::VaultPrincipals` names a
-vault slot per role: a row that requires `editor` presents the bearer in
-`shelf-editor`, any other the one in `shelf-reader`. The token is read from
-the vault at each call and never appears in the program.
-
-Because each call is a method the compiler writes, it carries an effect,
-`client(Shelf)`, and the claims see it with nothing new to learn:
+- **Outcome Matching**: Each row becomes a method returning `<Surface><Row>Outcome`. HTTP `404` maps to `HandlerError` with `class: "not_found"`, `401`/`403`/`429` map to `Refusal`, and `5xx` maps to `ServerError`. When calling a Hale-authored surface over `api::client`, `HandlerError` carries the server's typed error enum directly.
+- **Secret Vault Credentials (`std::api::VaultPrincipals`)**: Maps surface roles to secret vault slots (`"editor=shelf-editor, *=shelf-reader"`), fetching the bearer token from the vault on each outbound request so raw tokens never appear in source or locus state.
+- **Effect Class (`client(Surface)`)**: Outbound calls carry the `client(<Surface>)` effect class, allowing architectural claims to restrict external API calls:
 
 ```hale,fragment
 claims {
     desks_stay_local: forbid reaches(desks, effects(client(Shelf)));
+    // Use `effects(client(*))` to forbid calls to any consumed API surface.
 }
 ```
 
-fails naming the path, `Desk::label -> __ApiClient_Shelf::get_item`, and
-`effects(client(*))` covers every surface the program calls.
+- **Exporting Role-Scoped Agent Tools**: Run `hale api export --surface Shelf --tools-for editor` to export MCP tool definitions (`Shelf.create_item`, `Shelf.get_item`, ...) filtered to the operations `editor` is permitted to invoke.
 
-The client is placed like any param. Its methods run where its holder
-runs, so hold it in a locus placed `where async_io` and a slow service
-parks a coroutine instead of a thread.
+### Detecting Upstream API Drift (`hale api drift`)
 
-An agent acting for the program is given the same rows as tools. `hale
-api export --surface Shelf --tools-for editor` prints one tool per row the
-`editor` role admits, named `Shelf.create_item`, `Shelf.get_item`, … with
-each row's input schema, so tools from two surfaces never collide and a
-role that may not call a row is never offered it.
-
-### Noticing when the service moves
-
-A service you consume changes without asking you. `hale api drift` reads
-the source again and compares it with the committed rows, by shape, so
-renaming a record in your program is not drift but a field the service
-added is:
+Run `hale api drift` in CI or a watcher to compare the upstream OpenAPI/MCP specification against your committed `api` rows by structural shape:
 
 ```sh
 $ hale api drift .
@@ -1412,183 +882,15 @@ $ echo $?
 1
 ```
 
-One line per row, `added`, `removed`, or `changed` with the slot that moved
-(`request`, `response`, `wire`), and exit 1; a surface in step prints
-`Shelf: in step with ../shelf.json (4 rows)` and exits 0, and a source that
-cannot be read exits 2. The lines are meant for a script or a watcher to
-parse. `hale check --api` runs the same check after its document, printing
-the lines on stderr.
+- Exits `0` if all rows match (`Shelf: in step with ../shelf.json (4 rows)`), `1` if any row was `added`, `removed`, or `changed` (`request`, `response`, or `wire`), or `2` if the upstream document cannot be read.
+- Pass `hale api drift --document` to output the upstream specification as canonical, key-sorted JSON regardless of whether the source was YAML or JSON.
 
-A drift line names a row and the slot that moved, so a second change to a
-row that has already drifted reads the same as the first. To tell one
-revision of the source from the next, `hale api drift --document` prints the
-source itself, parsed and canonical (JSON, keys sorted), whatever form it
-was served in.
+---
 
-## When it says no
+## Current Limitations
 
-A refusal is an answer, never a failure of the program:
-
-```text
-{"request_id": 4, "id": 4, "ok": false, "refusal": {"kind": "malformed", "reason": "wrong_type: qty"}}
-```
-
-The kinds are `malformed` (not a request, no such member, or a payload
-that does not decode; the reason names the field), `digest_mismatch`,
-`unauthenticated` (the sources name nobody; nothing is served to such a
-caller), `unauthorized` (the caller does not hold what the row
-`requires`, which the refusal names), `full` (the exposure holds its
-`bound`), `shutting_down` and `unavailable`. A payload is decoded before
-dispatch, strictly: a string where an `Int` is declared is `wrong_type`, a
-missing field without a default is `missing_field`, and the handler only
-ever sees a value of its declared type.
-
-## Who is calling
-
-The exposure knows, and a handler can ask. Every reply over a socket
-carries the principal the exposure established for the connection: on the
-Unix socket that is the peer's credentials, as the kernel vouches for
-them; over HTTP it is the name the bearer source gave the token.
-
-```text
-{"request_id": 7, "id": 1, "ok": true, "value": {...},
- "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
-```
-
-A handler that wants the caller declares a second parameter:
-
-```hale
-type RefundRequest { order_id: Int; amount: Int; }
-type RefundResponse { ok: Bool; by: String; }
-
-locus Billing {
-    fn refund(req: RefundRequest, ctx: std::api::Context) -> RefundResponse {
-        // ctx.caller is who; ctx.via is the door: "unix", "http", "ws" or
-        // "mcp" through a transport, "local" for a call that never crossed one
-        return RefundResponse { ok: true, by: ctx.caller.name };
-    }
-}
-
-fn main() { }
-```
-
-The second parameter is `std::api::Context`: the caller, the request id,
-`via`, and the first role the row requires (`role`, empty when it
-requires none). A call that did not come through a transport hands the
-handler the local principal, so a handler never asks whether it was
-reached from outside; it reads `via`. `local` says where a call did not
-come from, never that it is trusted. `Context` and `Principal` are
-ordinary structs: build one in a test, forward one in a payload.
-
-## Who may call
-
-The requirement that an operation needs a role is part of the program,
-true wherever it runs; who holds the role here is a deployment fact. So
-the requirement is written once, on the row, and the mapping is a source
-the serve site names.
-
-```hale,fragment
-role refund_support;
-role auditor;
-role owner includes refund_support;      // whoever is owner may do what support may
-
-api Billing {
-    rpc Billing::refund requires: [refund_support];
-    rpc Billing::ledger requires: [auditor];
-}
-```
-
-A `role` is declared vocabulary, like `group`: a name nothing declares is
-an error at the row. What `requires` means is exactly one thing: a call
-**arriving through the exposure** is refused unless the caller holds the
-role, and the refusal names it. It is a gate at the boundary, not a proof
-about the program's insides; a handler that calls `refund` from some other
-path is not stopped by it, and the description says so in its notes, so no
-client presents the check as more than it is. A program that wants the
-inside proved states it as a claim: `group read_side = { role reader };`
-names the handlers a `reader` may call, and `forbid reaches(read_side, …)`
-is checked over the paths behind them
-([claims](../claims.md#group--the-vocabulary)). The requirement is a
-property of the row, never of the handler, so one handler shared by two
-surfaces meets each surface's own.
-
-Who holds a role is the **role source** of the transport instance
-(`roles: self.staff`): any locus satisfying `std::api::RoleSource`
-(`fn holds(p: std::api::Principal, r: String) -> Bool`, the direct
-question only; the exposure walks `includes`), built with the program's
-own state and kept as a param:
-
-```hale,fragment
-locus RecordRoles {                      // a std::api::RoleSource
-    params { root: String = "."; }
-    fn holds(p: std::api::Principal, r: String) -> Bool {
-        return r == "owner" && p.name == "uid:1000";   // ask the record at self.root
-    }
-}
-
-main locus Head {
-    params {
-        roles: RecordRoles = RecordRoles { };
-        local: api::Exposure = api::serve(Billing, unix::Rpc { path: "/run/head.sock", roles: self.roles }, as: "head", bound: 64, on_full: refuse);
-    }
-    run() {
-        self.local.wait();
-        self.local.stop();
-    }
-}
-
-fn main() { Head { }; }
-```
-
-That is how a program whose positions are roles answers from its own
-record. The standard library's `std::api::StaticRoles` is a table
-`role=member,member;…`, passed as its `table` param and overridden by
-`LOTUS_API_ROLES` at run time, which is how a test drives it. A member
-takes one of six spellings:
-
-| member | matches |
-|---|---|
-| `uid:<n>` | a socket peer with that uid |
-| `gid:<n>` | a socket peer whose primary group, or one of the supplementary groups the kernel reports for the connection, is `<n>` |
-| `user:<name>` | a socket peer with that account, resolved once at start per the account database |
-| `group:<name>` | a socket peer in that group, resolved the same way |
-| `bearer:<name>` | a caller on HTTP, MCP or a hub whose bearer source answered exactly `<name>` |
-| `*` | any caller the exposure authenticates, on any transport |
-
-The spellings of the two kinds of caller never cross. A `bearer:` member
-is never a socket peer, and the four account spellings never match a
-bearer caller, even one whose name reads the same: a Unix account and a
-token's subject are different identities. A table naming a role the
-program does not declare (`known:` lists them), or a member outside those
-spellings, is refused at start with the reason; with no table every
-`requires` refuses.
-
-A caller the sources name nobody for (a peer the kernel cannot vouch for,
-a bearer token the source answers with an empty name) is refused
-everything, whatever the roles: the exposure's whole claim is that it
-knows who is calling.
-
-The description follows the same rule. It lists the members the caller
-may call and only the schemas those need, so `hale mcp --app` lists
-exactly the tools a principal may call and `hale admin` shows what it may
-reach. A member a caller may not call is not shown to it, and if it
-names it anyway the server answers `unauthorized`, naming what the row
-requires.
-
-## What is left out, and why
-
-- A request or a response whose type has a field with no JSON form (a
-  `Decimal`, `Time`, `Duration`, `Bytes`, an array, an enum, a locus) is an
-  error at the row, naming the field.
-- A `Drain<T>` batch handler is not an operation.
-- A request that is not an object has no tool over MCP: the wrapped form
-  needs the handler's parameter name, which a description does not carry.
-- Resources over streams, MCP over stdio and `grpc::Rpc` are not
-  served ([`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md)
-  § Open points).
-- A hub that also serves a surface lists its streams in its live
-  description; the surface's own members are in the inventory.
-- Bearer groups wait: a role source grants a bearer caller a role by its
-  own name (`bearer:<name>`) or through `*`, not by a group its source
-  reports (an OIDC `groups` claim). A program that needs that today names
-  its own `RoleSource`.
+- **Unsupported Wire Field Types**: `Decimal`, `Bytes`, unbounded slices, and locus types cannot appear in wire records.
+- **Batch Handlers**: `Drain<T>` batch handlers cannot be exposed as `rpc` rows.
+- **Non-Object MCP Requests**: An `rpc` row whose request type is a top-level enum rather than a struct has no MCP tool projection.
+- **Hub Live Descriptions**: When a `ws::Hub` also serves an `api` surface via `api::serve`, its live `GET /.description` lists its stream bindings; the RPC surface members remain in the static `hale check --api` inventory.
+- **Bearer Group Claims**: `StaticRoles` matches bearer principals by individual name (`bearer:<name>`) or `*`. To authorize bearer tokens by OIDC group claims, implement a custom `std::api::RoleSource`.
