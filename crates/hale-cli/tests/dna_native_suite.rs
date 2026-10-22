@@ -1120,6 +1120,7 @@ fn dna_fixture_set_is_complete() {
             "library_family_batch_test.hl",
             "library_family_test.hl",
             "model_map_cli_test.hl",
+            "model_map_route_test.hl",
             "model_map_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",

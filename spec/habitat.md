@@ -156,7 +156,11 @@ models category … --endpoint <url> [--key-vault <slot>]`, run in its
 directory, a key only by its vault slot's name; `Commands::probe_model`
 (`{organism, category}`, `hale habitat model-probe`) asks the model the
 category names, where the map says, once, and answers what it said, never
-a key. A sapling's graft is the head's Board command
+a key. A leg's Work on a mapped category is asked the same way: the model
+router (`ModelRouter`, `dna/core/models.hl`) sends a request that names an
+endpoint there, with that endpoint's key slot or none, whichever backend
+the organism's catalog would have chosen, and a key slot the vault lacks is
+refused there, never answered by another backend. A sapling's graft is the head's Board command
 `Commands::graft` (`{sapling, host, library}`): it starts the act, which
 takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
 its exit status beside it in `<log>.exit`); the end of the graft is its

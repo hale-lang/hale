@@ -1115,6 +1115,10 @@ locus ModelRouter {
         quick: ModelBackend = FakeModel { name: "quick", model: "quick-1", price_micros: 5 };
         deep: ModelBackend = FakeModel { name: "deep", model: "deep-1", price_micros: 50 };
         private: ModelBackend = LocalFakeModel { };
+        // a category the habitat's model map points at an endpoint is asked
+        // there (the request's `endpoint`, its key the request's `key_vault`
+        // slot or none), whichever backend the catalog would have chosen
+        mapped: ModelBackend = OpenAiChat { name: "mapped" };
         selection: ModelSelection = EvidenceAwareSelection { };
         spent_micros: Int = 0; // what this router's calls cost, a counter; the org's allowance is the substrate's Budget (GH #583)
         calls: Int = 0;
@@ -1124,6 +1128,8 @@ locus ModelRouter {
     // Whether the backend this request would go to works in place (a
     // harness): the editor asks before it exports a worktree.
     fn in_place(req: ModelRequest) -> Bool {
+        // a mapped endpoint answers with text
+        if len(req.endpoint) > 0 { return false; }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)
@@ -1140,6 +1146,8 @@ locus ModelRouter {
     // would go to knows before sending (GH #1131); -1 when the cost is
     // learned only from the answer, or no backend is permitted.
     fn price_micros(req: ModelRequest) -> Int {
+        // a mapped endpoint's cost is learned from its answer
+        if len(req.endpoint) > 0 { return -1; }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)
@@ -1154,6 +1162,17 @@ locus ModelRouter {
     }
     // The router returns DATA. Which backend answered is recorded, not hidden.
     fn ask(req: ModelRequest) -> ModelResult {
+        // the mapping's endpoint answers a mapped category, with its own key
+        // or none: the catalog's backends (and their keys) are not asked,
+        // and a key the vault lacks is refused there, never answered elsewhere
+        if len(req.endpoint) > 0 {
+            self.calls = self.calls + 1;
+            self.last_backend = "mapped";
+            self.last_adapter = self.mapped.adapter();
+            let m = self.mapped.complete(req);
+            self.spent_micros = self.spent_micros + m.cost_micros;
+            return m;
+        }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)
