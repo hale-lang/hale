@@ -3,7 +3,7 @@
 // and put back on the way in. `Object.fromEntries` defines each key as its own property, so a key
 // such as `__proto__` is an entry like any other. A map of values (`value` given) carries each
 // record's `value` field alone.
-function apiMapEncode<T>(list: __Array<T>, key: string, encode: (e: T) => unknown, value?: string): unknown {
+function __apiMapEncode<T>(list: __Array<T>, key: string, encode: (e: T) => unknown, value?: string): unknown {
   return globalThis.Object.fromEntries(
     list.map((e) => {
       const o = { ...(encode(e) as __Record<string, unknown>) };
@@ -14,7 +14,7 @@ function apiMapEncode<T>(list: __Array<T>, key: string, encode: (e: T) => unknow
   );
 }
 
-function apiMapDecode<T>(json: unknown, key: string, decode: (json: unknown) => T, value?: string): __Array<T> {
+function __apiMapDecode<T>(json: unknown, key: string, decode: (json: unknown) => T, value?: string): __Array<T> {
   if (json == null || typeof json !== "object" || globalThis.Array.isArray(json)) return [];
   return globalThis.Object.entries(json as __Record<string, unknown>).map(([k, v]) =>
     decode(value === undefined ? { ...((v ?? {}) as __Record<string, unknown>), [key]: k } : { [value]: v, [key]: k }),

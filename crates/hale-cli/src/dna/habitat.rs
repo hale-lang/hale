@@ -817,6 +817,9 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     for f in hale_dna::HABITAT_FILES {
         let rel = f.path.strip_prefix("dna/habitat/").unwrap_or(f.path);
         let path = genome.join(rel);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
         if !path.exists() {
             std::fs::write(&path, f.content).map_err(|e| format!("write {}: {e}", path.display()))?;
         }

@@ -26,3 +26,7 @@ their data.
 - `law` **The habitat's data outlives its body.** Stopping the habitat
   stops its body and its services; only a test's habitat, under a scratch
   root, is ever taken down with its data.
+
+The operator face is the habitat's own [`ui/`](./ui/index.html): the
+standard face serves it under `/app/` once `hale habitat up` has started
+the face.

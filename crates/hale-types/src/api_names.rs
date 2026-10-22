@@ -25,17 +25,20 @@ pub const HALE_CLIENT_NAMES: &[&str] = &[
     "api_unix_exchange", "api_unix", "api_call", "api_get", "api_describe", "api_lists", "API_WAIT_NS", "API_ID",
     "API_WS_KEY", "API_MASK",
 ];
-/// The JavaScript client's own declarations.
+/// The JavaScript client's own declarations that a caller names. Everything
+/// else the preamble declares (`__Outcome`, `__apiCall`, ...) starts with
+/// `__`, which no name of a surface may, so no type of a surface can clash
+/// with it.
 pub const JS_CLIENT_NAMES: &[&str] = &[
-    "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-    "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode",
+    "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "describe",
+    "__Outcome", "__StreamEvent", "__Subscription", "__apiCall", "__apiRefusal", "__apiSubscribe",
 ];
 /// The TypeScript client's own declarations.
 pub const TS_CLIENT_NAMES: &[&str] = &[
-    "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-    "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode", "__Record",
+    "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "describe", "__Record",
     "__Promise", "__Array",
-    "__AsyncIterable", "__AsyncGenerator", "__Response", "__MessageEvent",
+    "__AsyncIterable", "__AsyncGenerator", "__Response", "__MessageEvent", "__Outcome", "__StreamEvent",
+    "__Subscription", "__apiCall", "__apiRefusal", "__apiSubscribe",
 ];
 
 /// `Orders::place` as `OrdersPlace`, `lib::Fills` as `LibFills`.

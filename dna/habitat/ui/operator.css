@@ -1,0 +1,60 @@
+/* The operator face's visual language, written once. Screens 2 to 4 take
+   these properties and add none.
+
+   Near-black ground, one monospace throughout, hairline rules.
+   Brass marks a crossing (a boundary: the sign-in edge now, a host
+   boundary later) and nothing else. Color is state and nothing else:
+   up, degraded, down. No shadow, no rounded corner, no card. */
+:root {
+  color-scheme: dark;
+  --ground: #0b0b0c;
+  --ink: #d9d9d4;
+  --dim: #7b7b74;
+  --rule: #262629;
+  --brass: #b58f4f;
+  --up: #6cc070;
+  --degraded: #d9a73c;
+  --down: #e05a52;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --step: 8px;
+  font: 13px/1.6 var(--mono);
+}
+
+* { box-sizing: border-box; border-radius: 0; box-shadow: none; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--mono);
+}
+
+main { max-width: 88ch; margin: 0 auto; padding: calc(var(--step) * 4) calc(var(--step) * 3); }
+
+header, section { border-top: 1px solid var(--rule); padding: calc(var(--step) * 2) 0; }
+header { display: flex; justify-content: space-between; align-items: baseline; border-top: 0; }
+
+h1, h2 { margin: 0; font: inherit; font-weight: 700; }
+h2 { color: var(--dim); font-weight: 400; text-transform: uppercase; letter-spacing: .12em; font-size: 11px; margin-bottom: var(--step); }
+
+a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--dim); text-underline-offset: 3px; }
+
+dl { display: grid; grid-template-columns: 14ch 1fr; margin: 0; gap: 2px calc(var(--step) * 2); }
+dt { color: var(--dim); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+table { border-collapse: collapse; width: 100%; }
+th { color: var(--dim); font-weight: 400; text-align: left; border-bottom: 1px solid var(--rule); }
+th, td { padding: 2px calc(var(--step) * 2) 2px 0; }
+
+/* state, the only color */
+[data-state="up"] { color: var(--up); }
+[data-state="degraded"] { color: var(--degraded); }
+[data-state="down"] { color: var(--down); }
+[data-state]::before { content: "\25CF\00a0"; }
+
+/* a crossing, the only brass */
+.crossing { border-top: 1px solid var(--brass); border-bottom: 1px solid var(--brass); padding: calc(var(--step) * 2) 0; color: var(--ink); }
+.crossing .edge { color: var(--brass); text-transform: uppercase; letter-spacing: .12em; font-size: 11px; }
+
+[hidden] { display: none; }

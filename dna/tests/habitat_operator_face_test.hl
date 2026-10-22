@@ -1,0 +1,149 @@
+// dna/tests/habitat_operator_face_test.hl — the habitat serves the operator face.
+//
+// `hale habitat up` births the habitat from the toolchain's genome, which
+// carries its own `ui/` (dna/habitat/ui): the operator face. The standard
+// face serves it under `/app/` behind the head's gate, with no step beyond
+// `up`. The page reads the habitat's state through the generated client of
+// the head's rows (`Commands::index`, over `/api/hale/v1/head/surface`);
+// this fixture makes the same call the client makes and reads the habitat
+// and its organisms from the answer. The head is a fixture's trusted-local
+// one; the sign-in itself, under the stub issuer, is
+// dna/api/project_service/tests/operator_face_test.hl.
+// The habitat is this test file's own (`hale test` gives each file one).
+// Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations and
+// the head a fixture's trusted-local one (no provider to sign in through).
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// Whether `log` comes to say `text` within `secs`.
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+fn get(url: String) -> dna::RunResult {
+    return dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n" + url);
+}
+
+// The row the client calls, as the client calls it.
+fn index_call(face: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:6db56a82d365c442\n--data\n{\"limit\": 200}\n"
+            + face + "/api/hale/v1/head/surface/call/Commands::index",
+    ).stdout;
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_operator_face_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_operator_face_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-operator-face");
+    dna::reap_on_exit(scratch);
+
+    let log = scratch + "/up.log";
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 600),
+        "the habitat is born and its body runs: " + text_of(log),
+    );
+    let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+    std::test::assert(std::str::starts_with(face, "http://127.0.0.1:"), "the face has an address");
+
+    // ---- the habitat's genome carries the operator face, tracked
+    let shell = get(face + "/app/");
+    let mut tries = 0;
+    let mut page = shell;
+    while !std::str::ends_with(std::str::trim(page.stdout), "200") && tries < 180 {
+        std::time::sleep(1s);
+        page = get(face + "/app/");
+        tries = tries + 1;
+    }
+    std::test::assert(
+        std::str::contains(page.stdout, "id=\"crossing\"")
+            && std::str::contains(page.stdout, "type=\"module\" src=\"operator.js\"")
+            && std::str::ends_with(std::str::trim(page.stdout), "200"),
+        "the face serves the operator shell under /app/: " + page.stdout,
+    );
+    let css = get(face + "/app/operator.css").stdout;
+    std::test::assert(
+        std::str::contains(css, "--brass") && std::str::contains(css, "JetBrains Mono"),
+        "with the visual language as properties: " + css,
+    );
+    let client = get(face + "/app/head-client.js").stdout;
+    std::test::assert(
+        std::str::contains(client, "export function commandsIndex")
+            && std::str::contains(client, "fnv1a64:6db56a82d365c442"),
+        "and the generated client of the head's row",
+    );
+
+    // ---- the read the page makes answers: the habitat's record, no organisms yet
+    let before = index_call(face);
+    std::test::assert(
+        std::str::contains(before, "\"ok\":true") || std::str::contains(before, "\"ok\": true"),
+        "the habitat-state read answers through the client's row: " + before,
+    );
+    std::test::assert(
+        std::str::contains(before, "\"organisms\":\"[]\"")
+            || std::str::contains(before, "\"organisms\": \"[]\""),
+        "with no organisms yet: " + before,
+    );
+
+    // ---- grafted organisms are counted and named by the same read
+    let a = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nalpha\n--no-library");
+    std::test::assert_eq_int(a.code, 0, "alpha is grafted: " + a.stdout + a.stderr);
+    let mut after = index_call(face);
+    let deadline = std::time::now() + dna::wait_secs(300);
+    while std::time::now() <= deadline && !std::str::contains(after, "alpha") {
+        std::time::sleep(1s);
+        after = index_call(face);
+    }
+    std::test::assert(
+        std::str::contains(after, "alpha") && std::str::contains(after, "grafted"),
+        "the read names the organism and its state: " + after,
+    );
+
+    let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    std::test::assert_eq_int(down.code, 0, "down: " + down.stdout + down.stderr);
+    dna::scratch_done(scratch);
+}

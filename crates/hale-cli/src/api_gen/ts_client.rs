@@ -90,10 +90,10 @@ pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String,
         FieldSchema::Scalar { .. } | FieldSchema::Time | FieldSchema::Any => Ok(value.to_string()),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("encode_{}({value})", type_ident(name))),
         FieldSchema::Map { name, lifted, of: None, .. } => {
-            Ok(format!("apiMapEncode({value}, {}, encode_{})", json_quote(lifted), type_ident(name)))
+            Ok(format!("__apiMapEncode({value}, {}, encode_{})", json_quote(lifted), type_ident(name)))
         }
         FieldSchema::Map { name, lifted, of: Some((v, _)), .. } => Ok(format!(
-            "apiMapEncode({value}, {}, encode_{}, {})",
+            "__apiMapEncode({value}, {}, encode_{}, {})",
             json_quote(lifted),
             type_ident(name),
             json_quote(v)
@@ -133,10 +133,10 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
         // free-form JSON: as parsed, never looked inside
         FieldSchema::Any => Ok(json.to_string()),
         FieldSchema::Map { name, lifted, of: None, .. } => {
-            Ok(format!("apiMapDecode({json}, {}, decode_{})", json_quote(lifted), type_ident(name)))
+            Ok(format!("__apiMapDecode({json}, {}, decode_{})", json_quote(lifted), type_ident(name)))
         }
         FieldSchema::Map { name, lifted, of: Some((v, _)), .. } => Ok(format!(
-            "apiMapDecode({json}, {}, decode_{}, {})",
+            "__apiMapDecode({json}, {}, decode_{}, {})",
             json_quote(lifted),
             type_ident(name),
             json_quote(v)
@@ -307,9 +307,9 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
         _ => "() => { throw new TransportError(\"the member has no handler error, and one came\"); }".to_string(),
     };
     Ok(format!(
-        "/** {name}{requires} */\nexport type {outcome} = Outcome<{value}, {error}>;\n\n\
+        "/** {name}{requires} */\nexport type {outcome} = __Outcome<{value}, {error}>;\n\n\
          export function {fn_name}(opts: ClientOptions{param}): __Promise<{outcome}> {{\n  \
-         return apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
+         return __apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
         digest = json_quote(&m.digest),
@@ -328,9 +328,9 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
         "/** The stream {topic} of the hub {hub} (stream digest {digest}), requires {roles}: `subscribed`, then\n \
          * each `event` with its `seq` (a gap is the frames shed) until `expired`, `revoked` or `closed`; a\n \
          * connection that ends with no closed frame throws a TransportError from the iterator. */\n\
-         export type {event} = StreamEvent<{payload}>;\n\n\
-         export function {subscribe}(opts: StreamOptions): Subscription<{payload}> {{\n  \
-         return apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
+         export type {event} = __StreamEvent<{payload}>;\n\n\
+         export function {subscribe}(opts: StreamOptions): __Subscription<{payload}> {{\n  \
+         return __apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
         topic = s.topic,
         hub = s.hub,
         digest = s.hub_digest,
@@ -341,6 +341,9 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
 pub fn generate(model: &ClientModel) -> Result<String, String> {
     let mut seen = BTreeSet::new();
     let mut claim = |name: String| -> Result<(), String> {
+        if name.starts_with("__") && !hale_types::api_names::TS_CLIENT_NAMES.contains(&name.as_str()) {
+            return Err(format!("`{name}` starts with `__`, which the client keeps for its own declarations: rename it"));
+        }
         if seen.insert(name.clone()) {
             Ok(())
         } else {

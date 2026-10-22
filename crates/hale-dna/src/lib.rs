@@ -215,7 +215,13 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
 /// habitat from, the one organism that may be born without a parent. Its
 /// positions are the nursery's `habitat` pack, and its law the `standard`
 /// pack and the `law` items its document marks.
-pub const HABITAT_FILES: &[EmbeddedFile] = at!["dna/habitat/README.md"];
+pub const HABITAT_FILES: &[EmbeddedFile] = at![
+    "dna/habitat/README.md",
+    "dna/habitat/ui/head-client.js",
+    "dna/habitat/ui/index.html",
+    "dna/habitat/ui/operator.css",
+    "dna/habitat/ui/operator.js",
+];
 
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.

@@ -78,10 +78,10 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
         _ => "() => { throw new TransportError(\"the member has no handler error, and one came\"); }".to_string(),
     };
     Ok(format!(
-        "/** @typedef {{Outcome<{value}, {error}>}} {outcome} */\n\n\
+        "/** @typedef {{__Outcome<{value}, {error}>}} {outcome} */\n\n\
          /**\n * {name}{requires}\n * @param {{ClientOptions}} opts\n{param_doc} * @returns {{globalThis.Promise<{outcome}>}}\n */\n\
          export function {fn_name}(opts{param}) {{\n  \
-         return apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
+         return __apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
         digest = json_quote(&m.digest),
@@ -97,13 +97,13 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
     let decoder = decode_in(p, "json", &format!("{what} payload"), true)?;
     let roles = if s.requires.is_empty() { "none".to_string() } else { s.requires.join(", ") };
     Ok(format!(
-        "/** @typedef {{StreamEvent<{payload}>}} {event} */\n\n\
+        "/** @typedef {{__StreamEvent<{payload}>}} {event} */\n\n\
          /**\n * The stream {topic} of the hub {hub} (stream digest {digest}), requires {roles}: `subscribed`, then\n \
          * each `event` with its `seq` (a gap is the frames shed) until `expired`, `revoked` or `closed`; a\n \
          * connection that ends with no closed frame throws a TransportError from the iterator.\n \
-         * @param {{StreamOptions}} opts\n * @returns {{Subscription<{payload}>}}\n */\n\
+         * @param {{StreamOptions}} opts\n * @returns {{__Subscription<{payload}>}}\n */\n\
          export function {subscribe}(opts) {{\n  \
-         return apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
+         return __apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
         topic = s.topic,
         hub = s.hub,
         digest = s.hub_digest,
@@ -114,6 +114,9 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
 pub fn generate(model: &ClientModel) -> Result<String, String> {
     let mut seen = BTreeSet::new();
     let mut claim = |name: String| -> Result<(), String> {
+        if name.starts_with("__") && !hale_types::api_names::JS_CLIENT_NAMES.contains(&name.as_str()) {
+            return Err(format!("`{name}` starts with `__`, which the client keeps for its own declarations: rename it"));
+        }
         if seen.insert(name.clone()) {
             Ok(())
         } else {
