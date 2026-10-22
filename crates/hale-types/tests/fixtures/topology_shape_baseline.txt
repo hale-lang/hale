@@ -1697,7 +1697,8 @@ crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
-crates/hale-stdlib/hl/http_client.hl 347a1da9c030446d
+crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6
+crates/hale-stdlib/hl/http_read.hl 986c1bdebfe304e9
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/lang.hl cec111863280b6a7

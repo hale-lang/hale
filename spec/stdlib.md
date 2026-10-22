@@ -886,7 +886,14 @@ locus Relay {
   with it: a handler's per-connection region reclaims a relay's whole
   stream when the response ends, while a read loop in a frame that lives
   as long as the program (a `main` locus's `run`) keeps every piece it
-  was handed until that frame ends.
+  was handed until that frame ends. The readers are declared in
+  `http_read.hl`, which joins only a program that names one of them, so
+  a program that reads no stream carries none of their code.
+- **A sealed key.** The `headers` and `body` of the `req` literal are a
+  wire write's payload for `@sealed` (spec/semantics.md § "`@sealed` and
+  a revealed secret"), as `std::http::request`'s are: `headers:
+  "Authorization: Bearer " + self.key.reveal_text()` is accepted there,
+  and a keyed upstream streams.
 
 Not provided: reconnection (`Last-Event-ID`), keep-alive reuse of a
 streamed connection, trailers (the trailer section after the last chunk

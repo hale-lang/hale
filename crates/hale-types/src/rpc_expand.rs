@@ -656,7 +656,7 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 /// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 8] = [
+    let windows: [(u32, &'static str, &'static str); 9] = [
         (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
         (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
         (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
@@ -665,6 +665,7 @@ pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)
         (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
         (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
         (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
+        (HTTP_READ_BASE, "http_read.hl", hale_stdlib::HTTP_READ_SOURCE),
     ];
     windows.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
@@ -906,6 +907,15 @@ const TCP_LISTENER_BASE: u32 = TCP_SERVE_BASE + 0x0008_0000;
 /// the runtime's space.
 pub const OBSERVE_BASE: u32 = TCP_SERVE_BASE + 0x000C_0000;
 
+/// Where `http_read.hl` parses (GH #1698): past the observe backends, in
+/// the same last window of the runtime's space.
+pub const HTTP_READ_BASE: u32 = TCP_SERVE_BASE + 0x000E_0000;
+
+/// Whether an offset is in the streamed body readers' appended source.
+pub fn is_http_read_pos(pos: u32) -> bool {
+    (HTTP_READ_BASE..HTTP_READ_BASE + hale_stdlib::HTTP_READ_SOURCE.len() as u32).contains(&pos)
+}
+
 /// Whether an offset is in the observe backends' appended source.
 pub fn is_observe_pos(pos: u32) -> bool {
     (OBSERVE_BASE..OBSERVE_BASE + hale_stdlib::OBSERVE_SOURCE.len() as u32).contains(&pos)
@@ -913,10 +923,14 @@ pub fn is_observe_pos(pos: u32) -> bool {
 
 /// Whether an offset is in stdlib source appended to the program because
 /// it names it, and not in the stdlib copy: the TCP substrate's, the
-/// observe backends', or the client binding's (`client_expand`). A `std::` path to one of its loci names the
+/// observe backends', the client binding's (`client_expand`) or the
+/// streamed body readers'. A `std::` path to one of its loci names the
 /// program's declaration.
 pub fn is_appended_stdlib_pos(pos: u32) -> bool {
-    is_tcp_serve_pos(pos) || is_observe_pos(pos) || crate::client_expand::is_client_runtime_pos(pos)
+    is_tcp_serve_pos(pos)
+        || is_observe_pos(pos)
+        || crate::client_expand::is_client_runtime_pos(pos)
+        || is_http_read_pos(pos)
 }
 
 /// The backends of `std::observe`, once, for a program whose main locus
@@ -1026,6 +1040,37 @@ fn inject_tcp_serve(programs: &mut [&mut Program]) {
         Ok(t) => programs[0].items.extend(t.items),
         Err(ds) => eprintln!(
             "rpc_expand: the TCP substrate's topic did not parse: {}",
+            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+/// Whether the programs name `std::http::BodyReader` or `std::http::SseReader`.
+fn mentions_http_read(programs: &[&mut Program]) -> bool {
+    spells(programs, &|w| w[1] == "std" && w[2] == "http" && (w[3] == "BodyReader" || w[3] == "SseReader"))
+}
+
+/// The streamed body readers, once, for a program that names one
+/// (`hale_stdlib::HTTP_READ_SOURCE`): a program that reads no stream
+/// carries none of them.
+fn inject_http_read(programs: &mut [&mut Program]) {
+    let have = programs
+        .iter()
+        .any(|p| flat_decls(&p.items).any(|d| matches!(d, TopDecl::Locus(l) if l.name.name == "__StdHttpBodyReader")));
+    if have || programs.is_empty() {
+        return;
+    }
+    match parse_source_at(hale_stdlib::HTTP_READ_SOURCE, HTTP_READ_BASE) {
+        Ok(rt) => {
+            for mut item in rt.items {
+                if let TopDecl::Type(t) = &mut item {
+                    t.synthetic = true;
+                }
+                programs[0].items.push(item);
+            }
+        }
+        Err(ds) => eprintln!(
+            "rpc_expand: the streamed body readers did not parse: {}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
         ),
     }
@@ -1162,6 +1207,9 @@ pub fn expand(
     }
     if mentions_tcp_listener(programs) {
         inject_tcp_listener(programs);
+    }
+    if mentions_http_read(programs) {
+        inject_http_read(programs);
     }
     let hubs = crate::hub_expand::binds_a_hub(programs);
     if !mentions_runtime(programs) && !hubs {

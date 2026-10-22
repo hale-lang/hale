@@ -228,9 +228,10 @@ fn every_renamed_std_target_is_declared_or_consciously_exempt() {
     // which join a program that serves or names them, and the observe
     // backends (`OBSERVE_SOURCE`), which join one that holds one as a param,
     // and the client binding's runtime (`API_CLIENT_SOURCE`), which joins one
-    // that holds a client.
+    // that holds a client, and the streamed body readers (`HTTP_READ_SOURCE`),
+    // which join one that names them.
     let mut declared = std::collections::BTreeSet::new();
-    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE, hale_stdlib::API_HUB_SOURCE, hale_stdlib::API_H2_SOURCE, hale_stdlib::API_GRPC_SOURCE, hale_stdlib::TCP_SERVE_SOURCE, hale_stdlib::TCP_LISTENER_SOURCE, hale_stdlib::OBSERVE_SOURCE, hale_stdlib::API_CLIENT_SOURCE] {
+    for source in [hale_stdlib::AP_SOURCE, hale_stdlib::API_RUNTIME_SOURCE, hale_stdlib::API_HUB_SOURCE, hale_stdlib::API_H2_SOURCE, hale_stdlib::API_GRPC_SOURCE, hale_stdlib::TCP_SERVE_SOURCE, hale_stdlib::TCP_LISTENER_SOURCE, hale_stdlib::OBSERVE_SOURCE, hale_stdlib::API_CLIENT_SOURCE, hale_stdlib::HTTP_READ_SOURCE] {
         let program = hale_syntax::parse_source(source).expect("the bundled stdlib source must parse");
         for item in &program.items {
             match item {

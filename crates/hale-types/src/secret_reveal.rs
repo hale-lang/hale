@@ -104,6 +104,11 @@ const REQUEST_FNS: &[&[&str]] = &[&["std", "http", "request"]];
 const REQUEST_METHODS: &[(&str, &str)] = &[("__StdHttpClient", "request")];
 const REQUEST_WIRE_FIELDS: &[&str] = &["headers", "body"];
 
+/// Loci whose `req` field is a request they put on the wire as
+/// `Client.request` does (GH #1698): a streamed body's readers send their
+/// `req` at birth, so its `headers` and `body` are the wire's.
+const REQUEST_LOCI: &[&str] = &["__StdHttpBodyReader", "__StdHttpSseReader"];
+
 /// Methods that compare their argument with a sealed value.
 const COMPARE_METHODS: &[(&str, &str)] = &[(CREDENTIAL, "matches")];
 
@@ -1471,13 +1476,22 @@ impl<'a> Body<'a> {
             }
             Expr::Struct { path, inits, .. } => {
                 let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                // a streamed body's reader: its `req` goes on the wire
+                let reader = match segs.as_slice() {
+                    ["std", "http", r @ ("BodyReader" | "SseReader")] => Some(format!("std::http::{r}")),
+                    [one] if REQUEST_LOCI.contains(one) => Some(self.world.display(one)),
+                    _ => None,
+                };
                 let locus = self.world.key_of_segs(&segs).filter(|k| self.world.loci.contains(k));
                 let f = match locus {
                     Some(l) => Flow::leaks(format!("is stored in a `{} {{ … }}`", self.world.display(&l))),
                     None => flow.composed(),
                 };
                 for i in inits {
-                    self.expr(&i.value, &f);
+                    match &reader {
+                        Some(spelled) if i.name.name == "req" => self.request_arg(spelled, &i.value),
+                        _ => self.expr(&i.value, &f),
+                    }
                 }
             }
             Expr::Block(b) => self.block(b, flow),

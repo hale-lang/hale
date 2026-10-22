@@ -95,6 +95,14 @@ locus Streams {
             ) or discard;
             return std::http::Response { status: 200, body: "", takeover_raw: true };
         }
+        if req.path == "/whoami" {
+            // the credential the request carried, as the stream's one event
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(
+                std::http::SseEvent { data: std::http::header(req, "Authorization") },
+            ) or discard;
+            return w.end();
+        }
         if req.path == "/mark" {
             self.marked = true;
         }
@@ -102,6 +110,25 @@ locus Streams {
             self.marked2 = true;
         }
         return std::http::Response { status: 200, body: "plain body" };
+    }
+}
+
+// A keyed upstream: the bearer is sealed in the vault, revealed only into
+// the reader's request, which goes on the wire at the reader's birth.
+locus Keyed {
+    params {
+        key: std::secret::Credential = std::secret::Credential { vault: "upstream-key" };
+    }
+    fn who(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"",
+            },
+        };
+        let e = s.event() or std::http::SseEvent { data: "!" };
+        return e.data;
     }
 }
 
@@ -221,6 +248,32 @@ main locus App {
         kind = "";
         d.chunk() or { kind = err.kind; b"" };
         std::test::assert_eq_str(kind, "connect_failed", "the same failure again");
+
+        // ---- an empty URL is a stated outcome, never a crash
+        let empty = std::http::BodyReader { req: request_to("") };
+        std::test::assert_eq_int(empty.status, 0, "an empty URL has no head");
+        kind = "";
+        empty.chunk() or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "connect_failed", "an empty host is a refused dial");
+        let blank = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: std::http::Url { scheme: "", host: "" },
+                body: b"",
+            },
+        };
+        kind = "";
+        blank.event() or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "unsupported_scheme", "an empty scheme");
+
+        // ---- a vault-sealed bearer reaches the server through a reader
+        std::io::fs::write_file(std::env::var("HALE_VAULT_DIR") + "/upstream-key", "sk-sealed")
+        or discard;
+        let keyed = Keyed { };
+        std::test::assert_eq_str(
+            keyed.who(request_to(base + "/whoami").url),
+            "Bearer sk-sealed",
+            "the sealed key on the wire",
+        );
 
         // ---- a Content-Length body, as it arrives, then its end
         let p = std::http::BodyReader { req: request_to(base + "/plain") };

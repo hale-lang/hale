@@ -1395,7 +1395,9 @@ reveals it:**
     the body or content type of `std::http::post` /
     `std::http::Client.post`; the `headers` or `body` of a
     `std::http::ClientRequest { … }` literal handed to
-    `std::http::request` / `Client.request`. A descriptor, host, port,
+    `std::http::request` / `Client.request`, or written as the `req` of
+    a `std::http::BodyReader { … }` / `SseReader { … }` literal (its
+    birth sends it, as `request` does). A descriptor, host, port,
     URL or method is not the wire's: an `HttpError` repeats the host
     back, so a secret there is refused;
   - a **comparison of the whole value**: `==`, `!=`, a `match` whose
