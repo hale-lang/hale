@@ -2154,11 +2154,19 @@ fn fleet_export(root: String, fleet_rel: String) -> String {
 }
 
 // The same at a revision of the genome: the revision checked out into a
-// scratch worktree for the export, which is removed after.
+// scratch worktree for the export, which is removed after. An export cuts
+// each instance's artifact, so the worktree needs what the seeds import.
 fn fleet_export_at(root: String, rev: String, fleet_rel: String) -> String {
     let dir = "/tmp/dna-fleet-" + to_string(std::process::pid()) + "-" + short(rev);
     let add = genome(root, "worktree\nadd\n--detach\n" + dir + "\n" + rev);
     if add.code != 0 { return ""; }
+    // the vendored dependencies are ignored, so no revision's tree holds
+    // them: the scratch worktree reads the checkout's, as its seeds import
+    // them (`vendor/dna/…`)
+    if std::io::fs::file_exists(root + "/vendor") {
+        let linked = dna::run_tool("ln\n-s\n" + root + "/vendor\n" + dir + "/vendor");
+        if linked.code != 0 { return ""; }
+    }
     let out = fleet_export(dir, fleet_rel);
     let removed = genome(root, "worktree\nremove\n--force\n" + dir);
     if removed.code != 0 { return out; }

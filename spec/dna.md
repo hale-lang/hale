@@ -4018,8 +4018,9 @@ The organization's models are a catalog in source (GH #583 M1):
 - **The fixture.** `dna/acceptance/trio`: a gateway (the root seed),
   an api and a worker under a fleet seed (`trio/fleet`) of four
   instances on two hosts, with the routes its bindings derive and claims
-  across them (`require publishes` on the gateway and the api, `forbid
-  reaches` gateway → worker avoiding the api). Its organization, with every
+  across them (`require publishes` on the gateway and the api, `require
+  subscribes` on the api for the gateway's orders, `forbid reaches`
+  gateway → worker avoiding the api). Its organization, with every
   backend a `RecordedModel` over the real adapter
   (`dna/acceptance/trio.fixture/catalog.hl`; mode from
   `HALE_DNA_TAPE`, the tape from `HALE_DNA_TAPE_DIR`), is driven by

@@ -23,6 +23,7 @@ fleet locus Production {
     }
     claims {
         the_gateway_takes_orders: require publishes(some gateway, topic g::Orders);
+        the_api_takes_the_orders: require subscribes(some api, topic g::Orders);
         the_api_fulfils: require publishes(some api, topic a::Fulfil);
         orders_pass_the_api: forbid reaches(gateway, worker) avoiding api;
     }
