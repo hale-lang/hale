@@ -1,0 +1,198 @@
+// dna/api/habitat_hosts.hl — the habitat's hosts, added, probed and removed
+// as the head's commands (phase 4).
+//
+// Three rows of `HeadCommands`, the Board's (`owner`): `Commands::add_host`
+// adds a machine on the LAN by the name it resolves under, as an `ssh` host
+// (the habitat's keypair made into its vault the first time; the host key
+// it answers with first kept as the only one trusted; what it offers probed
+// over SSH, or `pending-key` until the habitat's key is authorized there),
+// and answers the habitat's public key and the line the host's
+// `~/.ssh/authorized_keys` takes. `Commands::probe_host` probes it again: a
+// `pending-key` host whose key is now authorized moves on to `ready`, and a
+// host that answers with another host key is refused. `Commands::remove_host`
+// removes it, refused while any allocation is placed on it. Each act is a
+// `habitat.host <name>` row of the habitat's record, written when what it
+// says changed. `hale habitat host add|probe|remove` is a client of these.
+import "../core" as dna;
+
+type HostAdd {
+    name: String = "";
+    user: String = "";
+    port: Int = 22;
+}
+
+type HostNamed { name: String = ""; }
+
+type HostReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the host as its row now states it
+    host: String = "{}";
+    // what `add_host` answers: the habitat's public key, and the line the
+    // host's `~/.ssh/authorized_keys` takes
+    public_key: String = "";
+    authorize: String = "";
+}
+
+fn host_refused(code: String, why: String) -> HostReply {
+    return HostReply { code: code, why: why };
+}
+
+// Whether every byte of `s` is a letter, a digit or one of `extra`.
+@bounded_by(s)
+fn host_chars(s: String, extra: String) -> Bool {
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || std::str::contains(extra, c);
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Why `name` is no host name the LAN could resolve, "" when it is one.
+fn host_name_refusal(name: String) -> String {
+    if len(name) == 0 || len(name) > 253 { return "a host is named by 1 to 253 characters"; }
+    if std::str::starts_with(name, "-")
+        || std::str::starts_with(name, ".")
+        || !host_chars(name, ".-")
+    {
+        return "`" + name + "` is not a host name (letters, digits, `.` and `-`)";
+    }
+    if name == "local" { return "`local` is this machine, the compose provider's host"; }
+    return "";
+}
+
+// The `habitat.host` row for `h`, appended: "" once it is, else why not.
+fn host_write(root: String, h: dna::Host) -> String {
+    let j = dna::RecordJournal { repo: root, author: "api" };
+    let moved = j.refresh();
+    let r = j.append(j.revision(), "habitat.host", h.name, dna::host_row_body(h));
+    return if r.ok { "" } else { "the habitat's record refused the host's row (" + r.error + ")" };
+}
+
+// The allocations placed on the host `name`, space-separated
+// (`<instance>/<role>`): each `habitat.allocated` entity whose latest row
+// names it.
+@bounded_by(root)
+fn host_allocations(root: String, name: String) -> String {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.allocated");
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if std::json::find_string_field(e.body, "host") == name {
+            out = out + (if len(out) > 0 { " " } else { "" }) + e.entity;
+        }
+    }
+    return out;
+}
+
+fn host_reply(h: dna::Host, code: String, why: String) -> HostReply {
+    return HostReply { ok: len(code) == 0, code: code, why: why, host: dna::host_row_body(h) };
+}
+
+fn habitat_host_add(root: String, a: HostAdd) -> HostReply {
+    let refused = host_name_refusal(a.name);
+    if len(refused) > 0 { return host_refused("invalid_host", refused); }
+    let user = if len(a.user) > 0 { a.user } else { std::env::var("USER") };
+    if len(user) == 0
+        || len(user) > 32
+        || std::str::starts_with(user, "-")
+        || !host_chars(user, "._-")
+    {
+        return host_refused("invalid_host", "`" + user + "` is not a user name");
+    }
+    if a.port < 1 || a.port > 65535 {
+        return host_refused("invalid_host", "the port is 1 to 65535");
+    }
+    let had = dna::recorded_host(root, a.name);
+    if len(had.provider) > 0 && had.state != "removed" {
+        return host_refused(
+            "host_exists",
+            "`" + a.name + "` is a host already (" + had.state + "): `hale habitat host probe "
+                + a.name + "` checks it again",
+        );
+    }
+    let keyed = dna::habitat_key_ensure(root);
+    if len(keyed) > 0 { return host_refused("key_unavailable", keyed); }
+    // trust on first use: the host key it answers with now is the only one
+    // trusted after this
+    let host_key = dna::ssh_host_key(a.name, a.port);
+    if len(host_key) == 0 {
+        return host_refused(
+            "unreachable",
+            "no SSH server answered at " + a.name + ":" + to_string(a.port),
+        );
+    }
+    let fresh = dna::Host {
+        name: a.name,
+        provider: "ssh",
+        state: "pending-key",
+        address: a.name,
+        port: a.port,
+        user: user,
+        host_key: host_key,
+        fingerprint: dna::ssh_fingerprint(host_key),
+    };
+    let probed = dna::ssh_probe(root, fresh);
+    let h = if probed.state == "ready" || probed.state == "pending-key" { probed } else { fresh };
+    let wrote = host_write(root, h);
+    if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    let public = dna::habitat_public_key(root);
+    let mut r = host_reply(h, "", if h.state == "ready" { "" } else { probed.why });
+    r.public_key = public;
+    r.authorize = public;
+    return r;
+}
+
+fn habitat_host_probe(root: String, name: String) -> HostReply {
+    let h = dna::recorded_host(root, name);
+    if h.provider != "ssh" || h.state == "removed" {
+        return host_refused("not_found", "no ssh host `" + name + "` was added");
+    }
+    let probed = dna::ssh_probe(root, h);
+    if std::str::starts_with(probed.why, "host-key-changed") {
+        return host_refused("host_key_changed", probed.why);
+    }
+    if std::str::starts_with(probed.why, "unreachable") {
+        return host_reply(h, "unreachable", probed.why);
+    }
+    if dna::host_row_body(probed) != dna::host_row_body(h) {
+        let wrote = host_write(root, probed);
+        if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    }
+    return host_reply(probed, "", probed.why);
+}
+
+fn habitat_host_remove(root: String, name: String) -> HostReply {
+    if name == "local" {
+        return host_refused(
+            "not_removable",
+            "`local` is this machine, the compose provider's host",
+        );
+    }
+    let h = dna::recorded_host(root, name);
+    if len(h.provider) == 0 || h.state == "removed" {
+        return host_refused("not_found", "no host `" + name + "` was added");
+    }
+    let placed = host_allocations(root, name);
+    if len(placed) > 0 {
+        return host_refused(
+            "allocations_placed",
+            "allocations are placed on " + name + ": " + placed + "; move or remove them first",
+        );
+    }
+    let mut gone = h;
+    gone.state = "removed";
+    gone.reachable = false;
+    let wrote = host_write(root, gone);
+    if len(wrote) > 0 { return host_refused("record_refused", wrote); }
+    return host_reply(gone, "", "");
+}

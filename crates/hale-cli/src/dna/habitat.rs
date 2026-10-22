@@ -36,6 +36,9 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
+       hale habitat host add <name> [--user <user>] [--port <n>]
+       hale habitat host probe <name>
+       hale habitat host remove <name>
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -123,6 +126,22 @@ handover [organism]  what the habitat hands the organism's heart, one
                      HALE_DNA_BROKER_URL, _USER, _VAULT, _SUBJECTS,
                      _NODE_USER and _NODE_VAULT. `hale dna dev` hands the
                      heart the same.
+host add <name>      add a machine on the LAN, by the name it resolves under,
+                     as a host the habitat places on over SSH (port 22
+                     unless --port, as --user or this user): prints the
+                     host key first seen there (the one trusted after it)
+                     and the habitat's public key, the line to append to
+                     ~/.ssh/authorized_keys on that machine. Until it is
+                     appended the host is pending-key.
+host probe <name>    probe it again over SSH: what it offers (docker
+                     compose, the user's systemd, its OS and architecture);
+                     a pending-key host whose key is now authorized is
+                     ready. A host that answers with another host key is
+                     refused.
+host remove <name>   remove it; refused while an allocation is placed on it.
+                     The host verbs are the Board's commands of the
+                     habitat's head (Commands::add_host, ::probe_host,
+                     ::remove_host): its body must be up.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record
@@ -185,6 +204,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             }
         }
         Some("nursery") => sapling::nursery_cmd(&args[1..]),
+        Some("host") => host(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -209,6 +229,108 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+// ---------------------------------------------------------------
+// hosts: a thin client of the habitat head's commands (phase 4)
+// ---------------------------------------------------------------
+
+/// The socket the habitat's head serves its commands on, as
+/// `dna/api/main.hl`'s `head_socket` names it for the habitat's record.
+fn head_socket_of(genome: &Path) -> Option<PathBuf> {
+    if let Some(given) = std::env::var("HALE_DNA_RPC_SOCKET").ok().filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(given));
+    }
+    let id = manifest_pin(&genome.join("hale.toml")).ok().flatten()?;
+    let name = format!("{}.sock", &id[..12.min(id.len())]);
+    let runtime = std::env::var("XDG_RUNTIME_DIR").ok().filter(|v| !v.is_empty());
+    let dir = match runtime {
+        Some(r) => format!("{r}/hale/dna"),
+        None => genome.join(".hale/dna").display().to_string(),
+    };
+    // an AF_UNIX path has room for 103 bytes
+    if dir.len() + 1 + name.len() > 103 {
+        let uid = unsafe { libc::getuid() };
+        return Some(PathBuf::from(format!("/tmp/hale-{uid}/{name}")));
+    }
+    Some(PathBuf::from(dir).join(name))
+}
+
+fn host(args: &[String]) -> ExitCode {
+    let usage = "usage: hale habitat host add <name> [--user <user>] [--port <n>] | probe <name> | remove <name>";
+    let (verb, name) = match (args.first().map(String::as_str), args.get(1)) {
+        (Some(v @ ("add" | "probe" | "remove")), Some(n)) if !n.starts_with('-') => (v, n.clone()),
+        _ => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut payload = serde_json::json!({ "name": name });
+    let mut i = 2;
+    while i < args.len() {
+        match (verb, args[i].as_str(), args.get(i + 1)) {
+            ("add", "--user", Some(u)) => payload["user"] = serde_json::json!(u),
+            ("add", "--port", Some(p)) => match p.parse::<u16>() {
+                Ok(p) if p > 0 => payload["port"] = serde_json::json!(p),
+                _ => {
+                    eprintln!("hale habitat host: `--port {p}` is not a port");
+                    return ExitCode::from(2);
+                }
+            },
+            (_, other, _) => {
+                eprintln!("hale habitat host {verb}: `{other}` is not a flag of `host {verb}`\n{usage}");
+                return ExitCode::from(2);
+            }
+        }
+        i += 2;
+    }
+    let genome = genome_dir();
+    let Some(socket) = head_socket_of(&genome).filter(|p| p.exists()) else {
+        eprintln!("hale habitat host: the habitat's head is not up (`hale habitat up` starts it)");
+        return ExitCode::from(1);
+    };
+    let member = match verb {
+        "add" => "Commands::add_host",
+        "probe" => "Commands::probe_host",
+        _ => "Commands::remove_host",
+    };
+    let line = match crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-host" })) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("hale habitat host: the habitat's head did not answer: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+    if reply["ok"] != serde_json::json!(true) {
+        let why = reply["refusal"]["reason"].as_str().or_else(|| reply["error"].as_str()).unwrap_or(&line).to_string();
+        eprintln!("hale habitat host: the habitat's head refused {member}: {why}");
+        return ExitCode::from(1);
+    }
+    let v = &reply["value"];
+    let h: serde_json::Value = v["host"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let field = |k: &str| h[k].as_str().unwrap_or("").to_string();
+    if v["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat host {verb} {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let offers = if field("offers").is_empty() { "nothing yet".to_string() } else { field("offers") };
+    println!("{:<8}{name} ({}, {}@{}:{}): {}", "host", field("provider"), field("user"), field("address"), h["port"].as_i64().unwrap_or(0), field("state"));
+    if verb == "remove" {
+        return ExitCode::SUCCESS;
+    }
+    println!("{:<8}{offers}{}", "offers", if field("os").is_empty() { String::new() } else { format!(" ({} {})", field("os"), field("arch")) });
+    if verb == "add" {
+        println!("{:<8}{} {} (trusted from now on: another key is refused)", "hostkey", field("fingerprint"), field("host_key").split(' ').next().unwrap_or(""));
+        println!("{:<8}{}", "key", v["public_key"].as_str().unwrap_or(""));
+        if field("state") != "ready" {
+            println!("on {name}, append this line to ~/.ssh/authorized_keys of {}, then `hale habitat host probe {name}`:", field("user"));
+            println!("{}", v["authorize"].as_str().unwrap_or(""));
+        }
+    } else if let Some(why) = v["why"].as_str().filter(|w| !w.is_empty()) {
+        println!("{:<8}{why}", "note");
+    }
+    ExitCode::SUCCESS
 }
 
 fn migrate(dir: PathBuf) -> ExitCode {

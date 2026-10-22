@@ -38,6 +38,9 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
+       hale habitat host add <name> [--user <user>] [--port <n>]
+       hale habitat host probe <name>
+       hale habitat host remove <name>
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -123,6 +126,22 @@ handover [organism]  what the habitat hands the organism's heart, one
                      HALE_DNA_BROKER_URL, _USER, _VAULT, _SUBJECTS,
                      _NODE_USER and _NODE_VAULT. `hale dna dev` hands the
                      heart the same.
+host add <name>      add a machine on the LAN, by the name it resolves under,
+                     as a host the habitat places on over SSH (port 22
+                     unless --port, as --user or this user): prints the
+                     host key first seen there (the one trusted after it)
+                     and the habitat's public key, the line to append to
+                     ~/.ssh/authorized_keys on that machine. Until it is
+                     appended the host is pending-key.
+host probe <name>    probe it again over SSH: what it offers (docker
+                     compose, the user's systemd, its OS and architecture);
+                     a pending-key host whose key is now authorized is
+                     ready. A host that answers with another host key is
+                     refused.
+host remove <name>   remove it; refused while an allocation is placed on it.
+                     The host verbs are the Board's commands of the
+                     habitat's head (Commands::add_host, ::probe_host,
+                     ::remove_host): its body must be up.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record

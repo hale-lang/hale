@@ -6436,7 +6436,18 @@ them from the face as it relays the index: `POST
 (`Commands::index`, `::hosts`, `::allocations`, `::policy`) and no other
 member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
 record, written by `hale habitat up`; an allocation's provider and host
-are fields of the existing `habitat.allocated` row.
+are fields of the existing `habitat.allocated` row. `Commands::hosts`
+leaves out a removed host. Three Board rows (`requires: [owner]`) manage
+the hosts: `Commands::add_host` (`{name, user, port}`), `Commands::probe_host`
+and `Commands::remove_host` (`{name}`), each answering `{ok, code, why,
+host, public_key, authorize}`: the host as its row now states it, and for
+`add_host` the habitat's public key and the line the host's
+`~/.ssh/authorized_keys` takes. A refusal is `code` with `why`
+(`invalid_host`, `host_exists`, `unreachable`, `key_unavailable`,
+`not_found`, `host_key_changed`, `allocations_placed`, `not_removable`,
+`record_refused`). They are what `hale habitat host add|probe|remove`
+calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
+placement).
 Two more reads list the habitat's nurseries and saplings for the operator
 face's organisms screen: `Commands::nurseries` (`source`, `kind`: the
 toolchain's, `bundled`, then each `habitat.nursery` row the Board trusts)

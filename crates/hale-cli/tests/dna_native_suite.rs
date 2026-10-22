@@ -1078,6 +1078,7 @@ fn dna_fixture_set_is_complete() {
             "graph_show_test.hl",
             "habitat_face_test.hl",
             "habitat_graft_test.hl",
+            "habitat_hosts_test.hl",
             "habitat_operator_face_test.hl",
             "habitat_operator_test.hl",
             "habitat_saplings_test.hl",

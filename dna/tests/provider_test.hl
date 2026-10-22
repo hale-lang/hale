@@ -107,6 +107,11 @@ fn main() {
         "a render is applied on the host and kept: " + applied.why,
     );
     std::test::assert_eq_str(p.observe(placed).state, "up", "applied: up");
+    let gone = p.withdraw("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(gone.ok && p.withdrawn == 1, "a render is withdrawn: " + gone.why);
+    std::test::assert_eq_str(p.observe(placed).state, "down", "withdrawn: down");
+    let back = p.apply("local", dna::Render { project: "p", dir: "/d" });
+    std::test::assert(back.ok, "and applied again: " + back.why);
     p.degraded = "0123456789ab/memory";
     std::test::assert_eq_str(p.observe(placed).state, "degraded", "running, not well");
     p.down = "0123456789ab/memory";
