@@ -200,18 +200,22 @@ fn api() {
     // record's text linear in its size), whose calls the survey reads as
     // pure: two encoders of records whose fields are all non-string
     // scalars did nothing else, and leave the manifest on both sides.
+    // The placement rows sort before it as well (row 23 on main); the solo
+    // path's two rows (`complete_task` before it, which makes it row 24,
+    // and `take_task`) and the fns of `solo_tasks.hl` add 21 more on each
+    // side.
     pinned(
         "api",
-        573,
-        575,
+        594,
+        596,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
