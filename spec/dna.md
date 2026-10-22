@@ -3204,6 +3204,22 @@ the offer. An admission the record refuses holds the attempt for
 completed when the record resumes or on `redrive` without a restart,
 and the hand-off is announced only once it is durable.
 
+The solo path: the generated org chart sets `solo_without_model` on its
+substrate. While the organism has no model (`has_model`: no `model.category`
+row names one, `model_mapped`, and the editor's router permits no call, its
+hosted backends keyless and its local server, which `LocalModel` probes on
+this host, not running; a canned or recorded backend is a model), a Work the
+routing would hand to a leg (an agent's: a judgment, a Work routed to a
+position) or to the editor is a human leaf instead, a case for a person, and
+the case is handed unassigned with no word asked of the leader. Nothing
+waits on a model and nothing times out into a leg; mapping a category or
+giving the catalog a model gives the next execution its legs back. A
+substrate a program wires itself (`solo_without_model` false, the default)
+routes as before. A chart generated
+before the flag routes as before, and `hale dna upgrade` does not add it:
+DNA migrates nothing, and such an organism takes the solo path when it is
+born again (`hale habitat graft`).
+
 ## Workflow execution: human completion
 
 A case is completed by its person through the tooling of the day —
@@ -3221,6 +3237,15 @@ barrier, so the Work settles done, the step counts it, and a
 completion the record already holds an outcome for changes nothing.
 The report is kept until the record is seen to hold the outcome, as
 an edit's is.
+
+The face reaches the same through two rows of the head's surface, each
+in the caller's name (any person of the record), answering `{ok, code,
+why, task_id, state, assignee}`: `Commands::take_task` (`{task_id}`: a
+handed Task that names no assignee becomes the caller's, a
+`task.reassigned` row from `""`) and `Commands::complete_task`
+(`{task_id, text}`: a `task.done` row whose body is `by <who>: <text>`,
+refused `evidence_required` where the bound practice wants evidence, and
+by memory's gate for anyone but the assignee).
 
 The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
@@ -4568,7 +4593,10 @@ The live half is memory's, projected from the record by the spine
   next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
   `application`, the ask's own target — and the admission says it did
-  not parse. Without a leader the ask is an application change. An
+  not parse. On the solo path (below, Workflow execution: human cases), an
+  organism with no model asks no plan: the ask is a person's job, admitted
+  under `ask-person` and handed unassigned, for a person to take, and never
+  reaches the editor, which is a model too (`spec/habitat.md`). Without a leader the ask is an application change. An
   ask whose leader has not answered yet is in planning, and asked
   again meanwhile is not asked of the leader twice. No `task.planned`,
   `task.pending` or `task.resumed` row is written: the admission is

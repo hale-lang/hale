@@ -262,3 +262,18 @@ a newline; the review's with the hunk taken out and `index
 5980e16..efd80e8` put back), and each new key was the one the miss named.
 `rows.jsonl` did not move. No fresh model call was made; every answer,
 token and cost field is unchanged.
+
+The solo path (#1737) set `solo_without_model` on the generated
+organization's substrate, which changed one place in its `main.hl`:
+`planned: true` gains a comma and three lines after it (a two-line
+comment and `solo_without_model: true`). Two entries carry that file in
+their context. The organization-growth edit (`d9d4e054dcff…`, was
+`ac1f62d44200…`) is re-keyed, and its recorded output carries the same
+three lines and comma and nothing else; the growth assessment
+(`120afbb06c89…`, was `b248cbadc924…`) is re-keyed for the changed
+context alone. Each new context was read from the run's receipt and
+matched the miss's digest, each old context digest was reproduced from
+it with the change taken back out, each old key was reproduced from its
+entry's fields, and each new key was the one the miss named.
+`rows.jsonl` did not move. No fresh model call was made; every answer,
+token and cost field is unchanged.

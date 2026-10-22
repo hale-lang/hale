@@ -3029,7 +3029,10 @@ main locus Org {{
             // GH #596 L: an ask is planned by the leader before it becomes a Mutation
             // (the optimize pass occurs on the cadence a ratified practice
             // declares, `operating/optimize-cadence`: GH #1143)
-            planned: true
+            planned: true,
+            // the solo path: with no model (none mapped, none the catalog
+            // reaches) every ask and every leg's Work is a person's
+            solo_without_model: true
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
         // tier, reading the source diff and the semantic diff; every

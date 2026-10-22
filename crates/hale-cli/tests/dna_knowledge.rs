@@ -197,6 +197,12 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // proposed, not ratified: no package yet
     let pkg = field(&read_memory(&app, &head, "org/knowing/mailer", "8", "", ""), "pkg");
     assert!(pkg.split('\t').nth(1) == Some("0"), "nothing ratified yet: {pkg}");
+    // a model is mapped, so the ask below is the editor's (with none, the
+    // solo path hands it to a person and nothing consults memory for it);
+    // mapped before the ratification is waited for, so the projection the
+    // ask reads has the row too
+    let (ok, out) = hale(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"], &app, &[]);
+    assert!(ok, "the model mapped: {out}");
     // the Board ratifies the exact digest
     let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "riley", "--authority", "board", "--comment", "a good practice"], &app, &[]);
     assert!(ok, "verdict: {out}");

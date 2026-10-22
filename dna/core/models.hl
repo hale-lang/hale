@@ -924,6 +924,30 @@ locus AnthropicMessages {
 // server on this host). No credential, no external_model class: the
 // prompt does not leave the process boundary the law cares about, so
 // a customer-data path may reach it.
+// Whether `endpoint` (`http://host:port/…`) accepts a connection when its
+// host is this one (127.0.0.1 or localhost); an endpoint elsewhere is taken
+// to answer, never probed (a connection to a host that is gone may take
+// minutes to fail).
+fn local_endpoint_answers(endpoint: String) -> Bool {
+    let scheme = std::str::index_of(endpoint, "://");
+    let rest = if scheme < 0 { endpoint } else { endpoint[(scheme + 3)..len(endpoint)] };
+    let slash = std::str::index_of(rest, "/");
+    let hostport = if slash < 0 { rest } else { rest[0..slash] };
+    let colon = std::str::index_of(hostport, ":");
+    let host = if colon < 0 { hostport } else { hostport[0..colon] };
+    if host != "127.0.0.1" && host != "localhost" { return true; }
+    let port = if colon < 0 {
+        80
+    } else {
+        std::str::parse_int(hostport[(colon + 1)..len(hostport)]) or 0
+    };
+    if port < 1 || port > 65535 { return false; }
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::close_fd(fd);
+    return true;
+}
+
 locus LocalModel {
     params {
         name: String = "private";
@@ -940,7 +964,11 @@ locus LocalModel {
     fn adapter() -> String { return "local"; }
     fn price_micros(req: ModelRequest) -> Int { return 0; }
     fn model_name() -> String { return self.model; }
-    fn allows(data_class: String) -> Bool { return true; }
+    // A server on this host permits a call while it accepts one: a local
+    // model that is not running permits nothing, so a router whose only
+    // backend it is has no model (the solo path). An endpoint off this
+    // host is not probed.
+    fn allows(data_class: String) -> Bool { return local_endpoint_answers(self.endpoint); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     fn complete(req: ModelRequest) -> ModelResult {
@@ -1064,6 +1092,13 @@ locus ModelRouter {
         calls: Int = 0;
         last_backend: String = "";
         last_adapter: String = ""; // the adapter of the backend that answered last (GH #1131)
+    }
+    // Whether any backend permits a call at all (internal data): the router
+    // has a model to ask. False when every backend is a hosted one with no
+    // key or a local server that is not running (the solo path).
+    fn standing() -> Bool {
+        return self.quick.allows("internal") || self.deep.allows("internal")
+            || self.private.allows("internal");
     }
     // Whether the backend this request would go to works in place (a
     // harness): the editor asks before it exports a worktree.

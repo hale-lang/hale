@@ -456,6 +456,26 @@ from}` answering `{text, next, done, exit}`, the Board's like the graft; it
 reads only the log of a graft this head started, by its id, and refuses any
 other name or path) until it is done, then refreshes the lists.
 
+## The solo path: no model
+
+Every face screen works with the models catalog empty: no `model.category`
+row, no seat, no key. With no model:
+
+- **No verb requires one.** The operator face's screens read
+  `Commands::index`, `::hosts`, `::allocations`, `::policy`, `::nurseries` and
+  `::saplings`, none of which asks a model.
+- **A person does the organism's work.** With no model (none mapped, none
+  the catalog reaches; a canned or recorded one counts), an ask is a
+  person's job, handed unassigned with no plan asked, and a Work a leg or
+  the editor would perform is a person's case.
+  `spec/dna.md` (Graft, and Workflow execution: human cases) has both rules.
+- **The face does the person's part.** A person takes a handed Task
+  (`Commands::take_task`) and reports it done with the work as text
+  (`Commands::complete_task`, a `task.done` row in their name).
+- **Nothing times out into a leg.**
+
+The models screen's empty map is the normal state, not an error.
+
 ## Backends
 
 Chosen at the habitat's birth and kept.
