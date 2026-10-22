@@ -1463,7 +1463,11 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
         "fn {}{}{suffix}(__v: {}) -> String {{\n",
         fn_prefix, t.name, t.name
     ));
-    b.push_str("    let mut __b: String = \"{\";\n");
+    // One builder for the whole text: each piece is appended once, so what
+    // a record writes is linear in its text (re-concatenating `__b` with
+    // every element kept each prefix alive until the record was written,
+    // quadratic in a list: ~800 MB for a page of 1000 records).
+    b.push_str("    let __b = std::str::builder_new();\n    std::str::builder_append(__b, \"{\");\n");
     // A record with an optional field writes a key only when its field is
     // present (and never its flag), so its separators are decided as it is
     // written; any other record's are fixed here, as they always were.
@@ -1505,10 +1509,10 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             // without it as the value (or a map of values', its value
             // alone), in the list's order
             FieldKind::List { elem: Elem::Nested(tn), key: Some(k), value, .. } => {
-                b.push_str(&format!("    __b = __b + {} + \"{{\";\n", prefix));
+                b.push_str(&format!("    std::str::builder_append(__b, {} + \"{{\");\n", prefix));
                 b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
                 b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
-                b.push_str(&format!("        if __n_{} > 0 {{ __b = __b + \",\"; }}\n", f.name));
+                b.push_str(&format!("        if __n_{} > 0 {{ std::str::builder_append(__b, \",\"); }}\n", f.name));
                 let member = match value {
                     Some(v) => {
                         b.push_str(&format!("        let __xe: {} = __x.{};\n", v.elem_ty, v.field));
@@ -1517,10 +1521,10 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                     None => format!("{fn_prefix}{tn}__by_{k}(__x)"),
                 };
                 b.push_str(&format!(
-                    "        __b = __b + \"\\\"\" + std::json::escape_string(__x.{k}) + \"\\\":\" + {member};\n"
+                    "        std::str::builder_append(__b, \"\\\"\" + std::json::escape_string(__x.{k}) + \"\\\":\");\n        std::str::builder_append(__b, {member});\n"
                 ));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
-                b.push_str("    __b = __b + \"}\";\n");
+                b.push_str("    std::str::builder_append(__b, \"}\");\n");
                 if dynamic {
                     b.push_str("    __sep = \",\";\n");
                 }
@@ -1528,14 +1532,14 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 continue;
             }
             FieldKind::List { elem, elem_ty, .. } => {
-                b.push_str(&format!("    __b = __b + {} + \"[\";\n", prefix));
+                b.push_str(&format!("    std::str::builder_append(__b, {} + \"[\");\n", prefix));
                 b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
                 b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
                 b.push_str(&elem_bind(elem, elem_ty, "        "));
-                b.push_str(&format!("        if __n_{} > 0 {{ __b = __b + \",\"; }}\n", f.name));
-                b.push_str(&format!("        __b = __b + {};\n", json_elem_write(elem, "__xe", fn_prefix)));
+                b.push_str(&format!("        if __n_{} > 0 {{ std::str::builder_append(__b, \",\"); }}\n", f.name));
+                b.push_str(&format!("        std::str::builder_append(__b, {});\n", json_elem_write(elem, "__xe", fn_prefix)));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
-                b.push_str("    __b = __b + \"]\";\n");
+                b.push_str("    std::str::builder_append(__b, \"]\");\n");
                 if dynamic {
                     b.push_str("    __sep = \",\";\n");
                 }
@@ -1543,14 +1547,14 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 continue;
             }
         };
-        b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
+        b.push_str(&format!("    std::str::builder_append(__b, {});\n    std::str::builder_append(__b, {});\n", prefix, value));
         if dynamic {
             b.push_str("    __sep = \",\";\n");
         }
         b.push_str(&close_tracked(t, f, &prefix));
     }
-    b.push_str("    __b = __b + \"}\";\n");
-    b.push_str("    return __b;\n}\n");
+    b.push_str("    std::str::builder_append(__b, \"}\");\n");
+    b.push_str("    return std::str::builder_finish(__b);\n}\n");
     b
 }
 
@@ -1562,7 +1566,7 @@ fn close_tracked(t: &JsonType, f: &JsonField, prefix: &str) -> String {
         return String::new();
     }
     match clear_flag(t, &f.name) {
-        Some(clear) => format!("    }} else if __v.{clear} {{\n    __b = __b + {prefix} + \"null\";\n    __sep = \",\";\n    }}\n"),
+        Some(clear) => format!("    }} else if __v.{clear} {{\n    std::str::builder_append(__b, {prefix} + \"null\");\n    __sep = \",\";\n    }}\n"),
         None => "    }\n".to_string(),
     }
 }

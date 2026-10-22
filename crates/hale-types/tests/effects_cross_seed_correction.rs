@@ -193,10 +193,14 @@ fn api() {
     // rows (`add_nursery`, `nurseries`, `ratify_sapling`, `saplings`) add 31
     // more; `add_nursery` and `nurseries` sort before `preview_batch`, which
     // is row 18 now.
+    // The json codec's encoders write through one string builder (a
+    // record's text linear in its size), whose calls the survey reads as
+    // pure: two encoders of records whose fields are all non-string
+    // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
+        476,
         478,
-        480,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
