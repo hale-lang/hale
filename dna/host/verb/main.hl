@@ -69,7 +69,7 @@ fn main() {
     if verb == "verdict" && host::has_flag(a, "--evidence") {
         // GH #1161: a gate's run is the forge's, observed by the host
         ans = host::fail(
-            "review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)",
+            "review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna forge sync`)",
         );
     } else if verb == "verdict" {
         ans = host::verdict_command_verb(
@@ -548,8 +548,8 @@ fn main() {
         ans = host::deploy_verb(root, fleet, plan, host::word(a, 0), false, memory);
     } else if verb == "rollback" {
         ans = host::deploy_verb(root, fleet, plan, host::word(a, 0), true, memory);
-    } else if verb == "github" {
-        ans = host::github_verb(root, seed, host::word(a, 0), memory);
+    } else if verb == "forge" {
+        ans = host::forge_verb(root, seed, host::word(a, 0), memory);
     } else if verb == "models-map" {
         // the model mapping's tables, as rows (dna/core/model_map.hl)
         ans = host::model_map_verb(

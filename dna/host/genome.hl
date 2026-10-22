@@ -198,3 +198,12 @@ fn habitat_address(root: String, role: String) -> String {
     if base < 1 { return ""; }
     return "http://127.0.0.1:" + to_string(if role == "head" { base + 1 } else { base });
 }
+
+// The issuer the organism at `root` signs in through: its `dna.oidc.issuer`,
+// else the stub's default address.
+fn oidc_issuer(root: String) -> String {
+    let named = dna::trim_nl(
+        dna::run_tool("git\n-C\n" + root + "\nconfig\n--get\ndna.oidc.issuer").stdout,
+    );
+    return if len(named) > 0 { named } else { "http://127.0.0.1:8794" };
+}

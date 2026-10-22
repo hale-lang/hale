@@ -21,7 +21,7 @@ hale dna review <id> approve --comment "verified semantic diff and test receipts
 | **Standard Face** | Browser UI shell serving `/index`, `/app/`, and the Projects workspace in front of the head | `dna/face` |
 | **Read-Only UI** (`hale dna ui`) | Standalone read-only HTTP server rendering offline CLI projections on port `8790` | `dna/ui` |
 | **Board & Reviews** | Governance queue, 3-view Review rendering, signer routing, and verdict settlement | `hale dna board`, `hale dna review`, `hale dna route`, `dna/core/review.hl` |
-| **GitHub Mirror** | Bi-directional sync between DNA Reviews and GitHub Pull Requests (`gh`) | `hale dna github sync`, `dna/host/forge_github.hl` |
+| **Forge Mirror** | Reviews mirrored as pull requests at the organism's allocated forge, and their verdicts read back | `hale dna forge sync`, `dna/host/forge_github.hl` |
 
 ---
 
@@ -272,25 +272,25 @@ When a Review opens, it records this routing calculation as a `review.routed` ro
 
 ---
 
-## GitHub Pull Request Mirror (`hale dna github sync`)
+## The forge mirror (`hale dna forge sync`)
 
 You can mirror DNA change Reviews to GitHub Pull Requests while keeping the DNA record as the source of truth:
 
 ```sh
-git config dna.github acme/chat
-git config dna.github.board alice,bob     # GitHub logins whose PR reviews carry `board` authority
+hale habitat forge chat github --repo acme/chat --key-vault forge-token
+git config dna.github.board alice,bob     # whose GitHub reviews carry the Board's authority
 hale dna secret set FORGE_TOKEN
-hale dna github sync
+hale dna forge sync
 ```
 
-Running `hale dna github sync` (or letting the host run it automatically on each tick under `hale dna dev` / `hale dna run`):
+The forge is a role the habitat allocates, as it allocates memory: `none` until the Board allocates one (`hale habitat forge`, the head's `Commands::allocate_forge`), its token a vault slot the allocation names, never the token; with none allocated, `hale dna forge sync` says `forge: no forge allocated`. Running `hale dna forge sync` (or letting the host run it on each tick under `hale dna dev` / `hale dna run`) against the allocated forge:
 1. Pushes each pending change Review's candidate commit to branch `dna/<id>`, opens a GitHub PR containing the three Review views as its description, and records `github.pr` in the record.
 2. Imports GitHub PR reviews back into the record as `review.verdict` rows under the reviewer's GitHub login (granting `board` authority if listed in `dna.github.board`, or `reviewer` otherwise).
 3. Records GitHub Actions / check runs on the candidate commit as `gate.observed` rows.
 4. Once a change is applied, posts a settlement comment on the PR (`github.commented`) and pushes the updated genome branch on approval.
 
 > [!NOTE]
-> `gh` executes strictly using the `forge-token` slot from the vault (`hale dna secret set FORGE_TOKEN`). If the vault slot is empty, `github sync` is a no-op and never falls back to a developer's personal `gh auth` session.
+> `gh` executes strictly using the `forge-token` slot from the vault (`hale dna secret set FORGE_TOKEN`). If the vault slot is empty, `forge sync` runs nothing and never falls back to a developer's personal `gh auth` session.
 
 ---
 

@@ -254,7 +254,7 @@ const DNA_VERBS: &[&str] = &[
     "history", "body", "secret", "secrets", "application", "codebase", "schedule",
     "receipt", "connect", "practice", "disconnect", "handoff", "profile",
     "sync", "candidates", "ledger", "board", "report", "pressure", "concern",
-    "github", "fleet", "ui", "models", "work", "definitions", "deploy",
+    "forge", "fleet", "ui", "models", "work", "definitions", "deploy",
     "rollback", "review",
 ];
 

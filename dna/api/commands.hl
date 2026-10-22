@@ -1154,6 +1154,10 @@ locus CommandAdmission {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
         return habitat_host_remove(self.root, n.name, self.author(ctx));
     }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_allocate_forge(self.root, a);
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -1260,6 +1264,9 @@ locus Commands {
     }
     fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
         return self.admission.brief(a, ctx);
+    }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.allocate_forge(a, ctx);
     }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
@@ -1369,6 +1376,9 @@ api HeadCommands {
     // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
     // with the live state, for an agent pairing with a person. A read.
     rpc Commands::brief;
+
+    // An organism's forge allocated (habitat_rows.hl). The Board's.
+    rpc Commands::allocate_forge requires: [owner];
 }
 
 // A seat as a structure command names it: `position:<name>` from a name

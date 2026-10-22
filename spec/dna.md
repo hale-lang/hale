@@ -3704,7 +3704,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   which records it is connected to — declared by its pieces. `hale
   dna profile` prints one line per axis from the pieces alone: the
   record's remote, the body lease and its last tick, `[dna] fleet`,
-  the knowledge store's environment, `dna.trust`, `dna.github`; the
+  the knowledge store's environment, `dna.trust`, the forge allocation; the
   status projection carries a `profile:` and a `body:` line. `hale
   habitat graft <name> --profile local|remote-body [--remote <url>]
   [--body <user@host>]` sets pieces (a remote, `dna.body`); the profile name
@@ -5821,8 +5821,9 @@ The assembly names what fills each role; `hale check` sees the wiring.
 - **Board** (the `board` field, a `Membrane`) — where humans see and
   decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
-  relayed by the host); GitHub, mirrored by the host when `git config
-  dna.github` names `owner/repo`: every pending mutation Review becomes
+  relayed by the host); GitHub, mirrored by the host when the organism's
+  forge allocation is GitHub (`hale habitat forge <organism> github --repo
+  owner/repo`, `spec/habitat.md`): every pending mutation Review becomes
   a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the
   three views as the body), every GitHub review on it becomes a
   `review.verdict` row in the reviewer's login (authority `board` when
@@ -5841,7 +5842,10 @@ The assembly names what fills each role; `hale check` sees the wiring.
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
   `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
   behaviour, and `hale dna profile`'s `github:` line names which the
-  host found (`HALE_DNA_FORGE`, or `dna.github`). The forge's pass
+  host found: the organism's forge allocation (or `HALE_DNA_FORGE`, the
+  fixtures' override). `hale dna forge sync` syncs with the allocated
+  forge; with `none` allocated it answers `forge: no forge allocated`.
+  (`hale dna github sync` is gone.) The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
   not change with the forge. Nothing in the core or the host spells
@@ -6117,7 +6121,7 @@ over one seed, one command per process (GH #1490):
 - **the verb program**, `dna/host/verb`: every other verb, one-shot —
   the projections (`status`, `history`, `review`, `board`, `report`,
   `pressure`, `fleet`), the writers (`task create`, a verdict,
-  `pressure raise`, `sync`, `deploy`, `rollback`, `github sync`) and
+  `pressure raise`, `sync`, `deploy`, `rollback`, `forge sync`) and
   the rest. It imports the host's seed and starts no locus that runs
   or handles the bus, so it runs to exit, and the memory-bound survey
   judges it as it judges a script (`spec/verification.md`).

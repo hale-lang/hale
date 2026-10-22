@@ -172,6 +172,8 @@ fn applied_at(a: dna::Allocation) -> dna::Allocation {
 
 // What the allocation's provider observes of it now.
 fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
+    // the identity: the habitat's sign-in, answering at its issuer
+    if a.provider == "oidc-stub" { return dna::observe_address(a.address); }
     if a.provider == "compose" { return dna::ComposeProvider { }.observe(a); }
     if a.provider == "ssh" { return dna::SshProvider { root: root }.observe(a); }
     return dna::AllocationState {
@@ -411,4 +413,46 @@ fn habitat_sapling_ratify(root: String, name: String, by: String) -> NurseryRepl
         );
     }
     return NurseryReply { ok: true };
+}
+
+// ---- the forge, allocated by the Board ---------------------------------------
+//
+// `Commands::allocate_forge` allocates an organism's forge (`habitat` for the
+// habitat's own): `none`, `github` with its repository and the vault slot
+// of its token (never the token), or `file`. The act is `hale habitat forge
+// <organism> <provider> … --no-head`, run by the head with the toolchain
+// that launched it.
+
+type ForgeAllocate {
+    organism: String = "";
+    provider: String = "";
+    repo: String = "";
+    key_vault: String = "";
+}
+
+fn habitat_allocate_forge(root: String, a: ForgeAllocate) -> NurseryReply {
+    let words = a.organism + a.provider + a.repo + a.key_vault;
+    if len(a.organism) == 0 || len(a.provider) == 0 || std::str::contains(words, " ")
+        || std::str::contains(words, "\n") || std::str::starts_with(a.organism, "-")
+        || std::str::starts_with(a.repo, "-") || std::str::starts_with(a.key_vault, "-")
+    {
+        return nursery_refused(
+            "invalid",
+            "an organism, a provider, a repository and a vault slot's name, one word each",
+        );
+    }
+    if len(a.key_vault) > 0 && !std::secret::vault_name_is_safe(a.key_vault) {
+        return nursery_refused("invalid", "`" + a.key_vault + "` names no vault slot");
+    }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let mut args = "habitat\nforge\n" + a.organism + "\n" + a.provider + "\n--no-head";
+    if len(a.repo) > 0 { args = args + "\n--repo\n" + a.repo; }
+    if len(a.key_vault) > 0 { args = args + "\n--key-vault\n" + a.key_vault; }
+    let r = dna::run_tool_timeout(
+        300,
+        "sh\n-c\nfor v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + hale + "\n" + args,
+    );
+    if r.code != 0 { return nursery_refused("not_allocated", dna::trim_nl(r.stderr)); }
+    return NurseryReply { ok: true, why: dna::trim_nl(r.stdout) };
 }

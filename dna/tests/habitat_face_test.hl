@@ -265,6 +265,49 @@ fn main() {
             && std::json::find_string_field(tenant, "state") == "up",
         "a tenant's memory is the compose provider's too: " + allocations,
     );
+    // forge and identity are roles the habitat allocates too: the forge
+    // none until the Board allocates one, the identity the habitat's stub
+    let akey = dna::allocation_key(scratch + "/alpha");
+    let forge = element(allocations, "allocation", akey + "/forge");
+    let identity = element(allocations, "allocation", akey + "/identity");
+    std::test::assert(
+        std::json::find_string_field(forge, "provider") == "none"
+            && std::json::find_string_field(identity, "provider") == "oidc-stub"
+            && std::json::find_string_field(
+                element(allocations, "allocation", key + "/forge"),
+                "provider",
+            )
+            == "none",
+        "the allocations list forge and identity with their providers: " + allocations,
+    );
+    let synced = in_dir(scratch + "/alpha", toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        synced.code == 0 && std::str::contains(synced.stdout, "forge: no forge allocated"),
+        "with no forge, forge sync says so: " + synced.stdout + synced.stderr,
+    );
+    let allocated = in_dir(scratch, toolchain() + "\nhabitat\nforge\nalpha\nfile");
+    std::test::assert(
+        allocated.code == 0 && std::str::contains(allocated.stdout, "alpha's forge: file"),
+        "the Board allocates alpha a forge (Commands::allocate_forge): " + allocated.stdout
+            + allocated.stderr,
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(
+            element(
+                surface_read(face, "Commands::allocations", "allocations"),
+                "allocation",
+                akey + "/forge",
+            ),
+            "provider",
+        ),
+        "file",
+        "and the allocations say so",
+    );
+    let resynced = in_dir(scratch + "/alpha", toolchain() + "\ndna\nforge\nsync");
+    std::test::assert(
+        resynced.code == 0 && !std::str::contains(resynced.stdout, "no forge allocated"),
+        "forge sync goes through the allocated forge: " + resynced.stdout + resynced.stderr,
+    );
 
     // ---- down stops the face with the body
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");

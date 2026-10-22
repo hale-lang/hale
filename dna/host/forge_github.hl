@@ -6,6 +6,9 @@
 // when `dna.github` names a repository, else `none`; `file` for
 // fixtures) and `forge_sync` in writers.hl is written against the
 // interface: the rows it appends do not know which forge answered.
+// (Phase 4: the forge is the organism's allocation, `forge_allocated`, its
+// token a vault slot the allocation names; HALE_DNA_FORGE stays the
+// fixtures' override.)
 
 import "../core" as dna;
 
@@ -22,12 +25,12 @@ import "../core" as dna;
 // `GH_TOKEN="$(cat …)"`, so the token lives only in `gh`'s own environment.
 // The script unlinks the file as soon as it has read it, and the directory
 // goes after the call.
-fn gh(args: String) -> dna::RunResult {
-    let token = std::secret::Credential { vault: "forge-token" };
+fn gh(slot: String, args: String) -> dna::RunResult {
+    let token = std::secret::Credential { vault: if len(slot) > 0 { slot } else { "forge-token" } };
     if !token.ready() {
         return dna::RunResult {
             code: 1,
-            stderr: "no forge token: the vault holds none (`hale dna secret set FORGE_TOKEN`); gh's own login is never used in its place",
+            stderr: "no forge token: the vault holds none in the slot the forge's allocation names (`hale dna secret set FORGE_TOKEN` fills `forge-token`); gh's own login is never used in its place",
         };
     }
     // a token is provisioned: it is the identity, or nothing runs —
@@ -58,16 +61,18 @@ fn gh(args: String) -> dna::RunResult {
 }
 
 // GitHub: a pull request per review, its reviews as verdicts, a
-// comment at settlement. `repo` is `owner/repo` (`dna.github`), `base`
-// the branch a candidate is proposed against.
+// comment at settlement. `repo` is `owner/repo` (the forge allocation's),
+// `base` the branch a candidate is proposed against, `token_slot` the
+// vault slot of its token.
 locus GitHubForge {
-    params { repo: String = ""; base: String = "main"; }
+    params { repo: String = ""; base: String = "main"; token_slot: String = "forge-token"; }
     fn kind() -> String { return "github"; }
     fn present() -> Bool { return len(self.repo) > 0; }
     fn name() -> String { return "github " + self.repo; }
     // `candidate` is the branch the candidate was pushed to (`dna/<review>`).
     fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {
         let c = gh(
+            self.token_slot,
             "pr\ncreate\n--repo\n" + self.repo + "\n--base\n" + self.base + "\n--head\n" + candidate
                 + "\n--title\n" + title + "\n--body\n" + body,
         );
@@ -81,6 +86,7 @@ locus GitHubForge {
     fn verdicts(review: String) -> String {
         let number = review_number(review);
         let v = gh(
+            self.token_slot,
             "pr\nview\n" + number + "\n--repo\n" + self.repo + "\n--json\nstate,headRefOid,reviews",
         );
         if v.code != 0 { return "error\t" + dna::trim_nl(v.stderr) + "\t\t\n"; }
@@ -116,6 +122,7 @@ locus GitHubForge {
     // workflow's job, and its run is the job's check run.
     fn checks(review: String, sha: String) -> String {
         let c = gh(
+            self.token_slot,
             "api\n--paginate\nrepos/" + self.repo + "/commits/" + sha
                 + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv",
         );
@@ -124,6 +131,7 @@ locus GitHubForge {
     }
     fn comment(review: String, text: String) -> Bool {
         let c = gh(
+            self.token_slot,
             "pr\ncomment\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--body\n"
                 + text,
         );
@@ -131,6 +139,7 @@ locus GitHubForge {
     }
     fn close_review(review: String, why: String) -> Bool {
         let c = gh(
+            self.token_slot,
             "pr\nclose\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--comment\n"
                 + why,
         );
@@ -139,6 +148,7 @@ locus GitHubForge {
     // Phase 3: what became of a codebase's pull request.
     fn review_state(review: String) -> String {
         let v = gh(
+            self.token_slot,
             "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo
                 + "\n--json\nstate,mergeCommit",
         );
@@ -156,6 +166,7 @@ locus GitHubForge {
     }
     fn review_body(review: String) -> String {
         let v = gh(
+            self.token_slot,
             "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--json\nbody",
         );
         return if v.code == 0 { std::json::find_string_field(v.stdout, "body") } else { "" };
@@ -164,6 +175,7 @@ locus GitHubForge {
     @bounded_by(doc)
     fn review_comments(review: String) -> String {
         let v = gh(
+            self.token_slot,
             "pr\nview\n" + review_number(review) + "\n--repo\n" + self.repo
                 + "\n--json\ncomments,reviews",
         );
@@ -338,19 +350,18 @@ locus FileForge {
     }
 }
 
-// The forge the host found: GitHub when `dna.github` names a repository
-// (or HALE_DNA_FORGE says so), the file forge for fixtures, none for a
-// bare remote. `github:` in `profile` says which.
+// The forge the organism is allocated (`hale habitat forge`, the head's
+// `Commands::allocate_forge`): GitHub, the file forge (or HALE_DNA_FORGE,
+// the fixtures' override), or none. `profile` says which.
 fn forge_kind(root: String) -> String {
     let named = std::env::var("HALE_DNA_FORGE");
     if len(named) > 0 { return named; }
-    if len(rec(root).setting("github")) > 0 { return "github"; }
-    return "none";
+    return dna::forge_allocated(root).provider;
 }
 
 fn forge_name(root: String) -> String {
     let k = forge_kind(root);
-    if k == "github" { return "github " + rec(root).setting("github"); }
+    if k == "github" { return "github " + dna::forge_allocated(root).repo; }
     if k == "file" { return "file forge at .hale/dna/forge"; }
     return "none (a bare remote: no reviews are opened, no verdicts read from it)";
 }

@@ -574,7 +574,7 @@ locus OperationCases {
         let forge_sync = head::own_plan(self.cfg, ctx, "command-f5", "dna.forge.sync", "{}");
         std::test::assert(
             forge_sync.ok
-                && forge_sync.script == "exec \"$HALE_BIN\" dna github sync"
+                && forge_sync.script == "exec \"$HALE_BIN\" dna forge sync"
                 && std::str::contains(forge_sync.envs, "GH_PROMPT_DISABLED=1")
                 && forge_sync.external,
             "the forge sync plan",

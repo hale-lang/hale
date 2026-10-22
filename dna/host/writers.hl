@@ -2336,10 +2336,6 @@ fn deploy_verb(
 // `github.commented` still: a reader that met them before meets them
 // now, whichever forge answered.
 
-fn github_repo(root: String) -> String {
-    return rec(root).setting("github");
-}
-
 fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool {
     let mut i = 0;
     while i < p.rows() {
@@ -2700,15 +2696,15 @@ fn tab_field(line: String, n: Int) -> String {
 // (each forge is bound to a local before it is handed to the interface
 // parameter: constructed inline as the argument it reaches the callee
 // unborn)
-fn github_sync(root: String, seed: String, memory: dna::Memory) -> Answer {
+fn forge_sync_all(root: String, seed: String, memory: dna::Memory) -> Answer {
     let p = open_projection(root, seed, "", memory);
-    return github_sync_of(p, root, seed, memory);
+    return forge_sync_of(p, root, seed, memory);
 }
 
 // The same over a projection the caller already holds: the host's tick
 // reads one for the whole of its pass.
-fn github_sync_of(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
-    let own = github_sync_genome(p, root, seed, memory);
+fn forge_sync_of(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
+    let own = forge_sync_genome(p, root, seed, memory);
     if !own.ok { return own; }
     let theirs = codebase_sync(p, root, memory);
     if !theirs.ok { return theirs; }
@@ -2758,7 +2754,11 @@ fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
         if k == "github" {
             let slug = github_slug(c.repo);
             if len(slug) == 0 { continue; }
-            let gh_forge = GitHubForge { repo: slug, base: c.branch };
+            let gh_forge = GitHubForge {
+                repo: slug,
+                base: c.branch,
+                token_slot: forge_token_slot(root),
+            };
             rows = dna::codebase_intake(p.j, gh_forge, receipts, c.name);
         } else {
             let file_forge = FileForge { dir: root + "/.hale/dna/forge" };
@@ -2780,13 +2780,14 @@ fn codebase_sync(p: Projection, root: String, memory: dna::Memory) -> Answer {
     return answer(out);
 }
 
-fn github_sync_genome(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
+fn forge_sync_genome(p: Projection, root: String, seed: String, memory: dna::Memory) -> Answer {
     let k = forge_kind(root);
     if k == "github" {
         let branch = genome_branch(root);
         let gh_forge = GitHubForge {
-            repo: github_repo(root),
+            repo: dna::forge_allocated(root).repo,
             base: (if len(branch) == 0 { "main" } else { branch }),
+            token_slot: forge_token_slot(root),
         };
         return forge_sync_on(p, root, seed, gh_forge, memory);
     }
@@ -2799,12 +2800,26 @@ fn github_sync_genome(p: Projection, root: String, seed: String, memory: dna::Me
     return forge_sync_on(p, root, seed, none, memory);
 }
 
-fn github_verb(root: String, seed: String, sub: String, memory: dna::Memory) -> Answer {
-    if sub != "sync" { return fail("usage: hale dna github sync"); }
+// The vault slot of the allocated forge's token (`forge-token` when the
+// allocation names none).
+fn forge_token_slot(root: String) -> String {
+    let slot = dna::forge_allocated(root).key_vault;
+    return if len(slot) > 0 { slot } else { "forge-token" };
+}
+
+// `hale dna forge sync`: the allocated forge, synced; with none allocated,
+// the stated outcome.
+fn forge_verb(root: String, seed: String, sub: String, memory: dna::Memory) -> Answer {
+    if sub != "sync" { return fail("usage: hale dna forge sync"); }
+    if forge_kind(root) == "none" {
+        return answer(
+            "forge: no forge allocated (`hale habitat forge <organism> github --repo <owner/name>` allocates one)\n",
+        );
+    }
     let s0 = sync_record(root, memory);
-    let a = github_sync(root, seed, memory);
+    let a = forge_sync_all(root, seed, memory);
     if !a.ok { return a; }
     let s1 = sync_record(root, memory);
-    if len(a.text) == 0 { return answer("github: nothing to mirror\n"); }
+    if len(a.text) == 0 { return answer("forge: nothing to mirror\n"); }
     return a;
 }

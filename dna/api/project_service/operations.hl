@@ -465,7 +465,7 @@ fn plan_forge_sync(ctx: HeadContext) -> Plan {
     return Plan {
         ok: true,
         kind: "run",
-        script: "exec \"$HALE_BIN\" dna github sync",
+        script: "exec \"$HALE_BIN\" dna forge sync",
         cwd: ctx.active_root,
         envs: "GH_PROMPT_DISABLED=1\nGH_NO_UPDATE_NOTIFIER=1\n",
         deadline_secs: 180,

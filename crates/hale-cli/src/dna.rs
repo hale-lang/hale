@@ -1093,7 +1093,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("raise", Path::new("."), &args[2..]),
         Some("pressure") => host_exec("pressure", Path::new("."), &args[1..]),
         Some("concern") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("concern-raise", Path::new("."), &args[2..]),
-        Some("github") => host_exec("github", Path::new("."), &args[1..]),
+        Some("forge") => host_exec("forge", Path::new("."), &args[1..]),
         Some("fleet") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("fleet", &dir, &rest)
@@ -1366,8 +1366,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    `handoff` lists, `handoff accept <id>` accepts one received, `handoff sync` reads acceptances back");
     eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
-    eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
-    eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
+    eprintln!("       hale dna forge sync          mirror pending Reviews to the allocated forge and read its reviews back as verdicts");
+    eprintln!("                                    (`hale habitat forge <organism> github --repo owner/repo`; dna.github.board logins,…; needs `gh`)");
     eprintln!("       hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state");
     eprintln!("       hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)");
     eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");

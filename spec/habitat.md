@@ -172,6 +172,28 @@ allocated and placed on that host, each a row written only when the record
 does not already say it (below). The head's surface reads them back
 (`spec/dna.md`, The head's surface).
 
+## Forge and identity
+
+`forge` and `identity` are roles the habitat allocates, as it allocates an
+organism's memory: each a `habitat.allocated <id>/forge` and
+`<id>/identity` row naming its provider, written at `up` for the habitat
+and at a graft for the organism. The `local` profile's policy gives the
+forge `none` (no forge: `hale dna forge sync` answers `forge: no forge
+allocated`) and the identity `oidc-stub`, the habitat's own sign-in, at the
+organism's issuer (`dna.oidc.issuer`, else the stub's default address),
+which `Commands::allocations` observes by whether it answers. A graft takes
+`--forge <provider>` over the policy. The Board allocates a forge with
+`Commands::allocate_forge` (`{organism, provider, repo, key_vault}`, `hale
+habitat forge <organism> none|github|file [--repo <owner/name>]
+[--key-vault <slot>]`; `habitat` names the habitat's own): GitHub names its
+repository and the vault slot of its token (`forge-token` by default), never
+the token, and `file` is a forge of files (the fixtures'). The host reads
+the allocation from its cache beside the organism's allocations
+(`allocations/<id>/forge.json`) at each sync; `HALE_DNA_FORGE` stays the
+fixtures' override. `hale dna forge sync` is the forge's pass (`hale dna
+github sync` is gone): the verdicts a forge reports flow through it
+unchanged.
+
 ## Nurseries and saplings
 
 A **sapling** is an organism's seed in a nursery, an entry beside its
@@ -250,6 +272,7 @@ they call the head's socket, so the habitat's body must be up.
 | `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
 | `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
+| `forge <organism> none\|github\|file [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each

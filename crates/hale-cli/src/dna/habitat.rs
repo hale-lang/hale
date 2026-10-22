@@ -37,6 +37,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat place <key>/<role> <host>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
+       hale habitat forge <organism> none|github|file [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
@@ -137,6 +138,16 @@ nursery add <source> the Board trusts a nursery, a directory or a git
                      pins the revision filed (nothing grafted moves); `list`
                      shows the nurseries and saplings. The toolchain's own
                      nursery is always one.
+forge <organism> <provider>
+                     allocate the organism's forge (`habitat` for the
+                     habitat's own): none (the default), github with
+                     --repo owner/name and --key-vault, the vault slot of
+                     its token (`forge-token` by default; never the token),
+                     or file (a forge of files, the fixtures'). The head's
+                     Commands::allocate_forge while the head answers; the
+                     act itself with --no-head. `hale dna forge sync`
+                     syncs with what is allocated. A graft takes
+                     --forge <provider> over the habitat's policy.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
@@ -237,6 +248,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("brief") if args.len() == 1 => brief(),
         Some("place") => sapling::place_cmd(&args[1..]),
         Some("apply") => sapling::apply_cmd(&args[1..]),
+        Some("forge") => sapling::forge_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -550,6 +562,9 @@ pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
     }
     Ok(Some(format!("{:<8}its memory, nerves and senses' store on {} ({})", "placed", h["host"].as_str().unwrap_or(""), h["provider"].as_str().unwrap_or(""))))
 }
+/// The forge provider a graft names for its organism (`--forge`), over the
+/// habitat's policy.
+pub(super) static GRAFT_FORGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// One run of a heart's declared migration, a `habitat.migrated
 /// <id>/<role>` row owed to the habitat's record: the command, its exit
@@ -1840,6 +1855,14 @@ fn graft(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--no-head" => no_head = true,
+            "--forge" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `--forge` takes a provider (none, github, file)\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                let _ = GRAFT_FORGE.set(v.clone());
+                i += 1;
+            }
             "--attach" => attach = true,
             "--no-library" => library = false,
             "--no-pack" => pack = false,
@@ -2090,6 +2113,10 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         let _ = std::fs::remove_file(&file);
         landed?;
         out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
+        // its forge and its identity, roles the habitat allocates as it
+        // allocates its memory: the forge the policy (or `--forge`) names,
+        // the identity the habitat's own sign-in at the organism's issuer
+        out.extend(sapling::allocate_roles(&child, &root)?);
     }
     // the standard practices, the law every organism is born under, for
     // the child's Board (a process of its own: the verb execs the host),
