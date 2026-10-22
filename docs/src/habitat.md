@@ -15,7 +15,7 @@ hale habitat status
 ```
 
 > [!NOTE]
-> **Implemented Today vs. Architectural Design:** This chapter covers both the production habitat commands shipped today (`hale habitat up`, `graft`, `migrate`, `nursery`, `host`, `handover`, `status`, `down`) and the broader multi-record architecture (`runs_under` principal projections, cross-record `extract`/`absorb`, and financial books). See [Implementation Status](#implementation-status) at the end of this page for a complete feature matrix.
+> **Implemented Today vs. Architectural Design:** This chapter covers both the production habitat commands shipped today (`hale habitat up`, `graft`, `migrate`, `nursery`, `host`, `handover`, `brief`, `status`, `down`) and the broader multi-record architecture (`runs_under` principal projections, cross-record `extract`/`absorb`, and financial books). See [Implementation Status](#implementation-status) at the end of this page for a complete feature matrix.
 
 ---
 
@@ -66,13 +66,22 @@ hale habitat graft voice
 
 ---
 
+### Pairing an Agent with a Person (MCP)
+
+The habitat's head serves its command surface over MCP as well as over its socket and its HTTP commands port, with the same bearer and the same roles. `hale habitat status` prints the endpoint as `mcp://127.0.0.1:<port>`. An agent's host connects with the person's ID token, the bearer their face session holds:
+
+```sh
+HALE_API_TOKEN=<the person's ID token> hale mcp --app mcp://127.0.0.1:<port>
+```
+
+The agent's tools are the head's rows that person may call (`Commands__hosts`, `Commands__add_host`, …). A row they may not call is refused `unauthorized`, exactly as the face is refused, and every act is a row in their name. `hale habitat brief` (the row `Commands__brief`) is where such an agent starts: the Board's charter, the rules it works by, and the live state. [`agents/operator.md`](https://github.com/hale-lang/hale/blob/main/agents/operator.md) is the agent's own brief: the words, the rules, and which rows read, act or propose.
+
 <!--
 DRAFT. The walkthrough below includes Phase 4 habitat placement and model-routing
 commands from in-flight branches that have not yet landed on `main`:
 - `hale habitat place`, `apply [<host>]`, `graft --host`, `model-map`, and
   `model-probe`, plus the operator face's infrastructure/organisms action buttons
   (D4 `dna/habitat-placement`, D5 `dna/acceptance-homelab`, `face/operator-actions`).
-- `hale habitat brief` (D7, PR #1728).
 - Building `voice`'s image from a fetched sapling tree currently requires running
   `scripts/hale-toolchain.sh` inside the fetched tree (`voice#45`).
 -->
@@ -82,7 +91,7 @@ commands from in-flight branches that have not yet landed on `main`:
 This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through the `voice` nursery sapling.
 
 > [!NOTE]
-> **In-Flight Phase 4 Commands:** Steps 1–3 (`hale habitat up`, `status`, `nursery list`, `graft voice`, `host add`, `host probe`) are built on `main` today. The remote host placement (`graft --host`, `place`, `apply`), model routing (`model-map`, `model-probe`), and agent brief (`brief`) commands in Steps 3, 4, and 6 are part of the Phase 4 placement and homelab track (`D4`/`D5`/`#1728`) and are not on `main` yet.
+> **In-Flight Phase 4 Commands:** Steps 1–3 (`hale habitat up`, `status`, `nursery list`, `graft voice`, `host add`, `host probe`) are built on `main` today. The remote host placement (`graft --host`, `place`, `apply`), and model routing (`model-map`, `model-probe`) commands in Steps 3, 4, and 6 are part of the Phase 4 placement and homelab track (`D4`/`D5`) and are not on `main` yet.
 
 ### 1. Start the Habitat and Inspect Status
 
@@ -211,7 +220,7 @@ curl -N http://localhost:8080/v1/chat/completions \
 - **Stopping and restarting:** `hale habitat status` reports any degraded or stopped allocations. `hale habitat down` stops the body while preserving all Postgres/NATS data; `hale habitat up` brings it back online.
 - **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
 - **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
-- **Agent operator brief (`#1728`):** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items) without exposing vault secrets.
+- **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.
 
 ---
 
@@ -302,6 +311,7 @@ Financial operations follow four structural rules:
 | **Habitat child birth & role allocation (`hale habitat graft`)** | **Built:** Allocates `[dna] needs` (`memory`, `nerves`, `senses`, heart `database`), links parent genesis, and proposes `standard` pack |
 | **Habitat standard & operator browser face (`/index`, `/app/`)** | **Built:** Started automatically by `hale habitat up` ([The head and the face](./dna/head.md)) |
 | **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH (placing allocations onto remote SSH hosts is **not built**) |
+| **An agent pairing with a person (MCP, `hale habitat brief`)** | **Built:** the head's commands over `mcp::Rpc` under the person's bearer and roles (`hale mcp --app`, the endpoint `hale habitat status` prints), every act a row in their name; `agents/operator.md` |
 | **Saplings & nurseries (`hale habitat graft <sapling>`, `nursery`)** | **Built:** Digest-pinned `[[sapling]]` entries, `hale habitat nursery add\|refresh\|list\|ratify`, and `voice` sapling |
 | **Verified OIDC principal source** | **Built:** `git config dna.principal oidc` ([The head and the face](./dna/head.md), [The skin](./dna/skin.md)) |
 | **Per-client backend roles (Postgres, NATS, Vault)** | **Built:** Separate `owner`, `spine`, `head`, `reflexes`, and per-app roles ([The skin](./dna/skin.md)) |

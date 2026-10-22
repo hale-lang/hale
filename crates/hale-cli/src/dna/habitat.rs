@@ -39,6 +39,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
        hale habitat host remove <name>
+       hale habitat brief
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -142,7 +143,16 @@ host remove <name>   remove it; refused while an allocation is placed on it.
                      The host verbs are the Board's commands of the
                      habitat's head (Commands::add_host, ::probe_host,
                      ::remove_host): its body must be up.
-status               the habitat, its genome and body, and each
+brief                the Board's hat as a prompt, with the habitat's live
+                     state: its hosts, its allocations and their pulse, its
+                     organisms, its saplings, and what waits for the Board.
+                     The head's read Commands::brief, asked over its socket
+                     as the person this account maps to; an agent pairing
+                     with that person asks the same row over MCP (the
+                     endpoint `status` prints). It reads the record
+                     alone, never the vault: no secret value is in it.
+status               the habitat, its genome and body, its face and, while
+                     the face runs, its head's MCP endpoint, and each
                      allocation: its organism, whether each role's service
                      runs, the schema version memory and the nerves record
                      against this toolchain's, and how a heart's declared
@@ -205,6 +215,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         Some("nursery") => sapling::nursery_cmd(&args[1..]),
         Some("host") => host(&args[1..]),
+        Some("brief") if args.len() == 1 => brief(),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -1373,6 +1384,31 @@ fn stop_face(said: &mut Vec<String>) {
     }
 }
 
+/// `hale habitat brief`: the head's `Commands::brief`, printed.
+fn brief() -> ExitCode {
+    match sapling::head_call("Commands::brief", serde_json::json!({ "limit": 200 })) {
+        Ok(v) if v["ok"] == serde_json::json!(true) => {
+            print!("{}", v["prompt"].as_str().unwrap_or(""));
+            ExitCode::SUCCESS
+        }
+        Ok(v) => {
+            eprintln!("hale habitat brief: the head answered no brief ({})", v["why"].as_str().unwrap_or(""));
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("hale habitat brief: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// The port the habitat's head serves its surface over MCP on, as its API
+/// child reported it (`mcp=<port>` in the face state's `children/api.ports`).
+fn mcp_port() -> Option<u16> {
+    let text = std::fs::read_to_string(face_state_dir().join("children").join("api.ports")).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("mcp=")).and_then(|p| p.trim().parse().ok()).filter(|p| *p > 0)
+}
+
 fn status() -> ExitCode {
     let genome = genome_dir();
     println!("habitat local at {} (compose project {})", local_habitat_dir(), local_habitat_project());
@@ -1384,6 +1420,11 @@ fn status() -> ExitCode {
     match head_url_at(&genome).as_deref().and_then(loopback_port) {
         Some(port) => println!("{:<8}http://127.0.0.1:{port}/ ({})", "face", face_running().map(|s| format!("up, {s}")).unwrap_or_else(|| "down: `hale habitat up` starts it".to_string())),
         None => println!("{:<8}not assigned: `hale habitat up` assigns its address", "face"),
+    }
+    if face_running().is_some() {
+        if let Some(port) = mcp_port() {
+            println!("{:<8}mcp://127.0.0.1:{port} (the head's commands over MCP: `hale mcp --app mcp://127.0.0.1:{port}`, the person's ID token in HALE_API_TOKEN)", "mcp");
+        }
     }
     let (rows, from) = match recorded_allocations() {
         Some(rows) => (rows, "the habitat's record"),

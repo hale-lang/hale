@@ -66,9 +66,10 @@ fn host_name_refusal(name: String) -> String {
     return "";
 }
 
-// The `habitat.host` row for `h`, appended: "" once it is, else why not.
-fn host_write(root: String, h: dna::Host) -> String {
-    let j = dna::RecordJournal { repo: root, author: "api" };
+// The `habitat.host` row for `h`, appended in the name of `by`: "" once
+// it is, else why not.
+fn host_write(root: String, h: dna::Host, by: String) -> String {
+    let j = dna::RecordJournal { repo: root, author: by };
     let moved = j.refresh();
     let r = j.append(j.revision(), "habitat.host", h.name, dna::host_row_body(h));
     return if r.ok { "" } else { "the habitat's record refused the host's row (" + r.error + ")" };
@@ -98,7 +99,7 @@ fn host_reply(h: dna::Host, code: String, why: String) -> HostReply {
     return HostReply { ok: len(code) == 0, code: code, why: why, host: dna::host_row_body(h) };
 }
 
-fn habitat_host_add(root: String, a: HostAdd) -> HostReply {
+fn habitat_host_add(root: String, a: HostAdd, by: String) -> HostReply {
     let refused = host_name_refusal(a.name);
     if len(refused) > 0 { return host_refused("invalid_host", refused); }
     let user = if len(a.user) > 0 { a.user } else { std::env::var("USER") };
@@ -143,7 +144,7 @@ fn habitat_host_add(root: String, a: HostAdd) -> HostReply {
     };
     let probed = dna::ssh_probe(root, fresh);
     let h = if probed.state == "ready" || probed.state == "pending-key" { probed } else { fresh };
-    let wrote = host_write(root, h);
+    let wrote = host_write(root, h, by);
     if len(wrote) > 0 { return host_refused("record_refused", wrote); }
     let public = dna::habitat_public_key(root);
     let mut r = host_reply(h, "", if h.state == "ready" { "" } else { probed.why });
@@ -152,7 +153,7 @@ fn habitat_host_add(root: String, a: HostAdd) -> HostReply {
     return r;
 }
 
-fn habitat_host_probe(root: String, name: String) -> HostReply {
+fn habitat_host_probe(root: String, name: String, by: String) -> HostReply {
     let h = dna::recorded_host(root, name);
     if h.provider != "ssh" || h.state == "removed" {
         return host_refused("not_found", "no ssh host `" + name + "` was added");
@@ -165,13 +166,13 @@ fn habitat_host_probe(root: String, name: String) -> HostReply {
         return host_reply(h, "unreachable", probed.why);
     }
     if dna::host_row_body(probed) != dna::host_row_body(h) {
-        let wrote = host_write(root, probed);
+        let wrote = host_write(root, probed, by);
         if len(wrote) > 0 { return host_refused("record_refused", wrote); }
     }
     return host_reply(probed, "", probed.why);
 }
 
-fn habitat_host_remove(root: String, name: String) -> HostReply {
+fn habitat_host_remove(root: String, name: String, by: String) -> HostReply {
     if name == "local" {
         return host_refused(
             "not_removable",
@@ -192,7 +193,7 @@ fn habitat_host_remove(root: String, name: String) -> HostReply {
     let mut gone = h;
     gone.state = "removed";
     gone.reachable = false;
-    let wrote = host_write(root, gone);
+    let wrote = host_write(root, gone, by);
     if len(wrote) > 0 { return host_refused("record_refused", wrote); }
     return host_reply(gone, "", "");
 }

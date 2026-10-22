@@ -6458,7 +6458,8 @@ host, public_key, authorize}`: the host as its row now states it, and for
 `~/.ssh/authorized_keys` takes. A refusal is `code` with `why`
 (`invalid_host`, `host_exists`, `unreachable`, `key_unavailable`,
 `not_found`, `host_key_changed`, `allocations_placed`, `not_removable`,
-`record_refused`). They are what `hale habitat host add|probe|remove`
+`record_refused`). Each row they write is in the name of the person the
+caller maps to. They are what `hale habitat host add|probe|remove`
 calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
 placement).
 Two more reads list the habitat's nurseries and saplings for the operator
@@ -6471,7 +6472,11 @@ waits); the head relays both from the face. Two Board rows act on them:
 `Commands::add_nursery` (`{source}`: a `habitat.nursery <source>` row,
 state `trusted`) and `Commands::ratify_sapling` (`{name}`: the sapling
 pinned at the revision its proposal filed), each answering `{ok, code,
-why}`.
+why}`, each row written in the name of the person the caller maps to.
+`Commands::brief` is the habitat's brief for an agent pairing with a
+person (`spec/habitat.md`, Pairing), a read. The head serves the surface
+over `mcp::Rpc` too, under the commands port's bearer and roles, on a port
+the system gives it and reports as `mcp=<port>` (`HALE_DNA_API_PORTS`).
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a
@@ -6585,7 +6590,7 @@ otherwise.
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
 | `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, pinned by `dna/face/start.sh` (8795 by default) for the head and by the head for its API child; unset, the child's transport listens where the system puts it and the child reports the port it got (`HALE_DNA_API_PORTS`). |
-| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>` and `commands=<port>` lines, renamed into place): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
+| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>`, `commands=<port>` and `mcp=<port>` lines, renamed into place; the MCP port is always the system's): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |

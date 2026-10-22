@@ -11789,6 +11789,30 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/habitat_operator_test.hl
 
+== dna/tests/habitat_pairing_test.hl
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+row	App@literal1.head	__StdProcessChild	main	default
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
+shared	App@literal1.server	__StdHttpServer #e3960846
+shared	dynamic	sites in core #de2fb49b
+shared	dynamic	sites in oidc #f5f825c3
+-- dynamic	sites in tests
+dynamic	__StdBytesBytesBuilder	on pool:io|unknown (no instance)
+dynamic	__StdHttpResponder	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
+dynamic	__StdProcessChild	on main
+dynamic	__lib_dna__core___memory_record__MemoryRecord	on main
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__operations___graph__GraphEdge	on main
+shared	dynamic	sites in the stdlib #a037c975
+
 == dna/tests/habitat_saplings_test.hl
 
 == dna/tests/habitat_up_test.hl
@@ -14852,6 +14876,7 @@ hole	Head@literal1.commands.knowledge.provider	reuse `knowledge_commands`
 hole	Head@literal1.commands.knowledge.provider	unresolved declaration `KnowledgeCommandProvider`
 hole	Head@literal1.bearer.auth	unenumerable initializer
 hole	Head@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	Head@literal1.__rpc_h_3.conns.handler.fallback	reuse `self.held`
 hole	Head@literal2.srv.handler.web	reuse `web`
 hole	Head@literal2.srv.handler.definitions	reuse `definitions`
 hole	Head@literal2.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
@@ -14867,6 +14892,7 @@ hole	Head@literal2.commands.admission.provider	unresolved declaration `CommandPr
 hole	Head@literal2.commands.knowledge.provider	reuse `knowledge_commands`
 hole	Head@literal2.commands.knowledge.provider	unresolved declaration `KnowledgeCommandProvider`
 hole	Head@literal2.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	Head@literal2.__rpc_h_3.conns.handler.fallback	reuse `self.held`
 row	Head@literal1	Head	main	default
 row	Head@literal2	Head	main	default
 row	Head@literal2.bearer	LaunchBearer	main	default
@@ -14875,6 +14901,7 @@ row	WebAssets@main2	WebAssets	main	default
 row	__lib_dna__operations___definitions__ProjectWorkflowCatalog@main3	__lib_dna__operations___definitions__ProjectWorkflowCatalog	main	default
 dynamic	__StdSecretCredential	on pool:io	in ui
 shared	Head@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	Head@literal1.__rpc_h_3	__StdApiHttpListener #f468a184
 shared	Head@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- Head@literal1.bearer	OidcBearer
 row	~	OidcBearer	main	default
@@ -14909,6 +14936,7 @@ row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	Head@literal2.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	Head@literal2.__rpc_h_3	__StdApiHttpListener #f468a184
 shared	Head@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Head@literal2.commands	Commands #b8d39e38
 shared	Head@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384
@@ -15117,6 +15145,7 @@ hole	PracticeReviewHead@literal1.commands.knowledge.provider	reuse `knowledge_co
 hole	PracticeReviewHead@literal1.commands.knowledge.provider	unresolved declaration `__lib_dna__api___knowledge_commands__KnowledgeCommandProvider`
 hole	PracticeReviewHead@literal1.bearer.auth	unenumerable initializer
 hole	PracticeReviewHead@literal1.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal1.__rpc_h_3.conns.handler.fallback	reuse `self.held`
 hole	PracticeReviewHead@literal2.srv.handler.web	reuse `web`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	reuse `definitions`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
@@ -15131,6 +15160,7 @@ hole	PracticeReviewHead@literal2.commands.admission.provider	unresolved declarat
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	reuse `knowledge_commands`
 hole	PracticeReviewHead@literal2.commands.knowledge.provider	unresolved declaration `__lib_dna__api___knowledge_commands__KnowledgeCommandProvider`
 hole	PracticeReviewHead@literal2.__rpc_h_2.conns.handler.fallback	reuse `self.held`
+hole	PracticeReviewHead@literal2.__rpc_h_3.conns.handler.fallback	reuse `self.held`
 row	PracticeReviewHead@literal1	PracticeReviewHead	main	default
 row	PracticeReviewHead@literal2	PracticeReviewHead	main	default
 row	PracticeReviewHead@literal2.bearer	__lib_dna__api___bearer__LaunchBearer	main	default
@@ -15138,6 +15168,7 @@ row	__lib_dna__api___http__Http@main1	__lib_dna__api___http__Http	main	default
 dynamic	__StdSecretCredential	on pool:io	in dna/ui
 dynamic	__StdBytesBytesBuilder	on main	in iris/process_identity
 shared	PracticeReviewHead@literal1.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	PracticeReviewHead@literal1.__rpc_h_3	__StdApiHttpListener #f468a184
 shared	PracticeReviewHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- PracticeReviewHead@literal1.bearer	__lib_dna__api___bearer__OidcBearer
 row	~	__lib_dna__api___bearer__OidcBearer	main	default
@@ -15191,6 +15222,7 @@ row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 shared	PracticeReviewHead@literal2.__rpc_h_2	__StdApiHttpListener #f468a184
+shared	PracticeReviewHead@literal2.__rpc_h_3	__StdApiHttpListener #f468a184
 shared	PracticeReviewHead@literal2.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	PracticeReviewHead@literal2.commands	__lib_dna__api___commands__Commands #6008b315
 shared	PracticeReviewHead@literal2.roles	__lib_dna__core___roles__RecordRoles #1ebe7384

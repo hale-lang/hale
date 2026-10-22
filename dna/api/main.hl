@@ -1235,8 +1235,11 @@ fn head_socket(root: String) -> String {
 const SOCKET_PATH_MAX: Int = 103;
 
 // GH #1417 (R4): the head serves its commands as the surface `HeadCommands`
-// (commands.hl): over `unix::Rpc` on the record's socket, and over `http::Rpc`
-// on the commands port its launcher gives it. The record answers who holds
+// (commands.hl): over `unix::Rpc` on the record's socket, over `http::Rpc`
+// on the commands port its launcher gives it, and over `mcp::Rpc` on a port
+// the system gives it (`agents`), so a pairing agent is a client of the head
+// under the person's bearer: the same source the commands port verifies,
+// the same roles, a tool per row the person may call. The record answers who holds
 // which position (`dna::RecordRoles` over this root; `dna.unix.member` maps
 // a socket peer to a person), so a call is refused `unauthorized` unless its
 // row's role is held, and a description lists a caller only the members it
@@ -1276,6 +1279,15 @@ main locus Head {
             bound: 64,
             on_full: refuse
         );
+        // phase 4: the same surface over MCP for an agent pairing with a
+        // person; its bearer and roles are the commands port's
+        agents: api::Exposure = api::serve(
+            HeadCommands,
+            mcp::Rpc { bind: "127.0.0.1:0", principals: self.bearer, roles: self.roles },
+            as: "agents",
+            bound: 64,
+            on_full: refuse
+        );
     }
     // The server off the main pool (a server born as a param on main's
     // pool would hold its birth thread before the exposures are born), a
@@ -1296,44 +1308,54 @@ main locus Head {
             self.srv.listen_fd,
             self.http_port,
             self.remote,
+            self.agents,
             self.banner_head,
             self.banner_tail,
         );
         std::api::run_until_stopped(self.local);
         self.local.stop();
         self.remote.stop();
+        self.agents.stop();
     }
 }
 
-// A head program's ports, once its server and its commands exposure listen
-// (both are born, and listening, before its run()): the reads' off the
-// server's socket, the commands' as pinned or as the exposure was told the
-// address it was bound to (`127.0.0.1:<port>`). They are reported to the
-// launcher (`report_ports`) and announced: the reads' line between
-// `banner_head` and `banner_tail`, and the commands line, which a launcher
-// waits for as the process's own word that its commands port answers. One
-// implementation for every head program (this one and
-// dna/api/practice_review).
+// A head program's ports, once its server and its exposures listen (all
+// are born, and listening, before its run()): the reads' off the server's
+// socket, the commands' as pinned or as the exposure was told the address it
+// was bound to (`127.0.0.1:<port>`), and the MCP exposure's the same way.
+// They are reported to the launcher (`report_ports`) and announced: the
+// reads' line between `banner_head` and `banner_tail`, the commands line,
+// which a launcher waits for as the process's own word that its commands
+// port answers, and the MCP line. One implementation for every head program
+// (this one and dna/api/practice_review).
 fn announce_ports(
     listen_fd: Int,
     pinned_commands: Int,
     remote: std::api::Exposure,
+    agents: std::api::Exposure,
     banner_head: String,
     banner_tail: String
 ) {
     let reads = std::io::tcp::__local_port(listen_fd);
-    let mut commands = pinned_commands;
-    let mut waited = 0;
-    while commands <= 0 && waited < 250 {
-        let colon = std::str::index_of(remote.address, ":");
-        if colon > 0 {
-            commands = std::str::parse_int(remote.address[(colon + 1)..len(remote.address)]) or 0;
-        }
-        if commands <= 0 { std::time::sleep(20ms); waited = waited + 1; }
-    }
-    report_ports(reads, commands);
+    let commands = if pinned_commands > 0 { pinned_commands } else { bound_port(remote) };
+    let mcp = bound_port(agents);
+    report_ports(reads, commands, mcp);
     println(banner_head, reads, banner_tail);
     if commands > 0 { println("hale dna api: commands http://127.0.0.1:", commands, "/"); }
+    if mcp > 0 { println("hale dna api: mcp mcp://127.0.0.1:", mcp); }
+}
+
+// The port an exposure was bound to, as it was told the address
+// (`127.0.0.1:<port>`): waited for up to five seconds, 0 when it never was.
+fn bound_port(e: std::api::Exposure) -> Int {
+    let mut port = 0;
+    let mut waited = 0;
+    while port <= 0 && waited < 250 {
+        let colon = std::str::index_of(e.address, ":");
+        if colon > 0 { port = std::str::parse_int(e.address[(colon + 1)..len(e.address)]) or 0; }
+        if port <= 0 { std::time::sleep(20ms); waited = waited + 1; }
+    }
+    return port;
 }
 
 // The origin a head program is given for its browser commands: its own

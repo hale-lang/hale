@@ -53,6 +53,12 @@ When `dna/api/project_service` is started with an API port of `0` and no `HALE_D
 hale dna api: commands http://127.0.0.1:<port>/
 ```
 
+The API child serves the same surface over MCP too, for an agent pairing with a person, on an ephemeral port it always picks itself; it reports it as `mcp=<port>` in `HALE_DNA_API_PORTS` and prints:
+
+```text
+hale dna api: mcp mcp://127.0.0.1:<port>
+```
+
 ### Database Role and Memory Requirements
 
 The head reads the record and Knowledge from Postgres under the least-privilege **head role** (`HALE_DNA_MEMORY_DSN_HEAD`). `hale dna head` derives this DSN from an active, migrated memory allocation and passes it exclusively to the head process without printing it; an explicit `HALE_DNA_MEMORY_DSN_HEAD` in the environment takes precedence.

@@ -192,22 +192,26 @@ fn api() {
     // them a row the correction changes. The nurseries' and saplings' four
     // rows (`add_nursery`, `nurseries`, `ratify_sapling`, `saplings`) add 31
     // more; `add_nursery` and `nurseries` sort before `preview_batch`, which
-    // is row 18 now.
+    // is row 18 now. The hosts' rows (`add_host` sorting before it) made it
+    // row 19. The brief (`Commands::brief`, `habitat_brief.hl`) sorts before
+    // it too, and the head serves the surface over a third transport
+    // (`mcp::Rpc`), so each served row has a third eater (`__rpc_row_3_20`).
     // The json codec's encoders write through one string builder (a
     // record's text linear in its size), whose calls the survey reads as
     // pure: two encoders of records whose fields are all non-string
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
-        476,
-        478,
+        534,
+        536,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}

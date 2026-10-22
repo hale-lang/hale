@@ -1109,24 +1109,37 @@ locus CommandAdmission {
     }
     fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
-        return habitat_nursery_add(self.root, a);
+        return habitat_nursery_add(self.root, a, self.author(ctx));
     }
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
-        return habitat_sapling_ratify(self.root, n.name);
+        return habitat_sapling_ratify(self.root, n.name, self.author(ctx));
+    }
+    // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
+    // with the live state, for the person who asks. A read.
+    fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
+        if self.personless(ctx) { return HabitatBrief { why: "forbidden" }; }
+        return habitat_brief(self.root, self.roles.person(ctx.caller), a.limit);
+    }
+    // Who a habitat act's row is written by: the person the caller maps
+    // to, else the caller as the binding named it. Every act of the
+    // habitat's is a row in the name of whoever asked, over any transport.
+    fn author(ctx: std::api::Context) -> String {
+        let person = self.roles.person(ctx.caller);
+        return if len(person) > 0 { person } else { ctx.caller.name };
     }
     // The habitat's hosts (habitat_hosts.hl): the Board's acts.
     fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
-        return habitat_host_add(self.root, a);
+        return habitat_host_add(self.root, a, self.author(ctx));
     }
     fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
-        return habitat_host_probe(self.root, n.name);
+        return habitat_host_probe(self.root, n.name, self.author(ctx));
     }
     fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
-        return habitat_host_remove(self.root, n.name);
+        return habitat_host_remove(self.root, n.name, self.author(ctx));
     }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
@@ -1223,6 +1236,9 @@ locus Commands {
     fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
         return self.admission.remove_host(n, ctx);
     }
+    fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
+        return self.admission.brief(a, ctx);
+    }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
     fn open_position(p: PositionOpening, ctx: std::api::Context) -> CommandReply {
@@ -1266,10 +1282,12 @@ locus Commands {
 }
 
 // The head's surface (GH #1417): every command, served over `unix::Rpc` on
-// the head's socket and `http::Rpc` on its commands port, under the record's
-// roles (`dna::RecordRoles`, named at the serve site). A call is
+// the head's socket, `http::Rpc` on its commands port and `mcp::Rpc` for an
+// agent pairing with a person, under the record's roles
+// (`dna::RecordRoles`, named at the serve site). A call is
 // `{"call": "Commands::file_friction", "payload": {…}, "id": …}` on the
-// socket, `POST /call/Commands::file_friction` over HTTP.
+// socket, `POST /call/Commands::file_friction` over HTTP, and the tool
+// `Commands__file_friction` over MCP.
 api HeadCommands {
     rpc Commands::propose requires: [position];
     rpc Commands::verdict requires: [reviewer];
@@ -1319,6 +1337,9 @@ api HeadCommands {
     rpc Commands::add_host requires: [owner];
     rpc Commands::probe_host requires: [owner];
     rpc Commands::remove_host requires: [owner];
+    // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
+    // with the live state, for an agent pairing with a person. A read.
+    rpc Commands::brief;
 }
 
 // A seat as a structure command names it: `position:<name>` from a name
