@@ -1,4 +1,5 @@
 // The operator face, screen 1: sign in, then the habitat's name and state.
+// Screen 2 (hardware.js) is in the same page: the hash picks the screen.
 //
 // No build step: this module and the generated client of the head's rows
 // (head-client.js, `hale api client --surface HeadCommands --lang js`, kept
@@ -8,6 +9,7 @@
 // is ever served. A read the head refuses for want of a session is shown as
 // the crossing, and the link starts the same sign-in again.
 import { commandsIndex } from "./head-client.js";
+import { refresh as refreshHardware } from "./hardware.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -84,3 +86,18 @@ async function read() {
 
 read();
 setInterval(read, 5000);
+
+// One page, two screens: #habitat and #hardware.
+function route() {
+  const screen = location.hash === "#hardware" ? "hardware" : "habitat";
+  for (const s of ["habitat", "hardware"]) {
+    show("screen-" + s, s === screen);
+    const link = $("nav-" + s);
+    if (s === screen) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+  if (screen === "hardware") refreshHardware();
+}
+window.addEventListener("hashchange", route);
+route();
+setInterval(() => { if (location.hash === "#hardware") refreshHardware(); }, 5000);

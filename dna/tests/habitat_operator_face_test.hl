@@ -110,6 +110,11 @@ fn main() {
         std::str::contains(css, "--brass") && std::str::contains(css, "JetBrains Mono"),
         "with the visual language as properties: " + css,
     );
+    let hardware = get(face + "/app/hardware.js").stdout;
+    std::test::assert(
+        std::str::contains(hardware, "commandsAddHost"),
+        "with screen 2, the hardware module: " + hardware,
+    );
     let client = get(face + "/app/head-client.js").stdout;
     std::test::assert(
         std::str::contains(client, "export function commandsIndex")

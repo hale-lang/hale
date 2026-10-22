@@ -15,6 +15,10 @@
   <main>
     <header>
       <h1 id="name">habitat</h1>
+      <nav>
+        <a href="#habitat" id="nav-habitat" aria-current="page">habitat</a>
+        <a href="#hardware" id="nav-hardware">hardware</a>
+      </nav>
       <span id="state" data-state="down">down</span>
     </header>
     <section id="crossing" class="crossing" hidden>
@@ -22,6 +26,7 @@
       <p id="crossing-why"></p>
       <p><a id="signin" href="./">sign in through the provider</a></p>
     </section>
+    <div id="screen-habitat">
     <section id="habitat" hidden>
       <h2>habitat</h2>
       <dl>
@@ -39,6 +44,33 @@
         <tbody id="organism-rows"></tbody>
       </table>
     </section>
+    </div>
+    <div id="screen-hardware" hidden>
+      <section id="hosts">
+        <h2>hosts</h2>
+        <table>
+          <thead><tr><th>name</th><th>state</th><th>offers</th><th>host key</th><th>allocations</th><th></th></tr></thead>
+          <tbody id="host-rows"></tbody>
+        </table>
+        <p id="hosts-empty" class="dim" hidden>no host but this machine</p>
+        <p id="host-outcome" class="outcome" hidden></p>
+      </section>
+      <section id="host-key" class="crossing" hidden>
+        <div class="edge">crossing: authorize the habitat on <span id="key-host"></span></div>
+        <p>Append this line to <code>~/.ssh/authorized_keys</code> on the machine, then probe it.</p>
+        <pre id="key-line"></pre>
+        <p><button type="button" id="key-copy">copy</button> <span id="key-copied" class="dim"></span></p>
+      </section>
+      <section id="host-add" class="crossing">
+        <div class="edge">crossing: add a host</div>
+        <form id="add-form" autocomplete="off">
+          <label>name <input id="add-name" required placeholder="rack-a.lan"></label>
+          <label>user <input id="add-user" placeholder="this account"></label>
+          <label>port <input id="add-port" type="number" min="1" max="65535" value="22"></label>
+          <button type="submit">add</button>
+        </form>
+      </section>
+    </div>
   </main>
 </body>
 </html>

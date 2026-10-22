@@ -68,6 +68,24 @@ fn index_call(face: String, jar: String) -> fixture::HttpResponse {
     );
 }
 
+// Any row the hardware screen's client calls, as it calls it: the member's
+// own digest, the body as the client encodes it.
+fn row_call(
+    face: String,
+    jar: String,
+    member: String,
+    digest: String,
+    body: String
+) -> fixture::HttpResponse {
+    return fixture::curl(
+        "POST",
+        face + "/api/hale/v1/head/surface/call/Commands::" + member,
+        "Content-Type: application/json\nHale-Surface-Digest: " + digest + "\nOrigin: " + face
+            + (if len(jar) > 0 { "\nCookie: " + cookie_of(jar) } else { "" }),
+        body,
+    );
+}
+
 // The session cookie a jar holds, as `name=value`.
 fn cookie_of(jar: String) -> String {
     let text = std::io::fs::read_file(jar) or "";
@@ -138,6 +156,26 @@ fn main() {
         ops::graph_node_body("purpose", "shop", "Keep the shop honest.", ""),
     );
     std::test::assert(purpose.ok, "the record's purpose landed");
+    // a pending-key host with an allocation placed on it, as the ssh provider
+    // and a graft would have recorded them
+    let rack = dna::Host {
+        name: "rack-a.lan",
+        provider: "ssh",
+        state: "pending-key",
+        address: "rack-a.lan",
+        port: 22,
+        user: "ops",
+        fingerprint: "SHA256:invented",
+    };
+    let hosted = j.append(j.revision(), "habitat.host", rack.name, dna::host_row_body(rack));
+    std::test::assert(hosted.ok, "the host's row landed");
+    let placed = j.append(
+        j.revision(),
+        "habitat.allocated",
+        "shop/db",
+        "{\"role\":\"db\",\"provider\":\"operator\",\"host\":\"rack-a.lan\",\"organism\":\"shop\"}",
+    );
+    std::test::assert(placed.ok, "the allocation's row landed");
     let added = f.git("add\n-A");
     let committed = f.git("commit\n-q\n-m\nthe operator face");
     f.start_with_project(f.project, 0);
@@ -191,6 +229,65 @@ fn main() {
             && std::str::contains(read.body, "Keep the shop honest.")
             && std::str::contains(read.body, "\"ok\":true"),
         "the call the client makes answers the record: " + to_string(read.status) + read.body,
+    );
+
+    // screen 2: its assets, and the calls its page makes
+    let hardware = get(face + "/app/hardware.js", jar);
+    std::test::assert(
+        hardware.status == 200
+            && std::str::contains(hardware.body, "commandsAddHost")
+            && std::str::contains(hardware.body, "commandsRemoveHost"),
+        "signed in, the face serves screen 2's module: " + to_string(hardware.status),
+    );
+    std::test::assert(
+        std::str::contains(shell.body, "id=\"screen-hardware\"")
+            && std::str::contains(shell.body, "id=\"add-form\""),
+        "and the page carries both screens",
+    );
+    let unsigned = row_call(face, "", "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
+    let hosts = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        hosts.status == 200
+            && std::str::contains(hosts.body, "rack-a.lan")
+            && std::str::contains(hosts.body, "pending-key")
+            && std::str::contains(hosts.body, "SHA256:invented"),
+        "hosts answers the host with its state and first-seen key: " + hosts.body,
+    );
+    let allocations = row_call(
+        face,
+        jar,
+        "allocations",
+        "fnv1a64:baa8d6472387e176",
+        "{\"limit\": 1000}",
+    );
+    std::test::assert(
+        allocations.status == 200 && std::str::contains(allocations.body, "shop/db"),
+        "allocations answers what is placed on it: " + allocations.body,
+    );
+    // the Board's acts are relayed to the row, which keeps its gate: a
+    // person who holds no Board position is refused as the row says it
+    // (the row's own outcomes, `allocations_placed` and `unreachable`, are
+    // pinned where a Board is, in dna/tests/habitat_hosts_test.hl)
+    let refused_remove = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+    );
+    std::test::assert(
+        std::str::contains(refused_remove.body, "Commands::remove_host requires owner"),
+        "remove_host is the row's, gated by it: " + refused_remove.body,
+    );
+    let refused_add = row_call(
+        face, jar, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"no-such-host.invalid\", \"user\": \"ops\", \"port\": 22}",
+    );
+    std::test::assert(
+        std::str::contains(refused_add.body, "Commands::add_host requires owner"),
+        "and add_host: " + refused_add.body,
+    );
+    let hosts_after = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        std::str::contains(hosts_after.body, "rack-a.lan"),
+        "a refused act leaves the host where it was: " + hosts_after.body,
     );
 
     f.stop();
