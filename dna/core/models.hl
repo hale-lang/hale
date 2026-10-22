@@ -29,6 +29,11 @@ type ModelRequest {
     // the model the Work's mapping resolved (`model_resolve`): one gateway
     // serves many, so the request names it; "" = the backend's own
     model: String = "";
+    // where the mapping says the model is asked (its category's endpoint),
+    // "" = the backend's own; and the vault slot of that endpoint's key
+    // ("" = it takes none): never the performer's key sent elsewhere
+    endpoint: String = "";
+    key_vault: String = "";
     // a JSON object of string pairs the call is attributed by (the attempt,
     // the position, the holder): attribution only, never authority; "" = none
     metadata: String = "";
@@ -567,10 +572,40 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
 // The vault's name for the model key `key`.
 fn model_key_slot(key: String) -> String { return "model-" + key; }
 
+// POST a JSON body to an endpoint that takes no key (a mapped endpoint
+// with no `key_vault`: a gateway on the LAN): no credential attached.
+fn post_json_keyless(
+    url: String,
+    body: String,
+    extra: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let u = std::http::parse_url(url) or raise;
+    return std::http::request(std::http::ClientRequest {
+        method: "POST",
+        url: u,
+        // header lines joined by CRLF, none after the last
+        headers: if len(extra) >= 2 && std::str::ends_with(extra, "\r\n") {
+            "Content-Type: application/json\r\n" + extra[0..(len(extra) - 2)]
+        } else if len(extra) > 0 {
+            "Content-Type: application/json\r\n" + extra
+        } else {
+            "Content-Type: application/json"
+        },
+        body: std::bytes::from_string(body)
+    }) or raise;
+}
+
 @sealed locus HostedCredential {
-    params { key: String = "OPENAI_API_KEY"; scheme: String = "bearer"; }
+    params {
+        key: String = "OPENAI_API_KEY";
+        scheme: String = "bearer";
+        // a vault slot named outright (a mapped endpoint's `key_vault`)
+        vault_slot: String = "";
+    }
     // the vault's name for it, read where it is presented and nowhere else
-    fn slot() -> String { return model_key_slot(self.key); }
+    fn slot() -> String {
+        return if len(self.vault_slot) > 0 { self.vault_slot } else { model_key_slot(self.key) };
+    }
     fn ready() -> Bool { return std::secret::Credential { vault: self.slot() }.ready(); }
     @effects(is: { secret_use })
     fn fingerprint() -> String {
@@ -640,9 +675,22 @@ locus OpenAiChat {
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
+        // the mapping may name where the model is asked (its category's
+        // endpoint) and that endpoint's own key by vault slot: the
+        // performer's own key never goes to another endpoint
+        let mapped = len(req.endpoint) > 0;
+        let mapped_key = HostedCredential { vault_slot: req.key_vault };
+        let keyed = len(req.key_vault) > 0;
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
-            endpoint: self.endpoint, credential: self.credential.fingerprint(),
+            endpoint: if mapped { req.endpoint } else { self.endpoint },
+            credential: if !mapped {
+                self.credential.fingerprint()
+            } else if keyed {
+                mapped_key.fingerprint()
+            } else {
+                ""
+            },
             requested_model: if len(req.model) > 0 { req.model } else { self.model },
             params: temperature_param(self.temperature_milli) + " max_tokens="
                 + to_string(self.max_tokens),
@@ -655,8 +703,14 @@ locus OpenAiChat {
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
-        if !self.allows(req.data_class) {
-            ev.refused = if self.credential.ready() {
+        let permitted = if mapped {
+            !protected_class(req.data_class) && (!keyed || mapped_key.ready())
+        } else {
+            self.allows(req.data_class)
+        };
+        if !permitted {
+            let ready = if mapped { !keyed || mapped_key.ready() } else { self.credential.ready() };
+            ev.refused = if ready {
                 "data class " + req.data_class
             } else {
                 "credential not present"
@@ -684,11 +738,13 @@ locus OpenAiChat {
         } else {
             ""
         };
-        let resp = self.credential.post_json(
-            self.endpoint,
-            body,
-            extra,
-        ) or self.transport_failed(err);
+        let resp = if !mapped {
+            self.credential.post_json(self.endpoint, body, extra) or self.transport_failed(err)
+        } else if keyed {
+            mapped_key.post_json(req.endpoint, body, extra) or self.transport_failed(err)
+        } else {
+            post_json_keyless(req.endpoint, body, extra) or self.transport_failed(err)
+        };
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;

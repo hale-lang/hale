@@ -1029,6 +1029,7 @@ fn dna_fixture_set_is_complete() {
         names,
         vec![
             "acceptance_binding_test.hl",
+            "acceptance_homelab_test.hl",
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",

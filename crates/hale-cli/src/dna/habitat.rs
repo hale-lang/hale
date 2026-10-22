@@ -35,6 +35,8 @@ pub(crate) fn usage_text() -> &'static str {
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
        hale habitat place <key>/<role> <host>
+       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat model-probe <organism> <mode>.<size>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
@@ -118,6 +120,14 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      (a compose.yaml at its root), are allocations of the
                      host, brought up there by its provider, and its
                      addresses are derived from there.
+model-map <organism> <category> <model>
+                     point a grafted organism's model map at an endpoint
+                     (the head's Commands::set_model_map: `hale dna models
+                     category … --endpoint <url> [--key-vault <slot>]` run
+                     in its directory); a key only by its vault slot's name.
+model-probe <organism> <category>
+                     ask the model that category names, where the map says
+                     it is asked, once (Commands::probe_model).
 place <alloc> <host> place an allocation (`<key>/<role>`: memory, nerves,
                      senses, services) on a host (the head's
                      Commands::place_allocation); nothing applies yet.
@@ -236,6 +246,8 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("host") => host(&args[1..]),
         Some("brief") if args.len() == 1 => brief(),
         Some("place") => sapling::place_cmd(&args[1..]),
+        Some("model-map") => sapling::model_map_cmd(&args[1..], false),
+        Some("model-probe") => sapling::model_map_cmd(&args[1..], true),
         Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),

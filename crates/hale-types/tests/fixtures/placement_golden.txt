@@ -11046,6 +11046,8 @@ shared	dynamic	sites in core #595afad3
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/acceptance_homelab_test.hl
+
 == dna/tests/anthropic_messages_test.hl
 root	App	the entry
 domain	pool:io

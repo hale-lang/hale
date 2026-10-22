@@ -385,7 +385,23 @@ fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply 
             "the habitat's record refused the row (" + r.error + ")",
         );
     }
-    return NurseryReply { ok: true };
+    // what it offers, read into the record now (the habitat's act, run as
+    // the operator's own command would be: none of the head's own memory,
+    // nerves or socket reaches it)
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let read = dna::run_tool_timeout(
+        600,
+        "sh\n-c\nfor v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + hale + "\nhabitat\nnursery\nrefresh",
+    );
+    if read.code != 0 {
+        return NurseryReply {
+            ok: true,
+            why: "trusted; what it offers is read at the habitat's next act: "
+                + dna::trim_nl(read.stderr),
+        };
+    }
+    return NurseryReply { ok: true, why: dna::trim_nl(read.stdout) };
 }
 
 // The newer revision a nursery offered for `name`, ratified by `by`: the

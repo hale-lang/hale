@@ -88,15 +88,17 @@ pub(super) fn record(rows: &[serde_json::Value]) -> Result<(), String> {
 /// What each nursery the habitat holds offers, read into its record: a
 /// sapling first seen pinned (`habitat.sapling`), and a newer revision of
 /// one already pinned filed as a proposal (`habitat.sapling.proposed`),
-/// never taken. The first nursery to offer a name holds it: the toolchain's,
-/// then the trusted ones in the order of their sources. A nursery that
+/// never taken. The first nursery to offer a name holds it: the trusted
+/// ones in the order of their sources, then the toolchain's (the default). A nursery that
 /// cannot be read is said and skipped. What was done, a line each.
 pub(super) fn refresh() -> Result<Vec<String>, String> {
     let rows = rows_of(&genome_dir());
     let pins = latest(&rows, "habitat.sapling");
     let proposals = latest(&rows, "habitat.sapling.proposed");
-    let mut sources: Vec<Option<String>> = vec![None];
-    sources.extend(latest(&rows, "habitat.nursery").into_iter().filter(|(_, b)| b["state"] != "removed").map(|(k, _)| Some(k)));
+    // the nurseries the Board trusts first, then the toolchain's: the
+    // bundled one is the default a trusted one may offer over
+    let mut sources: Vec<Option<String>> = latest(&rows, "habitat.nursery").into_iter().filter(|(_, b)| b["state"] != "removed").map(|(k, _)| Some(k)).collect();
+    sources.push(None);
     let mut out = Vec::new();
     let mut new_rows = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -268,7 +270,12 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
-    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "vault": [] });
+    // the files its services mount beside the compose file: the
+    // repository's own, at its root (what it tracks, never what the graft
+    // wrote)
+    let tracked = Command::new("git").arg("-C").arg(root).args(["ls-files"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let mounted: Vec<&str> = tracked.lines().filter(|f| !f.contains('/') && *f != "compose.yaml" && *f != "hale.toml").collect();
+    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
     out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
@@ -318,6 +325,51 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     } else {
         serde_json::json!({ "ok": false, "code": "not_grafted", "why": format!("the graft ended with {} (its log: {})", if code.is_empty() { "no status".to_string() } else { format!("exit {code}") }, log.display()), "said": said })
     })
+}
+
+/// `hale habitat model-map <organism> <category> <model> [--endpoint <url>]
+/// [--key-vault <slot>] [--tools]` and `hale habitat model-probe <organism>
+/// <category>`: clients of the head's `Commands::set_model_map` and
+/// `Commands::probe_model`.
+pub(super) fn model_map_cmd(args: &[String], probe: bool) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let usage = if probe { "usage: hale habitat model-probe <organism> <mode>.<size>" } else { "usage: hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]" };
+    let words: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
+    let (member, payload) = if probe {
+        let [org, cat] = words.as_slice() else {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        };
+        ("Commands::probe_model", serde_json::json!({ "organism": org, "category": cat }))
+    } else {
+        let endpoint = flag("--endpoint");
+        let key_vault = flag("--key-vault");
+        let rest: Vec<&String> = words.iter().copied().filter(|w| **w != endpoint && **w != key_vault).collect();
+        let [org, cat, model] = rest.as_slice() else {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        };
+        ("Commands::set_model_map", serde_json::json!({ "organism": org, "category": cat, "model": model, "endpoint": endpoint, "key_vault": key_vault, "tools": args.iter().any(|a| a == "--tools") }))
+    };
+    match head_call(member, payload) {
+        Ok(v) if v["ok"] == serde_json::json!(true) => {
+            if probe {
+                println!("{:<8}{} at {}: {}", "model", v["model"].as_str().unwrap_or(""), v["endpoint"].as_str().unwrap_or(""), v["answer"].as_str().unwrap_or(""));
+            } else {
+                println!("{}", v["why"].as_str().unwrap_or(""));
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(v) => {
+            eprintln!("hale habitat {}: {} ({})", if probe { "model-probe" } else { "model-map" }, v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("hale habitat {}: {e}", if probe { "model-probe" } else { "model-map" });
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// `hale habitat place <allocation> <host>`.
@@ -427,7 +479,13 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                 _ => source.clone(),
             };
             match head_call("Commands::add_nursery", serde_json::json!({ "source": source })) {
-                Ok(v) if v["ok"] == serde_json::json!(true) => println!("{:<8}{source}: the Board trusts it", "nursery"),
+                Ok(v) if v["ok"] == serde_json::json!(true) => {
+                    println!("{:<8}{source}: the Board trusts it", "nursery");
+                    // what the head read of it
+                    if let Some(said) = v["why"].as_str().filter(|w| !w.is_empty()) {
+                        println!("{said}");
+                    }
+                }
                 Ok(v) => {
                     eprintln!("hale habitat nursery add: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
                     return ExitCode::from(1);

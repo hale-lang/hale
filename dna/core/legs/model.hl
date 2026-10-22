@@ -748,6 +748,15 @@ locus ModelPerformer {
                 std::json::find_field_raw(brief.hat, "model"),
                 "model",
             ),
+            // and where the mapping says it is asked, with its key's slot
+            endpoint: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "endpoint",
+            ),
+            key_vault: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "key_vault",
+            ),
             metadata: call_metadata(brief),
             // one call of the attempt: a retry of it is the same call
             idempotency_key: brief.attempt_id + ":call:1"

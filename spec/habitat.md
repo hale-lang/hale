@@ -149,7 +149,14 @@ which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
 allocation `<key>/services` of that host (its `render_dir` and
 `render_files`), applied there through the head. Every allocation names its
-provider: the host's. A sapling's graft is the head's Board command
+provider: the host's. A tenant's model map is the head's Board command
+`Commands::set_model_map` (`{organism, category, model, endpoint,
+key_vault, tools}`, `hale habitat model-map`): the organism's `hale dna
+models category … --endpoint <url> [--key-vault <slot>]`, run in its
+directory, a key only by its vault slot's name; `Commands::probe_model`
+(`{organism, category}`, `hale habitat model-probe`) asks the model the
+category names, where the map says, once, and answers what it said, never
+a key. A sapling's graft is the head's Board command
 `Commands::graft` (`{sapling, host, library}`): it starts the act, which
 takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
 its exit status beside it in `<log>.exit`); the end of the graft is its
@@ -185,8 +192,8 @@ the habitat trusts is trusted for its tenants' `pack apply --from` too.
 
 What the nurseries offer is read into the record by the habitat's acts:
 `up`, `hale habitat nursery add` and `hale habitat nursery refresh`. The
-first nursery to offer a name holds it (the toolchain's, then the
-trusted ones). A sapling first seen is pinned, a `habitat.sapling <name>`
+first nursery to offer a name holds it (the trusted ones, then the
+toolchain's, which is the default a trusted one may offer over). A sapling first seen is pinned, a `habitat.sapling <name>`
 row. **An upgrade is a proposal, never a pull**: a revision or digest
 other than the pinned one is filed as a `habitat.sapling.proposed <name>`
 row, once, and nothing moves; `Commands::ratify_sapling` (`hale habitat
@@ -212,6 +219,32 @@ The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
 commit). A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
+
+## Acceptance: the homelab case
+
+`dna/tests/acceptance_homelab_test.hl` is phase 4's exit at fixture level.
+After `hale habitat up` on an empty box, every step is a row of the head's
+surface, called on its socket as the operator face calls its rows: a
+machine of the LAN is added over SSH (`add_host`), authorized by its owner
+and probed (`probe_host`); a nursery is trusted (`add_nursery`) and its
+voice ratified over the bundled pin (`ratify_sapling`); voice is grafted by
+name onto the machine (`graft`) and applied there (`apply_allocations`)
+from its own compose; a streamed `/v1/chat/completions` through it, at the
+machine's name, answers as server-sent events from a local model on the
+machine's network; the grafted organism's model map is pointed at voice's
+endpoint on the machine (`set_model_map`) and its model call goes through
+voice to that model (`probe_model`); and the reads (`index` with purpose
+and pulse, `allocations`, `saplings`, `hosts`) list it placed and up. The fixture's
+machine is an sshd container driving this box's docker daemon, named
+`localhost` with its port; its voice is a checked-in minimal tree with
+voice's shape (`dna/tests/onboarding/voice-sapling`) in a local git
+nursery; its model is the cycle's canned OpenAI-compatible gateway. It
+says, as `SKIPPED`, what it does not prove: voice's own programs, store and
+broker (the real voice needs voice#44 and a network fetch); the Mac's
+launchd node.
+The real run adds them: a Linux box with docker as the host, Ollama on it
+over the host's network, the Mac as a launchd voice node, the real voice
+from the bundled nursery, all through the face.
 
 ## Long-lived, and only its acts provision
 
