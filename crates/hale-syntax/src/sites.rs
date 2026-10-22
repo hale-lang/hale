@@ -187,6 +187,15 @@ macro_rules! walk {
                         f(SiteKind::Topic, t.span, Some(t.name.name.as_str()), & $($m)? t.id);
                         ty(& $($m)? t.payload, f);
                     }
+                    // A fleet lowers to nothing and has no site of its own:
+                    // the deployment family reads it by name. Its params
+                    // and binding entries are numbered as a locus's are.
+                    TopDecl::Fleet(fl) => {
+                        params_block(& $($m)? fl.params, f);
+                        if let Some(bb) = & $($m)? fl.bindings {
+                            bindings(bb, f);
+                        }
+                    }
                     TopDecl::Group(g) => {
                         f(SiteKind::Group, g.span, Some(g.name.name.as_str()), & $($m)? g.id);
                     }
@@ -280,21 +289,7 @@ macro_rules! walk {
                             ty(& $($m)? slot.elem_ty, f);
                         }
                     }
-                    LocusMember::Bindings(bb) => {
-                        for entry in & $($m)? bb.entries {
-                            f(SiteKind::BindingEntry, entry.span, None, & $($m)? entry.id);
-                            match & $($m)? entry.transport {
-                                TransportSpec::Adapter { inits, .. } => {
-                                    struct_inits(inits, f)
-                                }
-                                TransportSpec::Unix { .. }
-                                | TransportSpec::ShmRing { .. } => {}
-                            }
-                            if let Some(codec) = & $($m)? entry.codec {
-                                struct_inits(& $($m)? codec.inits, f);
-                            }
-                        }
-                    }
+                    LocusMember::Bindings(bb) => bindings(bb, f),
                     LocusMember::Placement(pb) => {
                         for entry in & $($m)? pb.entries {
                             f(
@@ -314,6 +309,22 @@ macro_rules! walk {
                     LocusMember::Seam(sd) => expr(& $($m)? sd.head, f),
                     // No identity and no expression inside.
                     LocusMember::Topology(_) | LocusMember::Claims(_) => {}
+                }
+            }
+
+            fn bindings(bb: & $($m)? BindingsBlock, f: &mut Visit<'_>) {
+                for entry in & $($m)? bb.entries {
+                    f(SiteKind::BindingEntry, entry.span, None, & $($m)? entry.id);
+                    match & $($m)? entry.transport {
+                        TransportSpec::Adapter { inits, .. } => {
+                            struct_inits(inits, f)
+                        }
+                        TransportSpec::Unix { .. }
+                        | TransportSpec::ShmRing { .. } => {}
+                    }
+                    if let Some(codec) = & $($m)? entry.codec {
+                        struct_inits(& $($m)? codec.inits, f);
+                    }
                 }
             }
 

@@ -229,12 +229,29 @@ struct WireId {
     payload_hash: String,
 }
 
+/// Compose what `path` names: a fleet seed (a directory or `.hl` file
+/// declaring a `fleet locus`), through the `deployment` rows derived
+/// from it, or a plan JSON, until the rows replace it as an input.
 pub fn compose(
-    plan_path: &Path,
+    path: &Path,
     trust: &crate::sign::Trust,
 ) -> Result<String, Vec<String>> {
-    let plan = read_plan(plan_path)?;
-    let base = plan_path.parent().unwrap_or(Path::new("."));
+    if crate::deployment::is_fleet_seed(path) {
+        let rows = crate::deployment::derive_deployment(path)?;
+        let plan = rows.composition();
+        return compose_plan(&plan, &rows.root, trust);
+    }
+    let plan = read_plan(path)?;
+    let base = path.parent().unwrap_or(Path::new("."));
+    compose_plan(&plan, base, trust)
+}
+
+/// Compose one plan whose relative paths resolve against `base`.
+pub fn compose_plan(
+    plan: &FleetPlan,
+    base: &Path,
+    trust: &crate::sign::Trust,
+) -> Result<String, Vec<String>> {
     let mut errs: Vec<String> = Vec::new();
 
     // ---- step 1: validate every component artifact ----
@@ -515,12 +532,12 @@ pub fn compose(
     }
 
     // ---- step 9-10: fleet claims over the composed model ----
-    let groups = resolve_groups(&plan, &comps, &mut errs);
+    let groups = resolve_groups(plan, &comps, &mut errs);
     if !errs.is_empty() {
         return Err(errs);
     }
     let claim_rows = evaluate_claims(
-        &plan, &groups, &comps, &by_id, &call_edges, &local_bus,
+        plan, &groups, &comps, &by_id, &call_edges, &local_bus,
         &route_edges, &resolved_routes, &holes, &mut errs,
     );
     if !errs.is_empty() {
@@ -528,7 +545,7 @@ pub fn compose(
     }
 
     Ok(render(
-        &plan, &comps, &vertices, &call_edges, &local_bus, &route_edges,
+        plan, &comps, &vertices, &call_edges, &local_bus, &route_edges,
         &routes_out, &unknowns, &claim_rows,
     ))
 }
@@ -1415,24 +1432,33 @@ fn artifact_of(base: &Path, plan_name: &str, inst: &InstanceSpec) -> Result<Path
         return Err("no `artifact` and no `seed`: an instance names one or the other".into());
     };
     let out = base.join(".hale/fleet").join(plan_name).join(format!("{}.topology.json", inst.id));
+    cut_artifact(&base.join(seed), &out)?;
+    Ok(out)
+}
+
+/// Cut `seed`'s topology artifact into `out` (`hale check <seed>
+/// --dump-topology`). A seed that does not check has no artifact.
+pub(crate) fn cut_artifact(seed: &Path, out: &Path) -> Result<(), String> {
+    let shown = seed.display().to_string();
+    let seed_s = shown.as_str();
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("mkdir {}: {e}", d.display()))?;
     }
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let r = std::process::Command::new(me)
         .arg("check")
-        .arg(base.join(seed))
+        .arg(seed)
         .arg(format!("--dump-topology={}", out.display()))
         .output()
-        .map_err(|e| format!("hale check {seed}: {e}"))?;
+        .map_err(|e| format!("hale check {seed_s}: {e}"))?;
     if !r.status.success() {
         return Err(format!(
-            "seed `{seed}` does not check, so it has no artifact to compose:\n{}{}",
+            "seed `{seed_s}` does not check, so it has no artifact to compose:\n{}{}",
             String::from_utf8_lossy(&r.stdout).trim(),
             String::from_utf8_lossy(&r.stderr).trim()
         ));
     }
-    Ok(out)
+    Ok(())
 }
 
 pub fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
@@ -1461,7 +1487,7 @@ pub fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
 /// cannot honestly build on. Returns the parsed artifact, the
 /// SHA-256 of the admitted bytes, and the key_id that signed them
 /// (when trust roots are declared).
-fn load_artifact(
+pub(crate) fn load_artifact(
     p: &Path,
     trust: &crate::sign::Trust,
 ) -> Result<

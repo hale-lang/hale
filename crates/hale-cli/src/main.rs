@@ -35,6 +35,7 @@ use verbs::help::{subcommand_help, usage};
 use shared::stale::check_stale_cli;
 mod build_env;
 mod deploy;
+mod deployment;
 mod fleet;
 mod dna;
 mod iris;

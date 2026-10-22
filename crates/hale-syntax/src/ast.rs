@@ -135,6 +135,56 @@ pub enum TopDecl {
     /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }`
     /// — a surface. Seed-global, as `role` is.
     Api(ApiDecl),
+    /// Phase 4 (C2): `fleet locus NAME { params { … } placement { … }
+    /// bindings { … } claims { … } }` — a deployment of other seeds'
+    /// `main` loci. A locus KIND, not a typed param: a fleet is checked
+    /// as one graph (the routes between its instances, the claims across
+    /// them) and never runs itself, where a param is a thing a running
+    /// program holds. It lowers to nothing; the `deployment` family's
+    /// rows are derived from it (spec/verification.md § Fleet
+    /// composition).
+    Fleet(FleetDecl),
+}
+
+/// Phase 4 (C2): `fleet locus NAME { … }`. `fleet` is contextual, a
+/// word only in front of `locus` at the top level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetDecl {
+    pub name: Ident,
+    /// The instances: each param's type names another seed's `main
+    /// locus` through an import alias (`oms: oms::Oms;`). A param takes
+    /// no value; the instance is built from its own seed.
+    pub params: ParamsBlock,
+    /// Each param's placement default: the host it names or its replica
+    /// count. A default only: the habitat's allocation rows bind
+    /// instances to hosts.
+    pub placement: Vec<FleetPlacement>,
+    /// The topics the instances are wired by, each with the route's
+    /// transport: the shape of a `main locus` binding.
+    pub bindings: Option<BindingsBlock>,
+    /// The law across the instances, each group operand an instance
+    /// param.
+    pub claims: Option<ClaimsBlock>,
+    pub span: Span,
+    /// The param names as written, before the import renames rewrite
+    /// their types: `(param, alias, main locus)` for `oms: oms::Oms`.
+    pub written: Vec<(String, String, String)>,
+}
+
+/// One fleet placement entry: `oms: host("box-a");` or `gw: replicas(2);`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetPlacement {
+    pub instance: Ident,
+    pub spec: FleetPlacementSpec,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FleetPlacementSpec {
+    /// `host("name")`: the host the instance runs on, by name.
+    Host(String),
+    /// `replicas(n)`: n instances of the one seed, `name-0` … `name-(n-1)`.
+    Replicas(u64),
 }
 
 impl TopDecl {
@@ -156,6 +206,7 @@ impl TopDecl {
             TopDecl::Constitution(c) => c.span,
             TopDecl::Unit(u) => u.span,
             TopDecl::Api(a) => a.span,
+            TopDecl::Fleet(f) => f.span,
         }
     }
 }

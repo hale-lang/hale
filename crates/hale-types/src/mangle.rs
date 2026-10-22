@@ -1035,6 +1035,9 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
+            // Phase 4 (C2): a fleet names its instances' mains and its
+            // topics through the aliases of the seeds it imports.
+            TopDecl::Fleet(fl) => walk_fleet_members(fl, &mut |m| self.walk_locus_member(m)),
             // #392 thread 2: a library seed's own top-level claims
             // block — its qualified topic refs (of ITS sub-imports)
             // canonicalize with the same rule as main's block.
@@ -1340,6 +1343,32 @@ pub fn name_component(bytes: &[u8]) -> String {
     out
 }
 
+/// Phase 4 (C2): a fleet's params, bindings and claims are the shapes a
+/// locus's members are, and every rename pass treats them the same: the
+/// walker is handed each as the member it is and gets it back.
+fn walk_fleet_members(fl: &mut FleetDecl, walk: &mut dyn FnMut(&mut LocusMember)) {
+    let empty = ParamsBlock { params: Vec::new(), span: fl.params.span };
+    let mut m = LocusMember::Params(std::mem::replace(&mut fl.params, empty));
+    walk(&mut m);
+    if let LocusMember::Params(pb) = m {
+        fl.params = pb;
+    }
+    if let Some(bb) = fl.bindings.take() {
+        let mut m = LocusMember::Bindings(bb);
+        walk(&mut m);
+        if let LocusMember::Bindings(bb) = m {
+            fl.bindings = Some(bb);
+        }
+    }
+    if let Some(cb) = fl.claims.take() {
+        let mut m = LocusMember::Claims(cb);
+        walk(&mut m);
+        if let LocusMember::Claims(cb) = m {
+            fl.claims = Some(cb);
+        }
+    }
+}
+
 fn top_decl_name(d: &TopDecl) -> Option<&str> {
     match d {
         TopDecl::Locus(l) => Some(&l.name.name),
@@ -1372,9 +1401,14 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // GH #1417: a surface's NAME is the description's (the exposure
         // identity carries it), seed-global as a role's is, so it is
         // never mangled either.
-        TopDecl::Claims(_) | TopDecl::Constitution(_) | TopDecl::Role(_) | TopDecl::Unit(_) | TopDecl::Api(_) => {
-            None
-        }
+        // Phase 4 (C2): a fleet's name is deployment vocabulary, the
+        // name its rows carry; a fleet is never imported to collide.
+        TopDecl::Claims(_)
+        | TopDecl::Constitution(_)
+        | TopDecl::Role(_)
+        | TopDecl::Unit(_)
+        | TopDecl::Api(_)
+        | TopDecl::Fleet(_) => None,
     }
 }
 
@@ -1654,6 +1688,7 @@ impl<'a> Mangler<'a> {
                 // name and its equation's target stay as written (see
                 // `top_decl_name`).
             }
+            TopDecl::Fleet(fl) => walk_fleet_members(fl, &mut |m| self.walk_locus_member(m)),
             TopDecl::Api(a) => {
                 // GH #1417: a row names this seed's own locus, whose
                 // declaration was just mangled; follow it, as a

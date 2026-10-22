@@ -304,7 +304,64 @@ where the law says one, or a path from a strategy to a gateway that
 was supposed to go through risk.
 
 `hale fleet` answers that by composing the **artifacts**, never the
-source:
+source.
+
+### A fleet in source
+
+Declare the deployment as a seed of its own holding a `fleet locus`.
+Its params are the other seeds' mains, its placement a default host or
+replica count per instance, its bindings the topics that wire them,
+and its claims the law across them:
+
+```hale
+import "../desk" as desk;
+import "../venue" as venue;
+import "../shared" as t;
+
+fleet locus Prod {
+    params {
+        orders: desk::Orders;
+        gw: venue::Gateway;
+    }
+    placement {
+        orders: host("box-a");
+        gw: replicas(2);
+    }
+    bindings {
+        t::OrderRequest: unix("/run/orders.sock");
+    }
+    claims {
+        one_desk: count publishers(topic t::OrderRequest) == 1;
+        no_return: forbid reaches(gw, orders);
+    }
+}
+```
+
+A fleet is a locus kind, not a param of some main: it is checked as one
+graph and never runs, so it holds no code, `hale check` judges it and
+`hale build` refuses it. `hale fleet check fleets/prod` cuts each
+instance's artifact from its seed and derives the routes — you write
+the subject, never the endpoints:
+
+```text
+component `orders` runs `desk::Orders` from …/desk (shape …), on host `box-a`: orders
+  publishes svc.order.request as `t::OrderRequest`, bound unix
+component `gw` runs `venue::Gateway` from …/venue (shape …), 2 replicas: gw-0, gw-1
+  subscribes svc.order.request as `t::OrderRequest`, bound unix
+route `t::OrderRequest` (svc.order.request, unix): orders -> gw-0, gw-1
+ok: fleet `Prod` composed — 3 instance(s), 1 route(s), fleet_shape_hash …
+```
+
+Each end must bind the subject in its own main, over the same
+transport: a topic an instance does not bind never leaves its process,
+so the fleet refuses a route through it rather than drawing one. A
+binding nobody publishes (or nobody subscribes) wires nothing and is
+refused too.
+
+### A fleet as a plan
+
+The same composition reads a plan JSON, which names the artifacts and
+the routes by hand:
 
 ```sh
 hale check apps/prober --dump-topology=artifacts/prober.json
@@ -366,11 +423,12 @@ fleet claim `orders_pass_oms` violated — witness:
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
 
-Declare your deployments in `hale.toml` and check them all at once:
+Declare your deployments in `hale.toml` and check them all at once; an
+entry names a fleet seed or a plan:
 
 ```toml
 [fleets]
-production = "ops/fleet/prod.plan.json"
+production = "fleets/prod"
 staging    = "ops/fleet/staging.plan.json"
 ```
 

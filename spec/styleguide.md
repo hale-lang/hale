@@ -843,6 +843,55 @@ fn main() { let i = Items { }; }
 - **Atomicity is one repo call.** A `get` then a `put` is two operations.
   (`crates/hale-types/tests/repo_check.rs` pins the refusals.)
 
+### 2.13 Fleet — a deployment of other seeds' mains
+
+A deployment is a seed of its own holding one `fleet locus`: its params
+are other seeds' `main` loci, through their imports; `placement` gives
+each a default host or replica count; `bindings` names the topics that
+wire them, each with a declared `subject:`; `claims` state the law
+across the instances. It holds no code and never runs: `hale fleet
+check <seed>` derives the routes from the instances' artifacts and
+judges the claims over them as one graph.
+
+```hale,fragment
+import "../desk" as desk;
+import "../venue" as venue;
+import "../shared" as t;
+
+fleet locus Prod {
+    params {
+        orders: desk::Orders;
+        gw: venue::Gateway;
+    }
+    placement {
+        orders: host("box-a");
+        gw: replicas(2);
+    }
+    bindings {
+        t::OrderRequest: unix("/run/orders.sock");
+    }
+    claims {
+        one_desk: count publishers(topic t::OrderRequest) == 1;
+        no_return: forbid reaches(gw, orders);
+    }
+}
+```
+
+- **A fleet seed holds its fleet and its imports, nothing else.** It
+  never runs: a `fn` (an `@export` one too), a `locus`, a `type` or a
+  `target` beside the fleet is refused, and `hale build` refuses the
+  seed and builds each instance from its own. **[error]**
+- **Bind each end in its own main too.** A route reaches an instance
+  only through that instance's binding of the subject, over the same
+  transport kind; a topic it does not bind never leaves its process,
+  and the fleet refuses the binding. **[error]**
+- **Give every wired topic a `subject:`.** A local wire name cannot
+  join two programs. **[error]**
+- **Count instances in the fleet, not in a main.** `count
+  publishers(topic T) == 1` in a fleet counts deployed instances, so
+  `replicas(2)` of a publisher violates it. (`crates/hale-cli/tests/fleet_locus.rs`
+  pins the derivation and the refusals.)
+
 ### Naming conventions
 
 | Construct | Convention | Example |

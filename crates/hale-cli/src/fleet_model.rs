@@ -72,6 +72,10 @@ pub struct ComponentModel {
     /// discard it.
     pub capabilities: BTreeMap<String, bool>,
     pub adequacy: BTreeMap<String, String>,
+    /// The component's own `bindings` rows, (wire subject, transport):
+    /// the topics its main binds out of its process. A fleet route
+    /// reaches an instance only through one (Phase 4, C2).
+    pub bindings: Vec<(String, String)>,
 }
 
 impl ComponentModel {
@@ -363,7 +367,18 @@ impl ComponentModel {
                 req_str(x, &format!("adequacy.{}", k))?,
             );
         }
+        // The bindings rows: a program with none has an empty section.
+        let mut bindings: Vec<(String, String)> = Vec::new();
+        if let Some(rows) = v["bindings"].as_array() {
+            for (i, b) in rows.iter().enumerate() {
+                bindings.push((
+                    req_str(&b["subject"], &format!("bindings[{}].subject", i))?,
+                    req_str(&b["transport"], &format!("bindings[{}].transport", i))?,
+                ));
+            }
+        }
         Ok(ComponentModel {
+            bindings,
             shape_hash,
             fns,
             calls,

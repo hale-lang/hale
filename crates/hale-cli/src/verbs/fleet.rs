@@ -276,7 +276,23 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match fleet::compose(Path::new(plan), &trust) {
+    // Phase 4 (C2): a fleet seed composes through its `deployment`
+    // rows; `check` says what it derived.
+    let target = Path::new(plan);
+    let composed = if crate::deployment::is_fleet_seed(target) {
+        match crate::deployment::derive_deployment(target) {
+            Ok(rows) => {
+                if sub == "check" {
+                    print_rows(&rows);
+                }
+                fleet::compose_plan(&rows.composition(), &rows.root, &trust)
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        fleet::compose(target, &trust)
+    };
+    match composed {
         Ok(artifact) => {
             if sub == "dump" {
                 print!("{}", artifact);
@@ -303,14 +319,60 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
     }
 }
 
+/// What a fleet seed's `deployment` rows say: each component's
+/// instances and placement default, and each derived route.
+fn print_rows(rows: &crate::deployment::Deployment) {
+    for c in &rows.components {
+        let ids: Vec<&str> = rows.instances.iter().filter(|i| i.component == c.param).map(|i| i.id.as_str()).collect();
+        let at = match rows.placement.iter().find(|p| p.component == c.param) {
+            Some(p) if p.host.is_some() => format!(", on host `{}`", p.host.as_deref().unwrap_or_default()),
+            Some(p) if p.replicas > 1 => format!(", {} replicas", p.replicas),
+            _ => String::new(),
+        };
+        println!(
+            "component `{}` runs `{}` from {} (shape {}){}: {}",
+            c.param,
+            c.main,
+            c.seed.display(),
+            c.shape_hash,
+            at,
+            ids.join(", ")
+        );
+        for e in rows.endpoints.iter().filter(|e| e.component == c.param) {
+            println!(
+                "  {} {} as `{}`{}",
+                if e.publish { "publishes" } else { "subscribes" },
+                e.subject,
+                e.topic,
+                match &e.bound {
+                    Some(t) => format!(", bound {t}"),
+                    None => ", in process".to_string(),
+                }
+            );
+        }
+    }
+    for r in &rows.routes {
+        let ends = |v: &[(String, String)]| v.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>().join(", ");
+        println!(
+            "route `{}` ({}, {}): {} -> {}",
+            r.id,
+            r.subject,
+            r.transport,
+            ends(&r.publishers),
+            ends(&r.subscribers)
+        );
+    }
+}
+
 /// The `hale fleet` surface. One text for two callers: the usage
 /// error (stderr, exit 2) and `--help` (stdout, exit 0).
 pub(crate) fn fleet_usage() -> &'static str {
     "\
-hale fleet check [plan.json]   compose and check
-                                (no plan: every fleet in [fleets];
+hale fleet check [fleet seed]  compose and check
+                                (a seed declaring `fleet locus`, or a plan.json;
+                                 none: every fleet in [fleets];
                                  --in <dir> another workspace's, --if-declared: none is ok)
-hale fleet dump  <plan.json>    write the fleet artifact
+hale fleet dump  <fleet seed>   write the fleet artifact
 hale fleet attest <plan.json>   binaries match the plan's sha256 rows
 hale fleet keygen <prefix>      ES256 keypair for signing
 hale fleet sign <file> --key K  detached .sig over exact bytes
@@ -319,10 +381,11 @@ check/dump take --trust <pub.pem> (repeatable):
 with trust roots declared, every component must
 verify under one of them.
 
-A plan names exact application INSTANCES and the
-routes between them. It composes artifacts, never
-source: matching wire identities establish
-compatibility, but only an explicit route creates
-a fleet edge.
+A fleet names exact application INSTANCES (other
+seeds' mains) and the topics that wire them; its
+routes are derived from the instances' artifacts.
+It composes artifacts, never source: matching wire
+identities establish compatibility, but only a
+binding creates a fleet edge.
 "
 }

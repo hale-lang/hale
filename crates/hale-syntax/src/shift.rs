@@ -116,6 +116,14 @@ impl<A: Shift, B: Shift> Shift for (A, B) {
     }
 }
 
+impl<A: Shift, B: Shift, C: Shift> Shift for (A, B, C) {
+    fn shift(&mut self, d: Move) {
+        self.0.shift(d);
+        self.1.shift(d);
+        self.2.shift(d);
+    }
+}
+
 /// Shift each named binding.
 macro_rules! sh {
     ($d:ident; $($x:ident),* $(,)?) => {{
@@ -181,6 +189,7 @@ impl Shift for TopDecl {
             TopDecl::Constitution(x) => x.shift(d),
             TopDecl::Unit(x) => x.shift(d),
             TopDecl::Api(x) => x.shift(d),
+            TopDecl::Fleet(x) => x.shift(d),
         }
     }
 }
@@ -188,6 +197,16 @@ impl Shift for TopDecl {
 // Claims vocabulary.
 
 shift_struct!(RoleDecl { name, includes, span });
+shift_struct!(FleetDecl { name, params, placement, bindings, claims, span, written });
+shift_struct!(FleetPlacement { instance, spec, span });
+
+impl Shift for FleetPlacementSpec {
+    fn shift(&mut self, _: Move) {
+        match self {
+            FleetPlacementSpec::Host(_) | FleetPlacementSpec::Replicas(_) => {}
+        }
+    }
+}
 shift_struct!(ApiDecl { name, rows, span, origin, source });
 shift_struct!(ApiSource { kind, location, span });
 shift_struct!(RpcRow { locus, written, method, requires, span, signature, route });

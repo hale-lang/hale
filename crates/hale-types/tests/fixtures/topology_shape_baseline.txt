@@ -53,6 +53,8 @@ crates/hale-cli/tests/fixtures/claims-program/shout/shout.hl 33515435be967f5c
 crates/hale-cli/tests/fixtures/deploy/bare/main.hl de659712f90cbb84
 crates/hale-cli/tests/fixtures/deploy/served/main.hl a0da8a7dc08afc67
 crates/hale-cli/tests/fixtures/deploy/svc/main.hl 96dafd7df24818b3
+crates/hale-cli/tests/fixtures/fleet-locus/shared/topics.hl eacb157deb62e37c
+crates/hale-cli/tests/fixtures/fleet-locus/venue-unbound/main.hl 2f9ac565bf095b82
 crates/hale-cli/tests/fixtures/form-hashmap-qualified-model/main.hl af67c9605fa68550
 crates/hale-cli/tests/fixtures/g34-app/main.hl d4275fdcef4d5b13
 crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl 99a6e5ca46fb7c70

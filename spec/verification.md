@@ -1314,8 +1314,10 @@ than assume equivalence.
 ## Fleet composition (GH #408 Phase 1)
 
 A **fleet** is a named deployed system of application *instances* —
-not "every main in a repository". `hale fleet check|dump <plan.json>`
-composes **artifacts**, never source.
+not "every main in a repository". It is declared in source as a
+`fleet locus` (below) or, until that replaces it as an input, as a plan
+JSON; `hale fleet check|dump <fleet seed | plan.json>` composes
+**artifacts**, never source.
 
 That distinction is the design. A source-merged "super-main" would be
 unsound in both directions: an unbound topic is in-process by
@@ -1375,6 +1377,85 @@ Unknown keys in a plan are rejected, for the reason they are rejected
 in the environment manifest: a misspelled field and an omitted one
 look identical to a verifier.
 
+### The fleet locus
+
+A fleet seed declares one `fleet locus`, a locus KIND beside `main`:
+
+```text
+import "../desk" as desk;
+import "../venue" as venue;
+import "../shared" as t;
+
+fleet locus Prod {
+    params {
+        orders: desk::Orders;
+        gw: venue::Gateway;
+    }
+    placement {
+        orders: host("box-a");
+        gw: replicas(2);
+    }
+    bindings {
+        t::OrderRequest: unix("/run/orders.sock");
+    }
+    claims {
+        one_desk: count publishers(topic t::OrderRequest) == 1;
+        no_return: forbid reaches(gw, orders);
+    }
+}
+```
+
+It is a locus kind and not a typed param because a fleet is checked as
+one graph (the routes between its instances, the claims across them)
+and never runs itself; a param is a thing a running program holds.
+`hale check` judges its laws and `hale build` refuses it (`fleet locus
+Prod` is checked, never built) before it chooses any entry path, a
+`fn main` or an export-only wasm module alike: a fleet runs as its
+instances, each built from its own seed. So a fleet seed holds its
+fleet and its imports and nothing else: the check refuses any other
+declaration of the seed's own (a `fn`, an `@export fn`, a `locus`, a
+`main locus`, a `type`, a `target`, …), since nothing in it is ever
+built; a program to build is a seed of its own.
+
+- **params** are the instances: each names another seed's `main locus`
+  through the fleet seed's import (`alias::Main`) and takes no value. A
+  param naming a locus that is not its seed's main, a locus of the
+  fleet seed itself, or nothing an import declares is refused. A seed
+  declares at most one fleet.
+- **placement** is a default per instance, `host("<name>")` or
+  `replicas(<n>)` (n ≥ 1). `replicas(n)` deploys n instances,
+  `<param>-0` … `<param>-(n-1)`; any other param deploys one instance
+  whose id is the param. The habitat's allocation rows bind instances
+  to hosts; the placement block is what they default to.
+- **bindings** wire the instances, in a main binding's shape: each
+  names a topic with a declared `subject:` (a local wire name joins
+  nothing) and the route's transport. Constraints, codecs and hubs are
+  the instances' own bindings and are refused here.
+- **claims** are the fleet tier's forms, each group operand an instance
+  param (a group of every instance of it): `forbid reaches(A, B)
+  [avoiding G]`, `only edges A -> B { … }`, `require publishes|subscribes(some
+  G, topic T)` and `count publishers|subscribers(topic T) == | <= | >=
+  N`, which counts deployed instances. The other forms quantify inside
+  one program and belong in its main; `adopt` is refused.
+
+**The `deployment` rows.** `hale fleet check <fleet seed>` checks the
+seed, cuts each instance seed's artifact into
+`.hale/fleet/<Fleet>/<param>.topology.json` beside it, and derives the
+deployment as rows (spec/registry.md, `deployment`): the components
+(each param's main, its seed, its artifact and shape), the instances,
+each component's placement default, the endpoints each artifact
+records (topic, wire subject, direction, and the transport its own main
+binds the subject to), and the routes. A route is derived, never
+written: one per binding, from every instance whose artifact publishes
+the subject to every instance that subscribes it. An instance joins a
+route only through its own main's binding of the subject, over the
+transport kind the fleet's binding names, since an unbound topic never
+leaves its process; a binding with no publisher or no subscriber among
+the instances wires nothing; each is refused. Composition then reads
+the rows exactly as it reads a plan — the steps above, the claims
+below — so the seeds stay artifacts and the fleet is never a merged
+super-main.
+
 ### The workspace's deployments
 
 ```toml
@@ -1383,7 +1464,8 @@ production = "ops/fleet/prod.plan.json"
 staging    = "ops/fleet/staging.plan.json"
 ```
 
-`hale fleet check` with no plan checks every declared deployment.
+An entry may name a fleet seed instead of a plan. `hale fleet check`
+with no plan checks every declared deployment.
 A repository usually has more than one, and checking whichever one
 somebody remembered to name is the same partial-coverage problem
 `--matrix` solves for entrypoints. Every fleet runs even when an

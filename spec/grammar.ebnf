@@ -58,6 +58,7 @@ top_decl          = locus_decl
                   | target_decl
                   | group_decl
                   | role_decl             (* #1109 *)
+                  | fleet_decl            (* phase 4 *)
                   | claims_block          (* #392: library tier *)
                   | constitution_decl     (* #409 *)
                   | unit_decl             (* #1076 *)
@@ -303,6 +304,23 @@ locality_tier     = "L1" | "L2" | "L3" | "any" ;
 locus_decl        = { locus_decorator } , [ "main" ] , "locus" , IDENTIFIER ,
                     [ locus_annotations ] ,
                     "{" , { locus_member } , "}" ;
+(* Phase 4: a fleet locus is a deployment of other seeds' `main` loci,
+   a locus KIND beside `main`: it is checked as one graph (the routes
+   between its instances, the claims across them) and never runs, so it
+   holds no code, and its seed holds nothing beside it and its imports.
+   `fleet` is contextual, a word only before `locus` at
+   the top level. Each block at most once, in any order; `params` is
+   required. A param names an imported seed's main (`orders:
+   desk::Orders;`) and takes no value. A binding names a topic with a
+   declared `subject:` and the route's transport, as a main's binding
+   does; a claim is a fleet-tier form over instance params
+   (spec/verification.md § Fleet composition). *)
+fleet_decl        = "fleet" , "locus" , IDENTIFIER , "{" ,
+                    { params_block | fleet_placement | bindings_block
+                    | claims_block } , "}" ;
+fleet_placement   = "placement" , "{" , { IDENTIFIER , ":" ,
+                    ( "host" , "(" , STRING_LIT , ")"
+                    | "replicas" , "(" , INT_LIT , ")" ) , ";" } , "}" ;
 (* `@export locus` (export_annotation, defined in § 13) marks the
    persistent singleton "app" of a wasm program — instantiated once,
    never dissolved, its `fn` methods exported. See `spec/ffi.md`

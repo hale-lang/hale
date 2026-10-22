@@ -173,7 +173,8 @@ impl Walk<'_> {
             | TopDecl::Claims(_)
             | TopDecl::Constitution(_)
             | TopDecl::Unit(_)
-            | TopDecl::Api(_) => {}
+            | TopDecl::Api(_)
+            | TopDecl::Fleet(_) => {}
         }
     }
 

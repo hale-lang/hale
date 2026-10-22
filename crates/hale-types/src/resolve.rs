@@ -873,6 +873,10 @@ fn register_top_decls(
                 // GH #1417: a surface names a table of rows, never a
                 // value or a type; `api::serve` reads it by name.
             }
+            TopDecl::Fleet(_) => {
+                // Phase 4 (C2): a fleet is a deployment, never a value or
+                // a type; the fleet laws and the deployment rows read it.
+            }
         }
     }
 }

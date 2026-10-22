@@ -61,6 +61,8 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Unit(_) => None,
         // GH #1417: a surface is seed-global and never mangled.
         TopDecl::Api(_) => None,
+        // A fleet's name is deployment vocabulary, never mangled.
+        TopDecl::Fleet(_) => None,
     }
 }
 

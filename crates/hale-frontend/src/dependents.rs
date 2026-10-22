@@ -168,6 +168,7 @@ pub fn kind_and_name(item: &TopDecl) -> (&'static str, String) {
         TopDecl::Constitution(c) => ("constitution", c.name.name.clone()),
         TopDecl::Unit(u) => ("unit", u.name.name.clone()),
         TopDecl::Api(a) => ("api", a.name.name.clone()),
+        TopDecl::Fleet(f) => ("fleet", f.name.name.clone()),
     }
 }
 

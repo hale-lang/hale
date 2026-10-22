@@ -9053,6 +9053,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn lower_program(&mut self) -> Result<(), CodegenError> {
+        // Phase 4 (C2): a fleet seed is checked as one graph and never
+        // runs; its instances are built from their seeds. Refused before
+        // any entry path (a `fn main`, an export-only module) is chosen.
+        if let Some(f) = hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Fleet(f) => Some(f),
+            _ => None,
+        }) {
+            return Err(CodegenError::UnsupportedAt(
+                format!(
+                    "`fleet locus {}` is checked, never built: a fleet runs as its \
+                     instances, each built from its own seed (`hale build <seed>`); check \
+                     the fleet with `hale check` or `hale fleet check`",
+                    f.name.name
+                ),
+                f.name.span,
+            ));
+        }
         // Where an allocation is routed is the view's rows
         // (`alloc_routing`): which free fns allocate nothing (read at
         // fn-declare time to skip the per-call scratch arena, and during
@@ -13403,6 +13420,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 TopDecl::Api(_) => {
                     // GH #1417: a surface is model rows; it lowers to no
                     // code until a serve site serves it (R2).
+                }
+                TopDecl::Fleet(_) => {
+                    // Phase 4 (C2): a fleet is checked, never built; the
+                    // entry refuses it before anything lowers.
                 }
             }
         }

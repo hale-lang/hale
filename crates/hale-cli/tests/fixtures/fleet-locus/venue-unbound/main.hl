@@ -1,0 +1,25 @@
+// The same subscriber with no binding: its topic never leaves its
+// process, so no fleet route reaches it.
+import "../shared" as t;
+
+locus Venue {
+    params {
+        seen: Int = 0;
+    }
+    bus {
+        subscribe t::OrderRequest as take;
+    }
+    fn take(o: t::Order) {
+        self.seen = self.seen + o.id;
+    }
+}
+
+main locus Gateway {
+    params {
+        venue: Venue = Venue { };
+    }
+}
+
+fn main() {
+    Gateway { };
+}
