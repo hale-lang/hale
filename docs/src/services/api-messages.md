@@ -299,5 +299,5 @@ Connection: close
 ## Related Reference
 
 - **Codec Shapes, Digests & Error Classes**: [The API Surface](./api.md) and [`spec/api.md`](https://github.com/hale-lang/hale/blob/main/spec/api.md) (§ Codecs, § The contract digest, § Error classes).
-- **HTTP Streaming & Request Caps**: [HTTP](../everyday/http.md#streaming-a-response) and [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) (`std::http`).
+- **HTTP Streaming & Request Caps**: [HTTP](../everyday/http.md#4-streaming-responses--connection-takeover) and [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) (`std::http`).
 - **Style Guide Rules**: `spec/styleguide.md` (§ 2.11 for API message shapes, C10 for HTTP edge limits).

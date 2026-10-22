@@ -221,7 +221,7 @@ Inside `dna/core/legs/hands.hl`, a performer receives a `legs::Hands` locus cont
 | `deploy` | `DeployHand` (`NoDeploy`) | Refuses execution; deployment expression is owned by the body. |
 | `heart` | `HeartHand` (`NoHeart`) | Refuses execution; application heart API calls are not yet delegated to legs. |
 
-When completing a `Patch` Work, the leg commits its changes in the scratch clone and submits `result_ref: commit:<sha>` along with the `git format-patch` receipt. The spine applies the patch to the genome's base, re-verifies it, and opens a Review with the leg recorded as the author ([Reviews](./head.md#reviews)). For foreign repositories attached via `hale dna codebase attach`, `legs::CodebaseWork` works on a branch of the attached repository, runs its configured build/test commands, and opens a pull request on its forge.
+When completing a `Patch` Work, the leg commits its changes in the scratch clone and submits `result_ref: commit:<sha>` along with the `git format-patch` receipt. The spine applies the patch to the genome's base, re-verifies it, and opens a Review with the leg recorded as the author ([Reviews](./head.md#reviews-verdicts-and-signer-routing)). For foreign repositories attached via `hale dna codebase attach`, `legs::CodebaseWork` works on a branch of the attached repository, runs its configured build/test commands, and opens a pull request on its forge.
 
 ---
 

@@ -94,7 +94,7 @@ fn render(rows: Int) -> String {
 
 ### Zero-Copy Views (`StringView` and `BytesView`)
 
-The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..len(rest)]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#reading-line-by-line)).
+The same quadratic trap occurs when parsing text by repeatedly slicing the remainder (`rest = rest[(nl + 1)..len(rest)]`), which copies the tail on every line (Styleguide rule S16). Instead, create a `BytesView` once with `std::str::bytes_view(s)` and advance an integer cursor across it (see [Strings & Text](../basics/strings.md#walking-large-strings-with-byteview)).
 
 `StringView` and `BytesView` (and `BytesBuilder.view()` / `.text_view()`) borrow underlying storage without copying:
 - A view over a reused buffer or `BytesBuilder` is valid only until the buffer is next modified, reset, or overwritten. Accessing a stale view traps immediately at runtime.

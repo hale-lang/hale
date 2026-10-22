@@ -243,7 +243,7 @@ Each `self.src.next()` parks its coroutine on `EPOLLIN`, allowing `N` readers to
 
 ## 9. Decoder, Handler, Seam
 
-When an ingress boundary decodes wire bytes into one of several message types, handles each variant, and encodes a reply, use a [`seam`](./seams.md) over [set types](../everyday/records.md#sets--one-of-several-types) so the compiler generates and verifies exhaustive dispatch:
+When an ingress boundary decodes wire bytes into one of several message types, handles each variant, and encodes a reply, use a [`seam`](./seams.md) over [set types](../everyday/records.md#set-types-a--b--c) so the compiler generates and verifies exhaustive dispatch:
 
 ```hale,fragment
 type Inbound  = NewOrder | Cancel;

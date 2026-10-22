@@ -1,6 +1,6 @@
 # Seams
 
-A **seam** is a declarative pipeline inside a locus that connects a wire decoder, a domain handler locus, and an encoder over [set types](../everyday/records.md#sets--one-of-several-types) (`type Inbound = A | B;`). Instead of writing manual `match` dispatch glue with catch-all `_` arms, you write a single `->` chain and the compiler generates statically inlined dispatch while verifying that every message variant and error type is handled by exactly one target.
+A **seam** is a declarative pipeline inside a locus that connects a wire decoder, a domain handler locus, and an encoder over [set types](../everyday/records.md#set-types-a--b--c) (`type Inbound = A | B;`). Instead of writing manual `match` dispatch glue with catch-all `_` arms, you write a single `->` chain and the compiler generates statically inlined dispatch while verifying that every message variant and error type is handled by exactly one target.
 
 ```hale,fragment
 type NewOrder  { id: Int; qty: Int; }
