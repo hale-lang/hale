@@ -45,3 +45,17 @@ version = "1"
 path = "packs/habitat.pack"
 summary = "the habitat's fixed positions: placement, backends, identity and admission"
 params = { holder = "" }
+
+# Saplings: organisms' seeds, each pinned by repository, revision and
+# digest (the sha256 of `git ls-tree -r --full-tree <revision>`), with the
+# packs it adopts at graft. `hale habitat graft <name>` fetches the pinned
+# revision into the habitat's store, checks the digest and grafts it; a
+# newer revision here is filed for the habitat's Board, never taken.
+
+[[sapling]]
+name = "voice"
+summary = "distributed inference: one endpoint over local hosts and hosted providers, with routing, projects, budgets and rate limits"
+repo = "https://github.com/hale-lang/voice"
+revision = "d4d3db32319acbb607a2c3327b6796583bddbec5"
+digest = "sha256:bae66d743c8affe87332aa10dfc666964394d25cead9189a7d68b66083989708"
+packs = []

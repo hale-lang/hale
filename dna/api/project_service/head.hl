@@ -25,9 +25,9 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // bearer being the visitor's own Cookie header, which the face received and
 // presents on the visitor's behalf. The members relayed are the surface's
 // reads (`HEAD_SURFACE_READS`): the record's index and the habitat's hosts,
-// allocations and policy.
+// allocations, policy, nurseries and saplings.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_READS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy";
+const HEAD_SURFACE_READS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings";
 
 // The read `path` calls through the head's surface, "" for anything else.
 fn surface_read(path: String) -> String {
@@ -1307,10 +1307,11 @@ locus Head {
     }
 
     // The face's read of the surface (`HEAD_SURFACE_READS`: the record's
-    // index, the habitat's hosts, allocations and policy) for a visitor: the
-    // call reaches the API child's commands port under the visitor's own
-    // credential, a session's ID token under OIDC and the child's launch token
-    // in a trusted-local session, exactly as a proxied command does.
+    // index, the habitat's hosts, allocations, policy, nurseries and
+    // saplings) for a visitor: the call reaches the API child's commands
+    // port under the visitor's own credential, a session's ID token under
+    // OIDC and the child's launch token in a trusted-local session, exactly
+    // as a proxied command does.
     fn read_call(req: std::http::Request, member: String) -> std::http::Response {
         let ctx = context_of(self.cfg);
         let child = child_view(self.cfg, "api");

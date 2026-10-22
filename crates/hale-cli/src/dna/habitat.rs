@@ -17,6 +17,15 @@ use std::process::{Command, ExitCode};
 
 use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, memory_migrate, nerves_migrate, project, MemoryPlan, NervesPlan};
 
+#[path = "sapling.rs"]
+mod sapling;
+
+/// Whether the habitat's Board trusts the nursery `source`
+/// (`habitat.nursery`, `hale habitat nursery add`).
+pub(super) fn trusts_nursery(source: &str) -> bool {
+    sapling::trusted_nurseries().iter().any(|s| s == source)
+}
+
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
@@ -24,6 +33,8 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
+       hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
+       hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
        hale habitat status
        hale habitat down
@@ -85,6 +96,24 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      dna pack apply <pack> --on-holes`, its --set and
                      --as passed on), so one `review all approve`
                      ratifies the starting organization whole.
+graft <sapling>      graft a sapling the habitat pins, by name, with no
+                     checkout: its pinned revision is fetched into the
+                     habitat's store (<habitat>/saplings/<name>), its digest
+                     checked (a mismatch refuses, nothing grafted), the
+                     repository there grafted as the habitat's child, the
+                     packs it adopts proposed to its Board (--set values go
+                     to them), and the sapling, revision and digest recorded
+                     on the graft's row. A bare name only; ./<name> is a
+                     directory.
+nursery add <source> the Board trusts a nursery, a directory or a git
+                     repository (the head's Commands::add_nursery), and what
+                     it offers is read into the habitat's record. `refresh`
+                     reads every nursery again (`up` does too): a sapling
+                     first seen is pinned, a newer revision of one pinned is
+                     filed for the Board and never taken; `ratify <sapling>`
+                     pins the revision filed (nothing grafted moves); `list`
+                     shows the nurseries and saplings. The toolchain's own
+                     nursery is always one.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
@@ -155,6 +184,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        Some("nursery") => sapling::nursery_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -765,6 +795,12 @@ fn up(args: &[String]) -> ExitCode {
 fn place(genome: &Path, backends: &str) -> Result<(), String> {
     let said = host_run("habitat-place", genome, &[backends.to_string()]).map_err(|e| format!("the habitat's placement was not recorded: {e}"))?;
     print!("{said}");
+    // what its nurseries offer, read into its record (a newer revision of a
+    // pinned sapling filed for the Board, never taken)
+    match sapling::refresh() {
+        Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
+        Err(e) => println!("{:<8}the nurseries were not read: {e}", "note"),
+    }
     Ok(())
 }
 
@@ -1595,6 +1631,22 @@ fn graft(args: &[String]) -> ExitCode {
         eprintln!("hale habitat graft: which directory?\n{}", usage_text());
         return ExitCode::from(2);
     };
+    // a bare name the habitat pins as a sapling: grafted from its nursery,
+    // with no checkout (its --set values go to the packs it adopts)
+    if !attach && with.is_none() && who.is_none() && profile.is_none() && remote.is_none() && body.is_none() && sapling::names_a_sapling(&dir) {
+        return match sapling::graft_sapling(&dir.to_string_lossy(), library, pack, &sets) {
+            Ok(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("hale habitat graft: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     if with.is_none() && (!sets.is_empty() || who.is_some()) {
         eprintln!("hale habitat graft: `--set` and `--as` go with a pack; name the pack with `--with <pack>`");
         return ExitCode::from(2);
@@ -1604,7 +1656,7 @@ fn graft(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let shape = Shape { profile: profile.as_deref(), remote: remote.as_deref(), body: body.as_deref() };
-    match graft_lines(&dir, attach, library, pack, &shape) {
+    match graft_lines(&dir, attach, library, pack, &shape, None) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -1652,7 +1704,7 @@ struct Shape<'a> {
     body: Option<&'a str>,
 }
 
-fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shape) -> Result<Vec<String>, String> {
+fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shape, sapling: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let Some(parent) = manifest_pin(&genome.join("hale.toml")).ok().flatten() else {
         return Err("the habitat is not born: `hale habitat up` births it, and every other organism is grafted from it".to_string());
@@ -1741,7 +1793,14 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         taken.extend(head_url_at(&genome).as_deref().and_then(loopback_port));
         let base = head_block(&root, &taken)?;
         let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://127.0.0.1:{base}"), "head": format!("http://127.0.0.1:{}", base + 1) }).to_string() });
+        let mut body = serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://127.0.0.1:{base}"), "head": format!("http://127.0.0.1:{}", base + 1) });
+        // a sapling's graft says which sapling, revision and digest it is
+        if let Some(l) = sapling {
+            for k in ["sapling", "revision", "digest", "nursery"] {
+                body[k] = l[k].clone();
+            }
+        }
+        let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": body.to_string() });
         let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
         std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
         let landed = host_run("record-seed", &genome, &[file.display().to_string(), String::new()]);

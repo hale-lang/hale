@@ -321,7 +321,7 @@ locus App {
         // ---- unseated: the preview and the ungated rows only
         std::test::assert_eq_str(
             members_of(unseated),
-            "Commands::allocations Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::policy Commands::preview_batch",
+            "Commands::allocations Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::nurseries Commands::policy Commands::preview_batch Commands::saplings",
             "unseated: the ungated rows, the preview among them: " + unseated,
         );
         let rows0 = self.rows();

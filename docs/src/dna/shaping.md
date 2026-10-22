@@ -633,8 +633,11 @@ dev's seat and leaving out `reviewer` leaves that seat open. Another
 nursery is named with `--from`: a directory, or a git URL with `#<rev>`
 for the revision to read. A git nursery's packs are adopted only once
 the Board trusts it: `hale dna nursery add <url>` proposes that, and
-`hale dna nursery list` shows the ones it trusts. The Review records which pack it was, its
-digest and where it came from.
+`hale dna nursery list` shows the ones it trusts. The Review records
+which pack it was, its digest and where it came from. A nursery can also
+offer **saplings**, whole organisms pinned by repository, revision and
+digest, which the habitat grafts by name (`hale habitat graft <sapling>`,
+[The habitat, as designed](../habitat.md)).
 
 `hale dna pack retire dev-team` undoes the latest adoption the Board
 ratified, as one more Review: the positions the pack opened close, the

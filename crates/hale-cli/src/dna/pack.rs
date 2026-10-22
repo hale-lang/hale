@@ -24,6 +24,26 @@ const USAGE: &str = "usage: hale dna pack list [--from <dir|git-url[#rev]>]\n   
 struct Index {
     #[serde(default)]
     pack: Vec<Entry>,
+    #[serde(default)]
+    sapling: Vec<Sapling>,
+}
+
+/// A sapling: an organism's seed, pinned by repository, revision and
+/// digest, and the packs it adopts at graft (by name, from its own nursery
+/// or the toolchain's), with the parameters they take (phase 4). Packs stay
+/// what they are; a sapling only names them.
+#[derive(Deserialize, Clone)]
+pub(super) struct Sapling {
+    pub(super) name: String,
+    #[serde(default)]
+    pub(super) summary: String,
+    pub(super) repo: String,
+    pub(super) revision: String,
+    pub(super) digest: String,
+    #[serde(default)]
+    pub(super) packs: Vec<String>,
+    #[serde(default)]
+    pub(super) set: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -39,10 +59,11 @@ struct Entry {
 
 /// A nursery read: its index, how to read a pack's text, and what to
 /// record as its source.
-struct Nursery {
+pub(super) struct Nursery {
     entries: Vec<Entry>,
+    pub(super) saplings: Vec<Sapling>,
     root: Option<PathBuf>,
-    source: String,
+    pub(super) source: String,
 }
 
 impl Nursery {
@@ -58,31 +79,39 @@ impl Nursery {
     }
 }
 
-fn index_of(text: &str, what: &str) -> Result<Vec<Entry>, String> {
+fn index_of(text: &str, what: &str) -> Result<(Vec<Entry>, Vec<Sapling>), String> {
     let idx: Index = toml::from_str(text).map_err(|e| format!("{what}: nursery.toml: {e}"))?;
     for e in &idx.pack {
         if e.name.is_empty() || e.name.contains(char::is_whitespace) || e.version.is_empty() || e.path.is_empty() {
             return Err(format!("{what}: nursery.toml: a pack needs a one-word name, a version and a path"));
         }
     }
-    Ok(idx.pack)
+    for s in &idx.sapling {
+        let word = |w: &str| !w.is_empty() && !w.contains(char::is_whitespace);
+        if !word(&s.name) || s.name.contains('/') || !word(&s.repo) || !word(&s.revision) || !s.digest.starts_with("sha256:") || s.digest.len() != 71 {
+            return Err(format!("{what}: nursery.toml: a sapling needs a one-word name (no `/`), a repository, a revision and a `sha256:` digest"));
+        }
+    }
+    Ok((idx.pack, idx.sapling))
 }
 
 /// The nursery `--from` names, or the toolchain's.
-fn nursery(from: Option<&str>) -> Result<Nursery, String> {
+pub(super) fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let Some(from) = from else {
         let text = hale_dna::NURSERY_FILES
             .iter()
             .find(|f| f.path == "dna/nursery/nursery.toml")
             .map(|f| f.content)
             .unwrap_or("");
-        return Ok(Nursery { entries: index_of(text, "the toolchain's nursery")?, root: None, source: format!("toolchain {}", env!("CARGO_PKG_VERSION")) });
+        let (entries, saplings) = index_of(text, "the toolchain's nursery")?;
+        return Ok(Nursery { entries, saplings, root: None, source: format!("toolchain {}", env!("CARGO_PKG_VERSION")) });
     };
     let local = Path::new(from);
     if local.is_dir() {
         let root = local.canonicalize().map_err(|e| format!("{from}: {e}"))?;
         let text = fs::read_to_string(root.join("nursery.toml")).map_err(|_| format!("{from}: no nursery.toml at its root"))?;
-        return Ok(Nursery { entries: index_of(&text, from)?, source: root.display().to_string(), root: Some(root) });
+        let (entries, saplings) = index_of(&text, from)?;
+        return Ok(Nursery { entries, saplings, source: root.display().to_string(), root: Some(root) });
     }
     // a git repository: cloned once into the cache, fetched, and read at
     // the revision named (the default branch's head without one)
@@ -118,7 +147,8 @@ fn nursery(from: Option<&str>) -> Result<Nursery, String> {
     let commit = git(&["rev-parse", "--verify", &format!("{want}^{{commit}}")], Some(&dir)).map_err(|_| format!("{from}: `{want}` names no commit of the nursery"))?;
     git(&["checkout", "-q", "--detach", &commit], Some(&dir))?;
     let text = fs::read_to_string(dir.join("nursery.toml")).map_err(|_| format!("{url}: no nursery.toml at its root"))?;
-    Ok(Nursery { entries: index_of(&text, url)?, root: Some(dir), source: format!("{url}@{commit}") })
+    let (entries, saplings) = index_of(&text, url)?;
+    Ok(Nursery { entries, saplings, root: Some(dir), source: format!("{url}@{commit}") })
 }
 
 /// The pack's text with its parameters set: every `{param}` replaced, a
@@ -166,6 +196,28 @@ fn render(text: &str, params: &BTreeMap<String, String>, set: &BTreeMap<String, 
         out.push('\n');
     }
     Ok(out)
+}
+
+/// The pack `name` of the nursery `n` (or, when it offers none by that
+/// name, of the toolchain's) proposed to the organism at `dir`, planned on
+/// the holes its birth proposed, with each of `set` the pack takes: what a
+/// sapling adopts at graft. What the host said, or why it was not proposed.
+pub(super) fn propose_pack(n: &Nursery, name: &str, set: &BTreeMap<String, String>, dir: &Path) -> Result<String, String> {
+    let (from, entry) = match n.entries.iter().find(|e| e.name == name) {
+        Some(e) => (None, e.clone()),
+        None => {
+            let t = nursery(None)?;
+            let e = t.entries.iter().find(|e| e.name == name).cloned().ok_or_else(|| format!("no pack `{name}` in {} nor in the toolchain's nursery", n.source))?;
+            (Some(t), e)
+        }
+    };
+    let n = from.as_ref().unwrap_or(n);
+    let text = n.text(&entry.path)?;
+    let taken: BTreeMap<String, String> = set.iter().filter(|(k, _)| entry.params.contains_key(*k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let steps = render(&text, &entry.params, &taken).map_err(|e| format!("the pack `{name}`: {e}"))?;
+    let digest: String = openssl::sha::sha256(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    let args = vec!["--steps".to_string(), steps, "--pack".to_string(), format!("{}@{} sha256:{digest} {}", entry.name, entry.version, n.source), "--on-holes".to_string()];
+    super::host_run("apply", dir, &args)
 }
 
 pub(super) fn pack_cmd(args: &[String]) -> ExitCode {
@@ -222,7 +274,9 @@ pub(super) fn pack_cmd(args: &[String]) -> ExitCode {
             let url = url.split_once('#').map(|(u, _)| u).unwrap_or(url);
             let dir = words.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             let trusted = super::host_run("nursery-sources", &dir, &[]).unwrap_or_default();
-            if !trusted.lines().any(|l| l.trim() == url) {
+            // a nursery the habitat's Board trusts (`hale habitat nursery
+            // add`) is trusted for its tenants too
+            if !trusted.lines().any(|l| l.trim() == url) && !super::habitat::trusts_nursery(url) {
                 eprintln!("hale dna pack: the Board does not trust the nursery {url} yet: `hale dna nursery add {url}` proposes it");
                 return ExitCode::FAILURE;
             }
@@ -338,6 +392,20 @@ mod tests {
             let steps = render(&text, &e.params, &set).unwrap();
             assert!(!steps.contains('{'), "{} renders every parameter: {steps}", e.name);
         }
+    }
+
+    /// Phase 4: the toolchain's nursery offers voice as its first sapling,
+    /// pinned by repository, revision and digest (its shape only: CI has no
+    /// network to fetch it).
+    #[test]
+    fn the_toolchains_nursery_offers_voice() {
+        let n = nursery(None).unwrap();
+        let v = n.saplings.iter().find(|s| s.name == "voice").expect("a voice sapling");
+        assert_eq!(v.repo, "https://github.com/hale-lang/voice");
+        assert!(v.revision.len() == 40 && v.revision.chars().all(|c| c.is_ascii_hexdigit()), "pinned at a commit: {}", v.revision);
+        assert!(v.digest.starts_with("sha256:") && v.digest.len() == 71, "{}", v.digest);
+        assert!(v.packs.iter().all(|p| n.entries.iter().any(|e| &e.name == p)), "its packs are the nursery's");
+        assert!(index_of("[[sapling]]\nname = \"a/b\"\nrepo = \"r\"\nrevision = \"v\"\ndigest = \"sha256:x\"\n", "t").is_err(), "a malformed sapling is refused");
     }
 }
 

@@ -189,18 +189,21 @@ fn api() {
     // `::policy`) sort before `preview_batch`, so its eaters are row 16 now,
     // and add 26 rows on each side: each row's eater, decoder and encoder,
     // its admission and handler, and the fns of `habitat_rows.hl`, none of
-    // them a row the correction changes.
+    // them a row the correction changes. The nurseries' and saplings' four
+    // rows (`add_nursery`, `nurseries`, `ratify_sapling`, `saplings`) add 31
+    // more; `add_nursery` and `nurseries` sort before `preview_batch`, which
+    // is row 18 now.
     pinned(
         "api",
-        421,
-        423,
+        452,
+        454,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_16  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_16  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_18  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_18  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}

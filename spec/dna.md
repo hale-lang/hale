@@ -5416,8 +5416,18 @@ The live half is memory's, projected from the record by the spine
   ratified the org chart lists `nursery <source>`; `hale dna nursery
   list` prints the ones in force. `pack apply --from <git URL>` is
   refused, before anything is fetched, while the URL is not one of
-  them; the toolchain's nursery and a directory need no trust, and
+  them, unless the habitat's Board trusts it (`hale habitat nursery add`,
+  below); the toolchain's nursery and a directory need no trust, and
   reading a nursery (`list`, `show`) needs none either.
+  **Saplings** (phase 4) are a second kind of nursery entry beside packs,
+  and packs stay what they are: `[[sapling]]` with `name` (one word, no
+  `/`), `summary` (its purpose), `repo` (a git URL or path), `revision`,
+  `digest` (`sha256:` over `git ls-tree -r --full-tree <revision>`, the
+  tree's listing, so one tree is one digest at any commit), `packs` (the
+  packs it adopts at graft, by name, from its own nursery or else the
+  toolchain's) and `set` (their parameters). A sapling is grafted by name
+  into the habitat (`spec/habitat.md`, Nurseries and saplings); the
+  toolchain's nursery offers `voice`.
   **Every mutation is a head command; the UI is a client.** A change to
   the structure asked of the head is not a second code path: the head's
   surface `HeadCommands` carries `Commands::open_position`
@@ -6427,6 +6437,17 @@ them from the face as it relays the index: `POST
 member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
 record, written by `hale habitat up`; an allocation's provider and host
 are fields of the existing `habitat.allocated` row.
+Two more reads list the habitat's nurseries and saplings for the operator
+face's organisms screen: `Commands::nurseries` (`source`, `kind`: the
+toolchain's, `bundled`, then each `habitat.nursery` row the Board trusts)
+and `Commands::saplings` (each `habitat.sapling` row: `name`, `purpose`,
+`repo`, `revision`, `digest`, `nursery`, `packs`, and `proposed`, the
+revision a newer `habitat.sapling.proposed` row files, `""` when none
+waits); the head relays both from the face. Two Board rows act on them:
+`Commands::add_nursery` (`{source}`: a `habitat.nursery <source>` row,
+state `trusted`) and `Commands::ratify_sapling` (`{name}`: the sapling
+pinned at the revision its proposal filed), each answering `{ok, code,
+why}`.
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a
