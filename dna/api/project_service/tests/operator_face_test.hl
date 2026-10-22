@@ -265,25 +265,86 @@ fn main() {
         allocations.status == 200 && std::str::contains(allocations.body, "shop/db"),
         "allocations answers what is placed on it: " + allocations.body,
     );
-    // the Board's acts are relayed to the row, which keeps its gate: a
-    // person who holds no Board position is refused as the row says it
-    // (the row's own outcomes, `allocations_placed` and `unreachable`, are
-    // pinned where a Board is, in dna/tests/habitat_hosts_test.hl)
+    // the Board's acts are relayed to the row, which keeps its gate: the
+    // person who signed in holds no Board position yet, so the row refuses
+    // as it says
     let refused_remove = row_call(
         face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
     );
     std::test::assert(
         std::str::contains(refused_remove.body, "Commands::remove_host requires owner"),
-        "remove_host is the row's, gated by it: " + refused_remove.body,
+        "a visitor off the Board is refused: " + refused_remove.body,
     );
-    let refused_add = row_call(
-        face, jar, "add_host", "fnv1a64:9f59221a3e7c8a2f",
-        "{\"name\": \"no-such-host.invalid\", \"user\": \"ops\", \"port\": 22}",
+
+    // the person seated on the Board (the demo's founder) acts
+    let seated = ops::graph_seat(j, "position:board", "tester");
+    std::test::assert_eq_str(seated, "", "the person is seated on the Board");
+    let mut kept = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+    );
+    let mut tries = 0;
+    while std::str::contains(kept.body, "requires owner") && tries < 30 {
+        std::time::sleep(500ms);
+        kept = row_call(
+            face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+        );
+        tries = tries + 1;
+    }
+    std::test::assert(
+        std::str::contains(kept.body, "allocations_placed")
+            && std::str::contains(kept.body, "shop/db"),
+        "the Board's remove_host is refused while an allocation is placed: " + kept.body,
+    );
+    let probed = row_call(
+        face, jar, "probe_host", "fnv1a64:82dd0a3b0224e415", "{\"name\": \"rack-a.lan\"}",
     );
     std::test::assert(
-        std::str::contains(refused_add.body, "Commands::add_host requires owner"),
-        "and add_host: " + refused_add.body,
+        std::str::contains(probed.body, "unreachable")
+            || std::str::contains(probed.body, "\"ok\":true"),
+        "probe_host answers with its stated outcome: " + probed.body,
     );
+    // a machine that answers SSH: an unprivileged sshd of the fixture's own
+    // on the loopback, which has not authorized the habitat's key
+    let keygen = dna::run_tool("ssh-keygen\n-q\n-t\ned25519\n-N\n\n-f\n" + root + "/sshd-host-key");
+    std::test::assert_eq_int(keygen.code, 0, "the machine's host key made: " + keygen.stderr);
+    let ssh_port = dna::free_port(12);
+    let sshd = std::process::spawn(
+        "/usr/sbin/sshd\n-D\n-e\n-f\n/dev/null\n-h\n" + root + "/sshd-host-key\n-p\n"
+            + to_string(ssh_port)
+            + "\n-o\nPidFile=none\n-o\nUsePAM=no\n-o\nPasswordAuthentication=no\n-o\nAuthorizedKeysFile=none\n-o\nListenAddress=127.0.0.1",
+    ) or std::process::Child { };
+    std::test::assert(sshd.pid > 0, "the machine's sshd spawned");
+    std::time::sleep(1s);
+    let added_host = row_call(
+        face, jar, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"127.0.0.1\", \"user\": \"ops\", \"port\": " + to_string(ssh_port) + "}",
+    );
+    std::test::assert(
+        std::str::contains(added_host.body, "\"ok\":true")
+            && std::str::contains(added_host.body, "pending-key")
+            && std::str::contains(added_host.body, "\"authorize\":\"ssh-ed25519 "),
+        "add_host answers a pending-key host and the line to authorize: " + added_host.body,
+    );
+    let listed = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        std::str::contains(listed.body, "127.0.0.1") && std::str::contains(listed.body, "SHA256:"),
+        "hosts lists it with the fingerprint first seen: " + listed.body,
+    );
+    let again = row_call(
+        face, jar, "probe_host", "fnv1a64:82dd0a3b0224e415", "{\"name\": \"127.0.0.1\"}",
+    );
+    std::test::assert(
+        std::str::contains(again.body, "pending-key"),
+        "probe_host finds it still pending the key: " + again.body,
+    );
+    let gone = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"127.0.0.1\"}",
+    );
+    std::test::assert(
+        std::str::contains(gone.body, "\"ok\":true"),
+        "remove_host removes a host with nothing placed: " + gone.body,
+    );
+    std::process::kill(sshd) or discard;
     let hosts_after = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert(
         std::str::contains(hosts_after.body, "rack-a.lan"),
