@@ -791,7 +791,10 @@ fn main() {
   refused line at the check, not a first match that depends on the order
   of an `if` chain. Name a path parameter after the request's field
   (`{id}`), and keep the `status:` honest (`201` for a create, `204` for
-  a delete with nothing to say).
+  a delete with nothing to say). Leave the cross-origin write guard on:
+  a client sends `Content-Type: application/json`, a page on another
+  origin is listed in `cors:`, and a body larger than 1 MiB is a
+  `max_request_bytes:` on the transport, not a second server.
 - **What the rows cannot say goes to the fallback, on the same port.** A
   stream, an SSE feed or a connection takeover beside the rows is an
   `http::Rest { …, fallback: self.data_plane }` handler, not a second

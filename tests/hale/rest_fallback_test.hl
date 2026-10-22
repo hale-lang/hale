@@ -133,6 +133,12 @@ locus Driver {
             "plain GET /plain [Bearer t-user] ",
             "its own headers reach it",
         );
+        // the transport's body cap is the listener's, the fallback's too: a
+        // body past the 1 MiB default and under `max_request_bytes` reaches it
+        let big = std::str::repeat("x", 1572864);
+        let whole = post(base + "/plain", big);
+        std::test::assert_eq_int(whole.status, 200, "a 1.5 MiB body under a 2 MiB cap");
+        std::test::assert_eq_int(len(text(whole)), len("plain POST /plain [] ") + 1572864, "whole");
         let own = call("GET", base + "/nope", "");
         std::test::assert_eq_int(own.status, 404, "the fallback's own 404");
         std::test::assert_eq_str(text(own), "front has no /nope", "not Rest's 404");
@@ -183,6 +189,7 @@ main locus App {
                 codec: json,
                 principals: self.tokens,
                 fallback: self.front,
+                max_request_bytes: 2097152,
             },
             as: "web",
             bound: 8,
