@@ -51,6 +51,15 @@ main locus PracticeReviewHead {
             bound: 64,
             on_full: refuse
         );
+        // phase 4: the same surface over MCP, for an agent pairing with a
+        // person, under the commands port's bearer and roles
+        agents: api::Exposure = api::serve(
+            HeadCommands,
+            mcp::Rpc { bind: "127.0.0.1:0", principals: self.bearer, roles: self.roles },
+            as: "composed-agents",
+            bound: 64,
+            on_full: refuse
+        );
     }
     // The server off the main pool, a command's git work on its own; a
     // SIGTERM drains the head (run() returns, the io pool's shutdown ends
@@ -64,19 +73,22 @@ main locus PracticeReviewHead {
             self.srv.listen_fd,
             self.http_port,
             self.remote,
+            self.agents,
             self.banner_head,
             self.banner_tail,
         );
         std::api::run_until_stopped(self.local);
         self.local.stop();
         self.remote.stop();
+        self.agents.stop();
     }
 }
 
 // The head, up: the reads over HTTP with the socket named in its
-// capabilities, the commands on the socket and on the commands port
+// capabilities, the commands on the socket, on the commands port
 // (GH #1135), on the port its launcher gives it
-// (`HALE_DNA_COMMANDS_PORT`). Under OIDC
+// (`HALE_DNA_COMMANDS_PORT`), and over MCP on a port the system gives it,
+// reported beside the others (`HALE_DNA_API_PORTS`). Under OIDC
 // (GH #989) a caller is a verified ID token's subject — a bearer, or the
 // session a sign-in set — and its person; trusted-local is a fixture's
 // mode (HALE_DNA_TRUSTED_LOCAL=1) alone.

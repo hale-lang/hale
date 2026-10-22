@@ -165,7 +165,8 @@ they call the head's socket, so the habitat's body must be up.
 | Verb | Behaviour |
 |---|---|
 | `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
-| `status` | The habitat, its genome, body and face (its address), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
+| `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's socket as the person this account maps to. |
+| `status` | The habitat, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
 | `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
@@ -204,6 +205,43 @@ gate before the page is served; a read refused for want of one is shown as
 the crossing. The page's visual rules are CSS custom properties
 (`operator.css`): near-black ground, one monospace, hairline rules, brass
 only for a crossing, color only for state (up, degraded, down).
+
+## Pairing: an agent beside a person
+
+The head serves its surface, `HeadCommands`, over a third transport beside
+its socket (`unix::Rpc`) and its commands port (`http::Rpc`): `mcp::Rpc`
+(`spec/api.md` § The MCP transport), bound on the loopback at a port the
+system gives it and reported with the others (`mcp=<port>` in the API
+child's ports file, `HALE_DNA_API_PORTS`); `hale habitat status` prints it
+as `mcp://127.0.0.1:<port>`. It is a binding, not a new path: the
+exposure's bearer source and roles are the commands port's, so an agent
+pairing with a person is a client of the head under that person's bearer,
+the ID token the face's session holds under OIDC (the launch token in a
+fixture's trusted-local session). There is no service account and no other
+gate. `tools/list` answers a tool per row the person may call
+(`Commands__hosts`, `Commands__add_nursery`, …); a row whose role they do
+not hold is refused `unauthorized` (`-32005`) exactly as the commands port
+refuses it (`403`). `hale mcp --app mcp://127.0.0.1:<port>` with the token
+in `HALE_API_TOKEN` is the stdio bridge an agent's host runs.
+
+Every habitat act is a row in the name of whoever asked: the rows
+`Commands::add_nursery` and `Commands::ratify_sapling` write are authored by
+the person the caller maps to, over any transport. `agents/operator.md` is
+the brief for the agent itself: the vocabulary, the rules, which rows are
+reads, acts and proposals, and how to connect.
+
+**The brief.** `Commands::brief` (`dna/api/habitat_brief.hl`), a read taking
+`{limit}`, answers `{ok, why, revision, prompt}`: the Board's hat rendered as
+a prompt with the live state. The hat part is the Board's position
+(`position:board`) and its charter (the graph node's text, as
+`dna/core/hat.hl` reads it), and the rules an agent works by. The live state
+is what the other reads answer now: the hosts, the allocations with their
+pulse (the state their provider observes), the organisms grafted, the
+saplings pinned, and what waits for the Board: each Review requested and not
+settled, with the authority it requires and its question, and each sapling
+revision filed and not ratified. It reads the record and nothing else; no
+vault is opened, so no secret value can reach it. `hale habitat brief`
+prints it.
 
 ## Backends
 

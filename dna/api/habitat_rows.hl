@@ -73,7 +73,13 @@ fn habitat_cap(limit: Int) -> Int {
 
 // The habitat's record, refreshed.
 fn habitat_journal(root: String) -> dna::RecordJournal {
-    let j = dna::RecordJournal { repo: root, author: "api" };
+    return habitat_journal_by(root, "api");
+}
+
+// The habitat's record, refreshed, its rows written by `author`: the person
+// a Board act is in the name of.
+fn habitat_journal_by(root: String, author: String) -> dna::RecordJournal {
+    let j = dna::RecordJournal { repo: root, author: author };
     let moved = j.refresh();
     return j;
 }
@@ -291,10 +297,10 @@ fn nursery_refused(code: String, why: String) -> NurseryReply {
     return NurseryReply { code: code, why: why };
 }
 
-// A nursery the Board trusts: a `habitat.nursery <source>` row. What it
-// offers is read into the record by the habitat's next act that reads its
-// nurseries (`hale habitat nursery add` runs it at once).
-fn habitat_nursery_add(root: String, a: NurseryAdd) -> NurseryReply {
+// A nursery the Board trusts: a `habitat.nursery <source>` row, written by
+// `by`. What it offers is read into the record by the habitat's next act
+// that reads its nurseries (`hale habitat nursery add` runs it at once).
+fn habitat_nursery_add(root: String, a: NurseryAdd, by: String) -> NurseryReply {
     let source = std::str::trim(a.source);
     if len(source) == 0 || len(source) > 1024 || std::str::contains(source, " ")
         || std::str::contains(source, "\n") || source == "toolchain"
@@ -305,7 +311,7 @@ fn habitat_nursery_add(root: String, a: NurseryAdd) -> NurseryReply {
         );
     }
     let kind = if std::str::starts_with(source, "/") { "dir" } else { "git" };
-    let j = habitat_journal(root);
+    let j = habitat_journal_by(root, by);
     let latest = habitat_latest(j, "habitat.nursery");
     let held = latest.get(source) or LatestRow { };
     if held.at >= 0 && std::json::find_string_field(j.read(held.at).body, "state") == "trusted" {
@@ -327,11 +333,11 @@ fn habitat_nursery_add(root: String, a: NurseryAdd) -> NurseryReply {
     return NurseryReply { ok: true };
 }
 
-// The newer revision a nursery offered for `name`, ratified: the sapling is
-// pinned at the revision and digest its proposal filed. Nothing grafted
-// moves with it.
-fn habitat_sapling_ratify(root: String, name: String) -> NurseryReply {
-    let j = habitat_journal(root);
+// The newer revision a nursery offered for `name`, ratified by `by`: the
+// sapling is pinned at the revision and digest its proposal filed. Nothing
+// grafted moves with it.
+fn habitat_sapling_ratify(root: String, name: String, by: String) -> NurseryReply {
+    let j = habitat_journal_by(root, by);
     let pins = habitat_latest(j, "habitat.sapling");
     let proposals = habitat_latest(j, "habitat.sapling.proposed");
     let pin = pins.get(name) or LatestRow { };

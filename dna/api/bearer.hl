@@ -239,14 +239,14 @@ fn socket_live(socket: String) -> Bool {
 }
 
 // Where the launcher wants told the ports this process serves on once
-// they are bound (`HALE_DNA_API_PORTS`): a file of `api=<port>` and
-// `commands=<port>` lines, written whole. A launcher that pins neither
-// port hands the process 0 for both and reads them back here, so no port
-// is drawn free and then lost to a neighbour before the bind. "" when
-// nobody asked.
+// they are bound (`HALE_DNA_API_PORTS`): a file of `api=<port>`,
+// `commands=<port>` and `mcp=<port>` lines, written whole. A launcher that
+// pins neither port hands the process 0 for both and reads them back here,
+// so no port is drawn free and then lost to a neighbour before the bind; the
+// MCP port is always the system's. "" when nobody asked.
 fn ports_file() -> String { return std::env::var("HALE_DNA_API_PORTS"); }
 
-// The port `key` (`api`, `commands`) names in the ports file at `file`, 0
+// The port `key` (`api`, `commands`, `mcp`) names in the ports file at `file`, 0
 // when it names none (not written yet, or no file).
 fn port_in(file: String, key: String) -> Int {
     if len(file) == 0 { return 0; }
@@ -269,13 +269,14 @@ fn reported_port(key: String) -> Int { return port_in(ports_file(), key); }
 
 // Tell the launcher the ports this process got: the file written beside
 // itself and renamed into place, so a reader sees all of it or none.
-fn report_ports(api_port: Int, commands: Int) {
+fn report_ports(api_port: Int, commands: Int, mcp: Int) {
     let file = ports_file();
     if len(file) == 0 { return; }
     let staged = file + ".partial";
     std::io::fs::write_file(
         staged,
-        "api=" + to_string(api_port) + "\ncommands=" + to_string(commands) + "\n",
+        "api=" + to_string(api_port) + "\ncommands=" + to_string(commands) + "\nmcp="
+            + to_string(mcp) + "\n",
     ) or discard;
     std::io::fs::rename(staged, file) or discard;
 }

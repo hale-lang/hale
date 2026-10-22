@@ -1,0 +1,186 @@
+// dna/api/habitat_brief.hl — the habitat's brief for an agent pairing with a
+// person (phase 4).
+//
+// `Commands::brief` is a read of `HeadCommands`, like `Commands::hosts`: the
+// Board's hat rendered as a prompt with the habitat's live state. The hat
+// part is what dna/core/hat.hl composes for a position, here the Board's:
+// `position:board` and its charter (the graph node's text, `hat_node_text`).
+// The live state is what the head's other reads answer now: the hosts, the
+// allocations with their pulse (what their provider observes), the organisms
+// grafted, the saplings pinned, and what waits for the Board (each Review
+// requested and not settled, each sapling revision filed and not ratified).
+// It reads the record and nothing else: no vault is opened, so no secret
+// value can reach it; a secret is named by its vault slot, as the record
+// names it. `hale habitat brief` prints it; an MCP client asks for it as
+// the tool `Commands__brief`. It writes nothing.
+import "../core" as dna;
+
+type HabitatBrief {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    prompt: String = "";
+}
+
+// The renderer's version: a word changed here changes it.
+const BRIEF_VERSION: String = "habitat-brief/1";
+
+// The brief for `person` ("" when the caller maps to none), at most `limit`
+// entries of each section.
+fn habitat_brief(root: String, person: String, limit: Int) -> HabitatBrief {
+    let cap = habitat_cap(limit);
+    let j = habitat_journal(root);
+    let index = record_index(root, cap);
+    let hosts = habitat_hosts(root, cap);
+    let allocations = habitat_allocations(root, cap);
+    let saplings = habitat_saplings(root, cap);
+    let charter = dna::hat_node_text(j, "position:board");
+    let id = dna::record_scope(root);
+    let mut out = "You are pairing with "
+        + (if len(person) > 0 { person } else { "a person" })
+        + " on the habitat whose record is "
+        + (if len(id) >= 12 { id[0..12] } else { id })
+        + ", as the Board's agent: you hold no role of your own, and every call you make is a row in their name, under their roles.\n";
+    if len(index.purpose) > 0 { out = out + "Its purpose: " + index.purpose + "\n"; }
+    out = out + "The Board (position:board): "
+        + (if len(charter) > 0 { charter } else { "the record states no charter" }) + "\n";
+    out = out + "\nThe rules you work by:\n";
+    out = out
+        + "- Read before you act: ask the reads (Commands__brief, Commands__hosts, Commands__allocations, Commands__saplings) and act on what they answer now, not on this brief once it is old.\n";
+    out = out
+        + "- Propose, do not do, what the Board ratifies: a sapling's newer revision, a Review, a change to the structure. Say what you would do and let the person decide.\n";
+    out = out
+        + "- Never handle a secret value. A secret is named by its vault slot; ask the person to put a value in the vault, never to paste it to you.\n";
+    out = out
+        + "- A refusal is the head's answer: report it, do not route around it.\n";
+    out = out + "\nHosts:\n" + brief_hosts(hosts.hosts);
+    out = out + "\nAllocations, with their pulse:\n" + brief_allocations(allocations.allocations);
+    out = out + "\nOrganisms:\n" + brief_organisms(index.organisms);
+    out = out + "\nSaplings:\n" + brief_saplings(saplings.saplings);
+    out = out + "\nWaiting for the Board:\n" + brief_pending(j, saplings.saplings, cap);
+    out = out + "\nAs of revision " + to_string(j.revision()) + " (" + BRIEF_VERSION + ").\n";
+    return HabitatBrief { ok: true, revision: j.revision(), prompt: out };
+}
+
+// A record identity as the habitat names an allocation by it: its first
+// twelve characters; any other name whole.
+fn brief_short(id: String) -> String { return if len(id) == 64 { id[0..12] } else { id }; }
+
+fn brief_none(lines: String) -> String { return if len(lines) == 0 { "- none\n" } else { lines }; }
+
+@bounded_by(rows)
+fn brief_hosts(rows: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(rows);
+    while !it.done {
+        let e = it.element;
+        let offers = std::json::find_string_field(e, "offers");
+        out = out + "- " + std::json::find_string_field(e, "name") + ", by the "
+            + std::json::find_string_field(e, "provider") + " provider"
+            + (if len(offers) > 0 { "; offers " + offers } else { "" }) + "\n";
+        it = std::json::array_next(it);
+    }
+    return brief_none(out);
+}
+
+@bounded_by(rows)
+fn brief_allocations(rows: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(rows);
+    while !it.done {
+        let e = it.element;
+        let state = std::json::find_string_field(e, "state");
+        let host = std::json::find_string_field(e, "host");
+        let organism = brief_short(std::json::find_string_field(e, "organism"));
+        out = out + "- " + std::json::find_string_field(e, "allocation") + ": "
+            + std::json::find_string_field(e, "role")
+            + (if len(organism) > 0 { " of " + organism } else { "" })
+            + (if len(host) > 0 { " on " + host } else { "" }) + ", by the "
+            + std::json::find_string_field(e, "provider") + " provider; "
+            + (if len(state) > 0 { state } else { "not observed" }) + " ("
+            + std::json::find_string_field(e, "detail") + ")\n";
+        it = std::json::array_next(it);
+    }
+    return brief_none(out);
+}
+
+@bounded_by(rows)
+fn brief_organisms(rows: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(rows);
+    while !it.done {
+        let e = it.element;
+        let face = std::json::find_string_field(e, "face");
+        out = out + "- " + std::json::find_string_field(e, "name") + ": "
+            + std::json::find_string_field(e, "state")
+            + (if len(face) > 0 { ", its face " + face } else { "" }) + "\n";
+        it = std::json::array_next(it);
+    }
+    return brief_none(out);
+}
+
+@bounded_by(rows)
+fn brief_saplings(rows: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(rows);
+    while !it.done {
+        let e = it.element;
+        let purpose = std::json::find_string_field(e, "purpose");
+        out = out + "- " + std::json::find_string_field(e, "name") + " at "
+            + std::json::find_string_field(e, "revision") + " from "
+            + std::json::find_string_field(e, "nursery")
+            + (if len(purpose) > 0 { ": " + purpose } else { "" }) + "\n";
+        it = std::json::array_next(it);
+    }
+    return brief_none(out);
+}
+
+// A Review's id, as its rows name it (`review:<id>` or `<id>`).
+fn brief_review_id(entity: String) -> String {
+    return if std::str::starts_with(entity, "review:") { entity[7..len(entity)] } else { entity };
+}
+
+// What waits for the Board: each Review the record requested and has not
+// settled, with the authority it requires and its question, and each
+// sapling revision a nursery filed that the Board has not ratified.
+@bounded_by(j)
+fn brief_pending(j: dna::Journal, saplings: String, cap: Int) -> String {
+    let mut settled = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.settled" { settled = settled + brief_review_id(e.entity) + "\n"; }
+        i = i + 1;
+    }
+    let mut out = "";
+    let mut listed = "\n";
+    let mut n = 0;
+    i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "review.requested" { continue; }
+        let id = brief_review_id(e.entity);
+        if std::str::contains(settled, "\n" + id + "\n")
+            || std::str::contains(listed, "\n" + id + "\n")
+        {
+            continue;
+        }
+        listed = listed + id + "\n";
+        n = n + 1;
+        let authority = std::json::find_string_field(e.body, "required_authority");
+        out = out + "- Review " + id
+            + (if len(authority) > 0 { " (" + authority + ")" } else { "" }) + ": "
+            + std::json::find_string_field(e.body, "question") + "\n";
+    }
+    let mut it = std::json::array_first(saplings);
+    while !it.done {
+        let proposed = std::json::find_string_field(it.element, "proposed");
+        if len(proposed) > 0 {
+            out = out + "- sapling " + std::json::find_string_field(it.element, "name")
+                + ": revision " + proposed + " filed, to ratify (Commands__ratify_sapling)\n";
+        }
+        it = std::json::array_next(it);
+    }
+    return brief_none(out);
+}

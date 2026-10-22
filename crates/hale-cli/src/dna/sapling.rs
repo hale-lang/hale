@@ -250,7 +250,7 @@ fn head_socket() -> Option<PathBuf> {
 
 /// One call of the habitat head's surface over its socket: the value it
 /// answered, or why there was none.
-fn head_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+pub(super) fn head_call(member: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
     let socket = head_socket().filter(|p| p.exists()).ok_or("the habitat's head is not up (`hale habitat up` starts it)")?;
     let line = crate::api_client::unix_exchange(&socket.display().to_string(), &serde_json::json!({ "call": member, "payload": payload, "id": "habitat-nursery" })).map_err(|e| format!("the habitat's head did not answer: {e}"))?;
     let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();

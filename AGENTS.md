@@ -579,6 +579,8 @@ restriction, not a style preference.
   <https://github.com/hale-lang/pond>. Vendor via
   `hale.toml` → `hale fetch`; import as
   `import "vendor/pond/<lib>" as <alias>;`.
+- Pairing with a person on a habitat (not writing `.hl`):
+  [`agents/operator.md`](./agents/operator.md).
 - Sibling repos: <https://github.com/hale-lang/examples>,
   <https://github.com/hale-lang/bench>.
 
