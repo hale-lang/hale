@@ -45,12 +45,11 @@ fn rows_of(dir: String, kind: String) -> String {
     return out;
 }
 
-// `git` in `dir`, pushing as the Forgejo user `user` whose token the vault
-// slot `slot` holds (read from the vault's file, the test's own).
-fn git_as(dir: String, user: String, slot: String, args: String) -> dna::RunResult {
+// `git` in `dir`, as a leg commits (its pushes are the git hand's).
+fn leg_git(dir: String, args: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\nu=$0; t=$1; cd \"$2\" && shift 2 && exec git -c user.name=leg -c user.email=leg@hale-dna -c credential.helper= -c \"credential.helper=!f() { echo username=$u; echo password=\\$(cat '$t'); }; f\" \"$@\"\n"
-            + user + "\n" + std::secret::vault_local_dir() + "/" + slot + "\n" + dir + "\n" + args,
+        "sh\n-c\ncd \"$0\" && exec git -c user.name=leg -c user.email=leg@hale-dna \"$@\"\n" + dir
+            + "\n" + args,
     );
 }
 
@@ -187,11 +186,23 @@ fn main() {
     let app = scratch + "/shop";
     let key = dna::allocation_key(app);
     let slot = dna::forgejo_vault(key);
+    // the organism's own account, named for it and its key: two organisms
+    // never share one, however alike their names
+    let user = "shop-" + key;
+    let slug = user + "/shop";
+    std::test::assert(
+        dna::forgejo_user_for("shop", key) == user
+            && dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa")
+            != dna::forgejo_user_for("shop_api", "bbbbbbbbbbbb")
+            && dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa")
+            == dna::forgejo_user_for("shop-api", "aaaaaaaaaaaa"),
+        "an organism's Forgejo account is its own",
+    );
     std::test::assert(
         g.code == 0
             && std::str::contains(
                 g.stdout,
-                "its forge (forgejo shop/shop, its token in the vault slot " + slot + ")",
+                "its forge (forgejo " + slug + ", its token in the vault slot " + slot + ")",
             ),
         "the graft allocates the organism its Forgejo: " + g.stdout + g.stderr,
     );
@@ -201,17 +212,17 @@ fn main() {
     );
     let forge = dna::ForgejoForge {
         address: dna::forgejo_address(),
-        repo: "shop/shop",
+        repo: slug,
         base: "main",
         token_slot: slot,
     };
     let me = forge.call("GET", "/user", "");
     std::test::assert_eq_str(
         std::json::find_string_field(me.body, "login"),
-        "shop",
+        user,
         "the token is the organism's own user: " + me.why,
     );
-    let made = forge.call("GET", "/repos/shop/shop", "");
+    let made = forge.call("GET", "/repos/" + slug, "");
     std::test::assert(
         made.ok && std::json::find_string_field(made.body, "default_branch") == "main",
         "its codebase's repository is made there: " + made.body + made.why,
@@ -224,11 +235,11 @@ fn main() {
     std::test::assert_eq_int(c.code, 0, "the organism's code is committed: " + c.stderr);
     let first = in_dir(app, toolchain() + "\ndna\nforge\nsync");
     // Forgejo indexes a push's branches after it answers the push
-    let mut repo = forge.call("GET", "/repos/shop/shop/branches/main", "");
+    let mut repo = forge.call("GET", "/repos/" + slug + "/branches/main", "");
     let mut tries = 0;
     while !repo.ok && tries < 60 {
         std::time::sleep(500ms);
-        repo = forge.call("GET", "/repos/shop/shop/branches/main", "");
+        repo = forge.call("GET", "/repos/" + slug + "/branches/main", "");
         tries = tries + 1;
     }
     let head = dna::trim_nl(dna::run_tool("git\n-C\n" + app + "\nrev-parse\nHEAD").stdout);
@@ -243,7 +254,7 @@ fn main() {
 
     // ---- the SDLC flow, through forge sync: two legs' changes, each a
     // branch of the codebase's repository and a pull request there
-    let url = dna::forgejo_address() + "/shop/shop.git";
+    let url = dna::forgejo_address() + "/" + slug + ".git";
     let work = scratch + "/work";
     let cloned = dna::run_tool("git\nclone\n-q\n" + url + "\n" + work);
     std::test::assert_eq_int(cloned.code, 0, "the codebase clones: " + cloned.stderr);
@@ -252,19 +263,23 @@ fn main() {
     let mut i = 1;
     while i <= 2 {
         let branch = "leg/t" + to_string(i);
-        let b = git_as(work, "shop", slot, "checkout\n-q\n-b\n" + branch + "\nmain");
+        let b = leg_git(work, "checkout\n-q\n-b\n" + branch + "\nmain");
         std::io::fs::write_file(
             work + "/LEG" + to_string(i) + ".md",
             "the leg's change\n",
         ) or discard;
-        let c = git_as(work, "shop", slot, "add\n-A");
-        let m = git_as(work, "shop", slot, "commit\n-q\n-m\nthe leg's change");
-        let sha = dna::trim_nl(git_as(work, "shop", slot, "rev-parse\nHEAD").stdout);
-        let p = git_as(work, "shop", slot, "push\n-q\norigin\n" + branch);
-        std::test::assert_eq_int(p.code, 0, "the leg's branch is pushed: " + p.stderr);
-        // a leg's hands, as `hale dna work` hands them: "open a review" is
-        // the verb, and the organism's forge allocation answers it
-        let hands = legs::Hands { forge: legs::AllocatedForge { root: app } };
+        let c = leg_git(work, "add\n-A");
+        let m = leg_git(work, "commit\n-q\n-m\nthe leg's change");
+        let sha = dna::trim_nl(leg_git(work, "rev-parse\nHEAD").stdout);
+        // a leg's hands, as `hale dna work` hands them: the git hand pushes
+        // the branch as the organism's own Forgejo user, and "open a
+        // review" is the verb the organism's forge allocation answers
+        let hands = legs::Hands {
+            git: legs::ScratchGit { root: app },
+            forge: legs::AllocatedForge { root: app },
+        };
+        let p = hands.git.push(work, branch);
+        std::test::assert(p.ok, "the git hand pushes the leg's branch: " + p.error);
         let opened = hands.forge.open_review(
             work,
             "the leg's change " + to_string(i),
@@ -274,7 +289,7 @@ fn main() {
             opened.ok
                 && std::str::starts_with(
                     opened.output,
-                    dna::forgejo_address() + "/shop/shop/pulls/",
+                    dna::forgejo_address() + "/" + slug + "/pulls/",
                 ),
             "the leg's review opens at the allocated Forgejo: " + opened.output + opened.error,
         );
@@ -289,6 +304,35 @@ fn main() {
     }
     let r1 = nth_line(refs, 0);
     let r2 = nth_line(refs, 1);
+    // a gate's run is its context's current status: a pass before a failed
+    // rerun at the same commit, or before one still running, is not reported
+    let leg1 = nth_line(shas, 0);
+    let s1 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"success\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/1\"}",
+    );
+    let s2 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"failure\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/2\"}",
+    );
+    std::test::assert(s1.ok && s2.ok, "the statuses are posted: " + s1.why + s2.why);
+    std::test::assert_eq_str(
+        forge.checks(r1, leg1),
+        "ci/build\tfailure\t" + leg1 + "\thttp://ci.invalid/2\n",
+        "the rerun's failure is the run, never the pass before it",
+    );
+    let s3 = forge.call(
+        "POST",
+        "/repos/" + slug + "/statuses/" + leg1,
+        "{\"state\": \"pending\", \"context\": \"ci/build\", \"target_url\": \"http://ci.invalid/3\"}",
+    );
+    std::test::assert_eq_str(
+        forge.checks(r1, leg1),
+        "ci/build\t\t" + leg1 + "\thttp://ci.invalid/3\n",
+        "a rerun still going concludes nothing",
+    );
     std::test::assert(
         forge.comment(r1, "keep the memo short")
             && forge.review_state(r1) == "open"
@@ -297,7 +341,7 @@ fn main() {
     );
     let merged = forge.call(
         "POST",
-        "/repos/shop/shop/pulls/" + dna::forgejo_number(r1) + "/merge",
+        "/repos/" + slug + "/pulls/" + dna::forgejo_number(r1) + "/merge",
         "{\"Do\": \"merge\"}",
     );
     std::test::assert(merged.ok, "the team merges the first: " + merged.why);
@@ -394,14 +438,15 @@ fn main() {
         out1.code == 0
             && std::str::contains(
                 out1.stdout,
-                "m1: review opened at the forge (" + dna::forgejo_address() + "/shop/shop/pulls/",
+                "m1: review opened at the forge (" + dna::forgejo_address() + "/" + slug
+                    + "/pulls/",
             ),
         "the pending Review is a pull request at Forgejo: " + out1.stdout + out1.stderr,
     );
-    let at = std::str::index_of(out1.stdout, dna::forgejo_address() + "/shop/shop/pulls/");
+    let at = std::str::index_of(out1.stdout, dna::forgejo_address() + "/" + slug + "/pulls/");
     let rest = out1.stdout[at..len(out1.stdout)];
     let r3 = rest[0..std::str::index_of(rest, ")")];
-    let pulled = forge.call("GET", "/repos/shop/shop/pulls/" + dna::forgejo_number(r3), "");
+    let pulled = forge.call("GET", "/repos/" + slug + "/pulls/" + dna::forgejo_number(r3), "");
     std::test::assert(
         forge.review_state(r3) == "open"
             && std::json::find_string_field(std::json::find_field_raw(pulled.body, "head"), "ref")

@@ -199,9 +199,10 @@ into the vault the first time (`forgejo-admin`); the server reads it from
 the file compose mounts, inside the container, never from a command line,
 and the habitat's forge row names the slot, never the value. On an
 operator's backends the policy's forge is `none` until the Board allocates
-one. A graft gives the organism a Forgejo user of its own (named for it),
-its token drawn into the vault slot `forgejo-<id>`, and a repository for
-its codebase (`<user>/<user>`); its forge row names the provider
+one. A graft gives the organism a Forgejo user of its own, named for it and
+its key (`<name>-<id>`, so two organisms never share an account however
+alike their names), its token drawn into the vault slot `forgejo-<id>`,
+and a repository for its codebase (`<name>-<id>/<name>`); its forge row names the provider
 `forgejo`, the address, the repository and the slot. `hale dna forge sync`
 keeps the organism's branch there as it stands (a branch the forge moved
 past, by a merge there, is left as the forge has it), pushing as the
@@ -211,7 +212,9 @@ reading a private file.
 The forge's implementations sit behind the core's `Forge` interface:
 `ForgejoForge` (Forgejo's API, which maps onto GitHub's nearly one to one:
 a pull request per review, its approving or change-requesting reviews as
-verdicts, its commit statuses as check runs, a comment at settlement),
+verdicts, the current status of each context at the candidate as its
+check runs (a pass before a failed or pending rerun is never one), a
+comment at settlement),
 GitHub through `gh`, the file forge (the fixtures'), and `NoForge`, a bare
 remote whose Reviews are decided in the organism's own face or CLI, the
 no-infrastructure fallback. **GitHub is the allocation when a Board names
@@ -244,7 +247,10 @@ leg's hands are the same: their forge is `AllocatedForge`
 (`dna/core/legs/hands.hl`), which reads the organism's allocation at each
 call, as forge sync does, and opens the leg's review at the allocated
 Forgejo (the codebase's repository there, by its url), through `gh` for
-GitHub, or refuses with `none`. The guard refuses a `Hands` whose forge
+GitHub, or refuses with `none`; the git hand (`ScratchGit`) pushes a
+leg's branch to a repository at the allocated Forgejo as the organism's
+own user, its token handed to git through a credential helper reading a
+private file. The guard refuses a `Hands` whose forge
 names a kind.
 
 ## Nurseries and saplings

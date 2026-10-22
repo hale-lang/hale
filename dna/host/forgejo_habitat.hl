@@ -42,18 +42,23 @@ fn habitat_forge_provision_verb(
     let up = forgejo_up();
     if len(up) > 0 { return fail("habitat-forge-provision: " + up); }
     let address = dna::forgejo_address();
-    let user = dna::forgejo_user_name(name);
+    // the organism's own account, named for it and its key
+    let user = dna::forgejo_user_for(name, key);
     let made = forgejo_user(user, key);
     if len(made) > 0 { return fail("habitat-forge-provision: " + made); }
     let slot = dna::forgejo_vault(key);
     let api = dna::ForgejoApi { address: address, token_slot: slot };
-    let repo = user + "/" + user;
+    let repo = user + "/" + dna::forgejo_user_name(name);
     let named = genome_branch(organism);
     let branch = if len(named) > 0 { named } else { "main" };
     let got = api.call("GET", "/repos/" + repo, "");
     if !got.ok {
         if got.status != 404 { return fail("habitat-forge-provision: " + got.why); }
-        let c = api.call("POST", "/user/repos", forgejo_repo_json(user, branch));
+        let c = api.call(
+            "POST",
+            "/user/repos",
+            forgejo_repo_json(dna::forgejo_user_name(name), branch),
+        );
         if !c.ok { return fail("habitat-forge-provision: the repository " + repo + ": " + c.why); }
     }
     // its code as the graft left it, so a Review's pull request has a base

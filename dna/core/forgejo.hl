@@ -94,6 +94,15 @@ fn forgejo_user_name(name: String) -> String {
     return if len(out) > 0 { out } else { "organism" };
 }
 
+// The Forgejo user the organism named `name` keyed `key` is: its name and
+// its key, so two organisms never share an account or a repository however
+// alike their names (`shop-api` and `shop_api`, two roots of one basename),
+// and a retried graft of the same organism finds its own again.
+fn forgejo_user_for(name: String, key: String) -> String {
+    let base = forgejo_user_name(name);
+    return (if len(base) > 26 { base[0..26] } else { base }) + "-" + key;
+}
+
 // What Forgejo answered: its status and body, or why there was none.
 type ForgejoReply {
     ok: Bool = false;
@@ -269,13 +278,16 @@ locus ForgejoForge {
         }
         return out;
     }
-    // The commit statuses Forgejo holds for `sha`, each as a check run:
-    // `name\tconclusion\tsha\turl` (conclusion "" while it runs).
+    // The current status of each context Forgejo holds for `sha`, as a
+    // check run: `name\tconclusion\tsha\turl` (conclusion "" while it runs).
+    // The combined status names the newest per context, so a run that
+    // passed before a rerun failed (or is pending) at the same commit is
+    // never reported.
     @bounded_by(doc)
     fn checks(review: String, sha: String) -> String {
-        let r = self.call("GET", "/repos/" + self.repo + "/commits/" + sha + "/statuses", "");
+        let r = self.call("GET", "/repos/" + self.repo + "/commits/" + sha + "/status", "");
         if !r.ok { return "error\t" + r.why + "\t\t\n"; }
-        let doc = r.body;
+        let doc = std::json::find_field_raw(r.body, "statuses");
         let mut out = "";
         let mut it = std::json::array_first(doc);
         while !it.done {

@@ -11662,6 +11662,7 @@ dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
 dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in core/legs
+dynamic	__StdSecretCredential	on main|unknown (no instance)
 dynamic	__lib_dna__core___forgejo__ForgejoForge	on main
 dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
 dynamic	__lib_dna__core__legs___hands__ForgeBridge	on main
@@ -12328,6 +12329,7 @@ dynamic	__lib_dna__core___workspace__MutationGateway	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/legs_test.hl
+dynamic	__StdSecretCredential	on main|unknown (no instance)	in dna/core/legs
 dynamic	__lib_dna__core___memory_record__MemoryRecord	on main	in dna/organization_runtime
 shared	App@main1	App #14ce0a6f
 shared	__lib_dna__core___memory_record__MemoryRecord@main2	__lib_dna__core___memory_record__MemoryRecord #c4e304a1

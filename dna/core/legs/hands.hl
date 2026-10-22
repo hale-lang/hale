@@ -161,8 +161,11 @@ locus HeadLease {
 // (`dna::scratch_root`, one per worktree, swept by `clean` and by the
 // suite), so nothing a performer does reaches the primary checkout;
 // patches through a file, commits under the leg's own name.
+// `root` is the organism's ("": HALE_DNA_GENOME, else the leg's own
+// directory): a push to a repository at its allocated Forgejo goes as its
+// own Forgejo user (`push`).
 locus ScratchGit {
-    params { made: Int = 0; roots: String = ""; }
+    params { made: Int = 0; roots: String = ""; root: String = ""; }
     fn worktree(repo: String, base: String) -> HandResult {
         self.made = self.made + 1;
         let dir = dna::scratch_root("legs-git-" + to_string(self.made));
@@ -220,8 +223,44 @@ locus ScratchGit {
         let out = dna::run_tool("git\n-C\n" + worktree + "\ncheckout\n--quiet\n-b\n" + name);
         return hand_result(out, name);
     }
+    // The branch pushed to the worktree's origin. A repository at the
+    // organism's allocated Forgejo takes it as the organism's own user, its
+    // token the vault slot the allocation names: the token reaches git
+    // through a credential helper reading a file only this user can read,
+    // never an argv or this process's environment.
     fn push(worktree: String, name: String) -> HandResult {
-        let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+        let f = dna::forge_allocated(allocated_root(self.root));
+        let origin = dna::trim_nl(
+            dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin").stdout,
+        );
+        let slash = std::str::index_of(f.repo, "/");
+        if f.provider != "forgejo" || len(allocated_slug(f.address, origin)) == 0 || slash <= 0 {
+            let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+            return hand_result(out, name);
+        }
+        let token = std::secret::Credential { vault: f.key_vault };
+        if !token.ready() {
+            return HandResult {
+                error: "no token in the vault slot " + f.key_vault
+                    + " the organism's forge allocation names",
+            };
+        }
+        let made = dna::run_tool("mktemp\n-d\n-t\nhale-leg-forge-XXXXXX");
+        let dir = dna::trim_nl(made.stdout);
+        if made.code != 0 || len(dir) == 0 {
+            return HandResult { error: "no private directory for the forge's token" };
+        }
+        if !token.write_private(dir + "/token") {
+            dna::run_tool("rm\n-rf\n" + dir);
+            return HandResult { error: "the forge's token could not be written for git" };
+        }
+        let out = dna::run_tool(
+            "git\n-C\n" + worktree
+                + "\n-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username="
+                + f.repo[0..slash] + "; echo \"password=$(cat '" + dir
+                + "/token')\"; }; f\npush\n--quiet\norigin\n" + name,
+        );
+        dna::run_tool("rm\n-rf\n" + dir);
         return hand_result(out, name);
     }
 }
@@ -274,11 +313,7 @@ locus GhForge {
 // call, as the host's forge sync reads it.
 locus AllocatedForge {
     params { root: String = ""; }
-    fn organism() -> String {
-        if len(self.root) > 0 { return self.root; }
-        let named = std::env::var("HALE_DNA_GENOME");
-        return if len(named) > 0 { named } else { "." };
-    }
+    fn organism() -> String { return allocated_root(self.root); }
     fn open_review(worktree: String, title: String, body: String) -> HandResult {
         let f = dna::forge_allocated(self.organism());
         if f.provider == "github" {
@@ -337,6 +372,14 @@ locus AllocatedForge {
         let bridge = ForgeBridge { forge: fj };
         return bridge.verdict(review);
     }
+}
+
+// The organism a leg's hands act for: `root`, else HALE_DNA_GENOME, else
+// the leg's own directory (where `hale dna work` runs it).
+fn allocated_root(root: String) -> String {
+    if len(root) > 0 { return root; }
+    let named = std::env::var("HALE_DNA_GENOME");
+    return if len(named) > 0 { named } else { "." };
 }
 
 // The `owner/name` of a repository at the forge at `address`, from its url
