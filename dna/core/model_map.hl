@@ -115,6 +115,24 @@ fn model_category_of(j: Journal, category: String) -> ModelCategory {
     return out;
 }
 
+// Whether the record maps any model at all: some category's latest
+// `model.category` row names one. With none, nothing is a leg's to perform
+// (the solo path: Work a leg would take is a person's case).
+@bounded_by(j)
+fn model_mapped(j: Journal) -> Bool {
+    let mut cleared = "\n";
+    let mut i = j.revision() - 1;
+    while i >= 0 {
+        let e = j.read(i);
+        if e.kind == "model.category" && !std::str::contains(cleared, "\n" + e.entity + "\n") {
+            if len(std::json::find_string_field(e.body, "model")) > 0 { return true; }
+            cleared = cleared + e.entity + "\n";
+        }
+        i = i - 1;
+    }
+    return false;
+}
+
 // The model for a Work: the size its most specific rule says (a task's
 // override only inside the permitted sizes of the rule beneath it), the mode
 // its hands make, and the model the category names. A `tools` or `do` Work

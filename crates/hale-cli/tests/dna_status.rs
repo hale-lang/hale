@@ -111,6 +111,11 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
         let out = c.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
+    // a model is mapped: this organism routes Work to its legs and its
+    // editor (with none, the solo path hands every ask to a person,
+    // dna/tests/solo_no_model_test.hl)
+    let (ok, out) = run(&["dna", "models", "category", "do.deep", "mapped-deep", "--tools", "--as", "riley"]);
+    assert!(ok, "the model mapped: {out}");
     // ask: a Task is born, and the answer comes from the Journal
     let (ok, out) = run(&["dna", "task", "create", "write", "the", "changelog"]);
     let ask_out = out.clone();

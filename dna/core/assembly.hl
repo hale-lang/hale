@@ -368,6 +368,16 @@ locus Dna {
         // false, routed edit Work is a Mutation of class `application`,
         // as before — fixtures with no leader keep that.
         planned: Bool = false;
+        // Phase 4 (the solo path): when true and the organism has no model
+        // (`has_model`: the record maps none, `model.category`, and the
+        // editor's router permits none, its hosted backends keyless and
+        // its local server not running), an ask is a person's job, handed
+        // unassigned with no plan asked, and Work the routing would hand
+        // to a leg or the editor is a person's case: nothing waits on a
+        // model and nothing times out into a leg. A canned or recorded
+        // backend is a model. The generated org chart says so; fixtures
+        // that wire their own models keep the routing as it was.
+        solo_without_model: Bool = false;
         // GH #1026: claims by id. Any number of nodes may run this
         // organism over one record; an ask is claimed in memory before it
         // is planned and the optimize pass before it runs, so of the
@@ -1403,7 +1413,7 @@ locus Dna {
             self.hand_case(c, plan.assignee, plan.obligation, "leader", plan.narrative);
             return;
         }
-        if self.planned {
+        if self.planned && (!self.solo_without_model || self.has_model()) {
             // a case already awaiting the leader's word is not asked for twice
             if self.cases.awaiting(case_id) { return; }
             // GH #1026: claimed before the leader is asked, as an ask is. A
@@ -3288,6 +3298,11 @@ locus Dna {
         if len(i.position) > 0 {
             return self.admit_ask(i, Plan { kind: "position", change_class: "application" }, false);
         }
+        // the solo path: with no model there is no plan to ask for and no
+        // editor to perform one; the ask is a person's job, handed unassigned
+        if self.solo_without_model && !self.has_model() {
+            return self.admit_ask(i, Plan { kind: "person", change_class: "application" }, false);
+        }
         if self.planned {
             // the intent is this resident's to keep: what a handler's arena
             // handed in dies with the handler
@@ -3321,6 +3336,13 @@ locus Dna {
             return "planning";
         }
         return self.admit_ask(i, Plan { kind: "app", change_class: "application" }, false);
+    }
+    // Whether this organism has a model to ask: the record maps one
+    // (`model.category`), or the editor's router permits a call (a hosted
+    // backend with its key, a local server running, a canned or recorded
+    // backend).
+    fn has_model() -> Bool {
+        return model_mapped(self.journal) || self.editor.models.standing();
     }
     // Whether an ask is awaiting the leader's word.
     fn in_planning(intent_id: String) -> Bool {
@@ -3367,7 +3389,7 @@ locus Dna {
                 "judgment"
             } else if len(i.position) > 0 {
                 "position"
-            } else if planned {
+            } else if planned || p.kind == "person" {
                 p.kind
             } else {
                 "app"
@@ -3390,7 +3412,7 @@ locus Dna {
             "ask-judge"
         } else if len(i.position) > 0 {
             "ask-position"
-        } else if planned && p.kind == "person" {
+        } else if p.kind == "person" {
             "ask-person"
         } else {
             "ask-edit"
@@ -3439,6 +3461,7 @@ locus Dna {
         if !adm.ok { return ""; }
         let gap = self.catalog.decode_bound(adm.value.recipe);
         if len(gap) > 0 { return ""; }
+        let mapped = !self.solo_without_model || self.has_model();
         let mut out = "";
         let mut i = 0;
         while i < self.catalog.bound.len() {
@@ -3447,7 +3470,7 @@ locus Dna {
                 let req = bound_request(n, self.task_of_bound(n), n.parent);
                 // a Work routed to a position is a leg's, as an agent's: the
                 // position's own word decides before any substring of it can
-                let kind = if word_in("position", n.requires) { "agent" }
+                let mut kind = if word_in("position", n.requires) { "agent" }
                 else if std::str::contains(n.requires, "organism") { "organism" }
                 else if std::str::contains(n.requires, "edit") { "edit" }
                 else if std::str::contains(n.requires, "human")
@@ -3456,6 +3479,10 @@ locus Dna {
                     "human"
                 }
                 else { self.work.selection.select(req, 0, "") };
+                // a leg's or the editor's Work with no model is a person's case
+                if !mapped && (kind == "agent" || kind == "edit" || kind == "organism") {
+                    kind = "human";
+                }
                 out = out + (if len(out) > 0 { " " } else { "" }) + n.id + "=" + kind;
             }
             i = i + 1;

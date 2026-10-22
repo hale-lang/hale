@@ -1279,3 +1279,4 @@ textarea.kd-input { resize: vertical; min-height: 120px; line-height: 1.6; }
 .record-index .index-table td { padding: 8px 12px 8px 0; border-top: 1px solid var(--line); vertical-align: top; }
 .record-index .index-links { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
 .record-index .quiet { color: var(--muted); }
+.task-solo textarea { width: 100%; box-sizing: border-box; font: inherit; margin: 0.5rem 0; }

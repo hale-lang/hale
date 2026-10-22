@@ -155,6 +155,8 @@
   const COMMAND_TERMINAL = new Set(["succeeded", "refused", "failed"]);
   let intervention = { scope: "", phase: "idle", draft: null, metadata: null, receipt: null, error: "", blocked: false };
   let commandGeneration = 0;
+  // the solo path's one exchange in flight, and what it last said (soloTaskPanel)
+  let soloTask = { id: "", phase: "idle", error: "" };
   // the receipt whose Task was re-read after it: one re-read per receipt
   let taskRereadFor = "";
   let commandController = null;
@@ -2984,7 +2986,58 @@
       if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); confirmation.append(error); }
       detail.append(confirmation);
     }
+    const solo = soloTaskPanel(item);
+    if (solo) detail.append(solo);
     return detail;
+  }
+  // The solo path: a person takes a handed Task no one holds, and reports one
+  // theirs done with the work as text (the head's `TaskTake` and `TaskDone`,
+  // Commands::take_task and ::complete_task). No model is involved; the
+  // completion is the outcome of the case the Task is.
+  function soloTaskPanel(item) {
+    const slice = commandSlice(state.capabilities) || [];
+    const me = state.capabilities?.principal?.name;
+    if (item.state !== "handed" || !commandID(me) || !state.app) return null;
+    const mine = item.assignee === me, open = !item.assignee;
+    if (!mine && !open) return null;
+    if (!(open && slice.includes("TaskTake")) && !slice.includes("TaskDone")) return null;
+    const panel = node("section", "intervention-panel task-solo"); panel.id = "task-solo";
+    panel.setAttribute("role", "group"); panel.setAttribute("aria-label", "Do this Task");
+    panel.append(node("h3", "", open ? "No one holds this Task" : "This Task is yours"));
+    const busy = soloTask.id === item.id && soloTask.phase === "sending";
+    const actions = node("div", "intervention-actions");
+    if (open && slice.includes("TaskTake")) {
+      const take = button("Take this Task", () => soloSend(item, "TaskTake", { task_id: item.id }), "button");
+      take.id = "task-take"; take.disabled = busy; actions.append(take);
+    }
+    if (slice.includes("TaskDone") && !item.evidence_required) {
+      const text = document.createElement("textarea"); text.id = "task-done-text"; text.rows = 4; text.maxLength = 8192;
+      text.setAttribute("aria-label", "What you did"); text.placeholder = "What you did, as text";
+      const done = button("Report done", () => soloSend(item, "TaskDone", { task_id: item.id, text: text.value }), "button");
+      done.id = "task-done"; done.disabled = busy;
+      panel.append(text); actions.append(done);
+    } else if (item.evidence_required) {
+      panel.append(node("p", "detail-note", "Its acceptance practice requires evidence: `hale dna task done " + item.id + " --evidence <digest>` links it."));
+    }
+    panel.append(actions);
+    if (soloTask.id === item.id && soloTask.error) { const error = node("p", "intervention-error", soloTask.error); error.setAttribute("role", "alert"); panel.append(error); }
+    return panel;
+  }
+  async function soloSend(item, call, payload) {
+    if (call === "TaskDone" && !payload.text.trim()) { soloTask = { id: item.id, phase: "idle", error: "Say what you did: the work is reported as text." }; render(); return; }
+    soloTask = { id: item.id, phase: "sending", error: "" }; render();
+    const controller = new AbortController();
+    try {
+      const { body } = await commandExchange(state.app.id, { call, payload }, controller.signal);
+      const value = body?.ok ? body.value : null;
+      if (!value || value.ok !== true) {
+        const why = body?.ok === false ? body.refusal?.reason || body.refusal?.kind : value?.why || value?.code;
+        soloTask = { id: item.id, phase: "idle", error: why || "The head did not record it." };
+      } else soloTask = { id: "", phase: "idle", error: "" };
+    } catch (error) {
+      soloTask = { id: item.id, phase: "idle", error: "The head did not answer: " + error.message };
+    }
+    refresh();
   }
   function renderTaskRecovery() {
     const metadata = intervention.metadata, result = intervention.receipt;
@@ -3056,7 +3109,7 @@
       panel.append(renderCommandStages([
         { key: "command", title: "Request", value: r.state === "succeeded" ? "Recorded" : "Unconfirmed", tone: r.state === "succeeded" ? "confirmed" : "unknown", explanation: r.state === "succeeded" ? "The service recorded this ask once, in your name, at the Record head you prepared it against." : "Keep this request identity and check its status. No replacement request is sent automatically." },
         { key: "intent", title: "Intent", value: t.intent_state === "unknown" ? "Not established" : t.intent_id + " · " + t.intent_state, tone: t.intent_state === "refused" ? "refused" : t.intent_state === "born" || t.intent_state === "offered" ? "confirmed" : t.intent_state === "requested" ? "pending" : "unknown", explanation: t.intent_state === "requested" ? "The ask is in the Record. The host beside the organism relays it; the organism's answer is a later fact." : t.intent_state === "offered" ? "The organism admitted the ask. Its Task is minted next." : t.intent_state === "refused" ? "The organism refused this ask; its reason is in the Record. This request is complete." : t.intent_state === "born" ? "The organism admitted the ask and minted its Task." : "No intent is named for an unconfirmed ask." },
-        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? (t.kind === "judgment" ? "The Task exists. Its judgment is a leg's to claim and answer; the organism admitted it without a plan." : "The Task exists. It joins the handed Tasks once the leader hands it to a person.") : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
+        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? (t.kind === "judgment" ? "The Task exists. Its judgment is a leg's to claim and answer while a model is mapped, else a person's to take from the handed Tasks; the organism admitted it without a plan." : "The Task exists. It joins the handed Tasks once the leader hands it to a person; with no model to plan it, it is handed at once, for anyone to take.") : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
       ], r));
     } else panel.append(node("p", "detail-note", intervention.phase === "submitting" ? "Recording the ask…" : intervention.phase === "recovering" ? "Checking the saved request…" : "The request outcome is not yet confirmed."));
     if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); panel.append(error); }

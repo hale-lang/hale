@@ -1124,6 +1124,30 @@ locus CommandAdmission {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
         return habitat_nursery_add(self.root, a, self.author(ctx));
     }
+    // The solo path (solo_tasks.hl): a person takes a handed Task and
+    // reports it done, as text, in their own name.
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                t.task_id,
+                "forbidden",
+                "a Task is taken by a person of the record",
+            );
+        }
+        return solo_take(self.root, t.task_id, who);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                d.task_id,
+                "forbidden",
+                "a Task is reported done by a person of the record",
+            );
+        }
+        return solo_done(self.root, d.task_id, d.text, who);
+    }
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
         return habitat_sapling_ratify(self.root, n.name, self.author(ctx));
@@ -1249,6 +1273,12 @@ locus Commands {
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         return self.admission.ratify_sapling(n, ctx);
     }
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        return self.admission.take_task(t, ctx);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        return self.admission.complete_task(d, ctx);
+    }
     fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
         return self.admission.add_host(a, ctx);
     }
@@ -1316,6 +1346,10 @@ api HeadCommands {
     rpc Commands::propose_organization requires: [owner];
     rpc Commands::create_task;
     rpc Commands::reassign_task requires: [owner];
+    // The solo path (solo_tasks.hl): a person of the record takes a handed
+    // Task no one holds, and reports one theirs done as text.
+    rpc Commands::take_task;
+    rpc Commands::complete_task;
     rpc Commands::retire_person requires: [owner];
     rpc Commands::claim requires: [position];
     rpc Commands::outcome requires: [position];

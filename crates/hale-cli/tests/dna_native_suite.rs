@@ -1169,6 +1169,7 @@ fn dna_fixture_set_is_complete() {
             "schedule_test.hl",
             "sdlc_exit_test.hl",
             "senses_reflex_test.hl",
+            "solo_no_model_test.hl",
             "status_chain_race_test.hl",
             "structure_test.hl",
             "supersession_test.hl",

@@ -262,12 +262,15 @@ fn upgrade_retires_the_owners_map() {
     let text = std::fs::read_to_string(&main).unwrap();
     let anchor = "            budget: dna::Budget { policy: org_budget() },\n";
     assert!(text.contains(anchor), "the generated main.hl has its budget line");
+    // the solo path is in what the toolchain generates now; an organism born
+    // before it is born again for it (no migration)
+    assert!(text.contains("            planned: true,\n            // the solo path: with no model (none mapped, none the catalog\n            // reaches) every ask and every leg's Work is a person's\n            solo_without_model: true\n"), "the generated chart takes the solo path: {text}");
     let old = "            // Owners (GH #664): who admits which position. The map is the\n            // genome's file dna/org/owners — empty while this organization\n            // is the only owner; once the record is shared, every position\n            // names its owner and this body says which it is (dna.owner).\n            ownership: dna::Ownership { path: \"dna/org/owners\" },\n";
     // GH #1143: and the older generator's optimize field and monotonic tick
     let older = text
         .replace(anchor, &format!("{anchor}{old}"))
         .replace(
-            "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true\n",
+            "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true,\n            // the solo path: with no model (none mapped, none the catalog\n            // reaches) every ask and every leg's Work is a person's\n            solo_without_model: true\n",
             "            planned: true,\n            // GH #596 O: the optimize pass — the leader walks the machinery\n            // on this cadence, in milliseconds; 0 is never. The Board's to set.\n            optimize_every_ms: 0\n",
         )
         .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000);\n        }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }")
