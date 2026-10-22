@@ -274,7 +274,7 @@ locus App {
         );
         std::test::assert_eq_str(
             members_of(none),
-            "Commands::create_task Commands::index Commands::lookup Commands::lookup_knowledge Commands::preview_batch",
+            "Commands::allocations Commands::create_task Commands::hosts Commands::index Commands::lookup Commands::lookup_knowledge Commands::policy Commands::preview_batch",
             "seated nowhere: the ungated rows only",
         );
         // the served description is the surface `hale check --api` printed:
@@ -336,7 +336,7 @@ locus App {
         let seated = self.slice_with(sock, "Commands::reassign_task");
         std::test::assert_eq_str(
             members_of(seated),
-            "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge",
+            "Commands::allocations Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::hosts Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::policy Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge",
             "the board's slice: the owner's and a position's rows, not the reviewer's",
         );
         // The exposure follows the record: once ada holds a seat the role
@@ -396,7 +396,7 @@ locus App {
         let reviewing = self.slice_with(sock, "Commands::verdict");
         std::test::assert_eq_str(
             members_of(reviewing),
-            "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict",
+            "Commands::allocations Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::hosts Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::policy Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::propose_organization Commands::reassign_task Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::retire_person Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict",
             "every row",
         );
 
@@ -414,7 +414,7 @@ locus App {
         }
         std::test::assert_eq_str(
             members_of(gone),
-            "Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict",
+            "Commands::allocations Commands::apply_batch Commands::ask_allowance Commands::bind_knowledge Commands::claim Commands::create_task Commands::file_friction Commands::fill Commands::hosts Commands::index Commands::link_knowledge Commands::lookup Commands::lookup_knowledge Commands::open_position Commands::outcome Commands::policy Commands::preview_batch Commands::propose Commands::propose_knowledge Commands::release_attempt Commands::renew Commands::retire_knowledge Commands::revise_knowledge Commands::unbind_knowledge Commands::unlink_knowledge Commands::verdict",
             "the reviewer's seat still holds a position: the owner's three rows are gone, the rest stay",
         );
         let not_owner = retire_person_text(

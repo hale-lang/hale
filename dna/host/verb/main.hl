@@ -232,6 +232,13 @@ fn main() {
             "memory=" + to_string(dna::MEMORY_SCHEMA_VERSION) + "\nnerves="
                 + to_string(dna::NERVES_STREAM_VERSION) + "\n",
         );
+    } else if verb == "habitat-place" {
+        // phase 4: the habitat's host, policy and own allocations, placed by
+        // the compose provider and recorded (`hale habitat up`)
+        ans = host::habitat_place_verb(root, host::word(a, 0), memory);
+    } else if verb == "habitat-apply" {
+        // phase 4: a tenant's allocations brought back by the compose provider
+        ans = host::habitat_apply_verb(host::word(a, 0));
     } else if verb == "heart-handover" {
         // GH #1653: what the habitat hands a habitat-scoped heart
         ans = host::heart_handover_verb(

@@ -4639,9 +4639,12 @@ The live half is memory's, projected from the record by the spine
   own memory allocation, and both packs proposed to its Board), then
   migrates its own memory and nerves (the habitat's schema is its own to
   move, at bootstrap and at a toolchain's upgrade), brings every tenant's
-  recorded allocation up — migrating none: an organism's allocation moves
+  recorded allocation up through the `compose` provider — migrating none: an organism's allocation moves
   at its own upgrade or with `hale habitat migrate <organism>`, never
-  under ongoing work — and starts its body, `hale dna dev <genome>`: a
+  under ongoing work — records its placement (the host `local` the
+  `compose` provider produces with its offers, the `local` profile's
+  policy, and its own head and face placed on that host:
+  `spec/habitat.md`, Hosts, providers and placement) and starts its body, `hale dna dev <genome>`: a
   systemd user unit named for the habitat's project, or with
   `--foreground` in the process itself (what a fixture runs, to ready).
   `up` is idempotent, and the `hosted` profile is not built. **A
@@ -4835,7 +4838,9 @@ The live half is memory's, projected from the record by the spine
   only reads the allocations' files) and grafts into that.
 - **An allocation is a row of the habitat's record.** Every provisioning
   act is: `habitat.allocated <id>/<role>` the first time an organism's
-  role is provisioned (`organism`, `role`, `service`, `project`, and the
+  role is provisioned (`organism`, `role`, `service`, `project`, the
+  `provider` that placed it and the `host` it is on — `compose` on
+  `local`, or on `operator` backends `operator` and no host — and the
   vault slots it holds by name, never a value) and `habitat.migrated
   <id>/<role>` each time an organism role's schema version moves (`from`,
   `schema_version`: memory's `MEMORY_SCHEMA_VERSION`, the nerves'
@@ -6399,6 +6404,29 @@ commands). `hale dna head <organism>` serves on that block unless a port
 flag says otherwise, so the recorded address is the one the head answers
 on. The habitat's own address is assigned the same way, in its genome's
 `dna.head.url`, the first time `up` needs it.
+
+**The habitat's placement.** Three more reads of `HeadCommands`
+(`dna/api/habitat_rows.hl`), each taking `{limit}` as the index does and
+answering the record's revision and one JSON array, are what the operator
+face's hardware and infrastructure screens read: `Commands::hosts` (each
+`habitat.host` row: the host's `name`, the `provider` that produced it and
+what it `offers`), `Commands::policy` (each `habitat.policy` row: the
+`role`, its `provider` and the `profile` it came from) and
+`Commands::allocations` (each `habitat.allocated` row: the `allocation`
+(`<instance>/<role>`), its `role`, `instance`, `organism`, `provider`,
+`host`, `service` and `address`, and the `state` its provider observes
+now with the `detail` it saw: `up`, `degraded` or `down` from the
+`compose` provider; `""` for the `operator`'s, which the habitat does not
+observe). The latest row of an entity is the one listed. A host is a
+machine the habitat places on (`spec/habitat.md`, Hosts, providers and
+placement), never the program `dna/host`. They are reads any authenticated
+caller the record knows may ask, they write nothing, and the head relays
+them from the face as it relays the index: `POST
+/api/hale/v1/head/surface/call/<member>` for the surface's reads
+(`Commands::index`, `::hosts`, `::allocations`, `::policy`) and no other
+member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
+record, written by `hale habitat up`; an allocation's provider and host
+are fields of the existing `habitat.allocated` row.
 
 The head tells the browser when to read again, and the browser does
 not poll it (GH #986). `GET /api/hale/v1/head/events` is a

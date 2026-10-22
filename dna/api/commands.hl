@@ -1083,6 +1083,20 @@ locus CommandAdmission {
         if self.personless(ctx) { return RecordIndex { why: "forbidden" }; }
         return record_index(self.root, a.limit);
     }
+    // The habitat's hosts, allocations and policy (habitat_rows.hl): reads,
+    // so any authenticated caller the record knows may ask.
+    fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
+        if self.personless(ctx) { return HostRows { why: "forbidden" }; }
+        return habitat_hosts(self.root, a.limit);
+    }
+    fn allocations(a: HabitatAsk, ctx: std::api::Context) -> AllocationRows {
+        if self.personless(ctx) { return AllocationRows { why: "forbidden" }; }
+        return habitat_allocations(self.root, a.limit);
+    }
+    fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
+        if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
+        return habitat_policy(self.root, a.limit);
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -1147,6 +1161,15 @@ locus Commands {
     }
     fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
         return self.admission.index(a, ctx);
+    }
+    fn hosts(a: HabitatAsk, ctx: std::api::Context) -> HostRows {
+        return self.admission.hosts(a, ctx);
+    }
+    fn allocations(a: HabitatAsk, ctx: std::api::Context) -> AllocationRows {
+        return self.admission.allocations(a, ctx);
+    }
+    fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
+        return self.admission.policy(a, ctx);
     }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
@@ -1228,6 +1251,11 @@ api HeadCommands {
     rpc Commands::bind_knowledge requires: [position];
     rpc Commands::unbind_knowledge requires: [position];
     rpc Commands::lookup_knowledge;
+    // The habitat's placement (habitat_rows.hl): its hosts, its allocations
+    // with what their providers observe, and its policy. Reads.
+    rpc Commands::hosts;
+    rpc Commands::allocations;
+    rpc Commands::policy;
 }
 
 // A seat as a structure command names it: `position:<name>` from a name

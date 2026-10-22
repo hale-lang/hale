@@ -20,6 +20,53 @@ habitat, with a service per allocation, under
 names that directory outright (a test's or a suite slice's habitat; the
 developer's stays the default).
 
+## Hosts, providers and placement
+
+A **host** is a machine the habitat places on; the program `dna/host`
+keeps its name, and `host` in a command name always means the machine.
+Hosts are rows that providers produce, each declaring what it offers. A
+**provider** is what allocates, places, applies and observes the
+habitat's allocations on its hosts: every provider implements the core's
+`Provider` interface (`dna/core/infrastructure.hl`):
+
+| Verb | What it does |
+|---|---|
+| `offers(host)` | the host as the provider produces it: its name, the provider, what it offers (`compose`, `systemd-user`), or why it cannot be reached |
+| `allocate(role, instance)` | a role (`memory`, `nerves`, `senses`, `database`, `broker`, `head`, `face`) of an instance (an organism's record key) allocated, on no host yet: the service that holds it and the offer its host must make |
+| `place(allocation, host)` | the allocation placed on the host, or refused, naming the offer the host lacks |
+| `apply(host, render)` | a render applied on the host; until a fleet's render exists, a render is what `hale deploy render --backend compose` writes (a compose project, its directory, its files and the services to bring up) |
+| `observe(allocation)` | `up`, `degraded` (running, not well) or `down`, and what was seen |
+
+**Placement is the record's.** Every allocation is a row naming its role,
+its instance, its provider and its host; a source's placement is a default
+only. A **policy** maps each role to the provider that allocates it, per
+habitat, and a **profile** is a preset of policy: `local` gives the
+`compose` provider every role, and on `operator` backends the operator's
+servers hold memory, the nerves and a heart's database (the provider
+`operator`: adopted, never applied, and not observed by the habitat), with
+no `broker`.
+
+The **`compose` provider** is local only. It produces this machine as the
+host `local`, offering `compose` when docker compose answers and
+`systemd-user` when the user's systemd does. Memory, the nerves, the
+senses' store, a heart's database and its broker need `compose`; the
+habitat's head and face, one process of the habitat's (`hale dna head`),
+need no offer. It applies a render with `docker compose -p <project>
+--project-directory <dir> -f <file>… up -d --wait [<service>…]`, with
+`COMPOSE_IGNORE_ORPHANS=1`: every allocation the habitat brings up, the
+habitat's own and each tenant's, is brought up this way. It observes a
+service by its container's state (`running` is up, `running` and
+unhealthy or `restarting` is degraded, anything else or no container is
+down) and the head and the face by whether their address accepts a
+connection. A provider in memory (`MemProvider`) stands in for it in tests.
+
+`up` records the habitat's placement once its record is up
+(`habitat-place`): the host the compose provider produces, the `local`
+profile's policy for its backends, and the habitat's own head and face
+allocated and placed on that host, each a row written only when the record
+does not already say it (below). The head's surface reads them back
+(`spec/dna.md`, The head's surface).
+
 ## Long-lived, and only its acts provision
 
 - Nothing tears the local habitat down when work ends. Organisms are
@@ -40,7 +87,7 @@ developer's stays the default).
 
 | Verb | Behaviour |
 |---|---|
-| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up, migrating any whose recorded schema version is behind this toolchain's, and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it and brings its allocations up and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `status` | The habitat, its genome, body and face (its address), and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
 | `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
@@ -123,13 +170,17 @@ organism and the role (`<id>/<role>`), never by a checkout.
 
 | Row | When | Body |
 |---|---|---|
-| `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism | `organism`, `role`, `service`, `project`, `vault` (slots held by name, never a value) |
+| `habitat.allocated <id>/<role>` | the first time a role is provisioned for an organism; for the habitat's own `head` and `face`, at `up` whenever their placement changes | `organism`, `role`, `service`, `project`, `provider`, `host`, `vault` (slots held by name, never a value), and for the head and the face their `address` (`""` while none is assigned) |
+| `habitat.host <name>` | at `up`, whenever the host or its offers change | `name`, `provider`, `offers` (space-separated) |
+| `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
 | `habitat.profile local` | at birth | `profile`, `backends`, `project` |
 | `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses) |
 
-An allocation made before the habitat's record exists waits in
+An allocation names its provider and its host: `compose` on `local`, or,
+on `operator` backends, `operator` and no host. The latest row for an
+entity is the one that holds. An allocation made before the habitat's record exists waits in
 `allocations/<id>/allocation.json`, the local profile's cache of the rows,
 and is written at birth. `status` reads the rows, and the cache only while
 the habitat's memory is not up.

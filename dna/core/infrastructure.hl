@@ -4,9 +4,11 @@
 // Every external dependency of the DNA sits behind an interface in the
 // core with a vocabulary of its own, one implementation over the real
 // thing and one in memory; only the implementation spells the tool.
-// These two are declared here and implemented in memory; the host still
-// drives docker compose, systemd and ssh through its own shell strings
-// until #647 moves them behind these, in order after stage 3.
+// `Infrastructure` and `Transport` are declared here and implemented in
+// memory; the host implements them over docker compose, systemd and ssh
+// (dna/host/infra.hl). `Provider`, below, is the level above them: which
+// host an allocation of the habitat runs on, and what places, applies and
+// observes it there.
 
 // Where a body's knowledge database is, once it is up.
 type Database {
@@ -152,5 +154,352 @@ locus MemTransport {
         self.last_stdin = stdin;
         self.runs = self.runs + 1;
         return RunResult { code: 0, stdout: "", stderr: "" };
+    }
+}
+
+// ---- providers: where the habitat's allocations run (phase 4) ----------------
+//
+// A **host** is a machine the habitat places on: never the program
+// `dna/host`, which keeps its name. Hosts are rows that providers produce,
+// each declaring what it offers. An **allocation** is one role of one
+// instance (an organism's record key) placed on a host by a provider:
+// placement is the record's, a row naming the role, the instance, the
+// provider and the host. A **policy** maps each role to the provider that
+// allocates it, per habitat; a profile is a preset of policy (`local`: the
+// `compose` provider for every role). A provider's verbs are what every
+// provider does, whatever it spells: the host it produces and what it
+// offers, an allocation by role, a placement on a host, a render applied
+// on a host, and what it observes of an allocation.
+
+// A machine a provider produces: its name, the provider, and what it
+// offers, space-separated (`compose`, `systemd-user`).
+type Host {
+    name: String = "";
+    provider: String = "";
+    offers: String = "";
+    reachable: Bool = false;
+    why: String = "";
+}
+
+// One role of one instance, as a provider allocates and places it: the
+// service that runs it on its host (in the compose project `project`), the
+// offer its host must make (`needs`, "" for none), and the address it
+// answers on when it serves one.
+type Allocation {
+    role: String = "";
+    instance: String = "";
+    provider: String = "";
+    host: String = "";
+    project: String = "";
+    service: String = "";
+    needs: String = "";
+    address: String = "";
+    placed: Bool = false;
+    why: String = "";
+}
+
+// What a provider applies on a host. Until a fleet's render exists, a
+// render is what `hale deploy render --backend compose` writes: a compose
+// project, the directory its files are in, its files (newline-separated, in
+// order) and the services to bring up (newline-separated, "" all of them).
+type Render {
+    project: String = "";
+    dir: String = "";
+    files: String = "";
+    services: String = "";
+}
+
+type RenderApplied {
+    ok: Bool = false;
+    why: String = "";
+}
+
+// What a provider observes of an allocation: `up`, `degraded` (running,
+// not well) or `down`, and what it saw.
+type AllocationState {
+    state: String = "down";
+    detail: String = "";
+}
+
+interface Provider {
+    fn kind() -> String;
+    // The host named `host` as this provider produces it, with its offers.
+    fn offers(host: String) -> Host;
+    // `role` allocated for `instance`, on no host yet.
+    fn allocate(role: String, instance: String) -> Allocation;
+    // `a` placed on `host`: refused (`why`) when the host does not offer
+    // what the allocation needs.
+    fn place(a: Allocation, host: Host) -> Allocation;
+    // `render` applied on the host named `host`.
+    fn apply(host: String, render: Render) -> RenderApplied;
+    fn observe(a: Allocation) -> AllocationState;
+}
+
+// The roles a habitat allocates, in the order its policy lists them.
+const HABITAT_ROLES: String = "memory nerves senses database broker head face";
+
+// Whether the space-separated `words` hold `word`.
+fn has_word(words: String, word: String) -> Bool {
+    return len(word) > 0 && std::str::contains(" " + words + " ", " " + word + " ");
+}
+
+// The provider a profile's preset gives `role` on these backends: `local`
+// gives `compose` every role; on `operator` backends, the roles the
+// operator's servers hold (memory, nerves and the heart's database) are
+// the `operator`'s, adopted and never applied, and the `broker` is not
+// allocated there (""). "" for a profile that is not built.
+fn profile_provider(profile: String, backends: String, role: String) -> String {
+    if profile != "local" || !has_word(HABITAT_ROLES, role) { return ""; }
+    if backends == "operator" {
+        if role == "broker" { return ""; }
+        if role == "memory" || role == "nerves" || role == "database" { return "operator"; }
+    }
+    return "compose";
+}
+
+// The compose service that holds `role` for the instance `k`, the offer
+// its host must make, or "" for a role the compose provider does not run
+// as a service: the heart's database is a tenant of the memory server, its
+// broker users the nerves server's; the head and the face are one process
+// of the habitat's (`hale dna head`), not a service of the project.
+fn compose_service(role: String, k: String) -> String {
+    if role == "memory" || role == "nerves" || role == "senses" { return role + "-" + k; }
+    if role == "database" { return "memory-" + k; }
+    if role == "broker" { return "nerves-" + k; }
+    return "";
+}
+
+// The render of the allocations of the organism at `root` (its compose
+// file and ports, written the first time) bringing up `services`.
+fn allocation_render(root: String, services: String) -> Render {
+    let argv = allocation_compose(root);
+    if len(argv) == 0 { return Render { }; }
+    return Render {
+        project: local_habitat_project(),
+        dir: allocation_dir(root),
+        files: "compose.yaml\nports.yaml",
+        services: services,
+    };
+}
+
+// The render of the allocations kept at `dir` (`allocations/<key>`), every
+// service of them: what `hale habitat up` brings back for a tenant.
+fn allocations_render(dir: String) -> Render {
+    return Render {
+        project: local_habitat_project(),
+        dir: dir,
+        files: "compose.yaml\nports.yaml",
+    };
+}
+
+// The `compose` provider: this machine (the host `local`), docker compose
+// for the services of the habitat's project, and the habitat's own
+// processes (its head and face) beside them. Local only.
+locus ComposeProvider {
+    params {
+        project: String = "";
+        host_name: String = "local";
+    }
+    fn kind() -> String { return "compose"; }
+    fn offers(host: String) -> Host {
+        if host != self.host_name {
+            return Host {
+                name: host,
+                provider: "compose",
+                why: "the compose provider places on this machine alone (`" + self.host_name
+                    + "`)",
+            };
+        }
+        let mut offers = "";
+        if run_tool("docker\ncompose\nversion").code == 0 { offers = "compose"; }
+        if run_tool("systemctl\n--user\nshow-environment").code == 0 {
+            offers = offers + (if len(offers) > 0 { " " } else { "" }) + "systemd-user";
+        }
+        return Host { name: host, provider: "compose", offers: offers, reachable: true };
+    }
+    fn allocate(role: String, instance: String) -> Allocation {
+        if !has_word(HABITAT_ROLES, role) {
+            return Allocation {
+                role: role,
+                instance: instance,
+                provider: "compose",
+                why: "the compose provider allocates no `" + role + "`",
+            };
+        }
+        let service = compose_service(role, instance);
+        return Allocation {
+            role: role,
+            instance: instance,
+            provider: "compose",
+            project: if len(self.project) > 0 { self.project } else { local_habitat_project() },
+            service: if len(service) > 0 { service } else { "dna head" },
+            needs: if len(service) > 0 { "compose" } else { "" },
+        };
+    }
+    fn place(a: Allocation, host: Host) -> Allocation {
+        let mut p = a;
+        if !host.reachable {
+            p.why = "host `" + host.name + "` is not reachable: " + host.why;
+            return p;
+        }
+        if host.provider != "compose" {
+            p.why = "host `" + host.name + "` is the " + host.provider + " provider's";
+            return p;
+        }
+        if len(a.needs) > 0 && !has_word(host.offers, a.needs) {
+            p.why = "host `" + host.name + "` does not offer " + a.needs + " (it offers: "
+                + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")";
+            return p;
+        }
+        p.host = host.name;
+        p.placed = true;
+        return p;
+    }
+    fn apply(host: String, render: Render) -> RenderApplied {
+        if host != self.host_name {
+            return RenderApplied {
+                why: "the compose provider applies on this machine alone (`" + self.host_name
+                    + "`)",
+            };
+        }
+        if len(render.project) == 0 || len(render.dir) == 0 {
+            return RenderApplied { why: "nothing to apply: the render names no project" };
+        }
+        let mut argv = "env\nCOMPOSE_IGNORE_ORPHANS=1\ndocker\ncompose\n-p\n" + render.project
+            + "\n--project-directory\n" + render.dir;
+        let mut rest = render.files;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let f = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(f) > 0 { argv = argv + "\n-f\n" + render.dir + "/" + f; }
+        }
+        argv = argv + "\nup\n-d\n--wait";
+        if len(render.services) > 0 { argv = argv + "\n" + render.services; }
+        let up = run_tool(argv);
+        if up.code != 0 {
+            return RenderApplied { why: "docker compose up failed: " + trim_nl(up.stderr) };
+        }
+        return RenderApplied { ok: true };
+    }
+    fn observe(a: Allocation) -> AllocationState {
+        if a.provider != "compose" {
+            return AllocationState { detail: "the " + a.provider + " provider's, not compose's" };
+        }
+        // the service that holds the role (the heart's database is the
+        // memory server's), never a name the row spelled otherwise
+        let service = compose_service(a.role, a.instance);
+        if len(service) == 0 { return observe_address(a.address); }
+        let ps = run_tool(
+            "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
+                + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
+                + "\n--filter\nlabel=com.docker.compose.service=" + service
+                + "\n--format\n{{.State}} {{.Status}}",
+        );
+        if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
+        let seen = trim_nl(ps.stdout);
+        if len(seen) == 0 { return AllocationState { detail: service + " is not created" }; }
+        if std::str::starts_with(seen, "running") {
+            if std::str::contains(seen, "(unhealthy)") {
+                return AllocationState { state: "degraded", detail: seen };
+            }
+            return AllocationState { state: "up", detail: seen };
+        }
+        if std::str::starts_with(seen, "restarting") {
+            return AllocationState { state: "degraded", detail: seen };
+        }
+        return AllocationState { detail: seen };
+    }
+}
+
+// An allocation served at a loopback `address` (`http://127.0.0.1:<port>`):
+// up while something accepts connections there.
+fn observe_address(address: String) -> AllocationState {
+    let at = std::str::index_of(address, "127.0.0.1:");
+    if at < 0 { return AllocationState { detail: "no address assigned yet" }; }
+    let rest = address[(at + 10)..len(address)];
+    let slash = std::str::index_of(rest, "/");
+    let port = std::str::parse_int(if slash < 0 { rest } else { rest[0..slash] }) or 0;
+    if port < 1 || port > 65535 { return AllocationState { detail: "no port in " + address }; }
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return AllocationState { detail: "nothing answers at " + address }; }
+    std::io::tcp::close_fd(fd);
+    return AllocationState { state: "up", detail: "answers at " + address };
+}
+
+// A provider in memory: one host whose offers the fixture sets; an
+// allocation is placed when the host offers what it needs, a render is
+// kept rather than applied, and an allocation observes as the fixture says
+// (`down` and `degraded` list `<instance>/<role>` keys, space-separated;
+// every other applied allocation is up).
+locus MemProvider {
+    params {
+        host_name: String = "local";
+        host_offers: String = "compose systemd-user";
+        reachable: Bool = true;
+        refuse_apply: String = "";
+        down: String = "";
+        degraded: String = "";
+        applied: Int = 0;
+        last_host: String = "";
+        last: Render = Render { };
+    }
+    fn kind() -> String { return "memory"; }
+    fn offers(host: String) -> Host {
+        if host != self.host_name || !self.reachable {
+            return Host { name: host, provider: "memory", why: "no such host in memory" };
+        }
+        return Host { name: host, provider: "memory", offers: self.host_offers, reachable: true };
+    }
+    fn allocate(role: String, instance: String) -> Allocation {
+        if !has_word(HABITAT_ROLES, role) {
+            return Allocation {
+                role: role,
+                instance: instance,
+                provider: "memory",
+                why: "the memory provider allocates no `" + role + "`",
+            };
+        }
+        let service = compose_service(role, instance);
+        return Allocation {
+            role: role,
+            instance: instance,
+            provider: "memory",
+            project: "memory",
+            service: if len(service) > 0 { service } else { role + "-" + instance },
+            needs: if len(service) > 0 { "compose" } else { "" },
+        };
+    }
+    fn place(a: Allocation, host: Host) -> Allocation {
+        let mut p = a;
+        if !host.reachable {
+            p.why = "host `" + host.name + "` is not reachable";
+            return p;
+        }
+        if len(a.needs) > 0 && !has_word(host.offers, a.needs) {
+            p.why = "host `" + host.name + "` does not offer " + a.needs;
+            return p;
+        }
+        p.host = host.name;
+        p.placed = true;
+        return p;
+    }
+    fn apply(host: String, render: Render) -> RenderApplied {
+        if host != self.host_name { return RenderApplied { why: "no such host in memory" }; }
+        if len(self.refuse_apply) > 0 { return RenderApplied { why: self.refuse_apply }; }
+        self.applied = self.applied + 1;
+        self.last_host = host;
+        self.last = render;
+        return RenderApplied { ok: true };
+    }
+    fn observe(a: Allocation) -> AllocationState {
+        let key = a.instance + "/" + a.role;
+        if !a.placed && len(a.host) == 0 { return AllocationState { detail: "not placed" }; }
+        if has_word(self.down, key) { return AllocationState { detail: "down in memory" }; }
+        if has_word(self.degraded, key) {
+            return AllocationState { state: "degraded", detail: "degraded in memory" };
+        }
+        if self.applied == 0 { return AllocationState { detail: "nothing applied" }; }
+        return AllocationState { state: "up", detail: "up in memory" };
     }
 }

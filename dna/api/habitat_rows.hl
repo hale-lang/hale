@@ -1,0 +1,183 @@
+// dna/api/habitat_rows.hl — the habitat's hosts, allocations and policy as
+// the head's surface reads them (phase 4).
+//
+// Three rows of `HeadCommands`, reads like `Commands::index`: `hosts` (each
+// `habitat.host` row: the machine, the provider that produced it and what
+// it offers), `allocations` (each `habitat.allocated` row: the role, the
+// instance, the provider and the host it is placed on, with what that
+// provider observes of it now: `up`, `degraded` or `down`) and `policy`
+// (each `habitat.policy` row: the provider a role is allocated by). The
+// latest row for an entity is the one that holds. Each list is a JSON array;
+// they write nothing. The operator face's hardware and infrastructure
+// screens read them.
+import "../core" as dna;
+
+// What a reader asks: at most `limit` entries.
+type HabitatAsk { limit: Int = 200; }
+
+type HostRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    hosts: String = "[]";
+}
+
+type AllocationRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    allocations: String = "[]";
+}
+
+type PolicyRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    policy: String = "[]";
+}
+
+// Where the latest row of a kind is, for each entity: the record's index.
+type LatestRow {
+    entity: String = "";
+    at: Int = -1;
+}
+
+@form(hashmap)
+locus LatestRows {
+    capacity { pool rows of LatestRow indexed_by entity; }
+}
+
+// The index of the latest `kind` row of each entity in `j`.
+@bounded_by(j)
+fn habitat_latest(j: dna::Journal, kind: String) -> LatestRows {
+    let latest = LatestRows { };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind { latest.set(LatestRow { entity: e.entity, at: i }); }
+        i = i + 1;
+    }
+    return latest;
+}
+
+// Whether the row at `i` is its entity's latest.
+fn habitat_holds(latest: LatestRows, entity: String, i: Int) -> Bool {
+    let r = latest.get(entity) or LatestRow { };
+    return r.at == i;
+}
+
+fn habitat_cap(limit: Int) -> Int {
+    return if limit < 1 { 1 } else if limit > 1000 { 1000 } else { limit };
+}
+
+// The habitat's record, refreshed.
+fn habitat_journal(root: String) -> dna::RecordJournal {
+    let j = dna::RecordJournal { repo: root, author: "api" };
+    let moved = j.refresh();
+    return j;
+}
+
+fn habitat_hosts(root: String, limit: Int) -> HostRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.host");
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.host" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let body = e.body;
+        out.begin_object();
+        out.string_field("name", std::json::find_string_field(body, "name"));
+        out.string_field("provider", std::json::find_string_field(body, "provider"));
+        out.string_field("offers", std::json::find_string_field(body, "offers"));
+        out.end_object();
+    }
+    out.end_array();
+    return HostRows { ok: true, revision: j.revision(), hosts: out.result() };
+}
+
+fn habitat_policy(root: String, limit: Int) -> PolicyRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.policy");
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.policy" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let body = e.body;
+        out.begin_object();
+        out.string_field("role", std::json::find_string_field(body, "role"));
+        out.string_field("provider", std::json::find_string_field(body, "provider"));
+        out.string_field("profile", std::json::find_string_field(body, "profile"));
+        out.end_object();
+    }
+    out.end_array();
+    return PolicyRows { ok: true, revision: j.revision(), policy: out.result() };
+}
+
+// Each allocation with what its provider observes of it. The `compose`
+// provider observes its own; an allocation on the `operator` backends is
+// the operator's server, adopted, which the habitat does not observe: its
+// state is "" and the detail says so.
+fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
+    let j = habitat_journal(root);
+    let compose = dna::ComposeProvider { };
+    let out = std::json::Builder { };
+    out.begin_array();
+    let latest = habitat_latest(j, "habitat.allocated");
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let entity = e.entity;
+        let body = e.body;
+        let slash = std::str::index_of(entity, "/");
+        let a = dna::Allocation {
+            role: std::json::find_string_field(body, "role"),
+            instance: if slash < 0 { entity } else { entity[0..slash] },
+            provider: std::json::find_string_field(body, "provider"),
+            host: std::json::find_string_field(body, "host"),
+            project: std::json::find_string_field(body, "project"),
+            service: std::json::find_string_field(body, "service"),
+            address: std::json::find_string_field(body, "address"),
+            placed: true,
+        };
+        let seen = if a.provider == "compose" {
+            compose.observe(a)
+        } else {
+            dna::AllocationState {
+                state: "",
+                detail: "the " + (if len(a.provider) > 0 { a.provider } else { "unnamed" })
+                    + " provider's: not observed by the habitat",
+            }
+        };
+        out.begin_object();
+        out.string_field("allocation", entity);
+        out.string_field("role", a.role);
+        out.string_field("instance", a.instance);
+        out.string_field("organism", std::json::find_string_field(body, "organism"));
+        out.string_field("provider", a.provider);
+        out.string_field("host", a.host);
+        out.string_field("service", a.service);
+        out.string_field("address", a.address);
+        out.string_field("state", seen.state);
+        out.string_field("detail", seen.detail);
+        out.end_object();
+    }
+    out.end_array();
+    return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
+}

@@ -159,7 +159,7 @@ macro_rules! host {
 /// with the project resolved. This seed is the host's body (`run`,
 /// `dev`, `node`, `body-fence`: the `main locus` and the renewer beside
 /// it), and the library the verb program imports.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "placement", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "secrets", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
@@ -344,6 +344,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/commands.hl",
     "dna/api/context.hl",
     "dna/api/definition_drafts.hl",
+    "dna/api/habitat_rows.hl",
     "dna/api/http.hl",
     "dna/api/knowledge_commands.hl",
     "dna/api/knowledge.hl",

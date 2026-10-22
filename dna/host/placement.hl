@@ -1,0 +1,152 @@
+// dna/host/placement.hl — the habitat's placement, through its providers
+// (phase 4).
+//
+// `hale habitat up` runs `habitat-place` on the habitat's genome once its
+// record is up: the `compose` provider produces the host `local` with what
+// it offers, the `local` profile's preset gives each role its provider,
+// and the habitat's head and face are allocated and placed on that host.
+// Each is a row of the habitat's record, written only when the record
+// does not already say it: `habitat.host <name>`, `habitat.policy <role>`
+// and `habitat.allocated <key>/<role>` (the memory and nerves allocations
+// are the provisioning acts' own rows, which name the provider and the
+// host the same way). `habitat-apply` is a tenant's allocations brought
+// back by the same provider at `up`.
+
+import "../core" as dna;
+
+// The latest body the record holds for `kind` and `entity`, "" for none.
+@bounded_by(j)
+fn latest_body(j: dna::Journal, kind: String, entity: String) -> String {
+    let mut body = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { body = e.body; }
+        i = i + 1;
+    }
+    return body;
+}
+
+// One row as the record's seed takes it: a JSON object on its own line.
+fn row_line(kind: String, entity: String, body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+fn host_body(h: dna::Host) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", h.name);
+    b.string_field("provider", h.provider);
+    b.string_field("offers", h.offers);
+    b.end_object();
+    return b.result();
+}
+
+fn policy_body(role: String, provider: String, profile: String, backends: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("role", role);
+    b.string_field("provider", provider);
+    b.string_field("profile", profile);
+    b.string_field("backends", backends);
+    b.end_object();
+    return b.result();
+}
+
+fn allocation_body(organism: String, a: dna::Allocation) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("organism", organism);
+    b.string_field("role", a.role);
+    b.string_field("service", a.service);
+    b.string_field("project", a.project);
+    b.string_field("provider", a.provider);
+    b.string_field("host", a.host);
+    b.string_field("address", a.address);
+    b.begin_array_field("vault");
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
+// `habitat-place <backends>` on the habitat's genome: what was recorded, a
+// line each.
+fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> Answer {
+    let key = dna::allocation_key(root);
+    if len(key) == 0 { return fail("habitat-place: the habitat has no record identity yet"); }
+    if backends != "own" && backends != "operator" {
+        return fail("habitat-place: the backends are `own` or `operator`");
+    }
+    let j = dna::RecordJournal { repo: root, author: "habitat" };
+    let moved = j.refresh();
+    let provider = dna::ComposeProvider { };
+    let mut rows = "";
+    let mut out = "";
+
+    // the host the provider produces, with what it offers
+    let host = provider.offers("local");
+    let hb = host_body(host);
+    if latest_body(j, "habitat.host", host.name) != hb {
+        rows = rows + row_line("habitat.host", host.name, hb);
+    }
+    out = out + "host    " + host.name + " (" + host.provider + "; offers "
+        + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")\n";
+
+    // the policy: the `local` profile's preset, a provider per role
+    let mut policy = "";
+    let mut roles = dna::HABITAT_ROLES + " ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        let p = dna::profile_provider("local", backends, role);
+        if len(p) == 0 { continue; }
+        let pb = policy_body(role, p, "local", backends);
+        if latest_body(j, "habitat.policy", role) != pb {
+            rows = rows + row_line("habitat.policy", role, pb);
+        }
+        policy = policy + (if len(policy) > 0 { ", " } else { "" }) + role + " " + p;
+    }
+    out = out + "policy  local profile: " + policy + "\n";
+
+    // the habitat's own head and face, placed on the host
+    let organism = dna::record_scope(root);
+    let mut placed = "";
+    let mut own = "head face ";
+    while len(own) > 0 {
+        let sp = std::str::index_of(own, " ");
+        let role = own[0..sp];
+        own = own[(sp + 1)..len(own)];
+        let mut a = provider.allocate(role, key);
+        if len(a.why) > 0 { return fail("habitat-place: " + a.why); }
+        a.address = habitat_address(root, role);
+        let p = provider.place(a, host);
+        if !p.placed { return fail("habitat-place: the habitat's " + role + ": " + p.why); }
+        let ab = allocation_body(organism, p);
+        if latest_body(j, "habitat.allocated", key + "/" + role) != ab {
+            rows = rows + row_line("habitat.allocated", key + "/" + role, ab);
+        }
+        placed = placed + (if len(placed) > 0 { ", " } else { "" }) + role;
+    }
+    out = out + "placed  the habitat's " + placed + " on " + host.name + " (compose)\n";
+    if len(rows) > 0 && append_lines(root, rows, memory) < 0 {
+        return fail("habitat-place: the habitat's record refused the rows");
+    }
+    return answer(out);
+}
+
+// `habitat-apply <dir>`: a tenant's allocations kept at `dir`
+// (`allocations/<key>`) applied on this machine by the compose provider.
+fn habitat_apply_verb(dir: String) -> Answer {
+    if len(dir) == 0 { return fail("habitat-apply: the allocations' directory"); }
+    let provider = dna::ComposeProvider { };
+    let applied = provider.apply("local", dna::allocations_render(dir));
+    if !applied.ok { return fail(applied.why); }
+    return answer("up\n");
+}

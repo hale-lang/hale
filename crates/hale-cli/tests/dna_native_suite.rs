@@ -1140,6 +1140,7 @@ fn dna_fixture_set_is_complete() {
             "projection_fence_test.hl",
             "projectors_test.hl",
             "prompt_receipt_test.hl",
+            "provider_test.hl",
             "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
