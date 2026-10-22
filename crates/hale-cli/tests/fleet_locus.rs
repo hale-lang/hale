@@ -70,11 +70,11 @@ fn routes_are_derived_and_claims_are_judged_across_the_instances() {
         "the fixture's fleet composes and its claims hold:\n{out}"
     );
     assert!(
-        out.contains("route `t::OrderRequest` (svc.order.request, unix): orders -> gw-0, gw-1"),
+        out.contains("route `t::OrderRequest` (svc.order.request, unix): orders-0 -> gw-0, gw-1"),
         "the route is derived from the instances' artifacts and the binding, one subscriber per replica:\n{out}"
     );
     assert!(
-        out.contains("on host `box-a`: orders") && out.contains("2 replicas: gw-0, gw-1"),
+        out.contains("on host `box-a`: orders-0") && out.contains("2 replicas: gw-0, gw-1"),
         "{out}"
     );
     assert!(
@@ -113,8 +113,8 @@ fn routes_are_derived_and_claims_are_judged_across_the_instances() {
 #[test]
 fn a_mis_binding_is_refused() {
     let d = workspace("misbinding");
-    // a subscriber whose main does not bind the topic: it never leaves
-    // that process, so the route would be fiction
+    // a subscriber whose main does not bind the topic joins the route
+    // the fleet's binding configures
     variant(
         &d,
         "unbound",
@@ -124,7 +124,14 @@ fn a_mis_binding_is_refused() {
         )],
     );
     let (ok, out) = hale(&["fleet", "check", "unbound"], &d);
-    assert!(!ok && out.contains("instance `gw` subscribes subject `svc.order.request`, but its main binds no transport for it"), "{out}");
+    assert!(
+        ok && out.contains("subscribes svc.order.request as `t::OrderRequest`, in process"),
+        "{out}"
+    );
+    assert!(
+        out.contains("route `t::OrderRequest` (svc.order.request, unix): orders-0 -> gw-0, gw-1"),
+        "{out}"
+    );
     // a subject no instance publishes wires nothing
     variant(
         &d,
@@ -230,5 +237,130 @@ fn a_fleet_seed_holds_nothing_to_build() {
         !d.join("deploy/deploy.wasm").exists() && !d.join("deploy.wasm").exists(),
         "{out}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `hale fleet export` writes the rows `check` reads, as the plan
+/// document: the same instances, seeds, hosts, routes and claims.
+#[test]
+fn export_round_trips_what_check_reads() {
+    let d = workspace("export");
+    variant(
+        &d,
+        "spread",
+        &[("gw: replicas(2);", "gw: host(\"box-b\"), host(\"box-c\");")],
+    );
+    let (ok, checked) = hale(&["fleet", "check", "spread"], &d);
+    assert!(ok, "{checked}");
+    assert!(
+        checked.contains("on hosts `box-b`, `box-c`: gw-0, gw-1"),
+        "one instance per named host: {checked}"
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["fleet", "export", "spread"])
+        .current_dir(&d)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("hale");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(&text).expect("the export is JSON");
+    let insts: Vec<(String, String, String)> = v["instances"]
+        .as_array()
+        .expect("instances")
+        .iter()
+        .map(|i| {
+            (
+                i["id"].as_str().unwrap_or("").to_string(),
+                i["seed"].as_str().unwrap_or("").to_string(),
+                i["node"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        insts,
+        vec![
+            (
+                "orders-0".to_string(),
+                "../desk".to_string(),
+                "box-a".to_string()
+            ),
+            (
+                "gw-0".to_string(),
+                "../venue".to_string(),
+                "box-b".to_string()
+            ),
+            (
+                "gw-1".to_string(),
+                "../venue".to_string(),
+                "box-c".to_string()
+            ),
+        ],
+        "{text}"
+    );
+    let route = &v["routes"][0];
+    assert_eq!(route["id"], "t::OrderRequest", "{text}");
+    let ends = |k: &str| {
+        route[k]
+            .as_array()
+            .expect("ends")
+            .iter()
+            .map(|e| e["instance"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ends("publishers"), vec!["orders-0"], "{text}");
+    assert_eq!(ends("subscribers"), vec!["gw-0", "gw-1"], "{text}");
+    let claims: Vec<&str> = v["claims"]
+        .as_array()
+        .expect("claims")
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert_eq!(claims, vec!["one_desk", "gw_hears", "no_return"], "{text}");
+    for c in ["orders-0", "gw-0", "gw-1"] {
+        assert!(
+            checked.contains(c),
+            "check reads the same instances: {checked}"
+        );
+    }
+    // the same source exports the same bytes: what a signature covers
+    let again = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["fleet", "export", "spread"])
+        .current_dir(&d)
+        .env("HALE_SKIP_STALE_CHECK", "1")
+        .output()
+        .expect("hale");
+    assert_eq!(String::from_utf8_lossy(&again.stdout), text);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `--in <dir> --if-declared` is the verification step's spelling: the
+/// fleets a workspace elsewhere declares, and none declared is a success
+/// that says so.
+#[test]
+fn the_declared_fleets_are_checked_from_elsewhere() {
+    let d = workspace("declared");
+    std::fs::write(d.join("hale.toml"), "[deps]\n[fleets]\nprod = \"prod\"\n").unwrap();
+    let dir = d.to_string_lossy().to_string();
+    let (ok, out) = hale(
+        &["fleet", "check", "--in", &dir, "--if-declared"],
+        Path::new("/"),
+    );
+    assert!(
+        ok && out.contains("fleet `prod`") && out.contains("ok:"),
+        "{out}"
+    );
+    std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+    let (ok, out) = hale(
+        &["fleet", "check", "--in", &dir, "--if-declared"],
+        Path::new("/"),
+    );
+    assert!(ok && out.contains("declares no [fleets]"), "{out}");
+    let (ok, out) = hale(&["fleet", "check", "--in", &dir], Path::new("/"));
+    assert!(!ok && out.contains("declares no `[fleets]`"), "{out}");
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -14,13 +14,15 @@
 //! means a Hale program — a supervisor, a deploy gate — can verify
 //! the same sidecar with the language's own stdlib.
 //!
-//! Signatures cover the artifact's EXACT BYTES. That is sound
-//! because artifacts are byte-reproducible (schema 1.8: workspace-
-//! relative paths, canonicalized sources), and it is necessary
-//! because the in-band `artifact_digest` is FNV-1a — an integrity
-//! tripwire, not a trust anchor. Nothing here signs a digest.
+//! A signature covers a fleet's `deployment` rows: the EXACT BYTES
+//! `hale fleet export <seed>` writes (its instances, their seeds,
+//! hosts and component shape hashes, the derived routes, the claims).
+//! That is sound because the rows re-derive byte for byte from the same
+//! source, and a changed component moves its shape hash. Nothing here
+//! signs a digest.
 //!
-//! Sidecar format: `<artifact>.sig`, one line, `es256:<128 hex>`.
+//! Signature format: `fleet.sig` in the fleet seed's directory, one
+//! line, `es256:<128 hex>`.
 //! The prefix is the format's version; an unknown prefix is a
 //! refusal, not a skip.
 
@@ -85,8 +87,9 @@ impl Trust {
     ) -> Result<String, String> {
         let raw = std::fs::read_to_string(sig_path).map_err(|_| {
             format!(
-                "no signature at {} — trust roots are declared, so an \
-                 unsigned component is not admissible",
+                "no signature at {} — trust roots are declared, so \
+                 unsigned rows are not admissible (`hale fleet sign <seed> \
+                 --key <priv.pem>`)",
                 sig_path.display()
             )
         })?;
@@ -122,8 +125,9 @@ impl Trust {
         }
         Err(format!(
             "{}: signature does not verify under any of the {} trusted \
-             key(s) — either the artifact changed after signing or the \
-             signer is not in the trust set",
+             key(s) — either the rows changed after signing (a \
+             component, a route, a claim) or the signer is not in the \
+             trust set",
             sig_path.display(),
             self.keys.len()
         ))
@@ -147,12 +151,10 @@ pub fn keygen(prefix: &Path) -> Result<String, String> {
     key_id(&pkey)
 }
 
-/// `hale fleet sign <file> --key <priv.pem>` — detached sidecar
-/// over the file's exact bytes. Works on any file: a component
-/// artifact and a fleet artifact are both just bytes here.
-pub fn sign(file: &Path, key_path: &Path) -> Result<(PathBuf, String), String> {
-    let bytes = std::fs::read(file)
-        .map_err(|e| format!("read {}: {}", file.display(), e))?;
+/// `hale fleet sign <fleet seed> --key <priv.pem>` — a detached
+/// signature at `sig_path` over `bytes`, the fleet's `deployment` rows
+/// as `hale fleet export` writes them.
+pub fn sign(bytes: &[u8], sig_path: &Path, key_path: &Path) -> Result<String, String> {
     let pem = std::fs::read(key_path)
         .map_err(|e| format!("read key {}: {}", key_path.display(), e))?;
     // PKCS#8 first (what keygen writes), SEC1 as the fallback —
@@ -167,37 +169,22 @@ pub fn sign(file: &Path, key_path: &Path) -> Result<(PathBuf, String), String> {
         )
     })?;
 
-    let digest = sha256(&bytes);
+    let digest = sha256(bytes);
     let esig = EcdsaSig::sign(&digest, &ec).map_err(es)?;
     let mut raw = [0u8; 64];
     let (r, s) = (esig.r().to_vec(), esig.s().to_vec());
     raw[32 - r.len()..32].copy_from_slice(&r);
     raw[64 - s.len()..].copy_from_slice(&s);
 
-    let sig_path = sidecar(file);
     let mut line = String::with_capacity(6 + 128 + 1);
     line.push_str(SIG_PREFIX);
     for b in raw {
         let _ = write!(line, "{:02x}", b);
     }
     line.push('\n');
-    std::fs::write(&sig_path, line)
+    std::fs::write(sig_path, line)
         .map_err(|e| format!("write {}: {}", sig_path.display(), e))?;
-    Ok((sig_path, key_id(&pkey)?))
-}
-
-/// SHA-256 of a file's bytes, hex — `hale fleet attest` compares
-/// this against the plan's `binary_sha256`.
-pub fn sha256_file(p: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(p)
-        .map_err(|e| format!("read {}: {}", p.display(), e))?;
-    Ok(hex(&sha256(&bytes)))
-}
-
-pub fn sidecar(artifact: &Path) -> PathBuf {
-    let mut s = artifact.as_os_str().to_os_string();
-    s.push(".sig");
-    PathBuf::from(s)
+    key_id(&pkey)
 }
 
 /// First 8 bytes of SHA-256 over the SPKI DER, hex. Key identity,

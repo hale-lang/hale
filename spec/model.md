@@ -167,9 +167,9 @@ holds.
   graph` and the fleet tier *admit* an artifact by validating its
   JSON against the same rules; they do not reconstruct an
   `ApplicationModel`.
-- **No plan → model.** Fleet composition admits deployment plans
-  and reads artifacts; it does not elaborate a plan into an
-  application model. What it builds instead is instructive:
+- **No fleet → model.** Fleet composition derives a fleet seed's
+  `deployment` rows and reads artifacts; it does not elaborate a fleet
+  into an application model. What it builds instead is instructive:
   `ComponentModel`, a separate string-level structure reconstructed
   from artifact JSON — vertex names, `(from, to)` call pairs,
   name-level publish and subscribe relations, and the component's

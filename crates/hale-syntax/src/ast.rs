@@ -171,7 +171,8 @@ pub struct FleetDecl {
     pub written: Vec<(String, String, String)>,
 }
 
-/// One fleet placement entry: `oms: host("box-a");` or `gw: replicas(2);`.
+/// One fleet placement entry: `oms: host("box-a");`, one instance per
+/// host `gw: host("box-a"), host("box-b");`, or `gw: replicas(2);`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetPlacement {
     pub instance: Ident,
@@ -181,8 +182,9 @@ pub struct FleetPlacement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FleetPlacementSpec {
-    /// `host("name")`: the host the instance runs on, by name.
-    Host(String),
+    /// `host("a")` or `host("a"), host("b"), …`: one instance per host
+    /// named, on that host (`name-0` … for more than one).
+    Hosts(Vec<String>),
     /// `replicas(n)`: n instances of the one seed, `name-0` … `name-(n-1)`.
     Replicas(u64),
 }

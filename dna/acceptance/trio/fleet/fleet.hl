@@ -1,0 +1,30 @@
+// dna/acceptance/trio's deployment: the gateway on both edges, the api on
+// the first, the worker on the second, and the law over all three. The
+// DNA expresses it (`[dna] fleet = "production"`): each node runs the
+// instances placed on its host.
+import ".." as g;
+import "../api" as a;
+import "../worker" as w;
+
+fleet locus Production {
+    params {
+        gateway: g::TrioGateway;
+        api: a::TrioApi;
+        worker: w::TrioWorker;
+    }
+    placement {
+        gateway: host("edge-1"), host("edge-2");
+        api: host("edge-1");
+        worker: host("edge-2");
+    }
+    bindings {
+        g::Orders: unix("/tmp/trio-orders.sock");
+        a::Fulfil: unix("/tmp/trio-fulfil.sock");
+    }
+    claims {
+        the_gateway_takes_orders: require publishes(some gateway, topic g::Orders);
+        the_api_takes_the_orders: require subscribes(some api, topic g::Orders);
+        the_api_fulfils: require publishes(some api, topic a::Fulfil);
+        orders_pass_the_api: forbid reaches(gateway, worker) avoiding api;
+    }
+}

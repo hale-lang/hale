@@ -1,12 +1,15 @@
 //! GH #1477: `hale deploy render <path> --backend compose|kubernetes
-//! [--env <name>] [--out <dir>]` — a program's own placement elaborated
-//! into a platform description.
+//! [--env <name>] [--placement <file>] [--out <dir>]` — a program's own
+//! placement elaborated into a platform description.
 //!
 //! A pure function of what the program already says: its checked topology
 //! (`--dump-topology`: scrape endpoint, bindings), its `main` locus's
-//! `std::observe::Probes` param, the fleet plan when the path is one
-//! (instances, routes), and `hale.toml`'s `[environments.<name>]` (the
-//! backend, the environment values). Nothing is invented: a program that
+//! `std::observe::Probes` param, a fleet seed's `deployment` rows when the
+//! path is one (instances, their placement defaults, the derived routes),
+//! the allocation input that overrides those defaults per instance
+//! (`--placement`), and `hale.toml`'s `[environments.<name>]` (the
+//! backend, the environment values). A fleet renders one description per
+//! host, since each host is applied on its own. Nothing is invented: a program that
 //! declares no probes renders no probe section. It never builds, applies
 //! or contacts anything, and it renders only the programs the caller names
 //! (an organism's own), never a heart's.
@@ -47,7 +50,23 @@ pub(crate) struct Inst {
     pub prog: usize,
 }
 
+/// A route of the fleet as the render declares it: its endpoints by
+/// instance and the host each runs on, so a route between two hosts'
+/// projects is named in both.
+#[derive(Debug, Clone)]
+pub(crate) struct RouteDecl {
+    pub id: String,
+    pub subject: String,
+    pub transport: String,
+    pub publishers: Vec<(String, String)>,
+    pub subscribers: Vec<(String, String)>,
+}
+
 pub(crate) struct Model {
+    /// The host this description is for (a fleet's), `None` for a seed.
+    pub host: Option<String>,
+    /// The fleet's routes that touch this host.
+    pub routes: Vec<RouteDecl>,
     /// Where the binaries are, for the mount: the seed's or the plan's directory.
     pub base: PathBuf,
     pub env_name: Option<String>,
@@ -61,13 +80,18 @@ pub(crate) struct Model {
 }
 
 const USAGE: &str = "\
-hale deploy render <path> --backend compose|kubernetes [--env <name>] [--out <dir>]
+hale deploy render <path> --backend compose|kubernetes [--env <name>] [--placement <file>] [--out <dir>]
 
-  <path>: a seed (a directory or .hl file), or a fleet plan (.json)
+  <path>: a seed (a directory or .hl file), or a fleet seed (one declaring
+    `fleet locus`), which renders one description per host
   --backend: compose | kubernetes; else `backend` of [environments.<name>]
   --env: the [environments.<name>] of the nearest hale.toml: its
     `backend` and its `[environments.<name>.env]` values
-  --out: write compose.yaml / kubernetes.yaml into <dir>; else stdout
+  --placement: a fleet's allocation rows, a JSON array of
+    {\"instance\", \"host\"} (with \"provider\" and \"role\" when the habitat
+    exports them): each instance's host, over its placement default
+  --out: write compose.yaml / kubernetes.yaml into <dir> (a fleet's into
+    <dir>/<host>/); else stdout, a fleet's hosts as YAML documents
 
 A pure function of the checked program: it never builds or deploys, and it
 renders no probe, scrape or scale section the program does not declare.
@@ -83,7 +107,7 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let mut path: Option<&str> = None;
-    let (mut backend, mut env, mut out) = (None, None, None);
+    let (mut backend, mut env, mut out, mut placement) = (None, None, None, None);
     let mut i = 1;
     while i < rest.len() {
         let a = rest[i].as_str();
@@ -112,6 +136,10 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
                 Some(v) => out = Some(PathBuf::from(v)),
                 None => return ExitCode::from(2),
             },
+            "--placement" => match val("--placement") {
+                Some(v) => placement = Some(PathBuf::from(v)),
+                None => return ExitCode::from(2),
+            },
             _ if a.starts_with('-') => {
                 eprintln!("unknown flag `{a}`\n{USAGE}");
                 return ExitCode::from(2);
@@ -129,7 +157,7 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let mut notes = Vec::new();
-    let (model, env_backend) = match gather(Path::new(path), env.as_deref(), &mut notes) {
+    let (models, env_backend) = match gather(Path::new(path), env.as_deref(), placement.as_deref(), &mut notes) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{e}");
@@ -137,16 +165,9 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
         }
     };
     let backend = backend.or(env_backend);
-    let dest = match &out {
-        Some(d) => d.clone(),
-        None => PathBuf::from("."),
-    };
-    let (file, text) = match backend.as_deref() {
-        Some("compose") => (
-            "compose.yaml",
-            Ok(compose::render(&model, &dest, &mut notes)),
-        ),
-        Some("kubernetes") => ("kubernetes.yaml", kubernetes::render(&model, &mut notes)),
+    let file = match backend.as_deref() {
+        Some("compose") => "compose.yaml",
+        Some("kubernetes") => "kubernetes.yaml",
         Some(other) => {
             eprintln!("unknown backend `{other}`: compose or kubernetes");
             return ExitCode::from(2);
@@ -156,27 +177,52 @@ pub(crate) fn run_deploy(rest: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let text = match text {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
+    let mut rendered: Vec<(Option<String>, String)> = Vec::new();
+    for model in &models {
+        // a fleet's host renders into its own directory
+        let dest = match (&out, &model.host) {
+            (Some(d), Some(h)) => d.join(h),
+            (Some(d), None) => d.clone(),
+            (None, _) => PathBuf::from("."),
+        };
+        let text = if file == "compose.yaml" {
+            Ok(compose::render(model, &dest, &mut notes))
+        } else {
+            kubernetes::render(model, &mut notes)
+        };
+        match text {
+            Ok(t) => rendered.push((model.host.clone(), t)),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
         }
-    };
+    }
     for n in &notes {
         eprintln!("note: {n}");
     }
     match out {
         Some(d) => {
-            if let Err(e) =
-                std::fs::create_dir_all(&d).and_then(|_| std::fs::write(d.join(file), &text))
-            {
-                eprintln!("write {}: {e}", d.join(file).display());
-                return ExitCode::from(1);
+            for (host, text) in &rendered {
+                let dir = match host {
+                    Some(h) => d.join(h),
+                    None => d.clone(),
+                };
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(file), text)) {
+                    eprintln!("write {}: {e}", dir.join(file).display());
+                    return ExitCode::from(1);
+                }
+                eprintln!("rendered: {}", dir.join(file).display());
             }
-            eprintln!("rendered: {}", d.join(file).display());
         }
-        None => print!("{text}"),
+        None => {
+            for (i, (_, text)) in rendered.iter().enumerate() {
+                if i > 0 {
+                    println!("---");
+                }
+                print!("{text}");
+            }
+        }
     }
     ExitCode::SUCCESS
 }
@@ -208,6 +254,16 @@ pub(crate) fn relative(from: &Path, p: &Path) -> String {
     }
 }
 
+/// The routes of a fleet that touch a host, as lines of declared
+/// endpoints (`instance@host`), for a description's header.
+pub(crate) fn route_lines(m: &Model) -> Vec<String> {
+    let ends = |v: &[(String, String)]| v.iter().map(|(i, h)| format!("{i}@{h}")).collect::<Vec<_>>().join(", ");
+    m.routes
+        .iter()
+        .map(|r| format!("route {} ({}, {}): {} -> {}", r.id, r.subject, r.transport, ends(&r.publishers), ends(&r.subscribers)))
+        .collect()
+}
+
 pub(crate) fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
@@ -233,12 +289,69 @@ pub(crate) fn dns(s: &str) -> String {
     o
 }
 
+/// One row of the allocation input: the host an instance runs on. The
+/// habitat's allocation rows export `provider` and `role` beside them;
+/// the render places by host alone.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Allocation {
+    instance: String,
+    host: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    provider: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    role: Option<String>,
+}
+
+fn read_placement(p: &Path) -> Result<BTreeMap<String, String>, String> {
+    let raw = std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))?;
+    let rows: Vec<Allocation> = serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", p.display()))?;
+    let mut out = BTreeMap::new();
+    for r in rows {
+        if !hale_types::fleet::host_name_ok(&r.host) {
+            return Err(format!(
+                "{}: instance `{}` is allocated to `{}`, which names no host: a host is one name of \
+                 letters, digits, `.`, `_` and `-`, never a path (each host renders into a directory \
+                 of its name)",
+                p.display(),
+                r.instance,
+                r.host
+            ));
+        }
+        if out.insert(r.instance.clone(), r.host).is_some() {
+            return Err(format!("{}: instance `{}` is allocated twice", p.display(), r.instance));
+        }
+    }
+    Ok(out)
+}
+
+/// The deepest directory holding every path.
+fn common_dir(paths: &[PathBuf]) -> PathBuf {
+    let abs: Vec<PathBuf> = paths.iter().map(|p| p.canonicalize().unwrap_or_else(|_| p.clone())).collect();
+    let mut common: Vec<std::path::Component> = match abs.first() {
+        Some(p) => p.components().collect(),
+        None => return PathBuf::from("."),
+    };
+    for p in &abs[1..] {
+        let c: Vec<_> = p.components().collect();
+        let n = common.iter().zip(&c).take_while(|(a, b)| a == b).count();
+        common.truncate(n);
+    }
+    common.iter().collect()
+}
+
 fn gather(
     path: &Path,
     env: Option<&str>,
+    placement: Option<&Path>,
     notes: &mut Vec<String>,
-) -> Result<(Model, Option<String>), String> {
-    let is_plan = path.extension().and_then(|e| e.to_str()) == Some("json");
+) -> Result<(Vec<Model>, Option<String>), String> {
+    let fleet = crate::deployment::is_fleet_seed(path);
+    if placement.is_some() && !fleet {
+        return Err("--placement places a fleet's instances: the path is no fleet seed".to_string());
+    }
     let anchor = if path.is_dir() {
         path.to_path_buf()
     } else {
@@ -269,72 +382,19 @@ fn gather(
         env_vals = spec.env.clone();
         env_backend = spec.backend.clone();
     }
-    let mut progs: Vec<Prog> = Vec::new();
-    let mut insts: Vec<Inst> = Vec::new();
-    let mut edges: Vec<(String, String)> = Vec::new();
-    let base;
-    if is_plan {
-        let plan = crate::fleet::read_plan(path).map_err(|e| e.join("\n"))?;
-        base = anchor.clone();
-        let mut by_key: BTreeMap<String, usize> = BTreeMap::new();
-        for inst in &plan.instances {
-            let key = inst.seed.clone().unwrap_or_else(|| inst.artifact.clone());
-            let idx = match by_key.get(&key) {
-                Some(i) => *i,
-                None => {
-                    let p = if let Some(seed) = &inst.seed {
-                        let dir = anchor.join(seed);
-                        seed_prog(&dir, env, notes)?
-                    } else {
-                        let facts = topology_facts(&anchor.join(&inst.artifact), true)?;
-                        notes.push(format!(
-                            "{}: an artifact carries no Probes param, so no probe section is rendered for it",
-                            inst.id
-                        ));
-                        Prog {
-                            name: inst.id.clone(),
-                            probes_port: None,
-                            scrape: facts,
-                        }
-                    };
-                    progs.push(p);
-                    by_key.insert(key, progs.len() - 1);
-                    progs.len() - 1
-                }
-            };
-            let binary = match (&inst.binary, &inst.seed) {
-                (Some(b), _) => Some(b.clone()),
-                (None, Some(seed)) => Some(format!(
-                    "{}/{}",
-                    seed.trim_end_matches('/'),
-                    dir_name(&anchor.join(seed))
-                )),
-                _ => None,
-            };
-            insts.push(Inst {
-                id: inst.id.clone(),
-                binary,
-                prog: idx,
-            });
-        }
-        for r in &plan.routes {
-            for p in &r.publishers {
-                for s in &r.subscribers {
-                    if p.instance != s.instance {
-                        edges.push((p.instance.clone(), s.instance.clone()));
-                    }
-                }
-            }
-        }
-    } else {
+    let source = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !fleet {
         if path.is_dir() && !has_hl(path) {
             return Err(format!(
-                "{}: no .hl source here. `render` takes the program of an organism's own: a seed, or a fleet plan \
+                "{}: no .hl source here. `render` takes the program of an organism's own: a seed, or a fleet seed \
                  naming its seeds; a repository's heart is deployed by its owner, never from here",
                 path.display()
             ));
         }
-        base = if path.is_dir() {
+        let base = if path.is_dir() {
             path.to_path_buf()
         } else {
             anchor.clone()
@@ -345,38 +405,147 @@ fn gather(
         } else {
             path.file_stem().unwrap().to_string_lossy().into_owned()
         });
-        insts.push(Inst {
-            id: p.name.clone(),
-            binary,
-            prog: 0,
-        });
-        progs.push(p);
-    }
-    // a workload with several instances is named for its program, one alone for its instance
-    for (i, p) in progs.iter_mut().enumerate() {
-        let mine: Vec<&Inst> = insts.iter().filter(|x| x.prog == i).collect();
-        if mine.len() == 1 {
-            p.name = mine[0].id.clone();
-        }
-    }
-    insts.sort_by(|a, b| a.id.cmp(&b.id));
-    edges.sort();
-    edges.dedup();
-    Ok((
-        Model {
+        let insts = vec![Inst { id: p.name.clone(), binary, prog: 0 }];
+        let model = Model {
+            host: None,
+            routes: Vec::new(),
             base,
             env_name: env.map(String::from),
             env: env_vals,
-            progs,
+            progs: vec![p],
+            insts,
+            edges: Vec::new(),
+            source,
+        };
+        return Ok((vec![model], env_backend));
+    }
+
+    // A fleet seed: its rows, each instance on the host its allocation
+    // names, else its placement default.
+    let rows = crate::deployment::derive_deployment(path).map_err(|e| e.join("\n"))?;
+    let allocated = match placement {
+        Some(p) => read_placement(p)?,
+        None => BTreeMap::new(),
+    };
+    for id in allocated.keys() {
+        if !rows.instances.iter().any(|i| &i.id == id) {
+            return Err(format!("--placement allocates `{id}`, which fleet `{}` does not deploy", rows.fleet));
+        }
+    }
+    let host_of = |id: &str, default: &Option<String>| -> String {
+        allocated
+            .get(id)
+            .cloned()
+            .or_else(|| default.clone())
+            .unwrap_or_else(|| "local".to_string())
+    };
+    let unplaced: Vec<&str> = rows
+        .instances
+        .iter()
+        .filter(|i| i.host.is_none() && !allocated.contains_key(&i.id))
+        .map(|i| i.id.as_str())
+        .collect();
+    if !unplaced.is_empty() {
+        notes.push(format!(
+            "{}: no host in the source or the allocation, rendered for the host `local`",
+            unplaced.join(", ")
+        ));
+    }
+    let mut dirs: Vec<PathBuf> = vec![rows.root.clone()];
+    dirs.extend(rows.components.iter().map(|c| c.seed.clone()));
+    let base = common_dir(&dirs);
+    let mut progs: Vec<Prog> = Vec::new();
+    for c in &rows.components {
+        let mut p = seed_prog(&c.seed, env, notes)?;
+        p.name = c.param.clone();
+        progs.push(p);
+    }
+    let mut placed: Vec<(String, Inst)> = Vec::new();
+    for i in &rows.instances {
+        let Some(pi) = rows.components.iter().position(|c| c.param == i.component) else { continue };
+        let seed = &rows.components[pi].seed;
+        let binary = Some(format!("{}/{}", relative(&base, seed), dir_name(seed)));
+        placed.push((host_of(&i.id, &i.host), Inst { id: i.id.clone(), binary, prog: pi }));
+    }
+    let host_by_id: BTreeMap<String, String> = placed.iter().map(|(h, i)| (i.id.clone(), h.clone())).collect();
+    let routes: Vec<RouteDecl> = rows
+        .routes
+        .iter()
+        .map(|r| {
+            let ends = |v: &[(String, String)]| {
+                v.iter().map(|(i, _)| (i.clone(), host_by_id.get(i).cloned().unwrap_or_default())).collect::<Vec<_>>()
+            };
+            RouteDecl {
+                id: r.id.clone(),
+                subject: r.subject.clone(),
+                transport: r.transport.clone(),
+                publishers: ends(&r.publishers),
+                subscribers: ends(&r.subscribers),
+            }
+        })
+        .collect();
+    let mut hosts: Vec<String> = placed.iter().map(|(h, _)| h.clone()).collect();
+    hosts.sort();
+    hosts.dedup();
+    // each host renders into a directory of its name: never a path
+    if let Some(bad) = hosts.iter().find(|h| !hale_types::fleet::host_name_ok(h)) {
+        return Err(format!("`{bad}` names no host: a host is one name, never a path"));
+    }
+    let mut models = Vec::new();
+    for h in hosts {
+        // the programs with an instance on this host, re-indexed
+        let mine: Vec<&Inst> = placed.iter().filter(|(x, _)| *x == h).map(|(_, i)| i).collect();
+        let mut keep: Vec<usize> = mine.iter().map(|i| i.prog).collect();
+        keep.sort();
+        keep.dedup();
+        let mut hprogs: Vec<Prog> = keep.iter().map(|k| progs[*k].clone()).collect();
+        let mut insts: Vec<Inst> = mine
+            .iter()
+            .map(|i| Inst {
+                id: i.id.clone(),
+                binary: i.binary.clone(),
+                prog: keep.iter().position(|k| *k == i.prog).unwrap_or(0),
+            })
+            .collect();
+        // a workload with several instances is named for its program, one alone for its instance
+        for (pi, p) in hprogs.iter_mut().enumerate() {
+            let only: Vec<&Inst> = insts.iter().filter(|x| x.prog == pi).collect();
+            if only.len() == 1 {
+                p.name = only[0].id.clone();
+            }
+        }
+        insts.sort_by(|a, b| a.id.cmp(&b.id));
+        // in-host edges order the services; a route that leaves the host is declared
+        let mut edges: Vec<(String, String)> = Vec::new();
+        for r in &routes {
+            for (p, ph) in &r.publishers {
+                for (sub, sh) in &r.subscribers {
+                    if *ph == h && *sh == h && p != sub {
+                        edges.push((p.clone(), sub.clone()));
+                    }
+                }
+            }
+        }
+        edges.sort();
+        edges.dedup();
+        let touching: Vec<RouteDecl> = routes
+            .iter()
+            .filter(|r| r.publishers.iter().chain(&r.subscribers).any(|(_, x)| *x == h))
+            .cloned()
+            .collect();
+        models.push(Model {
+            host: Some(h),
+            routes: touching,
+            base: base.clone(),
+            env_name: env.map(String::from),
+            env: env_vals.clone(),
+            progs: hprogs,
             insts,
             edges,
-            source: path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        },
-        env_backend,
-    ))
+            source: source.clone(),
+        });
+    }
+    Ok((models, env_backend))
 }
 
 fn dir_name(p: &Path) -> String {
@@ -437,7 +606,7 @@ fn seed_prog(seed: &Path, env: Option<&str>, notes: &mut Vec<String>) -> Result<
             String::from_utf8_lossy(&r.stderr).trim()
         ));
     }
-    let scrape = topology_facts(&tmp, false);
+    let scrape = topology_facts(&tmp);
     note_local_bindings(&tmp, &name, notes);
     let _ = std::fs::remove_file(&tmp);
     let scrape = scrape?;
@@ -478,7 +647,7 @@ fn note_local_bindings(artifact: &Path, name: &str, notes: &mut Vec<String>) {
 
 /// The scrape endpoint of an artifact's `observe` rows (schema 1.21), when
 /// the source gave a literal port.
-fn topology_facts(artifact: &Path, _plan: bool) -> Result<Option<Scrape>, String> {
+fn topology_facts(artifact: &Path) -> Result<Option<Scrape>, String> {
     let raw = std::fs::read_to_string(artifact)
         .map_err(|e| format!("read {}: {e}", artifact.display()))?;
     let v: serde_json::Value =

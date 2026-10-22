@@ -8,7 +8,7 @@
 // toolchain cache and execs the one the verb belongs to, with the
 // project resolved:
 //
-//   <program> <verb> <root> <seed> <fleet> <plan> [args…]
+//   <program> <verb> <root> <seed> <fleet> <fleet seed> [args…]
 //
 // with HALE_BIN (the toolchain) and HALE_DNA_TOOLCHAIN (its version) in
 // the environment. It decides nothing. A one-shot verb never publishes:

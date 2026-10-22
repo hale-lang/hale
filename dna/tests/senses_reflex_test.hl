@@ -204,15 +204,21 @@ main locus App {
             0,
             "the store restarted on this run's ports: " + reread.stderr,
         );
-        let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
-        std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
+        // the fleet: one instance of the app's main, on the edge
+        let src = text_of(self.app + "/main.hl");
+        let rest = src[(std::str::index_of(src, "main locus ") + 11)..len(src)];
+        let main_name = rest[0..std::str::index_of(rest, " ")];
+        let fleet = "import \"..\" as app;\n\nfleet locus Production {\n    params {\n        api: app::"
+            + main_name + ";\n    }\n    placement {\n        api: host(\"edge-1\");\n    }\n}\n";
+        std::io::fs::mkdir(self.app + "/fleet") or discard;
+        std::io::fs::write_file(self.app + "/fleet/fleet.hl", fleet) or discard;
         // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
         let manifest = std::str::replace(
             text_of(self.app + "/hale.toml"),
             "\n[dna]\n",
             "\n[dna]\nfleet = \"production\"\n",
         )
-            + "\n[fleets]\nproduction = \"fleet.plan.json\"\n";
+            + "\n[fleets]\nproduction = \"fleet\"\n";
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";

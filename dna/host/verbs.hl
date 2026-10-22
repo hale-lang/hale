@@ -1160,13 +1160,18 @@ fn pressure_list(p: Projection) -> Answer {
 
 // ---- fleet ----------------------------------------------------------
 
-fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
+fn fleet_list(p: Projection, fleet: String, fleet_rel: String) -> Answer {
     if len(fleet) == 0 {
         return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here");
     }
-    let plan = std::io::fs::read_file(p.root + "/" + plan_rel) or "";
-    if len(plan) == 0 { return fail("no plan at " + plan_rel); }
-    let mut out = "fleet " + fleet + " (" + plan_rel + ")\n";
+    let plan = fleet_export(p.root, fleet_rel);
+    if len(plan) == 0 {
+        return fail(
+            "the fleet seed " + fleet_rel + " does not derive (`hale fleet check " + fleet_rel
+                + "`)",
+        );
+    }
+    let mut out = "fleet " + fleet + " (" + fleet_rel + ")\n";
     let d = p.last_of("fleet.deploy");
     if d.seq >= 0 {
         let seed = std::json::find_string_field(d.body, "seed");

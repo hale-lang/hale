@@ -771,7 +771,7 @@ Counts **distinct declared loci** on the chosen end of the topic.
 actual count and names the participating loci. These are counts
 over declarations, not a runtime census of replicated instances —
 exact instance counts are a fleet claim
-(`count_publisher_instances` in a fleet plan; see
+(`count publishers` in a `fleet locus`; see
 [Checking the whole deployment](./services/multi-binary.md#checking-the-whole-deployment)).
 
 ## `cover keys` — every key has exactly one recipient

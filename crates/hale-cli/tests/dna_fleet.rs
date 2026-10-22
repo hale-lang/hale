@@ -196,7 +196,7 @@ impl Fleet {
     }
 }
 
-/// An application with its DNA, a plan of two API instances on two
+/// An application with its DNA, a fleet of two API instances on two
 /// nodes, an origin, two node clones, and one Mutation waiting for its
 /// Review; then the organization, the two nodes, and the base deployed.
 fn bring_up(tag: &str) -> Fleet {
@@ -225,19 +225,25 @@ fn bring_up(tag: &str) -> Fleet {
     let (ok, out) = (made.status.success(), format!("{}{}", String::from_utf8_lossy(&made.stdout), String::from_utf8_lossy(&made.stderr)));
     assert!(ok, "{out}");
     let app = f.app.clone();
+    // the fleet: two instances of the app's main, one on each edge
+    let main_src = std::fs::read_to_string(app.join("main.hl")).unwrap_or_default();
+    let main = main_src
+        .lines()
+        .find_map(|l| l.strip_prefix("main locus ").map(|r| r.split_whitespace().next().unwrap_or("").to_string()))
+        .expect("the grafted app has a main locus");
+    std::fs::create_dir_all(app.join("fleet")).unwrap();
     std::fs::write(
-        app.join("fleet.plan.json"),
-        r#"{"schema":"1.2","name":"production","instances":[
-  {"id":"api-0","seed":".","node":"edge-1","labels":["api"]},
-  {"id":"api-1","seed":".","node":"edge-2","labels":["api"]}]}
-"#,
+        app.join("fleet/fleet.hl"),
+        format!(
+            "import \"..\" as app;\n\nfleet locus Production {{\n    params {{\n        api: app::{main};\n    }}\n    placement {{\n        api: host(\"edge-1\"), host(\"edge-2\");\n    }}\n}}\n"
+        ),
     )
     .unwrap();
     // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
     let manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
     assert!(manifest.contains("\n[dna]\n"), "init pins the record in [dna]:\n{manifest}");
     let mut manifest = manifest.replacen("\n[dna]\n", "\n[dna]\nfleet = \"production\"\n", 1);
-    manifest.push_str("\n[fleets]\nproduction = \"fleet.plan.json\"\n");
+    manifest.push_str("\n[fleets]\nproduction = \"fleet\"\n");
     std::fs::write(app.join("hale.toml"), manifest).unwrap();
     git(&["init", "-q", "--bare", "-b", "main", &f.bare.to_string_lossy()], &d);
     git(&["config", "user.name", "riley"], &app);

@@ -129,8 +129,8 @@ pub struct DnaManifest {
     pub migrations: Option<toml::Table>,
 }
 
-/// GH #566 F5: the fleet the DNA expresses — its name and plan path
-/// (relative to the manifest), when `[dna] fleet` names one.
+/// GH #566 F5: the fleet the DNA expresses — its name and fleet seed
+/// path, when `[dna] fleet` names one.
 pub fn read_dna_fleet(manifest: &Path) -> Result<Option<(String, PathBuf)>, String> {
     if !manifest.exists() {
         return Ok(None);
@@ -138,7 +138,8 @@ pub fn read_dna_fleet(manifest: &Path) -> Result<Option<(String, PathBuf)>, Stri
     let src = fs::read_to_string(manifest).map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
     let Some(name) = m.dna.fleet else { return Ok(None) };
-    let Some(rel) = m.fleets.get(&name) else {
+    let fleets = seeds_only(manifest, m.fleets)?;
+    let Some(rel) = fleets.get(&name) else {
         return Err(format!("{}: `[dna] fleet = \"{name}\"` names no entry of `[fleets]`", manifest.display()));
     };
     let base = manifest.parent().unwrap_or(Path::new("."));
@@ -739,7 +740,7 @@ pub fn read_claims_config(
     Ok((m.environments, m.claims.base))
 }
 
-/// GH #408 Phase 5: the `[fleets]` table — name → plan path,
+/// GH #408 Phase 5: the `[fleets]` table — name → fleet seed path,
 /// relative to the manifest.
 pub fn read_fleets(
     manifest: &Path,
@@ -751,7 +752,21 @@ pub fn read_fleets(
         .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src)
         .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
-    Ok(m.fleets)
+    seeds_only(manifest, m.fleets)
+}
+
+/// A `[fleets]` entry names a fleet seed: a plan JSON is not an input.
+fn seeds_only(manifest: &Path, fleets: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    for (name, rel) in &fleets {
+        if rel.ends_with(".json") {
+            return Err(format!(
+                "{}: `[fleets] {name} = \"{rel}\"` names a plan; a fleet is a seed declaring \
+                 `fleet locus` (a plan JSON is only an export: `hale fleet export <seed>`)",
+                manifest.display()
+            ));
+        }
+    }
+    Ok(fleets)
 }
 
 /// GH #408 Phase 7: the `[fleet_trust]` key paths, resolved

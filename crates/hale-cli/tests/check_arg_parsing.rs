@@ -250,7 +250,7 @@ fn every_subcommand_answers_help() {
 /// Every `hale dna` verb `dna::run` dispatches.
 const DNA_VERBS: &[&str] = &[
     "init", "new", "upgrade", "memory", "nerves", "senses", "run", "dev",
-    "plan-of", "status", "task", "retire", "effect", "show", "route", "fill",
+    "fleet-of", "status", "task", "retire", "effect", "show", "route", "fill",
     "history", "body", "secret", "secrets", "application", "codebase", "schedule",
     "receipt", "connect", "practice", "disconnect", "handoff", "profile",
     "sync", "candidates", "ledger", "board", "report", "pressure", "concern",

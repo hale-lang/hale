@@ -218,7 +218,11 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
                 let FleetPlacement { instance, spec, span: _ } = p;
                 name(instance, f);
                 match spec {
-                    FleetPlacementSpec::Host(h) => text(h, f),
+                    FleetPlacementSpec::Hosts(hs) => {
+                        for h in hs {
+                            text(h, f);
+                        }
+                    }
                     FleetPlacementSpec::Replicas(_) => {}
                 }
             }

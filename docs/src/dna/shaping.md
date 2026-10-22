@@ -235,7 +235,7 @@ whatever the plan called it.
 | `docs`, `refactor`, `feature`, `application` | a change to the application | the Leader when the class is in the grant and the change is under its magnitude; else the Board |
 | `organization` | a change to `dna/org`: a position, a route, the grant | the Board |
 | `constitutional`, `process-policy` | classes the Leader's plan may name | the Board |
-| `topology` | a change to the fleet's shape; a candidate that names a plan or the manifest is re-classed `topology` (`mutation.topology`) | the Board |
+| `topology` | a change to the fleet's shape; a candidate that names a fleet seed's source or the manifest is re-classed `topology` (`mutation.topology`) | the Board |
 
 With the generated grant, an `application` change escalates to the
 Board. Widen it to `"refactor docs application"` in a reviewed commit

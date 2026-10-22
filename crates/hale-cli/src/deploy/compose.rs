@@ -33,6 +33,10 @@ pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String 
     if let Some(e) = &m.env_name {
         let _ = writeln!(o, "# environment: {e}");
     }
+    if let Some(h) = &m.host {
+        let _ = writeln!(o, "# host: {h} (one project per host; each is applied on its own)");
+        let _ = writeln!(o, "name: {}", q(&super::dns(h)));
+    }
     let _ = writeln!(
         o,
         "# Build each program first (`hale build <seed>`); a service runs its built binary from"
@@ -57,7 +61,7 @@ pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String 
                 let _ = writeln!(o, "    command: [{}]", q(&format!("/app/{b}")));
             }
             None => notes.push(format!(
-                "{}: no binary named (a plan row's `binary`): no command rendered",
+                "{}: no binary named: no command rendered",
                 inst.id
             )),
         }
@@ -79,6 +83,7 @@ pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String 
         if let Some(port) = p.probes_port {
             o.push_str(&healthcheck(port));
         }
+        // a route across hosts is no service dependency: it is declared below
         let deps: Vec<&str> = m
             .edges
             .iter()
@@ -101,6 +106,20 @@ pub(super) fn render(m: &Model, dest: &Path, notes: &mut Vec<String>) -> String 
                 };
                 let _ = writeln!(o, "      {d}:\n        condition: {cond}");
             }
+        }
+    }
+    // The fleet's routes that touch this host, each endpoint as
+    // `instance@host`: a route between two hosts' projects is declared in
+    // both, never wired by compose.
+    if !m.routes.is_empty() {
+        let _ = writeln!(o, "x-hale-routes:");
+        for r in &m.routes {
+            let ends = |v: &[(String, String)]| v.iter().map(|(i, h)| q(&format!("{i}@{h}"))).collect::<Vec<_>>().join(", ");
+            let _ = writeln!(o, "  {}:", q(&r.id));
+            let _ = writeln!(o, "    subject: {}", q(&r.subject));
+            let _ = writeln!(o, "    transport: {}", q(&r.transport));
+            let _ = writeln!(o, "    publishers: [{}]", ends(&r.publishers));
+            let _ = writeln!(o, "    subscribers: [{}]", ends(&r.subscribers));
         }
     }
     o

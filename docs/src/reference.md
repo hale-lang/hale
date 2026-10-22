@@ -55,7 +55,7 @@ diagnostic's meaning, go there.
 | `hale bench` | run `*_bench.hl` (ns/op, allocs/op) |
 | `hale doc` | API reference from `///` comments |
 | `hale fleet` | compose topology artifacts across binaries: `check` / `dump` / `sign` / `attest` / `keygen` |
-| `hale node <name>` | express a fleet plan's instances on one machine, from the record |
+| `hale node <name>` | express a fleet's instances on one host, from the record |
 | `hale replay <rec> <file \| dir>` | re-run a recording; `--diff` reports the first divergence and per-category coverage — see [Record & replay](./systems/replay.md) |
 | `hale iris [port]` | the embedded observer; `hale run --observe` starts a session beside a run — see [Iris](./systems/iris.md) |
 | `hale dna <verb>` | attach and operate an organization: `init`, `new`, `run`, `task create`, `status`, `ledger`, `body` and the rest — see the [DNA reference](./dna/reference.md) |

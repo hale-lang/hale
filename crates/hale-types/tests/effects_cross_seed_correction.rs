@@ -232,8 +232,8 @@ fn host() {
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        546,
-        552,
+        548,
+        554,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -311,6 +311,9 @@ fn host() {
         fence_stop  does={syscall,block,alloc}
         fill_check  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        fleet_export  does={syscall,block,env,alloc}
+        fleet_export_at  does={syscall,block,env,alloc}
+        fleet_rel_of  does={syscall,block,env,alloc}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
         genome_candidate  does={syscall,block,alloc}
@@ -359,7 +362,6 @@ fn host() {
         owners_here  does={syscall,env,alloc}
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
-        plan_rel_of  does={syscall,block,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}

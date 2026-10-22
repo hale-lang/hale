@@ -41,7 +41,7 @@ Claim [7..8] claim `iso`: the forbidden destination `B` is declared here
 Claim [372..375] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.notify)-> `Email::notify`
 Claim [237..256] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
 Claim [56..61] claim `iso`: the forbidden destination `Email` is declared here
---- crates/hale-cli/tests/fleet_cross_tier.rs#4 ---
+--- crates/hale-cli/tests/fleet_cross_tier.rs#3 ---
 Claim [161..173] claim `no_llm` names effect class `llm`, which is never declared. Add `effect llm;` at the top level.
 --- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0 ---
 Claim [104..117] group member `MissingWorker` names no declared locus or fn. Unknown names are errors, never empty sets.

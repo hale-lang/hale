@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use super::{dns, q, Model, LIVENESS_PATH, READINESS_PATH};
+use super::{dns, q, route_lines, Model, LIVENESS_PATH, READINESS_PATH};
 
 pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> Result<String, String> {
     // names are normalized to DNS labels, which is not injective: refuse a clash
@@ -36,6 +36,12 @@ pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> Result<String, Strin
     );
     if let Some(e) = &m.env_name {
         let _ = writeln!(o, "# environment: {e}");
+    }
+    if let Some(h) = &m.host {
+        let _ = writeln!(o, "# host: {h} (one description per host; each is applied on its own)");
+        for l in route_lines(m) {
+            let _ = writeln!(o, "# {l}");
+        }
     }
     let _ = writeln!(
         o,
@@ -85,7 +91,7 @@ pub(super) fn render(m: &Model, notes: &mut Vec<String>) -> Result<String, Strin
                 let _ = writeln!(o, "          command: [{}]", q(&format!("/app/{b}")));
             }
             None => notes.push(format!(
-                "{}: no binary named (a plan row's `binary`): no command rendered",
+                "{}: no binary named: no command rendered",
                 p.name
             )),
         }
