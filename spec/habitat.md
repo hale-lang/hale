@@ -322,15 +322,20 @@ The third screen, infrastructure (`infrastructure.js`, `#infrastructure`),
 lists the allocations (`Commands::allocations`: role, instance, provider,
 host and the state the provider observes) and the policy
 (`Commands::policy`: the provider and profile each role is allocated by).
-It reads only; placing an allocation on another host is the placement
-rows' act and joins the screen with them.
+Each allocation has a host picker (this machine and the `ready` hosts) that
+calls `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
+and shows its pulse, what each provider observes of each allocation after it.
+A move of a memory that holds a record is refused by the row; the page shows
+the refusal's text with a confirm step that applies again with `fresh`.
 
 The fourth screen, organisms (`organisms.js`, `#organisms`), lists the
-organisms the index shows (name and state; the row carries no purpose or
-pulse, which the page says) with the allocations placed for each, then the
-saplings the habitat pins (`Commands::saplings`: name, purpose, revision,
-digest, nursery) and the nurseries it trusts (`Commands::nurseries`). It
-reads only; a graft is `hale habitat graft`, and has no head row yet.
+organisms the index shows (name, purpose, state and pulse) with the
+allocations placed for each, then the saplings the habitat pins
+(`Commands::saplings`: name, purpose, revision, digest, nursery) and the
+nurseries it trusts (`Commands::nurseries`). A sapling has a host picker and
+a `graft` action (`Commands::graft`), which answers at once with the log the
+graft writes; the page follows the graft until its organism is in the index,
+then refreshes the lists.
 
 ## Backends
 

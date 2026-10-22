@@ -64,7 +64,7 @@ nav { display: flex; gap: calc(var(--step) * 2); }
 nav a[aria-current="page"] { text-decoration-color: var(--ink); font-weight: 700; }
 
 /* forms and controls: hairlines, no fill */
-input, button { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--rule); padding: 2px var(--step); }
+input, button, select { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--rule); padding: 2px var(--step); }
 input { width: 18ch; }
 input[type="number"] { width: 8ch; }
 input:focus, button:focus-visible { outline: 1px solid var(--dim); outline-offset: 1px; }

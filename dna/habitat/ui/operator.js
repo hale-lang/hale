@@ -107,6 +107,8 @@ function route() {
 window.addEventListener("hashchange", route);
 route();
 setInterval(() => {
+  // a picker open in a select is not rebuilt under the person's hand
+  if (document.activeElement && document.activeElement.tagName === "SELECT") return;
   if (location.hash === "#hardware") refreshHardware();
   if (location.hash === "#infrastructure") refreshInfrastructure();
   if (location.hash === "#organisms") refreshOrganisms();

@@ -378,6 +378,60 @@ fn main() {
         "remove_host removes a host with nothing placed: " + gone.body,
     );
     std::process::kill(sshd) or discard;
+    // placement, apply and the pulse, as the Board
+    let memory = j.append(
+        j.revision(),
+        "habitat.allocated",
+        "shop/memory",
+        "{\"role\":\"memory\",\"provider\":\"compose\",\"host\":\"local\",\"organism\":\"shop\"}",
+    );
+    std::test::assert(memory.ok, "a placeable allocation's row landed");
+    let place_digest = "fnv1a64:b5163ad15ef2dfca";
+    let refused_place = row_call(
+        face, jar, "place_allocation", place_digest,
+        "{\"allocation\": \"shop/db\", \"host\": \"local\"}",
+    );
+    std::test::assert(
+        std::str::contains(refused_place.body, "not_placeable"),
+        "an adopted allocation is not placed, in the row's words: " + refused_place.body,
+    );
+    let placed_row = row_call(
+        face, jar, "place_allocation", place_digest,
+        "{\"allocation\": \"shop/memory\", \"host\": \"local\"}",
+    );
+    std::test::assert(
+        std::str::contains(placed_row.body, "\"ok\":true"),
+        "place_allocation places on a ready host: " + placed_row.body,
+    );
+    let pulse = row_call(
+        face, jar, "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+        "{\"host\": \"rack-a.lan\", \"fresh\": false}",
+    );
+    std::test::assert(
+        pulse.status == 200 && std::str::contains(pulse.body, "\"applied\""),
+        "apply_allocations answers the pulse: " + pulse.body,
+    );
+
+    // graft through the row: it answers at once with its log, and the log
+    // ends (`<log>.exit`) whatever the graft came to
+    let grafted = row_call(
+        face, jar, "graft", "fnv1a64:2c77e8f2abaf9e18",
+        "{\"sapling\": \"no-such-sapling\", \"host\": \"\", \"library\": false}",
+    );
+    std::test::assert(
+        std::str::contains(grafted.body, "\"code\":\"started\""),
+        "graft answers at once with where it writes: " + grafted.body,
+    );
+    let log = std::json::find_string_field(grafted.body, "log");
+    let mut ended = 0;
+    while ended < 120 && !std::io::fs::file_exists(log + ".exit") {
+        std::time::sleep(500ms);
+        ended = ended + 1;
+    }
+    std::test::assert(
+        std::io::fs::file_exists(log + ".exit"),
+        "the graft reached a terminal state in its log: " + log,
+    );
     let hosts_after = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert(
         std::str::contains(hosts_after.body, "rack-a.lan"),
