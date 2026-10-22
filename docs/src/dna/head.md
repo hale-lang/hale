@@ -42,6 +42,15 @@ its `dna.head.url`, and `hale dna head <organism>` serves there, so the
 address in the list is the one to open. `hale habitat down` stops the face
 with the body.
 
+The same surface answers where the habitat runs things, for the screens that
+show its hardware and its infrastructure: `Commands::hosts` (each machine the
+habitat places on and what it offers), `Commands::allocations` (each role of
+each organism with the provider and host it is placed on, and whether it is
+`up`, `degraded` or `down` now) and `Commands::policy` (which provider each
+role goes to). The face reaches them as it reaches the index, at
+`POST /api/hale/v1/head/surface/call/Commands::hosts` and so on, with
+`{"limit": 50}` as the body.
+
 ### The operator face
 
 Beside the index the habitat serves its operator face, under `/app/` of the

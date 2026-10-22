@@ -8,6 +8,9 @@
 // index reads the habitat's record through the head's surface, and a record
 // that grafted organisms lists them (the `habitat.grafted` rows): name, state,
 // the address of the organism's face and of its head, each taken at its graft.
+// The same surface reads the habitat's placement: the host the compose
+// provider produced, the policy, and each allocation with its provider, its
+// host and what that provider observes of it.
 // The habitat is this test file's own (`hale test` gives each file one).
 // Without docker compose nothing here is exercised.
 
@@ -63,6 +66,27 @@ fn index_with(face: String, needle: String, secs: Int) -> String {
         if !std::str::contains(page, needle) { std::time::sleep(500ms); }
     }
     return page;
+}
+
+// The JSON array `field` of what the head's surface answers `member`, read
+// through the face as the operator face reads it (the head relays the
+// surface's reads to its API child).
+fn surface_read(face: String, member: String, field: String) -> String {
+    let r = dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n{\"limit\": 50}\n" + face
+            + "/api/hale/v1/head/surface/call/" + member,
+    ).stdout;
+    return std::json::find_string_field(r, field);
+}
+
+// The element of the JSON `array` whose `key` is `value`, "" for none.
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
 }
 
 fn main() {
@@ -185,6 +209,61 @@ fn main() {
     std::test::assert(
         std::str::contains(page, "href=\"/styles.css\"") && !std::str::contains(page, "<script"),
         "the same page as every organism's: the shell's stylesheet, no script",
+    );
+
+    // ---- the habitat's placement (phase 4): `up` went through the compose
+    // provider, which produced this machine as the host `local` with what it
+    // offers; the `local` profile's policy gives every role that provider;
+    // and every allocation, the habitat's own memory, nerves, head and face
+    // and each tenant's, is a row naming its provider and its host, with
+    // what the provider observes of it. Each is a read of the head's
+    // surface, through the face.
+    let hosts = surface_read(face, "Commands::hosts", "hosts");
+    let local = element(hosts, "name", "local");
+    std::test::assert(
+        std::json::find_string_field(local, "provider") == "compose"
+            && dna::has_word(std::json::find_string_field(local, "offers"), "compose"),
+        "the compose provider produced the host `local`, offering compose: " + hosts,
+    );
+    let policy = surface_read(face, "Commands::policy", "policy");
+    std::test::assert(
+        std::json::find_string_field(element(policy, "role", "memory"), "provider") == "compose"
+            && std::json::find_string_field(element(policy, "role", "face"), "provider")
+            == "compose"
+            && std::json::find_string_field(element(policy, "role", "memory"), "profile")
+            == "local",
+        "the local profile's policy: compose for every role: " + policy,
+    );
+    let allocations = surface_read(face, "Commands::allocations", "allocations");
+    let key = dna::allocation_key(dna::local_habitat_dir() + "/genome");
+    let mut roles = "memory nerves head face ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        let a = element(allocations, "allocation", key + "/" + role);
+        std::test::assert(
+            std::json::find_string_field(a, "provider") == "compose"
+                && std::json::find_string_field(a, "host") == "local"
+                && std::json::find_string_field(a, "state") == "up",
+            "the habitat's " + role + " is placed by compose on local, and up: " + allocations,
+        );
+    }
+    std::test::assert_eq_str(
+        std::json::find_string_field(element(allocations, "allocation", key + "/face"), "address"),
+        face,
+        "the face's allocation answers at the face's address",
+    );
+    let tenant = element(
+        allocations,
+        "allocation",
+        dna::allocation_key(scratch + "/alpha") + "/memory",
+    );
+    std::test::assert(
+        std::json::find_string_field(tenant, "provider") == "compose"
+            && std::json::find_string_field(tenant, "host") == "local"
+            && std::json::find_string_field(tenant, "state") == "up",
+        "a tenant's memory is the compose provider's too: " + allocations,
     );
 
     // ---- down stops the face with the body

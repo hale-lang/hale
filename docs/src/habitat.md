@@ -161,6 +161,12 @@ No automated payment is part of the first slice.
 
 Models, stores, identity, communications, payments, accounting and hosting are bound through interfaces and perspectives, under the same claims and ownership rules as everything else ([Perspectives](./services/perspectives.md)). A provider's capability is kept in three separate states: implemented, available on this account, and authorized. A feature appearing at a provider never widens a grant. Replacing a provider keeps the organization's intent, authority, records and history, although mandates and pending operations may stay bound to the original service until they are reconciled.
 
+### Hosts and providers, as built
+
+A **host** is a machine the habitat places on (the program `dna/host` keeps its name; `host` in a command always means the machine). Hosts are rows that **providers** produce, and each says what it offers. A provider allocates a role for an organism, places the allocation on a host that offers what it needs, applies a render there and observes what runs: `up`, `degraded` or `down`. Placement belongs to the record: every allocation is a row naming its role, its organism, its provider and its host. A **policy** maps each role to a provider for the whole habitat, and a **profile** is a preset of policy.
+
+Today there is one provider and one profile. The `local` profile gives every role the `compose` provider, which runs on this machine alone: `hale habitat up` has it produce the host `local` (offering `compose`, and `systemd-user` where the user's systemd answers) and bring every allocation up, the habitat's own and each tenant's. The habitat's head and face are placed there too. The head's surface reads the rows back: `Commands::hosts`, `Commands::allocations` (each with what its provider observes now) and `Commands::policy`. A provider over SSH, to add other machines by name, comes next.
+
 ## What the tree has today
 
 | piece of the design | in the tree today |
@@ -183,5 +189,6 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | the habitat's operations: extract, absorb, re-parent | **not built**; they span several records and come with saplings |
 | the habitat, born and run | **built**, local profile: `hale habitat up` births the habitat from the genome the toolchain ships (no parent; its positions and law proposed to its Board) and runs its body as a systemd user unit or `--foreground`; `status` reads its allocations, rows of its record by organism and role with their schema versions; `down` stops it and keeps its data. The hosted profile is not built |
 | the habitat's face | **built**: `hale habitat up` starts the standard face over the habitat's own head, and `status` prints its address; its index lists the organisms grafted from it with their state and the addresses of their faces and heads: [The head and the face](./dna/head.md) |
+| hosts, providers and placement | **built**, local only: the `compose` provider produces the host `local` and brings every allocation up at `hale habitat up`; allocations, hosts and the `local` profile's policy are rows of the habitat's record, read through the head's surface (above). Hosts over SSH and placing an allocation on another host are not built |
 | standard equipment | **not built**; the standard-practices pack is in the nursery (`hale dna pack apply standard`, GH #1591), its first clause that logs are structured, proposed to a grafted organism's Board at birth |
 | finance capture and books | **not built** |

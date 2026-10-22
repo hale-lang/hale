@@ -127,6 +127,9 @@ locus ReferenceInfrastructure {
         target: String = ""; // "" = this machine
         ssh: SshTransport = SshTransport { };
         local: LocalTransport = LocalTransport { };
+        // the habitat's allocations on this machine are the compose
+        // provider's to bring up (dna/core/infrastructure.hl)
+        provider: dna::ComposeProvider = dna::ComposeProvider { };
         last: String = "";
     }
     fn kind() -> String { return "compose+systemd+envfile"; }
@@ -147,8 +150,9 @@ locus ReferenceInfrastructure {
     }
     // GH #1653: an organism's memory, nerves and senses' store are the local
     // habitat's allocations for it (dna/core/memory_spine.hl), brought up
-    // here when they are not: one compose project per machine, a service per
-    // allocation named for the organism and the role, never a checkout's.
+    // here when they are not, by the compose provider: one compose project
+    // per machine, a service per allocation named for the organism and the
+    // role, never a checkout's.
     // `why` says what is needed instead, when there is no docker compose or
     // the organism has no identity yet.
     fn allocation(role: String) -> String {
@@ -201,10 +205,8 @@ locus ReferenceInfrastructure {
             };
         }
         let service = dna::allocation_service(self.root, "memory");
-        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 {
-            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
-        }
+        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "5432");
         if len(hp) == 0 {
             return dna::Database { why: "cannot read the memory allocation's port from compose" };
@@ -307,10 +309,8 @@ locus ReferenceInfrastructure {
             };
         }
         let service = dna::allocation_service(self.root, "nerves");
-        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 {
-            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
-        }
+        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "4222");
         if len(hp) == 0 {
             return dna::Database { why: "cannot read the nerves allocation's port from compose" };
@@ -331,10 +331,8 @@ locus ReferenceInfrastructure {
         let not = self.allocation("senses' store");
         if len(not) > 0 { return dna::Database { why: not }; }
         let service = dna::allocation_service(self.root, "senses");
-        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
-        if up.code != 0 {
-            return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
-        }
+        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "9090");
         if len(hp) == 0 {
             return dna::Database { why: "cannot read the senses' store's port from compose" };

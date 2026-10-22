@@ -52,9 +52,12 @@ up                   birth the habitat the first time, from the genome the
                      toolchain ships (its positions the nursery's `habitat`
                      pack, its law the `standard` pack and its document's
                      `law` items), the one organism born without a parent;
-                     then bring every recorded allocation up, migrating any
-                     whose recorded schema version is behind this
-                     toolchain's, and start the habitat's body: a systemd
+                     then bring every recorded allocation up through the
+                     compose provider, migrating any whose recorded schema
+                     version is behind this toolchain's; record its
+                     placement (the host `local` with what it offers, the
+                     profile's policy, its head and face on that host, rows
+                     of its record); and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
                      --foreground, in this process; --no-body births it and
                      brings its allocations up and starts no body (what a

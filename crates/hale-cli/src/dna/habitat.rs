@@ -41,9 +41,12 @@ up                   birth the habitat the first time, from the genome the
                      toolchain ships (its positions the nursery's `habitat`
                      pack, its law the `standard` pack and its document's
                      `law` items), the one organism born without a parent;
-                     then bring every recorded allocation up, migrating any
-                     whose recorded schema version is behind this
-                     toolchain's, and start the habitat's body: a systemd
+                     then bring every recorded allocation up through the
+                     compose provider, migrating any whose recorded schema
+                     version is behind this toolchain's; record its
+                     placement (the host `local` with what it offers, the
+                     profile's policy, its head and face on that host, rows
+                     of its record); and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
                      --foreground, in this process, and its face (the
                      standard face over its own head; `status` prints its
@@ -301,7 +304,12 @@ fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, sl
     let entity = format!("{}/{role}", &id[..12]);
     let slots: Vec<&str> = slots.split_whitespace().collect();
     if had.is_none() && !recorded {
-        pending.push(serde_json::json!({ "kind": "habitat.allocated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "service": service, "project": project, "vault": slots }).to_string() }));
+        // every allocation names its provider and its host: the `compose`
+        // provider's on the host `local`, as the `local` profile's policy
+        // gives each role (`habitat.policy`), or the operator's own server,
+        // adopted, on no host of the habitat's
+        let (provider, host) = if operator { ("operator", "") } else { ("compose", "local") };
+        pending.push(serde_json::json!({ "kind": "habitat.allocated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "service": service, "project": project, "provider": provider, "host": host, "vault": slots }).to_string() }));
     }
     if !heart && had != Some(version) {
         pending.push(serde_json::json!({ "kind": "habitat.migrated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "from": had, "schema_version": version }).to_string() }));
@@ -701,6 +709,10 @@ fn up(args: &[String]) -> ExitCode {
     // GH #1653: born and its allocations up, its body not started: what a
     // test's habitat needs to graft into
     if no_body {
+        if let Err(e) = place(&genome, &backends) {
+            eprintln!("hale habitat up: {e}");
+            return ExitCode::from(1);
+        }
         println!("{:<8}not started (--no-body): `hale habitat up` starts it", "body");
         return ExitCode::SUCCESS;
     }
@@ -708,6 +720,10 @@ fn up(args: &[String]) -> ExitCode {
         match start_face(&me, &genome, true) {
             Ok(line) => println!("{line}"),
             Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
+        }
+        if let Err(e) = place(&genome, &backends) {
+            eprintln!("hale habitat up: {e}");
+            return ExitCode::from(1);
         }
         let _ = std::fs::write(pid_file(), format!("{}\n", std::process::id()));
         println!("{:<8}the habitat's body runs in this process (`hale dna dev {}`)", "body", genome.display());
@@ -719,6 +735,10 @@ fn up(args: &[String]) -> ExitCode {
     match start_face(&me, &genome, false) {
         Ok(line) => println!("{line}"),
         Err(e) => eprintln!("hale habitat up: the habitat's face did not start: {e}"),
+    }
+    if let Err(e) = place(&genome, &backends) {
+        eprintln!("hale habitat up: {e}");
+        return ExitCode::from(1);
     }
     if let Some(state) = body_state() {
         println!("{:<8}{state}", "body");
@@ -734,6 +754,18 @@ fn up(args: &[String]) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// The habitat's placement, through its providers (phase 4): the host
+/// the `compose` provider produces (`local`, with what it offers), the
+/// `local` profile's policy (a provider per role, on these backends) and
+/// the habitat's own head and face placed on that host, each a row of its
+/// record written when the record does not already say it (`habitat-place`,
+/// dna/host/placement.hl). What it recorded, a line each, printed.
+fn place(genome: &Path, backends: &str) -> Result<(), String> {
+    let said = host_run("habitat-place", genome, &[backends.to_string()]).map_err(|e| format!("the habitat's placement was not recorded: {e}"))?;
+    print!("{said}");
+    Ok(())
 }
 
 /// The habitat born the first time, its own memory and nerves migrated
@@ -768,20 +800,10 @@ fn bring_up(backends: &str) -> Result<Vec<String>, String> {
         if !dir.join("compose.yaml").is_file() || !dir.join("ports.yaml").is_file() {
             continue;
         }
-        let up = Command::new("env")
-            .args(["COMPOSE_IGNORE_ORPHANS=1", "docker", "compose", "-p"])
-            .arg(local_habitat_project())
-            .arg("--project-directory")
-            .arg(&dir)
-            .arg("-f")
-            .arg(dir.join("compose.yaml"))
-            .arg("-f")
-            .arg(dir.join("ports.yaml"))
-            .args(["up", "-d", "--wait"])
-            .output()
-            .map_err(|e| format!("docker compose: {e}"))?;
-        if !up.status.success() {
-            out.push(format!("{:<8}allocation {key}: did not come up: {}", "note", String::from_utf8_lossy(&up.stderr).trim()));
+        // the tenant's allocations are the compose provider's to apply
+        // (`habitat-apply`, dna/host/placement.hl)
+        if let Err(why) = host_run("habitat-apply", &genome, &[dir.display().to_string()]) {
+            out.push(format!("{:<8}allocation {key}: did not come up: {why}", "note"));
             continue;
         }
         let moved = behind(&row, &versions);
@@ -1965,6 +1987,12 @@ mod tests {
         let allocated = row["pending"][0]["body"].as_str().unwrap();
         assert!(allocated.contains("\"organism\":\"1234567890abcdef") && allocated.contains("\"vault\":[\"postgres-owner-1234567890ab\"]") && !allocated.contains("checkout"), "{allocated}");
         assert_eq!(row["pending"][0]["entity"], "1234567890ab/memory");
+        // phase 4: every allocation names its provider and its host
+        assert!(allocated.contains("\"provider\":\"compose\"") && allocated.contains("\"host\":\"local\""), "{allocated}");
+        let mut adopted = serde_json::json!({});
+        next_rows(&mut adopted, id, "nerves", 2, "", "p", true);
+        let on_operator = adopted["pending"][0]["body"].as_str().unwrap();
+        assert!(on_operator.contains("\"provider\":\"operator\"") && on_operator.contains("\"host\":\"\"") && on_operator.contains("\"service\":\"operator\""), "{on_operator}");
         // flushed, then migrated again at the same version: nothing owed
         row["pending"] = serde_json::json!([]);
         row["roles"]["memory"]["recorded"] = serde_json::json!(true);

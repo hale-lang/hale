@@ -185,17 +185,22 @@ fn api() {
     // into a child locus's field from outside its methods (`self.reader.root
     // = self.root`), which lowering copies (GH #1561) and the survey now
     // sees through the checker's types.
+    // Phase 4: the habitat's three reads (`Commands::allocations`, `::hosts`,
+    // `::policy`) sort before `preview_batch`, so its eaters are row 16 now,
+    // and add 26 rows on each side: each row's eater, decoder and encoder,
+    // its admission and handler, and the fns of `habitat_rows.hl`, none of
+    // them a row the correction changes.
     pinned(
         "api",
-        395,
-        397,
+        421,
+        423,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_13  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_13  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_16  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_16  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
@@ -217,10 +222,13 @@ fn host_verb() {
 fn host() {
     // GH #1554: the renames-blind side gains a row, `{alloc}` from a copy
     // its walk, which resolves no imported type, cannot rule out.
+    // Phase 4: `placement.hl` adds eight rows on each side; two of them,
+    // `habitat_address` and `habitat_apply_verb`, reach imported code (the
+    // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        539,
-        545,
+        547,
+        553,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -315,6 +323,8 @@ fn host() {
         genome_root  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
+        habitat_address  does={syscall,block,alloc}
+        habitat_apply_verb  does={env,alloc}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
