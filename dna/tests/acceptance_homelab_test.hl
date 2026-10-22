@@ -1,11 +1,14 @@
 // dna/tests/acceptance_homelab_test.hl — phase 4's exit at fixture level:
 // the homelab case.
 //
-// An empty habitat on one box, and after `hale habitat up` nothing but the
-// head's surface: every step is a `Commands::` row, called on the head's
-// socket as the operator face calls its rows (add_host, probe_host,
-// add_nursery, ratify_sapling, graft, apply_allocations, and the reads).
-// A machine of the LAN is added over SSH and authorized; voice is grafted
+// An empty habitat on one box, born named (`hale habitat up --name
+// homelab-test`), and after that nothing but the head's surface: every step
+// is a `Commands::` row, called on the head's socket as the operator face
+// calls its rows (graft, add_host, probe_host, add_nursery, ratify_sapling,
+// apply_allocations, and the reads). Its first graft is the hale organism,
+// from the toolchain's nursery, its codebases attached from its manifest
+// (its placeholder repository's url leads to one built from the tree the
+// nursery pins). A machine of the LAN is added over SSH and authorized; voice is grafted
 // by name from a nursery onto it, placed and applied there from its own
 // compose, reachable at the host's name; its seat relays to a local model
 // on the host's network; a streamed request through it answers as
@@ -25,8 +28,9 @@
 //   (scripts/dna-cycle/canned-gateway.py) on this machine's loopback.
 // The organism's model map is pointed at voice's endpoint on the host
 // (`set_model_map`) and its model call goes through voice (`probe_model`).
-// What it does not prove is said where it stops (`SKIPPED`): voice's own
-// programs, store and broker; the Mac's launchd node.
+// The index and the face answer the habitat's name, and list both
+// organisms. What it does not prove is said where it stops (`SKIPPED`):
+// voice's own programs, store and broker; the Mac's launchd node.
 
 import "../core" as dna;
 import "../core/legs/head_commands" as hc;
@@ -205,12 +209,21 @@ fn main() {
     dna::reap_on_exit(scratch);
     let genome = dna::local_habitat_dir() + "/genome";
 
-    // ---- the box: an empty habitat, `hale habitat up` the one command
+    // ---- the hale organism's genome: a repository built from the tree the
+    // toolchain's nursery pins, where its placeholder url leads
+    let organism_repo = scratch + "/hale-organism";
+    let built = dna::run_tool(
+        "sh\n-c\nmkdir -p \"$2\" && cp -R \"$1\"/. \"$2\"/ && cd \"$2\" && git init -q -b main && git add -A && git -c user.name=board -c user.email=board@hale-dna commit -q -m 'the hale organism'\nsh\n"
+            + source() + "/dna/nursery/saplings/hale\n" + organism_repo,
+    );
+    std::test::assert_eq_int(built.code, 0, "the hale organism's repository: " + built.stderr);
+
+    // ---- the box: an empty habitat, named, `hale habitat up` the one command
     let log = scratch + "/up.log";
     let started = in_dir(
         scratch,
-        "sh\n-c\nnohup timeout --foreground 2400 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
-            + toolchain() + "\n" + log,
+        "sh\n-c\nGIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=\"url.$3.insteadOf\" GIT_CONFIG_VALUE_0=https://github.com/hale-lang/hale-organism nohup timeout --foreground 2400 \"$1\" habitat up --foreground --name homelab-test >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log + "\n" + organism_repo,
     );
     std::test::assert(
         len(dna::trim_nl(started.stdout)) > 0
@@ -230,6 +243,42 @@ fn main() {
     std::test::assert(
         !std::str::contains(read(sock, "Commands::index", "organisms"), "\"name\""),
         "the habitat is empty: no organism",
+    );
+    std::test::assert_eq_str(
+        read(sock, "Commands::index", "name"),
+        "homelab-test",
+        "the habitat is named at its birth",
+    );
+
+    // ---- its first graft: the hale organism, from the toolchain's nursery,
+    // on this machine, its codebases attached from its manifest
+    let hgraft = call(
+        sock,
+        "Commands::graft",
+        "{\"sapling\": \"hale\", \"host\": \"\", \"library\": false}",
+    );
+    let hlog = std::json::find_string_field(hgraft, "log");
+    std::test::assert(len(hlog) > 0, "the hale organism's graft starts: " + hgraft);
+    let mut hdone = false;
+    tries = 0;
+    while !hdone && tries < dna::wait_secs(1200) * 2 {
+        hdone = std::io::fs::file_exists(hlog + ".exit");
+        if !hdone { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(
+        hdone && dna::trim_nl(text_of(hlog + ".exit")) == "0"
+            && std::str::contains(text_of(hlog), "attached the codebase `hale`")
+            && std::str::contains(text_of(hlog), "attached the codebase `voice`"),
+        "the hale organism is grafted, its codebases attached: " + text_of(hlog),
+    );
+    let hale_store = dna::local_habitat_dir() + "/saplings/hale";
+    let hale_codebases = in_dir(hale_store, toolchain() + "\ndna\ncodebase\nlist");
+    std::test::assert(
+        std::str::contains(hale_codebases.stdout, "codebases: 2")
+            && std::str::contains(hale_codebases.stdout, "https://github.com/hale-lang/hale")
+            && std::str::contains(hale_codebases.stdout, "https://github.com/hale-lang/voice"),
+        "its record holds its codebases: " + hale_codebases.stdout + hale_codebases.stderr,
     );
 
     // ---- the host: a machine of the LAN over SSH (the fixture's own sshd)
@@ -428,7 +477,12 @@ fn main() {
     );
 
     // ---- the face lists it: the habitat's reads
-    let listed = element(read(sock, "Commands::index", "organisms"), "name", "voice");
+    let organisms = read(sock, "Commands::index", "organisms");
+    std::test::assert(
+        len(element(organisms, "name", "hale")) > 0,
+        "the index lists the hale organism, the habitat's first graft: " + organisms,
+    );
+    let listed = element(organisms, "name", "voice");
     std::test::assert(
         len(std::json::find_string_field(listed, "purpose")) > 0
             && std::json::find_string_field(listed, "pulse") == "up",
@@ -440,6 +494,40 @@ fn main() {
             "state",
         ) == "ready",
         "the hosts list the machine",
+    );
+
+    // ---- the face shows the habitat's name: its operator screen reads it
+    // from the index, through the face's own relay of the head's surface
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(
+        std::str::contains(status, "\nname    homelab-test\n"),
+        "status names the habitat: " + status,
+    );
+    let at = std::str::index_of(status, "face    http://");
+    let face_rest = if at < 0 { "" } else { status[(at + 8)..len(status)] };
+    let face = if std::str::index_of(face_rest, "/ (") < 0 {
+        ""
+    } else {
+        face_rest[0..std::str::index_of(face_rest, "/ (")]
+    };
+    let client = dna::run_tool("curl\n-s\n" + face + "/app/head-client.js").stdout;
+    let mark = std::str::index_of(client, "\"Commands::index\", \"");
+    let digest = if mark < 0 { "" } else { client[(mark + 20)..(mark + 20 + 24)] };
+    let through_face = dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: " + digest
+            + "\n--data\n{\"limit\": 200}\n" + face
+            + "/api/hale/v1/head/surface/call/Commands::index",
+    ).stdout;
+    std::test::assert(
+        std::str::starts_with(digest, "fnv1a64:")
+            && (std::str::contains(through_face, "\"name\":\"homelab-test\"")
+                    || std::str::contains(through_face, "\"name\": \"homelab-test\""))
+            && std::str::contains(
+                dna::run_tool("curl\n-s\n" + face + "/app/operator.js").stdout,
+                "r.name",
+            ),
+        "the face's read answers the habitat's name, and its screen shows it: " + digest + " "
+            + through_face,
     );
 
     // ---- what this fixture does not prove
