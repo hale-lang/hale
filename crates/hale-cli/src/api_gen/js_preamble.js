@@ -47,14 +47,14 @@ export class TransportError extends Error {
 
 /**
  * @template T, E
- * @typedef {{ kind: "result", value: T } | { kind: "handler_error", error: E } | { kind: "refusal", refusal: Refusal } | { kind: "server_error" }} Outcome
+ * @typedef {{ kind: "result", value: T } | { kind: "handler_error", error: E } | { kind: "refusal", refusal: Refusal } | { kind: "server_error" }} __Outcome
  */
 
 /**
  * @param {unknown} body
  * @returns {Refusal}
  */
-function apiRefusal(body) {
+function __apiRefusal(body) {
   const r = /** @type {{ refusal?: globalThis.Record<string, unknown> } | null} */ (body)?.refusal ?? {};
   /** @type {Refusal} */
   const out = {
@@ -74,9 +74,9 @@ function apiRefusal(body) {
  * @param {string} payload
  * @param {(json: unknown) => T} decodeValue
  * @param {(json: unknown) => E} decodeError
- * @returns {globalThis.Promise<Outcome<T, E>>}
+ * @returns {globalThis.Promise<__Outcome<T, E>>}
  */
-async function apiCall(opts, member, digest, payload, decodeValue, decodeError) {
+async function __apiCall(opts, member, digest, payload, decodeValue, decodeError) {
   /** @type {globalThis.Record<string, string>} */
   const headers = {
     "Content-Type": "application/json",
@@ -104,7 +104,7 @@ async function apiCall(opts, member, digest, payload, decodeValue, decodeError) 
   if (res.status === 422) return { kind: "handler_error", error: decodeError(body) };
   // a classed handler error names its class (spec/api.md § Error classes)
   if (res.headers.get("Hale-Error-Class") !== null) return { kind: "handler_error", error: decodeError(body) };
-  const refusal = apiRefusal(body);
+  const refusal = __apiRefusal(body);
   if (/** @type {{ refusal?: unknown } | null} */ (body)?.refusal === undefined) {
     throw new TransportError("the endpoint answered " + res.status + " with no outcome: " + text);
   }
@@ -134,13 +134,13 @@ export async function describe(opts) {
 /**
  * What a subscription yields; it ends after `refusal`, `expired`, `revoked` or `closed`.
  * @template P
- * @typedef {{ kind: "subscribed" } | { kind: "event", seq: number, payload: P } | { kind: "refusal", refusal: Refusal } | { kind: "expired" } | { kind: "revoked" } | { kind: "closed" }} StreamEvent
+ * @typedef {{ kind: "subscribed" } | { kind: "event", seq: number, payload: P } | { kind: "refusal", refusal: Refusal } | { kind: "expired" } | { kind: "revoked" } | { kind: "closed" }} __StreamEvent
  */
 
 /**
  * An async iterable of a stream's events; `close()` ends the subscription and closes the connection.
  * @template P
- * @typedef {globalThis.AsyncIterable<StreamEvent<P>> & { close(): void }} Subscription
+ * @typedef {globalThis.AsyncIterable<__StreamEvent<P>> & { close(): void }} __Subscription
  */
 
 /**
@@ -148,15 +148,15 @@ export async function describe(opts) {
  * @param {StreamOptions} opts
  * @param {string} topic
  * @param {(json: unknown) => P} decode
- * @returns {Subscription<P>}
+ * @returns {__Subscription<P>}
  */
-function apiSubscribe(opts, topic, decode) {
-  /** @type {globalThis.Array<StreamEvent<P> | TransportError | null>} */
+function __apiSubscribe(opts, topic, decode) {
+  /** @type {globalThis.Array<__StreamEvent<P> | TransportError | null>} */
   const queue = [];
   /** @type {(() => void) | undefined} */
   let wake;
   let ended = false;
-  /** @param {StreamEvent<P> | TransportError | null} item */
+  /** @param {__StreamEvent<P> | TransportError | null} item */
   const push = (item) => {
     queue.push(item);
     if (wake) {
@@ -203,7 +203,7 @@ function apiSubscribe(opts, topic, decode) {
       case "event":
         return push({ kind: "event", seq: Number(frame.seq), payload: decode(frame.payload) });
       case "refusal":
-        push({ kind: "refusal", refusal: apiRefusal(frame) });
+        push({ kind: "refusal", refusal: __apiRefusal(frame) });
         return finish();
       case "unauthorized":
         push({ kind: frame.reason === "expired" ? "expired" : "revoked" });

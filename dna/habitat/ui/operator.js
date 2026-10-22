@@ -1,7 +1,8 @@
 // The operator face, screen 1: sign in, then the habitat's name and state.
 //
-// No build step: this module and the generated client (head-client.js, from
-// dna/face/operator/surface.hl by scripts/api-clients.sh) are all it loads.
+// No build step: this module and the generated client of the head's rows
+// (head-client.js, `hale api client --surface HeadCommands --lang js`, kept
+// current by scripts/api-clients.sh) are all it loads.
 // The page is served by the standard face under /app/, behind the head's
 // gate: a visitor with no session is sent to the provider before this page
 // is ever served. A read the head refuses for want of a session is shown as

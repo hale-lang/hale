@@ -6369,6 +6369,11 @@ OIDC, the child's launch token in a trusted-local session. So the index is
 the visitor's read: a visitor who is not signed in, or whose session is
 forged, is refused as the head refuses every read (`401`), the face passing
 the refusal on.
+A page the face serves (the habitat's operator face) calls the same row from
+the browser: the face relays that one `POST` with the page's own `Cookie`
+header as the `Authorization` bearer, which is where the head reads the
+visitor's session, so the generated client of the head's rows needs no token
+of its own.
 
 **The habitat's face.** The habitat is an organism, so its face is this
 one: `hale habitat up` starts `hale dna head` on the habitat's genome, the

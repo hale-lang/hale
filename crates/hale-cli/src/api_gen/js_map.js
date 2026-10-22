@@ -11,7 +11,7 @@
  * @param {string} [value]
  * @returns {unknown}
  */
-function apiMapEncode(list, key, encode, value) {
+function __apiMapEncode(list, key, encode, value) {
   return globalThis.Object.fromEntries(
     list.map((e) => {
       const o = { .../** @type {globalThis.Record<string, unknown>} */ (encode(e)) };
@@ -30,7 +30,7 @@ function apiMapEncode(list, key, encode, value) {
  * @param {string} [value]
  * @returns {globalThis.Array<T>}
  */
-function apiMapDecode(json, key, decode, value) {
+function __apiMapDecode(json, key, decode, value) {
   if (json == null || typeof json !== "object" || globalThis.Array.isArray(json)) return [];
   return globalThis.Object.entries(/** @type {globalThis.Record<string, unknown>} */ (json)).map(([k, v]) =>
     decode(

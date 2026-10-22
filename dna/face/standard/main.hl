@@ -31,6 +31,10 @@ import "../../operations" as ops;
 
 const USAGE: String = "hale dna face: expected <port 1..65535> <webroot> <head-port 1..65535>";
 const HEAD_READ: String = "/api/hale/v1/head";
+// The head's row for the record's index. The head reads the call's bearer as
+// the visitor's cookies; a page cannot write that header, so the face does,
+// from the cookies the page's own request carries.
+const HEAD_INDEX_CALL: String = "/api/hale/v1/head/surface/call/Commands::index";
 // A request to the head is answered within this; an event stream's
 // heartbeat (the head writes one every 15 s) keeps its read alive.
 const RELAY_RECV_NS: Int = 60000000000;
@@ -57,6 +61,13 @@ fn lower_name(line: String) -> String {
     return std::str::lower(line[0..colon]);
 }
 
+// Whether `req` is a page's call of the head's index row: its cookies are the
+// call's bearer (HEAD_INDEX_CALL).
+fn presents_cookies(req: std::http::Request) -> Bool {
+    return req.method == "POST" && req.path == HEAD_INDEX_CALL
+        && len(std::http::header(req, "Cookie")) > 0;
+}
+
 // The request as the head must see it: the browser's lines but for the
 // connection's own framing, then the body's real length and a close.
 fn head_request(req: std::http::Request, head_port: Int) -> String {
@@ -68,6 +79,7 @@ fn head_request(req: std::http::Request, head_port: Int) -> String {
         rest = if cut < 0 { "" } else { rest[(cut + 2)..len(rest)] };
         let name = lower_name(line);
         if len(name) > 0
+            && !(name == "authorization" && presents_cookies(req))
             && name != "connection"
             && name != "content-length"
             && name != "transfer-encoding"
@@ -79,6 +91,9 @@ fn head_request(req: std::http::Request, head_port: Int) -> String {
     }
     if req.method == "POST" || len(req.body) > 0 {
         lines = lines + "Content-Length: " + to_string(len(req.body)) + "\r\n";
+    }
+    if presents_cookies(req) {
+        lines = lines + "Authorization: Bearer " + std::http::header(req, "Cookie") + "\r\n";
     }
     return req.method + " " + req.path + " HTTP/1.1\r\n" + lines + "Connection: close\r\n\r\n"
         + req.body;

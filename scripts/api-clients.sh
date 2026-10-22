@@ -25,7 +25,7 @@ clients=(
   "Public|tests/api-contract/program.hl|hale|tests/hale/api/client/public/client.hl"
   "Admin|tests/api-contract/program.hl|hale|tests/hale/api/client/admin/client.hl"
   "HeadCommands|dna/api|hale|dna/core/legs/head_commands/client.hl"
-  "OperatorIndex|dna/face/operator|js|dna/habitat/ui/head-client.js"
+  "HeadCommands|dna/api|js|dna/habitat/ui/head-client.js"
 )
 
 status=0
