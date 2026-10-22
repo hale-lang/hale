@@ -166,8 +166,9 @@ main locus App {
         );
 
         // named `voice`: the application the record attaches, whose own
-        // account publishes on its subjects (GH #989)
-        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\nvoice"));
+        // account publishes on its subjects (GH #989); `./voice`, since a
+        // bare `voice` is the toolchain's sapling of that name
+        let made = in_dir(scratch, dna::in_habitat(toolchain() + "\nhabitat\ngraft\n./voice"));
         std::test::assert_eq_int(made.code, 0, "hale habitat graft: " + made.stdout + made.stderr);
         let a = scratch + "/voice";
         let g1 = in_dir(a, "git\nconfig\nuser.name\norganism-host");

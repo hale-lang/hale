@@ -148,10 +148,29 @@ pub(super) fn names_a_sapling(arg: &Path) -> bool {
 /// store keeps the revision it was checked at. (Where it is placed is D4's:
 /// a graft takes a placement there.)
 pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[String]) -> Result<Vec<String>, String> {
-    let pin = pinned(name).ok_or_else(|| format!("the habitat pins no sapling `{name}` (`hale habitat nursery list`)"))?;
+    let current = pinned(name).ok_or_else(|| format!("the habitat pins no sapling `{name}` (`hale habitat nursery list`)"))?;
+    let store = PathBuf::from(local_habitat_dir()).join("saplings").join(name);
+    // what the graft checked when it began, kept beside the store: a graft
+    // that goes on is the revision it checked, whatever is pinned since
+    let checked = PathBuf::from(local_habitat_dir()).join("saplings").join(format!("{name}.grafted.json"));
+    let begun = manifest_pin(&store.join("hale.toml")).ok().flatten().is_some();
+    let pin = if begun {
+        match std::fs::read_to_string(&checked).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+            Some(p) => p,
+            // nothing kept: the checkout's own tree must be the pinned one
+            None => {
+                let (_, found) = digest_at(&store, "HEAD")?;
+                if Some(found.as_str()) != current["digest"].as_str() {
+                    return Err(format!("the graft of `{name}` began at a revision the habitat no longer knows ({found}): remove {} to graft it afresh", store.display()));
+                }
+                current.clone()
+            }
+        }
+    } else {
+        current.clone()
+    };
     let field = |k: &str| pin[k].as_str().unwrap_or("").to_string();
     let (repo, revision, digest, nursery) = (field("repo"), field("revision"), field("digest"), field("nursery"));
-    let store = PathBuf::from(local_habitat_dir()).join("saplings").join(name);
     let git = |args: &[&str], cwd: Option<&Path>| -> Result<(), String> {
         let mut c = Command::new("git");
         if let Some(d) = cwd {
@@ -164,7 +183,6 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
         }
     };
-    let begun = manifest_pin(&store.join("hale.toml")).ok().flatten().is_some();
     let mut out = Vec::new();
     if !store.join(".git").is_dir() {
         std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
@@ -180,7 +198,12 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             return Err(format!("the sapling `{name}` at {revision} is {found}, not the {digest} its nursery pinned: refused, nothing grafted"));
         }
         git(&["checkout", "-q", "--detach", &commit], Some(&store))?;
+        let mut kept = pin.clone();
+        kept["commit"] = serde_json::json!(commit);
+        std::fs::write(&checked, format!("{kept}\n")).map_err(|e| format!("write {}: {e}", checked.display()))?;
         out.push(format!("{:<8}{name} at {revision} ({}…), its digest {digest} checked", "fetched", &commit[..12]));
+    } else {
+        out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the revision its graft checked", "kept"));
     }
     let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery });
     out.extend(graft_lines(&store, true, library, pack, &Shape { profile: None, remote: None, body: None }, Some(&lineage))?);

@@ -276,6 +276,64 @@ fn main() {
         "the grafted organism stays at its revision",
     );
 
+    // ---- a graft that stops after the child is born, and goes on after a
+    // newer revision was ratified, is the revision it checked: `bud` needs
+    // a database whose heart migration fails until `ready` is there
+    let bsrc = scratch + "/bud-src";
+    std::io::fs::mkdir(bsrc) or discard;
+    git(bsrc, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(
+        bsrc + "/hale.toml",
+        "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n\n[dna.migrations.database]\ncommand = [\"sh\", \"-c\", \"test -e ready\"]\n",
+    ) or discard;
+    std::io::fs::write_file(bsrc + "/README.md", "# bud\n") or discard;
+    git(bsrc, "add\n-A");
+    git(bsrc, "commit\n-q\n-m\nbud v1");
+    git(bsrc, "tag\nv1");
+    let bud1 = digest_of(bsrc, "v1");
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        index(src, "v2", newer) + bud_entry(bsrc, "v1", bud1),
+    ) or discard;
+    in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    let stopped = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbud\n--no-library");
+    let bstore = dna::local_habitat_dir() + "/saplings/bud";
+    std::test::assert(
+        stopped.code != 0 && len(dna::allocation_key(bstore)) == 12,
+        "the graft stops after the child is born: " + stopped.stdout + stopped.stderr,
+    );
+    std::io::fs::write_file(bsrc + "/CHANGELOG.md", "v2\n") or discard;
+    git(bsrc, "add\n-A");
+    git(bsrc, "commit\n-q\n-m\nbud v2");
+    git(bsrc, "tag\nv2");
+    let bud2 = digest_of(bsrc, "v2");
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        index(src, "v2", newer) + bud_entry(bsrc, "v2", bud2),
+    ) or discard;
+    in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    let bratified = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nratify\nbud");
+    std::test::assert_eq_int(bratified.code, 0, "bud v2 is ratified: " + bratified.stderr);
+    std::io::fs::write_file(bstore + "/ready", "") or discard;
+    let resumed = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nbud\n--no-library");
+    std::test::assert(
+        resumed.code == 0 && std::str::contains(resumed.stdout, "bud goes on at v1 (" + bud1 + ")"),
+        "the graft goes on at the revision it checked: " + resumed.stdout + resumed.stderr,
+    );
+    let brows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    // the graft's row (its fields in key order): v1 and v1's digest
+    std::test::assert(
+        std::str::contains(brows, "\\\"revision\\\":\\\"v1\\\",\\\"sapling\\\":\\\"bud\\\"")
+            && std::str::contains(brows, "\\\"digest\\\":\\\"" + bud1 + "\\\",\\\"face"),
+        "the graft's row names v1, the revision grafted: " + brows,
+    );
+
     in_dir(scratch, toolchain() + "\nhabitat\ndown");
     dna::scratch_done(scratch);
+}
+
+// The nursery's entry for `bud` at `rev`.
+fn bud_entry(src: String, rev: String, digest: String) -> String {
+    return "\n[[sapling]]\nname = \"bud\"\nsummary = \"a sapling whose graft stops once\"\nrepo = \""
+        + src + "\"\nrevision = \"" + rev + "\"\ndigest = \"" + digest + "\"\n";
 }
