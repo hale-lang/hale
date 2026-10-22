@@ -662,6 +662,16 @@ bounds the whole exchange, from the connect to the last byte, just as
 it does for the `Client`. A stream that may run longer than that sets
 `timeout_ms: 0`.
 
+Sometimes waiting inside `event()` is too long: a relay that also takes
+a cancel, or a new job, can't answer it while it waits for the next
+event. `event_within(ms)` (and `chunk_within(ms)` on a `BodyReader`)
+waits at most `ms` and, when nothing came in that time, fails with
+`err.kind == "idle"` without ending anything. Answer whatever else is
+waiting, then read again: the stream is still open, and an event that
+had half arrived is still there, returned whole once the rest comes.
+The reader's `timeout_ms` still ends the stream when it runs out, so
+there's no need to shrink it to stay responsive.
+
 The two halves meet in a relay: a handler that calls an upstream and
 hands each event on to its own client as it arrives. Check the
 upstream's status first, while you can still answer with an ordinary

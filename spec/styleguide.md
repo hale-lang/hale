@@ -1411,6 +1411,32 @@ fn handle(req: std::http::Request) -> std::http::Response {
   long as the stream may run (`0` for none). Do not speak HTTP/1.1 over
   `std::io::tcp` to stream: the reader de-chunks, splits events, takes
   https and keeps the deadline. **[convention]**
+- **A relay that answers something else reads with a bounded wait.**
+  When the relay also serves a control channel (a cancel, a new
+  assignment), read with `up.event_within(ms)` (or `chunk_within`): on
+  `err.kind == "idle"` serve the control channel, then read again; any
+  other failure ends the loop as before. The stream stays open across
+  each `idle` and nothing read is lost, so the deadline stays the
+  stream's whole length and is never shrunk to make room for the
+  control channel:
+
+  ```hale,fragment
+  while !self.cancelled {
+      let mut idle = false;
+      let e = up.event_within(250) or {
+          idle = err.kind == "idle";
+          if !idle { break; }
+          std::http::SseEvent { data: "" }
+      };
+      if idle {
+          self.serve_control();
+      } else {
+          w.event(e) or { break; };
+      }
+  }
+  ```
+
+  **[convention]**
 
 ---
 

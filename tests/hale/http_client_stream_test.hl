@@ -8,7 +8,10 @@
 // read ends in: the end, a body cut off mid-chunk, the deadline, a dial
 // refused, a body framed by Content-Length and by the close, the SSE
 // line rules, and a relay that reads events off one stream and writes
-// them on to its own.
+// them on to its own. Last, the bounded reads (`event_within`,
+// `chunk_within`): a stream that goes silent fails each with `idle` and
+// stays open, the next read carrying on where it was, a partial event
+// held across the silence; the deadline still ends a silent stream.
 
 locus Streams {
     params {
@@ -101,6 +104,25 @@ locus Streams {
             w.event(
                 std::http::SseEvent { data: std::http::header(req, "Authorization") },
             ) or discard;
+            return w.end();
+        }
+        if req.path == "/quiet-sse" {
+            // one event, half of the next, 1.5 s of silence, then the rest
+            // and one more; framed by the close
+            let s = std::io::tcp::Stream { conn_fd: req.conn_fd };
+            s.send(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                    + "data: one\n\ndata: tw",
+            ) or discard;
+            std::time::sleep(1500ms);
+            s.send("o\n\ndata: three\n\n") or discard;
+            return std::http::Response { status: 200, body: "", takeover_raw: true };
+        }
+        if req.path == "/quiet-chunks" {
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd };
+            w.chunk("a") or discard;
+            std::time::sleep(1500ms);
+            w.chunk("b") or discard;
             return w.end();
         }
         if req.path == "/mark" {
@@ -332,6 +354,91 @@ main locus App {
         kind = "";
         x.event() or { kind = err.kind; std::http::SseEvent { data: "" } };
         std::test::assert_eq_str(kind, "end", "no data, no event; the unfinished one is dropped");
+
+        // ---- a bounded wait: silence is `idle`, and the stream goes on
+        let q = std::http::SseReader { req: request_to(base + "/quiet-sse"), timeout_ms: 0 };
+        std::test::assert_eq_str(
+            (q.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "one",
+            "the event before the silence",
+        );
+        let mut idles = 0;
+        let mut next = "";
+        while next == "" && idles < 50 {
+            kind = "";
+            let e = q.event_within(200) or {
+                kind = err.kind;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                idles = idles + 1;
+            } else {
+                std::test::assert_eq_str(kind, "", "only idle while silent");
+                next = e.data;
+            }
+        }
+        std::test::assert(idles >= 3, "the silence read as idle: " + to_string(idles));
+        std::test::assert_eq_str(next, "two", "the event split across the silence, whole");
+        std::test::assert_eq_str(
+            (q.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "three",
+            "the next event",
+        );
+        kind = "";
+        q.event_within(200) or { kind = err.kind; std::http::SseEvent { data: "" } };
+        std::test::assert_eq_str(kind, "end", "the stream's end, after the idles");
+
+        // ---- the deadline still ends a silent stream read within bounds
+        let t1 = std::time::monotonic_ns();
+        let held = std::http::SseReader { req: request_to(base + "/held"), timeout_ms: 700 };
+        std::test::assert_eq_str(
+            (held.event_within(200) or std::http::SseEvent { data: "!" }).data,
+            "early",
+            "the event before the hold",
+        );
+        let mut held_idles = 0;
+        kind = "idle";
+        detail = "";
+        while kind == "idle" && held_idles < 50 {
+            held.event_within(200) or {
+                kind = err.kind;
+                detail = err.detail;
+                std::http::SseEvent { data: "" }
+            };
+            if kind == "idle" {
+                held_idles = held_idles + 1;
+            }
+        }
+        let held_took = (std::time::monotonic_ns() - t1) / 1000000;
+        std::test::assert(held_idles >= 1, "idle while the deadline was ahead");
+        std::test::assert_eq_str(kind, "recv_failed", "the deadline still ends the stream");
+        std::test::assert(
+            std::str::contains(detail, "timeout: no complete response within 700 ms"),
+            "the deadline's detail: " + detail,
+        );
+        std::test::assert(held_took < 1500, "ended at its deadline: " + to_string(held_took));
+
+        // ---- the same for chunks, and an unbounded read after an idle one
+        let k = std::http::BodyReader { req: request_to(base + "/quiet-chunks"), timeout_ms: 0 };
+        std::test::assert_eq_str(
+            text(k.chunk_within(200) or b"!"),
+            "a",
+            "the chunk before the silence",
+        );
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "idle", "silence is idle");
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "idle", "and idle again, the stream open");
+        std::test::assert_eq_str(
+            text(k.chunk() or b"!"),
+            "b",
+            "an unbounded read after a bounded one waits for the next chunk",
+        );
+        kind = "";
+        k.chunk_within(200) or { kind = err.kind; b"" };
+        std::test::assert_eq_str(kind, "end", "the end, read within bounds");
 
         std::io::tcp::stop(self.srv.listener);
     }
