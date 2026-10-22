@@ -202,25 +202,27 @@ fn api() {
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
-        573,
-        575,
+        581,
+        583,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
         applied_at  does={syscall,env,alloc}
+        habitat_allocate_forge  does={syscall,block,env,alloc}
         habitat_graft  does={syscall,block,env,alloc}
         habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}
+        observe_row  does={syscall,block,alloc}
         placed_body  does={env,alloc}
         ",
     );
@@ -243,8 +245,8 @@ fn host() {
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        548,
-        554,
+        558,
+        565,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}
@@ -326,6 +328,11 @@ fn host() {
         fleet_export  does={syscall,block,env,alloc}
         fleet_export_at  does={syscall,block,env,alloc}
         fleet_rel_of  does={syscall,block,env,alloc}
+        forge_kind  does={syscall,env,alloc}
+        forge_name  does={syscall,env,alloc}
+        forge_token_slot  does={syscall,env,alloc}
+        forgejo_exec  does={syscall,block,env,alloc}
+        forgejo_healthy  does={syscall,block,time,env,alloc}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
         genome_candidate  does={syscall,block,alloc}
@@ -367,6 +374,7 @@ fn host() {
         nerves_urls  does={syscall,block,alloc}
         node_main  does={syscall,env,alloc,stdio}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        oidc_issuer  does={syscall,block,alloc}
         organism_here  does={syscall,block,time,env,alloc}
         organism_secrets  does={syscall,block,alloc}
         own_nerves  does={syscall,block,env,alloc}
@@ -375,6 +383,7 @@ fn host() {
         ownership_graph_here  does={syscall,env,alloc}
         ownership_note  does={syscall,env,alloc}
         postgres_secrets_path  does={syscall,block,env,alloc}
+        profile_name  does={syscall,block,time,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
         record_genesis_verb  does={syscall,block,env,alloc,secret_use}
