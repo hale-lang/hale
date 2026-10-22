@@ -30,7 +30,7 @@ Every built-in effect class name is reserved by the compiler (redeclaring `effec
 | `spawn` | Instantiating a locus. | `Worker { }` |
 | `recursion` | A direct or mutual cycle in the call graph. | Any recursive function chain |
 | `alloc` | Dynamic allocation in the locus arena (strings, non-elided records, collection growth). | `"a" + "b"`, `Buf { n: 1 }` |
-| `secret_use` | Compiler-owned class on privileged operations over confined secret material ([Verification](./verification.md#secrets-confine-classify-claim)). | `std::secret::Signer.sign` |
+| `secret_use` | Compiler-owned class on privileged operations over confined secret material ([Verification](./verification.md#5-secret-confinement-sealed--stdsecret)). | `std::secret::Signer.sign` |
 | `client(S)` | Calling an external API surface `S` bound via `api::client` (`client(*)` matches all consumed surfaces). | `self.shelf.get_item(req)` |
 
 ### Effect & Contract Decorators

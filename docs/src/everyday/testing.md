@@ -129,5 +129,5 @@ If a single-pool test exhibits flakiness, the nondeterminism comes from an exter
 
 ## Runtime Invariants (`closure`) & Benchmarks (`hale bench`)
 
-- **Continuous runtime invariants**: Unit tests assert point-in-time values. To assert stateful invariants that must hold continuously across a locus's lifetime (such as `"debits == credits"` or `"len <= capacity"`), declare [invariant closures](../services/failure.md#declaring-an-invariant-closure) on the locus (see [Verification](../verification.md)).
+- **Continuous runtime invariants**: Unit tests assert point-in-time values. To assert stateful invariants that must hold continuously across a locus's lifetime (such as `"debits == credits"` or `"len <= capacity"`), declare [invariant closures](../services/failure.md#declaring-invariants-closure) on the locus (see [Verification](../verification.md)).
 - **Microbenchmarks (`hale bench`)**: Name benchmark files `*_bench.hl` and define `bench_<name>` functions. `hale bench` calibrates iteration counts automatically and reports `ns/op` and `allocs/op`. If a benchmark function takes a fixture parameter (`fn bench_parse(f: Fixture)`), define a matching `fn setup_parse() -> Fixture`; the runner builds the fixture before each batch outside the timed region.

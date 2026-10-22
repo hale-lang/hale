@@ -206,7 +206,7 @@ Because mechanical evidence totals at most `8` (`1 + 1 + 2 + 2 + 2`) and a fresh
 
 The `review_policy` maps the disposition and change metadata to a required authority rank (`board` > `leader` > `supervisor` > `reviewer`). Under `dna::OrgPolicy`, the Board is required for all hard boundaries, the four Board change classes, and any `escalate` disposition; all other Reviews within the grant are assigned to the `leader` (which evaluates the candidate via an LLM call and records its reasoning in the record).
 
-When the Postgres memory graph defines active `reviews` edges for the touched files and those reviewer positions are held by people, those human signers take precedence and the Leader never decides the Review ([Route and signers](./head.md#route-and-signers)).
+When the Postgres memory graph defines active `reviews` edges for the touched files and those reviewer positions are held by people, those human signers take precedence and the Leader never decides the Review ([Route and signers](./head.md#signer-routing-hale-dna-route)).
 
 ### Post-Review Mode for Trusted Refactors (`dna::PostReviewRefactors`)
 

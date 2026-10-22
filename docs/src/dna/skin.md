@@ -126,7 +126,7 @@ hale dna secret set OIDC_CLIENT_SECRET
 
 In Hale code, credentials are never stored in `String` fields or variables. Instead, components hold a `std::secret::Credential { vault: … }`—a `@sealed` locus that resolves the vault entry on demand and reveals its contents only inside the expression that writes to the network wire.
 
-The compiler enforces that `.reveal_text()` is consumed immediately in the same statement by a wire write, a whole-value equality check, or a `@secret` parameter; it cannot be bound to a `let` variable, stored in a struct/locus field, returned from a function, or branched on ([Verification: Secrets](../verification.md#secrets-confine-classify-claim)).
+The compiler enforces that `.reveal_text()` is consumed immediately in the same statement by a wire write, a whole-value equality check, or a `@secret` parameter; it cannot be bound to a `let` variable, stored in a struct/locus field, returned from a function, or branched on ([Verification: Secrets](../verification.md#5-secret-confinement-sealed--stdsecret)).
 
 For example, `HostedCredential` in `dna/core/models.hl` reveals a model API key directly inside the outbound HTTP request header:
 
@@ -161,7 +161,7 @@ If `.ready()` returns `false` (the vault slot is empty), the model router skips 
 
 ## Closures and Violations
 
-When a runtime invariant closure ([When Things Fail](../services/failure.md#declaring-an-invariant-closure)) fails in a component that cannot recover in place, the owning supervisor absorbs the failure, writes a `violation.recorded` row (`{kind, subject, owner, detail}`) to the record, and executes a clean recovery action:
+When a runtime invariant closure ([When Things Fail](../services/failure.md#declaring-invariants-closure)) fails in a component that cannot recover in place, the owning supervisor absorbs the failure, writes a `violation.recorded` row (`{kind, subject, owner, detail}`) to the record, and executes a clean recovery action:
 
 | Violation Kind | Subject | Owner | Trigger & Recovery Action |
 | --- | --- | --- | --- |

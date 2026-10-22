@@ -507,7 +507,7 @@ consumed:      count subscribers(topic t::Done) >= 1;
 capped:        count subscribers(topic t::Audit) <= 2;
 ```
 
-Counts the number of **distinct declared loci** that publish or subscribe to the topic. To count replicated runtime instances across a multi-binary deployment, use `count` inside a `fleet locus` ([Multi-Binary Services](./services/multi-binary.md#checking-the-whole-deployment)).
+Counts the number of **distinct declared loci** that publish or subscribe to the topic. To count replicated runtime instances across a multi-binary deployment, use `count` inside a `fleet locus` ([Multi-Binary Services](./services/multi-binary.md#multi-binary-verification-fleet-locus)).
 
 ---
 
@@ -847,4 +847,4 @@ Key artifact sections:
 - **Specification**: [`spec/verification.md § Claims`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).
 - **Reusable Claimsets**: [Constitutions](./constitutions.md).
 - **Program Model**: [The Model](./the-model.md).
-- **Multi-Binary Fleet Claims**: [Multi-Binary Services](./services/multi-binary.md#checking-the-whole-deployment).
+- **Multi-Binary Fleet Claims**: [Multi-Binary Services](./services/multi-binary.md#multi-binary-verification-fleet-locus).
