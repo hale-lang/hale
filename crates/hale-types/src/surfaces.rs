@@ -2359,6 +2359,7 @@ fn serve_laws_of(
                 }
             }
             let address = crate::rpc_expand::listener_address(l, site.transport);
+            let fallback = crate::rpc_expand::rest_fallback_of(l, site.transport);
             for c in &chains {
                 if by_main.get(c.main.as_str()).is_some_and(|p| p.len() > 1) {
                     continue;
@@ -2378,8 +2379,32 @@ fn serve_laws_of(
                         continue;
                     }
                 }
+                // an `http::Rest` fallback is read off the server as its
+                // address is: a method of it cannot be (a holder that is its
+                // own handler, `fallback: self`, can)
+                if let Some(fb) = &fallback {
+                    if let Err(what) = crate::rpc_expand::fallback_for_main(c, fb) {
+                        diags.push(Diag::ty(
+                            fb.span(),
+                            format!(
+                                "exposure `{name}` held by `{}`: its listener is `{}`'s, born after `self.{root}`, so \
+                                 its `fallback:` is read off `{}` as it was built (`self.{}.<param>`, or `self.{}` \
+                                 for `{}` itself), and {what} cannot be read that way; hold the handler as a param \
+                                 of `{}` (spec/api.md § Serving)",
+                                l.name.name,
+                                c.main,
+                                l.name.name,
+                                c.path(),
+                                c.path(),
+                                l.name.name,
+                                l.name.name
+                            ),
+                        ));
+                    }
+                }
                 if let Some(addr) = &address {
-                    if crate::rpc_expand::reads_holder(addr) {
+                    let fallback_reads = fallback.as_ref().is_some_and(crate::rpc_expand::reads_holder);
+                    if crate::rpc_expand::reads_holder(addr) || fallback_reads {
                         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
                         let window = crate::listener_window::Window::new(&programs, loci, effects(), &bundle.import_renames, typed_bodies, placement);
                         let sites = window.constructions_of(&programs, &c.main);

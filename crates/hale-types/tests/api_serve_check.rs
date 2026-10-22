@@ -1038,3 +1038,57 @@ fn an_imported_main_thread_handler_is_judged() {
     );
     assert_eq!(errs, Vec::<String>::new());
 }
+
+/// An `http::Rest` exposure held below the main locus keeps its
+/// `fallback:`: the listener is the main locus's and reads the handler off
+/// the holder as built — a field of it, or the holder itself
+/// (`fallback: self`) — and a fallback it cannot read that way (a method of
+/// the holder) is refused, never served as no fallback.
+#[test]
+fn a_held_rest_exposure_keeps_its_fallback_or_is_refused() {
+    let src = |fallback: &str| {
+        format!(
+            "
+type Req {{ n: Int; }}
+type Res {{ n: Int; }}
+locus Orders {{ fn place(r: Req) -> Res {{ return Res {{ n: r.n }}; }} }}
+api Public {{ rpc Orders::place at \"POST /orders\"; }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: \"bearer\", name: \"\" }}; }}
+    fn refused() -> String {{ return \"no\"; }}
+}}
+locus Front {{
+    fn handle(req: std::http::Request) -> std::http::Response {{ return std::http::Response {{ status: 200, body: \"\" }}; }}
+}}
+locus Server {{
+    params {{
+        orders: Orders = Orders {{ }};
+        tokens: Tokens = Tokens {{ }};
+        front: Front = Front {{ }};
+        web: api::Exposure = api::serve(Public, http::Rest {{ bind: \"127.0.0.1:0\", codec: json, principals: self.tokens, fallback: {fallback} }}, as: \"web\", bound: 8, on_full: refuse);
+    }}
+    fn make() -> Int {{ return 1; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{ return std::http::Response {{ status: 200, body: \"\" }}; }}
+}}
+main locus App {{
+    params {{ server: Server = Server {{ }}; }}
+    placement {{ server: cooperative(pool = edge) where async_io; }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"
+        )
+    };
+    // a field of the holder, with a constant address: the listener is born
+    // after the holder for its fallback, so the default reads it as built
+    assert_eq!(errors(&src("self.front")), Vec::<String>::new());
+    // the holder itself, its own handler
+    assert_eq!(errors(&src("self")), Vec::<String>::new());
+    // a method of the holder cannot be read off it as built: refused
+    let errs = errors(&src("self.make()"));
+    assert!(
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its listener is `App`'s, born after `self.server`, so its `fallback:` is read off `Server`")
+            && e.contains("`self.make(…)`, a method of the holder")),
+        "{errs:#?}"
+    );
+}

@@ -1,0 +1,125 @@
+// tests/hale/rest_fallback_self_test.hl — a holder below the main locus
+// that is its own handler: `fallback: self` falls back to the holder,
+// which the main locus's listener reads as `self.<holder>`, born after it.
+// It is served, never compiled to an exposure with no fallback.
+
+type Health { status: String; }
+
+api Shop {
+    rpc Probe::live at "GET /healthz";
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-user" { return std::api::Principal { mode: "bearer", name: "user" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Probe {
+    fn live() -> Health { return Health { status: "live" }; }
+}
+
+// a holder that is its own handler
+locus OwnHolder {
+    params {
+        tokens: Tokens = Tokens { };
+        probe: Probe = Probe { };
+        web: api::Exposure = api::serve(
+            Shop,
+            http::Rest {
+                bind: "127.0.0.1:0",
+                codec: json,
+                principals: self.tokens,
+                fallback: self,
+            },
+            as: "own",
+            bound: 8,
+            on_full: refuse
+        );
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: "own " + req.path };
+    }
+}
+
+fn get(url: String) -> std::http::ClientResponse {
+    let u = std::http::parse_url(url) or std::http::Url { };
+    let req = std::http::ClientRequest {
+        method: "GET",
+        url: u,
+        headers: "Authorization: Bearer t-user",
+        body: b"",
+    };
+    return std::http::request(req) or std::http::ClientResponse {
+        status: -1,
+        headers: "",
+        body: b"",
+    };
+}
+
+fn text(r: std::http::ClientResponse) -> String {
+    return std::str::from_bytes(r.body);
+}
+
+type Done { ok: Bool; }
+type Go { address: String; }
+
+locus Driver {
+    params {
+        own: String = "";
+    }
+    bus {
+        publish "own.done" of type Done;
+        subscribe "own.go" as on_go of type Go;
+    }
+    // the address once the listener has bound it: main reads it off the
+    // holder and sends it
+    fn on_go(g: Go) {
+        self.own = g.address;
+        let live = get("http://" + self.own + "/healthz");
+        std::test::assert_eq_int(live.status, 200, "the row answers: " + text(live));
+        std::test::assert_eq_str(
+            text(get("http://" + self.own + "/y")),
+            "own /y",
+            "the holder itself",
+        );
+        "own.done" <- Done { ok: true };
+    }
+}
+
+main locus App {
+    params {
+        own: OwnHolder = OwnHolder { };
+        driver: Driver = Driver { };
+        finished: Bool = false;
+    }
+    bus {
+        subscribe "own.done" as on_done of type Done;
+        publish "own.go" of type Go;
+    }
+    placement {
+        own: cooperative(pool = edge) where async_io;
+        driver: cooperative(pool = client) where async_io;
+    }
+    run() {
+        let mut i = 0;
+        while std::str::ends_with(self.own.web.address, ":0") && i < 3000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        "own.go" <- Go { address: std::str::clone(self.own.web.address) };
+        i = 0;
+        while !self.finished && i < 3000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        std::test::assert(self.finished, "the client ran to its end");
+    }
+    fn on_done(d: Done) {
+        self.finished = d.ok;
+    }
+}
+
+fn main() { App { }; }

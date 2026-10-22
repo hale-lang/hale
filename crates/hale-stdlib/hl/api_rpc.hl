@@ -2197,6 +2197,19 @@ locus __StdApiHttpPeer {
         published: Bool = false;
         answered: Bool = false;
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // an `http::Rest` fallback (spec/api.md § The REST transport, `fallback`): a request
+        // whose path no row serves goes to `fallback` on this connection
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: __StdApiRestFallback = __StdApiRestFallback { };
+        // what serves it: `api_rest_fallback.hl`'s, appended only to a
+        // program that gives a fallback, so a program that gives none
+        // calls no handler from here
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
     }
     bus {
         subscribe __ApiHttpOutT as on_out where key == self.route;
@@ -2277,6 +2290,29 @@ locus __StdApiHttpPeer {
                         have = body.len() - (head_end + 4);
                     }
                 }
+                if self.open
+                    && have >= want
+                    && self.has_fallback
+                    && !__api_rest_serves(self.routes, head.path)
+                {
+                    // no row serves the path: the program's own handler
+                    // answers it on this connection, as a Server's would
+                    self.published = true;
+                    self.answered = true;
+                    let whole = body.finish() or std::bytes::from_string("");
+                    let mut req = std::http::parse_request(
+                        std::str::from_bytes(std::bytes::slice(whole, 0, head_end + 4 + want)),
+                    );
+                    req.conn_fd = self.fd;
+                    // a name no program binds: a program's own `serve`
+                    // would otherwise be the one called
+                    let __api_rest_fallback_fn = self.serve_fallback;
+                    if __api_rest_fallback_fn(self.fallback, self.stream, req) {
+                        // taken over: the connection is the handler's now
+                        self.fd = -1;
+                    }
+                    self.open = false;
+                }
                 if self.open && have >= want {
                     // the request is whole: the exposure answers it, and the
                     // wait for the answer is not on the clock of a read
@@ -2353,10 +2389,27 @@ locus __StdApiHttpPeer {
 locus __StdApiHttpConns {
     params {
         tid: Int = 0;
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: __StdApiRestFallback = __StdApiRestFallback { };
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
     }
     fn serve(c: __StdIoTcpAccepted) {
         let n = ((c.seq - 1) % 16777215) + 1;
-        __StdApiHttpPeer { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: c.fd };
+        __StdApiHttpPeer {
+            conn: n,
+            tid: self.tid,
+            route: self.tid * 4294967296 + n,
+            fd: c.fd,
+            routes: self.routes,
+            has_fallback: self.has_fallback,
+            fallback: self.fallback,
+            serve_fallback: self.serve_fallback,
+        };
     }
     accept(p: __StdApiHttpPeer) { }
     release(p: __StdApiHttpPeer) { }
@@ -2401,6 +2454,18 @@ locus __StdApiHttpListener {
         bind: String = "";
         what: String = "http::Rpc";
         tid: Int = 0;
+        // an `http::Rest` exposure's route table and fallback, written by
+        // the compiler from the transport literal (spec/api.md § The REST transport, `fallback`)
+        routes: String = "";
+        has_fallback: Bool = false;
+        fallback: std::http::Handler = __StdApiRestNoFallback { };
+        serve_fallback: fn (
+            __StdApiRestFallback,
+            std::io::tcp::Stream,
+            std::http::Request
+        ) -> Bool = __api_rest_no_fallback;
+        // the handler as the connections hold it
+        held: __StdApiRestFallback = __StdApiRestFallback { h: self.fallback };
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
@@ -2410,7 +2475,13 @@ locus __StdApiHttpListener {
         listener: String = "";
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
         conns: __StdIoTcpConnections = __StdIoTcpConnections {
-            handler: __StdApiHttpConns { tid: self.tid },
+            handler: __StdApiHttpConns {
+                tid: self.tid,
+                routes: self.routes,
+                has_fallback: self.has_fallback,
+                fallback: self.held,
+                serve_fallback: self.serve_fallback,
+            },
             armed: false,
         };
     }
@@ -2435,7 +2506,13 @@ locus __StdApiHttpListener {
         self.relay.armed = true;
         self.conns = __StdIoTcpConnections {
             listener: self.listener,
-            handler: __StdApiHttpConns { tid: self.tid },
+            handler: __StdApiHttpConns {
+                tid: self.tid,
+                routes: self.routes,
+                has_fallback: self.has_fallback,
+                fallback: self.held,
+                serve_fallback: self.serve_fallback,
+            },
         };
     }
     run() {
@@ -2958,6 +3035,59 @@ type __StdApiRestPending {
 @form(vec)
 locus __StdApiRestTable {
     capacity { heap items of __StdApiRestPending; }
+}
+
+/// The `http::Rest` fallback as a connection holds it: the program's
+/// handler (`h`). Only `api_rest_fallback.hl`, appended to a program that
+/// gives a fallback, calls it.
+locus __StdApiRestFallback {
+    params {
+        h: std::http::Handler = __StdApiRestNoFallback { };
+    }
+}
+
+/// What a REST transport with no fallback holds in its place; never called
+/// (`has_fallback` is false wherever it is).
+locus __StdApiRestNoFallback {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 404, body: "" };
+    }
+}
+
+/// Whether a row of `routes` serves the request target's path, by any
+/// method (a path a row serves keeps Rest's own `405`, `OPTIONS` and CORS),
+/// or the path is the exposure's `/.description`.
+fn __api_rest_serves(routes: String, target: String) -> Bool {
+    let path = std::str::replace(
+        std::str::replace(__http_path_only(target), "%3A", ":"),
+        "%3a",
+        ":",
+    );
+    if path == "/.description" { return true; }
+    let probe = std::http::RouteParams { qs: "" };
+    let mut rest = routes;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let mut line = rest;
+        if nl >= 0 {
+            line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        if __http_match_pattern_into(__api_rest_cell(line, 1), path, probe) { return true; }
+    }
+    return false;
+}
+
+/// What a connection holds in place of a fallback's server when the
+/// exposure has no fallback; never called (`has_fallback` is false).
+fn __api_rest_no_fallback(
+    f: __StdApiRestFallback,
+    s: std::io::tcp::Stream,
+    req: std::http::Request
+) -> Bool {
+    return false;
 }
 
 /// The REST transport (`std::api::http::Rest`; `http::Rest` at a serve

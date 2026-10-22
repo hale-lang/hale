@@ -311,6 +311,7 @@ fn every_named_sig_type_is_declared_by_the_stdlib() {
         hale_stdlib::OBSERVE_SOURCE,
         hale_stdlib::API_CLIENT_SOURCE,
         hale_stdlib::HTTP_READ_SOURCE,
+        hale_stdlib::API_REST_FALLBACK_SOURCE,
     ] {
         let program = parse_source(source)
             .expect("the bundled stdlib source must parse");

@@ -1039,6 +1039,64 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   `unauthenticated` as over `http::Rpc`. It is the transport's knob and
   never the surface's: it is how a health probe is a row (`GET /healthz`)
   that needs no token.
+- **`fallback`** (2026-10-21). `fallback: h` names a
+  handler the program owns, any locus that satisfies `std::http::Handler`
+  (`fn handle(req: std::http::Request) -> std::http::Response`, the
+  interface `std::http::Server` dispatches to); a value that does not is
+  refused at the literal (`locus `X` does not satisfy interface
+  `std::http::Handler``). A request whose path no row serves goes to it,
+  on the same listener and the same connection, instead of `404`:
+  - the connection reads the request as it reads any (the head within
+    64 KiB, the body within 1 MiB and its `Content-Length`, the 10 s to
+    read it), then matches its path against the route table; a path no
+    route serves by any method (and that is not `/.description`) is the
+    fallback's, by every method, `OPTIONS` included;
+  - the handler gets the request untouched (`std::http::parse_request`
+    of the bytes received, its target with the query, its headers and
+    body, `conn_fd` the connection), and its `Response` is written as
+    `std::http::Server` writes one: whole, the last chunk of a streamed
+    body (a `BodyWriter` or `SseWriter` on `req.conn_fd`), the head only
+    for a `takeover` and nothing for a `takeover_raw`, after which the
+    connection is the handler's. The connection's 5 s receive and send
+    timeouts are still armed, as under the Server;
+  - **a path a row serves stays Rest's** by every method: another method
+    is the `405` with `Allow`, and `OPTIONS` and CORS of it are the
+    transport's. Only an unmatched path reaches the fallback;
+  - **the exposure's gate is the rows'**: the bearer, `anonymous`, the
+    role source, `requires`, `cors`, the digest header and the queue
+    judge only a request a row serves. The fallback reads no credential
+    and refuses nothing for the exposure: its own authentication, its
+    own CORS and its own limits are its handler's;
+  - **placement:** the fallback runs on the listener's connections, so
+    it is placed where the listener is: the exposure's own placement row
+    places the listener (§ The HTTP transport), and the handler's field
+    goes on the same `where async_io` pool. A handler placed anywhere else
+    is refused as a cross-pool alias (spec/types.md §
+    "Single-threaded-method invariant (F.31)"). On that pool each
+    connection is a coroutine, so a stream parks only its own;
+  - the compiler hands the handler, and the route table, to the listener
+    it adds; the transport literal the exposure holds keeps neither. The
+    call of the handler is in `api_rest_fallback.hl`, which joins only a
+    program that gives a fallback, so a REST, RPC or MCP exposure without
+    one calls no `std::http` handler from its connections and its
+    program's analyses are unchanged.
+  - **held below the main locus:** the listener is the main locus's and
+    reads the fallback off the holder as built, as it reads the address
+    (§ Serving): `fallback: self.front` is `self.<holder>.front`, and
+    `fallback: self`, a holder that is its own handler, is
+    `self.<holder>`. A fallback that reads the holder puts the listener
+    after the holder in the main locus's birth whatever its address
+    reads. A fallback that cannot be read that way (a method of the
+    holder, `self.make()`) is refused at the serve site; it is never
+    served as an exposure with no fallback.
+
+  No `fallback` (the default) leaves everything as it was: a path no
+  route serves is `404`.
+
+  ```hale,fragment
+  web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, fallback: self.data_plane }, as: "web", bound: 64, on_full: refuse);
+  // placement { web: cooperative(pool = edge) where async_io; data_plane: cooperative(pool = edge) where async_io; }
+  ```
 - **The description** is `GET /.description`, as over `http::Rpc`;
   `hale api export --surface NAME` writes the OpenAPI form with each
   routed row at its method and path (path parameters as `in: path`,

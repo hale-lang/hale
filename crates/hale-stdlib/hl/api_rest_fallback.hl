@@ -1,0 +1,39 @@
+// Hale stdlib — the `http::Rest` fallback's server (spec/api.md § The
+// REST transport, `fallback`).
+//
+// Appended (`hale_types::rpc_expand`) only to a program whose `http::Rest`
+// gives a `fallback:`: the call of the program's handler lives here, so a
+// program that serves no fallback calls no `std::http` handler from its
+// listener's connections. The listener hands this fn to each connection
+// (`serve_fallback`), which calls it with a request no row's path matches.
+
+// Ask the handler `f` holds and write its answer on `s` as `std::http::Server` writes a
+// handler's: nothing for a raw takeover, the status line and headers for a
+// takeover (true: the connection is the handler's now), the last chunk of
+// a streamed body, else the whole response.
+fn __api_rest_fallback_serve(
+    f: __StdApiRestFallback,
+    s: std::io::tcp::Stream,
+    req: std::http::Request
+) -> Bool {
+    let resp = f.h.handle(req);
+    if resp.takeover_raw { return true; }
+    if resp.takeover {
+        let extra = if len(resp.headers) > 0 {
+            resp.headers + "\r\n"
+        } else {
+            ""
+        };
+        s.send(
+            "HTTP/1.1 " + to_string(resp.status) + " " + __status_phrase(resp.status) + "\r\n"
+                + extra + "\r\n",
+        ) or discard;
+        return true;
+    }
+    if resp.streamed {
+        s.send("0\r\n\r\n") or discard;
+        return false;
+    }
+    std::http::write_response(s, resp);
+    return false;
+}

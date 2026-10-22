@@ -809,6 +809,71 @@ surface's digest and in the description, so a client whose digest matches
 never meets a path that moved. A surface without routes keeps its digest;
 `http::Rpc` and the Unix socket serve a routed surface by member.
 
+#### Routes of your own beside the rows: `fallback`
+
+Some endpoints are not calls: an event stream, a token stream relayed
+from a model, a WebSocket that takes the connection over. Serving them
+from a second `std::http::Server` puts them on another port and another
+origin, and a UI that talks to both now needs CORS. Instead, give the
+REST transport a `fallback`, a `std::http` handler you own, and it
+answers every path no row serves on the same listener:
+
+```hale,fragment
+locus DataPlane {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/v1/events" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd };
+            w.event(std::http::SseEvent { event: "ready", data: "{}" }) or discard;
+            return w.end();
+        }
+        return std::http::Response { status: 404, body: "no such path" };
+    }
+}
+
+main locus Svc {
+    params {
+        bearer: Tokens = Tokens { };
+        data_plane: DataPlane = DataPlane { };
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", codec: json, principals: self.bearer, fallback: self.data_plane }, as: "web", receivers: { Probe: self.probe, Items: self.items }, bound: 64, on_full: refuse);
+    }
+    placement {
+        web: cooperative(pool = edge) where async_io;
+        data_plane: cooperative(pool = edge) where async_io;
+    }
+}
+```
+
+The handler is any locus with `fn handle(req: std::http::Request) ->
+std::http::Response`, the one a `std::http::Server` takes, and it gets the
+request exactly as it arrived: method, path with its query, headers,
+body, and `req.conn_fd`. Whatever works in a Server's handler works here:
+a `BodyWriter` or `SseWriter`, a `takeover`. Name anything else and the
+check says it `does not satisfy interface std::http::Handler`.
+
+Three things to know:
+
+- **Only unmatched paths reach it.** A path a row serves stays the
+  transport's for every method: `POST /healthz` when the row is `GET` is
+  still `405` with `Allow`, and its `OPTIONS` and CORS are still
+  answered from the table. Everything else, by any method, is the
+  fallback's, including its own `404`.
+- **It is not behind the exposure's gate.** The bearer, `anonymous`,
+  the roles and `cors:` judge the rows. The fallback sees the
+  `Authorization` header like any other and decides for itself, so a
+  route there that needs a token checks it.
+- **Place it with the listener.** It runs on the listener's connections,
+  so it goes on the pool the exposure's placement row names, as above. A
+  handler on another pool is refused as a cross-pool alias. On a `where
+  async_io` pool each connection is a coroutine, so a long stream holds
+  only its own.
+- **In a locus below main, it is read off that locus.** An exposure a
+  locus your main holds serves keeps its fallback: a field of that locus
+  (`fallback: self.front`), or the locus itself when it is its own handler
+  (`fallback: self`). A method call there (`fallback: self.make()`) is
+  refused at the serve site; hold the handler as a param instead.
+
+Without a `fallback`, a path no row serves is `404`, as before.
+
 ### Serving to an MCP host
 
 `mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the
