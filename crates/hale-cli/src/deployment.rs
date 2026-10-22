@@ -147,14 +147,14 @@ pub fn derive_deployment(path: &Path) -> Result<Deployment, Vec<String>> {
         Config::check(false, false),
     )
     .map_err(|_| vec![format!("{}: the fleet seed does not load", path.display())])?;
-    let (Ok(top), Ok(entry)) = (snap.demand_scope(), snap.demand_entry()) else {
+    let Ok(top) = snap.demand_scope() else {
         return Err(vec![format!(
             "{}: the fleet seed does not resolve",
             path.display()
         )]);
     };
     let bundle = snap.bundle();
-    let (source, diags) = hale_types::fleet::fleet_source(&bundle, top, entry);
+    let (source, diags) = hale_types::fleet::fleet_source(&bundle, top);
     let Some(source) = source else {
         let mut errs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
         if errs.is_empty() {

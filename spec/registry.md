@@ -1367,7 +1367,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Invariants.**
 
-- a fleet is a locus kind, not a typed param: it is checked as one graph and never runs; a fleet seed declares no `main locus` and no `fn main`, and `hale build` refuses it
+- a fleet is a locus kind, not a typed param: it is checked as one graph and never runs; a fleet seed holds its fleet and its imports and nothing else, and `hale build` refuses it before any entry path is chosen
 - a fleet's params are other seeds' `main` loci, named through the fleet seed's imports; a param takes no value
 - a route is derived, never written: a binding names a subject with a declared `subject:`, and its publishers and subscribers are the instances whose artifacts publish and subscribe that subject
 - an instance joins a route only through its own main's binding of the subject, over the transport kind the fleet's binding names; a binding with no publisher or no subscriber is refused

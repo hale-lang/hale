@@ -1409,15 +1409,19 @@ It is a locus kind and not a typed param because a fleet is checked as
 one graph (the routes between its instances, the claims across them)
 and never runs itself; a param is a thing a running program holds.
 `hale check` judges its laws and `hale build` refuses it (`fleet locus
-Prod` is checked, never built): a fleet runs as its instances, each
-built from its own seed.
+Prod` is checked, never built) before it chooses any entry path, a
+`fn main` or an export-only wasm module alike: a fleet runs as its
+instances, each built from its own seed. So a fleet seed holds its
+fleet and its imports and nothing else: the check refuses any other
+declaration of the seed's own (a `fn`, an `@export fn`, a `locus`, a
+`main locus`, a `type`, a `target`, …), since nothing in it is ever
+built; a program to build is a seed of its own.
 
 - **params** are the instances: each names another seed's `main locus`
   through the fleet seed's import (`alias::Main`) and takes no value. A
   param naming a locus that is not its seed's main, a locus of the
-  fleet seed itself, or nothing an import declares is refused. A fleet
-  seed declares no `main locus` and no `fn main` of its own, and at
-  most one fleet.
+  fleet seed itself, or nothing an import declares is refused. A seed
+  declares at most one fleet.
 - **placement** is a default per instance, `host("<name>")` or
   `replicas(<n>)` (n ≥ 1). `replicas(n)` deploys n instances,
   `<param>-0` … `<param>-(n-1)`; any other param deploys one instance

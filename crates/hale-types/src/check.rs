@@ -1443,7 +1443,7 @@ pub fn check_bundle_rules(
     check_main_and_bindings(bundle, inputs, &mut diags);
     // Phase 4 (C2): a fleet seed's laws (its instances are imported
     // mains, its bindings name subjects, its claims name instances).
-    diags.extend(crate::fleet::fleet_laws(bundle, top, inputs.entry));
+    diags.extend(crate::fleet::fleet_laws(bundle, top));
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);

@@ -196,3 +196,39 @@ fn a_fleet_is_checked_and_never_built() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A fleet seed holds its fleet and its imports: an `@export` fn and a
+/// `target` beside it are refused by the check, and the build refuses
+/// the seed before it chooses any entry path (the export-only wasm
+/// module included).
+#[test]
+fn a_fleet_seed_holds_nothing_to_build() {
+    let d = std::env::temp_dir().join(format!("hale_fleet_locus_{}_export", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("piece")).unwrap();
+    std::fs::create_dir_all(d.join("deploy")).unwrap();
+    std::fs::write(
+        d.join("piece/main.hl"),
+        "locus Bit { params { n: Int = 0; } }\nmain locus Piece { params { b: Bit = Bit { }; } }\nfn main() { Piece { }; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("deploy/main.hl"),
+        "import \"../piece\" as p;\ntarget wasm { }\nfleet locus Deploy { params { x: p::Piece; } }\n@export fn answer() -> Int { return 42; }\n",
+    )
+    .unwrap();
+    let (ok, out) = hale(&["check", "deploy"], &d);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("`fn answer` beside `fleet locus Deploy`")
+            && out.contains("`target wasm` beside"),
+        "{out}"
+    );
+    let (ok, out) = hale(&["build", "deploy", "--target", "wasm32"], &d);
+    assert!(!ok, "no module is emitted for a fleet seed: {out}");
+    assert!(
+        !d.join("deploy/deploy.wasm").exists() && !d.join("deploy.wasm").exists(),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

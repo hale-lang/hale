@@ -877,9 +877,10 @@ fleet locus Prod {
 }
 ```
 
-- **A fleet seed never runs.** No `main locus`, no `fn main`; `hale
-  build` refuses the seed and builds each instance from its own.
-  **[error]**
+- **A fleet seed holds its fleet and its imports, nothing else.** It
+  never runs: a `fn` (an `@export` one too), a `locus`, a `type` or a
+  `target` beside the fleet is refused, and `hale build` refuses the
+  seed and builds each instance from its own. **[error]**
 - **Bind each end in its own main too.** A route reaches an instance
   only through that instance's binding of the subject, over the same
   transport kind; a topic it does not bind never leaves its process,

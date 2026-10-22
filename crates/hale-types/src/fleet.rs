@@ -128,22 +128,14 @@ fn topic_named<'a>(bundle: &'a Bundle<'_>, name: &str) -> Option<&'a TopicDecl> 
 }
 
 /// The laws a fleet seed obeys. Empty for a bundle with no fleet.
-pub fn fleet_laws(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-) -> Vec<Diag> {
-    fleet_source(bundle, top, entry).1
+pub fn fleet_laws(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
+    fleet_source(bundle, top).1
 }
 
 /// The bundle's fleet as resolved source, with the diagnostics of every
 /// law it breaks. `None` when the bundle declares no fleet, or when a
 /// law is broken (the diagnostics say which).
-pub fn fleet_source(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-) -> (Option<FleetSource>, Vec<Diag>) {
+pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>, Vec<Diag>) {
     let all = fleets(bundle);
     let Some(fl) = all.first().copied() else {
         return (None, Vec::new());
@@ -159,31 +151,62 @@ pub fn fleet_source(
             ),
         ));
     }
-    // A fleet never runs: its seed starts nothing.
-    for m in entry.own() {
-        diags.push(Diag::ty(
-            m.span,
-            format!(
-                "`main locus {}` beside `fleet locus {}`: a fleet seed never runs, its instances \
-                 do, each from its own seed",
-                m.name, fl.name.name
-            ),
-        ));
-    }
+    // A fleet seed holds its fleet and its imports, nothing else: it
+    // never runs, so nothing in it is built — its instances are, each
+    // from its own seed. Its own files are the fleet's directory's (the
+    // instances' seeds sit elsewhere, imported).
+    let dir_of = |span: Span| -> Option<String> {
+        bundle
+            .sources
+            .iter()
+            .find(|f| span.start.0 >= f.base && span.start.0 < f.base + f.len.max(1))
+            .map(|f| {
+                f.path
+                    .rsplit_once('/')
+                    .map(|(d, _)| d.to_string())
+                    .unwrap_or_default()
+            })
+    };
+    let home = dir_of(fl.span);
     for p in bundle.programs.values() {
         for d in flat_decls(&p.items) {
-            if let TopDecl::Fn(f) = d {
-                if f.name.name == "main" {
-                    diags.push(Diag::ty(
-                        f.name.span,
-                        format!(
-                            "`fn main` beside `fleet locus {}`: a fleet seed never runs, its \
-                             instances do, each from its own seed",
-                            fl.name.name
-                        ),
-                    ));
-                }
+            if matches!(d, TopDecl::Fleet(_)) {
+                continue;
             }
+            let own = match &home {
+                Some(h) => dir_of(d.span()).as_ref() == Some(h),
+                // no source map: the seed's own declarations are the ones
+                // no import renamed
+                None => match d {
+                    TopDecl::Locus(l) => !l.imported,
+                    TopDecl::Fn(f) => f.name.name == "main",
+                    _ => false,
+                },
+            };
+            if !own {
+                continue;
+            }
+            let (span, what) = match d {
+                TopDecl::Locus(l) if l.is_main => {
+                    (l.name.span, format!("`main locus {}`", l.name.name))
+                }
+                TopDecl::Locus(l) => (l.name.span, format!("`locus {}`", l.name.name)),
+                TopDecl::Fn(f) => (f.name.span, format!("`fn {}`", f.name.name)),
+                TopDecl::Type(t) => (t.name.span, format!("`type {}`", t.name.name)),
+                TopDecl::Topic(t) => (t.name.span, format!("`topic {}`", t.name.name)),
+                TopDecl::Const(c) => (c.name.span, format!("`const {}`", c.name.name)),
+                TopDecl::Target(t) => (t.name.span, format!("`target {}`", t.name.name)),
+                other => (other.span(), "a declaration".to_string()),
+            };
+            diags.push(Diag::ty(
+                span,
+                format!(
+                    "{what} beside `fleet locus {}`: a fleet seed never runs, its instances do, each \
+                     from its own seed; a fleet seed holds its fleet and its imports, and a program to \
+                     build is a seed of its own",
+                    fl.name.name
+                ),
+            ));
         }
     }
 
