@@ -24,6 +24,7 @@ type RecordIndex {
     ok: Bool = false;
     why: String = "";
     revision: Int = 0;
+    name: String = ""; // the habitat's name (its `habitat.profile` row's), "" for any other record
     purpose: String = "";
     positions: String = "[]";
     codebases: String = "[]";
@@ -401,9 +402,14 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     let mut ratified = "\n";
     let mut retired = "\n";
     let mut proposed = "";
+    let mut habitat_name = "";
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
+        if e.kind == "habitat.profile" {
+            let named = std::json::find_string_field(e.body, "name");
+            habitat_name = if len(named) > 0 { named } else { "local" };
+        }
         if e.kind == "knowledge.ratified" { ratified = ratified + e.entity + "\n"; }
         if e.kind == "knowledge.retired" { retired = retired + e.entity + "\n"; }
         if e.kind == "knowledge.proposed" && len(std::json::find_string_field(e.body, "name")) > 0 {
@@ -462,6 +468,7 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
     return RecordIndex {
         ok: true,
         revision: j.revision(),
+        name: habitat_name,
         purpose: purpose,
         positions: positions.result(),
         codebases: codebases.result(),

@@ -127,6 +127,12 @@ pub struct DnaManifest {
     /// when the heart opts in (`dna::habitat::heart_migrations`).
     #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
     pub migrations: Option<toml::Table>,
+    /// D8: `[[dna.codebase]]` — the codebases the organism works on,
+    /// each attached at its graft with phase 3's fields (`name`, `repo`,
+    /// `branch`, `build`, `test`, `toolchain`;
+    /// `dna::habitat::manifest_codebases` reads them).
+    #[allow(dead_code)] // declared so `deny_unknown_fields` admits it
+    pub codebase: Option<Vec<toml::Table>>,
 }
 
 /// GH #566 F5: the fleet the DNA expresses — its name and fleet seed

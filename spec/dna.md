@@ -1631,6 +1631,11 @@ the toolchain hand a leg works the codebase with (anything but `go`,
 `hale` or `none` is refused); `none` leaves build and test as the opaque
 commands, and `hale` is recorded for the hale hand to select by.
 
+A genome's manifest may list its codebases, `[[dna.codebase]]` in its
+`hale.toml` with the same fields (`name`, `repo`, `branch`, `build`,
+`test`, `toolchain`); the habitat attaches each one at the organism's graft
+as this verb does, once (`spec/habitat.md`, Nurseries and saplings).
+
 A `go` codebase's leg holds a Go hand (`legs::GoToolchain`, beside
 `Toolchain` in `dna/core/legs/hands.hl`, behind the `GoHand` interface and
 `Hands.go`) with three tools added to the hat's `tool_grant`: `go_vet`

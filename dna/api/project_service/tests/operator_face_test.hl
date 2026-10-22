@@ -62,7 +62,7 @@ fn index_call(face: String, jar: String) -> fixture::HttpResponse {
     return fixture::curl(
         "POST",
         face + "/api/hale/v1/head/surface/call/Commands::index",
-        "Content-Type: application/json\nHale-Surface-Digest: fnv1a64:6db56a82d365c442\nOrigin: "
+        "Content-Type: application/json\nHale-Surface-Digest: fnv1a64:a03807891b4f4f8c\nOrigin: "
             + face + (if len(jar) > 0 { "\nCookie: " + cookie_of(jar) } else { "" }),
         "{\"limit\": 200}",
     );

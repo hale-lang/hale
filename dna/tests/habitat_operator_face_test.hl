@@ -57,7 +57,7 @@ fn get(url: String) -> dna::RunResult {
 // The row the client calls, as the client calls it.
 fn index_call(face: String) -> String {
     return dna::run_tool(
-        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:6db56a82d365c442\n--data\n{\"limit\": 200}\n"
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: fnv1a64:a03807891b4f4f8c\n--data\n{\"limit\": 200}\n"
             + face + "/api/hale/v1/head/surface/call/Commands::index",
     ).stdout;
 }
@@ -79,7 +79,7 @@ fn main() {
     let log = scratch + "/up.log";
     let started = in_dir(
         scratch,
-        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground --name operator-face >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
             + toolchain() + "\n" + log,
     );
     std::test::assert(
@@ -87,8 +87,25 @@ fn main() {
             && logged(log, "body    the habitat's body runs in this process", 600),
         "the habitat is born and its body runs: " + text_of(log),
     );
-    let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+    let status = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    let face = face_of(status);
     std::test::assert(std::str::starts_with(face, "http://127.0.0.1:"), "the face has an address");
+    // ---- its name: given at its birth, recorded, shown, and kept
+    std::test::assert(
+        std::str::contains(status, "\nname    operator-face\n"),
+        "status shows the habitat's name: " + status,
+    );
+    let renamed = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--name\nanother");
+    std::test::assert(
+        renamed.code != 0
+            && std::str::contains(renamed.stderr, "a habitat keeps the name it was born with"),
+        "a habitat keeps its name: " + renamed.stdout + renamed.stderr,
+    );
+    let bad = in_dir(scratch, toolchain() + "\nhabitat\nup\n--no-body\n--name\nNot_A_Label");
+    std::test::assert(
+        bad.code == 2 && std::str::contains(bad.stderr, "a habitat's name is a DNS label"),
+        "a name is a DNS label: " + bad.stderr,
+    );
 
     // ---- the habitat's genome carries the operator face, tracked
     let shell = get(face + "/app/");
@@ -113,12 +130,22 @@ fn main() {
     let client = get(face + "/app/head-client.js").stdout;
     std::test::assert(
         std::str::contains(client, "export function commandsIndex")
-            && std::str::contains(client, "fnv1a64:6db56a82d365c442"),
+            && std::str::contains(client, "fnv1a64:a03807891b4f4f8c"),
         "and the generated client of the head's row",
     );
 
-    // ---- the read the page makes answers: the habitat's record, no organisms yet
+    // ---- the read the page makes answers: the habitat's record, its name,
+    // no organisms yet
     let before = index_call(face);
+    std::test::assert(
+        std::str::contains(before, "\"name\":\"operator-face\"")
+            || std::str::contains(before, "\"name\": \"operator-face\""),
+        "Commands::index answers the habitat's name: " + before,
+    );
+    std::test::assert(
+        std::str::contains(get(face + "/app/operator.js").stdout, "const name = r.name ||"),
+        "and the operator face shows it first",
+    );
     std::test::assert(
         std::str::contains(before, "\"ok\":true") || std::str::contains(before, "\"ok\": true"),
         "the habitat-state read answers through the client's row: " + before,

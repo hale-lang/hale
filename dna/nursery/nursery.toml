@@ -46,6 +46,13 @@ path = "packs/habitat.pack"
 summary = "the habitat's fixed positions: placement, backends, identity and admission"
 params = { holder = "" }
 
+[[pack]]
+name = "hale-organism"
+version = "1"
+path = "packs/hale-organism.pack"
+summary = "the hale organism's positions and their mandates: the compiler, the DNA, voice, and review before merge"
+params = { board = "" }
+
 # Saplings: organisms' seeds, each pinned by repository, revision and
 # digest (the sha256 of `git ls-tree -r --full-tree <revision>`), with the
 # packs it adopts at graft. `hale habitat graft <name>` fetches the pinned
@@ -59,3 +66,19 @@ repo = "https://github.com/hale-lang/voice"
 revision = "d4d3db32319acbb607a2c3327b6796583bddbec5"
 digest = "sha256:bae66d743c8affe87332aa10dfc666964394d25cead9189a7d68b66083989708"
 packs = []
+
+# The hale organism (D8): the organism that works on the Hale toolchain. Its
+# genome is a small repository of its own, the tree checked in at
+# saplings/hale; its codebases (hale-lang/hale, hale-lang/voice) are listed
+# in that tree's hale.toml and attached at its graft. PLACEHOLDER: the
+# repository below is not created yet. Until it is, `revision` is its main
+# branch and `digest` the checked-in tree's (a test holds the two equal);
+# a fixture grafts it from a local repository built from that tree. Once it
+# exists, the tree is pushed there and the revision pinned to the commit.
+[[sapling]]
+name = "hale"
+summary = "the organism that works on the Hale toolchain: its codebases are hale-lang/hale and hale-lang/voice"
+repo = "https://github.com/hale-lang/hale-organism"
+revision = "main"
+digest = "sha256:c4b20c40f58e06730cfeda00d896e7946f07afe45a6ff8e85200871d8f9b56dd"
+packs = ["hale-organism"]

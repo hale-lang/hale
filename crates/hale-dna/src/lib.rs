@@ -207,6 +207,7 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/packs/content-team.pack",
     "dna/nursery/packs/dev-team.pack",
     "dna/nursery/packs/founder.pack",
+    "dna/nursery/packs/hale-organism.pack",
     "dna/nursery/packs/habitat.pack",
     "dna/nursery/packs/small-startup.pack",
     "dna/nursery/packs/standard.pack",

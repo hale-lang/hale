@@ -528,4 +528,29 @@ mod tests {
         assert!(digest_at(&d, "v9").unwrap_err().contains("names no commit"));
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// D8: the bundled nursery's `hale` sapling pins the digest of the tree
+    /// checked in at dna/nursery/saplings/hale, so the tree a repository
+    /// is made from is the one the nursery pins (and an edit to the tree
+    /// moves the pin with it).
+    #[test]
+    fn the_hale_sapling_pins_its_checked_in_tree() {
+        let dna = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/nursery");
+        let index: toml::Table = std::fs::read_to_string(dna.join("nursery.toml")).unwrap().parse().unwrap();
+        let hale = index["sapling"].as_array().unwrap().iter().find(|s| s["name"].as_str() == Some("hale")).expect("the bundled nursery offers `hale`");
+        let d = std::env::temp_dir().join(format!("hale-sapling-hale-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for e in std::fs::read_dir(dna.join("saplings/hale")).unwrap().flatten() {
+            std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
+        }
+        let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&d).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success(), "{args:?}");
+        git(&["init", "-q", "-b", "main"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "the hale organism"]);
+        let (_, digest) = digest_at(&d, hale["revision"].as_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(Some(digest.as_str()), hale["digest"].as_str(), "the nursery's `hale` digest is the checked-in tree's: update dna/nursery/nursery.toml");
+        assert_eq!(hale["packs"].as_array().unwrap()[0].as_str(), Some("hale-organism"));
+    }
 }

@@ -11772,6 +11772,8 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/habitat_graft_test.hl
 
+== dna/tests/habitat_hale_organism_test.hl
+
 == dna/tests/habitat_hosts_test.hl
 row	__lib_dna__core___ssh_provider__SshProvider@main1	__lib_dna__core___ssh_provider__SshProvider	main	default
 shared	__lib_dna__core___memory_record__RecordJournal@main2	__lib_dna__core___memory_record__RecordJournal #8053e680
@@ -16161,6 +16163,10 @@ row	Desk@literal1.intake	Intake	main	default
 row	Desk@literal1.product	Product	main	default
 row	Desk@literal1.support	Support	main	default
 row	Desk@literal1.triage	Triage	main	default
+
+== dna/nursery/saplings/hale
+root	HaleOrganism	the entry
+row	HaleOrganism@literal1	HaleOrganism	main	default
 
 == dna/organism
 root	Organism	the entry
