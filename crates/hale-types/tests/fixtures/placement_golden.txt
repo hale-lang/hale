@@ -13210,7 +13210,14 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/provider_test.hl
 row	__lib_dna__core___infrastructure__MemProvider@main1	__lib_dna__core___infrastructure__MemProvider	main	default
 row	__lib_dna__core___infrastructure__MemProvider@main2	__lib_dna__core___infrastructure__MemProvider	main	default
-row	__lib_dna__core___infrastructure__MemProvider@main3	__lib_dna__core___infrastructure__MemProvider	main	default
+row	__lib_dna__core___infrastructure__MemProvider@main4	__lib_dna__core___infrastructure__MemProvider	main	default
+row	__lib_dna__core___ssh_provider__SshProvider@main3	__lib_dna__core___ssh_provider__SshProvider	main	default
+-- dynamic	sites in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdSecretCredential	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___memory_record__RecordJournal	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/reap_test.hl
 root	App	the entry

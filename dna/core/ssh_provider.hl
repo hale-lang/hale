@@ -342,6 +342,12 @@ locus SshProvider {
             p.why = "host `" + host.name + "` is " + host.state + ": " + host.why;
             return p;
         }
+        // a probe that just failed (unreachable, a changed host key) keeps
+        // the host's last state, so `ready` alone is no proof it is placeable
+        if !host.reachable {
+            p.why = "host `" + host.name + "` did not answer its probe: " + host.why;
+            return p;
+        }
         if len(a.needs) > 0 && !has_word(host.offers, a.needs) {
             p.why = "host `" + host.name + "` does not offer " + a.needs + " (it offers: "
                 + (if len(host.offers) > 0 { host.offers } else { "nothing" }) + ")";
