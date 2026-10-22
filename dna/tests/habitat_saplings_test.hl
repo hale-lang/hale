@@ -1,0 +1,281 @@
+// dna/tests/habitat_saplings_test.hl — a sapling grafted by name from a
+// nursery the habitat's Board trusts (phase 4).
+//
+// A sapling is an organism's seed in a nursery, beside its packs: a
+// repository pinned at a revision with a digest, and the packs it adopts at
+// graft. The nursery here is a directory of the fixture's, its sapling a
+// local git repository standing in for one on the network. The Board trusts
+// the nursery (`hale habitat nursery add`, the head's `Commands::add_nursery`)
+// and what it offers is read into the habitat's record; the head lists the
+// nurseries and the saplings. A revision whose tree is not the one pinned is
+// refused and nothing is grafted; the pinned one is grafted by name, with no
+// checkout, its digest checked, its pack proposed to the child's Board, and
+// the sapling, revision and digest on the graft's row. A newer revision in
+// the nursery is filed for the Board and never pulled; ratified, the pin
+// moves and the grafted organism does not. Without docker compose nothing
+// here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// The JSON array `field` of what the head's surface answers `member`, read
+// through the face; retried until it answers.
+fn surface_read(face: String, member: String, field: String) -> String {
+    let mut tries = 0;
+    while tries < 120 {
+        let r = dna::run_tool(
+            "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n{\"limit\": 50}\n"
+                + face
+                + "/api/hale/v1/head/surface/call/" + member,
+        ).stdout;
+        let got = std::json::find_string_field(r, field);
+        if std::str::starts_with(got, "[") { return got; }
+        std::time::sleep(500ms);
+        tries = tries + 1;
+    }
+    return "";
+}
+
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+// `git` in `dir` as a fixture's author.
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool(
+        "git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args,
+    );
+}
+
+// The digest a nursery pins a revision by: the sha256 of its tree's listing.
+fn digest_of(dir: String, rev: String) -> String {
+    let r = dna::run_tool(
+        "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree \"$2\" | sha256sum | cut -d' ' -f1\nsh\n"
+            + dir
+            + "\n" + rev,
+    );
+    return "sha256:" + dna::trim_nl(r.stdout);
+}
+
+// The nursery's index: one pack, and the sapling `sprout` at `rev`.
+fn index(src: String, rev: String, digest: String) -> String {
+    return "[[pack]]\nname = \"crew\"\nversion = \"1\"\npath = \"packs/crew.pack\"\nsummary = \"one dev for a part\"\nparams = { part = \"\" }\n\n[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism to graft\"\nrepo = \""
+        + src + "\"\nrevision = \"" + rev + "\"\ndigest = \"" + digest
+        + "\"\npacks = [\"crew\"]\nset = { part = \"sprout\" }\n";
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_saplings_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_saplings_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let scratch = dna::scratch_root("habitat-saplings");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- the habitat, up with its head
+    let log = scratch + "/up.log";
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 600),
+        "the habitat is born and its body runs: " + text_of(log),
+    );
+    std::test::assert(
+        std::str::contains(text_of(log), "sapling voice at "),
+        "up reads the toolchain's nursery: voice is pinned: " + text_of(log),
+    );
+    let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+
+    // ---- a sapling's repository, and a nursery offering it at v1
+    let src = scratch + "/sprout-src";
+    std::io::fs::mkdir(src) or discard;
+    git(src, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(src + "/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n")
+    or discard;
+    std::io::fs::write_file(src + "/README.md", "# sprout\n\nA small organism to graft.\n")
+    or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v1");
+    git(src, "tag\nv1");
+    let v1 = dna::trim_nl(git(src, "rev-parse\nv1").stdout);
+    let pinned = digest_of(src, "v1");
+    std::io::fs::write_file(src + "/NOTES.md", "another tree\n") or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nanother tree");
+    let other = dna::trim_nl(git(src, "rev-parse\nHEAD").stdout);
+
+    let nursery = scratch + "/nursery";
+    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::mkdir(nursery + "/packs") or discard;
+    std::io::fs::write_file(
+        nursery + "/packs/crew.pack",
+        "open {part}/dev | Decides: how {part} is built.\n",
+    ) or discard;
+    std::io::fs::write_file(nursery + "/nursery.toml", index(src, "v1", pinned)) or discard;
+
+    // ---- the Board trusts the nursery; what it offers is the record's
+    let added = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + nursery);
+    std::test::assert(
+        added.code == 0
+            && std::str::contains(added.stdout, "nursery " + nursery + ": the Board trusts it")
+            && std::str::contains(added.stdout, "sapling sprout at v1 (" + pinned + ")"),
+        "the nursery is trusted and its sapling pinned: " + added.stdout + added.stderr,
+    );
+    let nurseries = surface_read(face, "Commands::nurseries", "nurseries");
+    std::test::assert(
+        len(element(nurseries, "source", "toolchain")) > 0
+            && std::json::find_string_field(element(nurseries, "source", nursery), "kind") == "dir",
+        "the head lists the toolchain's nursery and the trusted one: " + nurseries,
+    );
+    let saplings = surface_read(face, "Commands::saplings", "saplings");
+    let sprout = element(saplings, "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(sprout, "revision") == "v1"
+            && std::json::find_string_field(sprout, "digest") == pinned
+            && std::json::find_string_field(sprout, "nursery") == nursery
+            && std::json::find_string_field(sprout, "purpose") == "a small organism to graft"
+            && len(element(saplings, "name", "voice")) > 0,
+        "the head lists the saplings, voice among them: " + saplings,
+    );
+
+    // ---- a revision whose tree is not the one pinned is refused
+    git(src, "tag\n-f\nv1\n" + other);
+    let tampered = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsprout\n--no-library");
+    std::test::assert(
+        tampered.code != 0
+            && std::str::contains(
+                tampered.stderr,
+                "not the " + pinned + " its nursery pinned: refused",
+            ),
+        "a tampered revision is refused: " + tampered.stdout + tampered.stderr,
+    );
+    std::test::assert(
+        !std::str::contains(
+            in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout,
+            "\\\"sapling\\\":\\\"sprout\\\"",
+        ),
+        "and nothing is grafted",
+    );
+
+    // ---- the pinned revision grafted by name: digest checked, pack proposed
+    git(src, "tag\n-f\nv1\n" + v1);
+    let grafted = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nsprout\n--no-library");
+    std::test::assert(
+        grafted.code == 0
+            && std::str::contains(grafted.stdout, "fetched sprout at v1")
+            && std::str::contains(grafted.stdout, "as the habitat's child")
+            && std::str::contains(grafted.stdout, "pack    `crew` proposed"),
+        "the sapling is grafted by name: " + grafted.stdout + grafted.stderr,
+    );
+    let store = dna::local_habitat_dir() + "/saplings/sprout";
+    let rows = in_dir(genome, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(rows, "\\\"sapling\\\":\\\"sprout\\\"")
+            && std::str::contains(rows, "\\\"revision\\\":\\\"v1\\\"")
+            && std::str::contains(rows, "\\\"digest\\\":\\\"" + pinned + "\\\""),
+        "the graft's row says which sapling, revision and digest: " + rows,
+    );
+    let child = in_dir(store, toolchain() + "\ndna\nrecord-rows\n.").stdout;
+    std::test::assert(
+        std::str::contains(child, "crew@1"),
+        "the sapling's pack is proposed to the child's Board: " + child,
+    );
+
+    // ---- a newer revision is filed for the Board, never pulled
+    std::io::fs::write_file(src + "/CHANGELOG.md", "v2\n") or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v2");
+    git(src, "tag\nv2");
+    let newer = digest_of(src, "v2");
+    std::io::fs::write_file(nursery + "/nursery.toml", index(src, "v2", newer)) or discard;
+    let refreshed = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    std::test::assert(
+        refreshed.code == 0 && std::str::contains(refreshed.stdout, "upgrade sprout v1 -> v2"),
+        "the newer revision is filed: " + refreshed.stdout + refreshed.stderr,
+    );
+    let again = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nrefresh");
+    std::test::assert(
+        !std::str::contains(again.stdout, "upgrade sprout"),
+        "once: " + again.stdout,
+    );
+    let waiting = element(surface_read(face, "Commands::saplings", "saplings"), "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(waiting, "revision") == "v1"
+            && std::json::find_string_field(waiting, "proposed") == "v2",
+        "the pin stays at v1, v2 waits for the Board: " + waiting,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "nothing is pulled",
+    );
+
+    // ---- ratified, the pin moves; the grafted organism does not
+    let ratified = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nratify\nsprout");
+    std::test::assert(
+        ratified.code == 0 && std::str::contains(ratified.stdout, "sprout pinned at v2"),
+        "the Board ratifies the newer revision: " + ratified.stdout + ratified.stderr,
+    );
+    let moved = element(surface_read(face, "Commands::saplings", "saplings"), "name", "sprout");
+    std::test::assert(
+        std::json::find_string_field(moved, "revision") == "v2"
+            && std::json::find_string_field(moved, "digest") == newer
+            && std::json::find_string_field(moved, "proposed") == "",
+        "pinned at v2: " + moved,
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(git(store, "rev-parse\nHEAD").stdout),
+        v1,
+        "the grafted organism stays at its revision",
+    );
+
+    in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    dna::scratch_done(scratch);
+}

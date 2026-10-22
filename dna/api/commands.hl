@@ -1097,6 +1097,24 @@ locus CommandAdmission {
         if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
         return habitat_policy(self.root, a.limit);
     }
+    // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
+    // the Board's acts on them.
+    fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
+        if self.personless(ctx) { return NurseryRows { why: "forbidden" }; }
+        return habitat_nurseries(self.root, a.limit);
+    }
+    fn saplings(a: HabitatAsk, ctx: std::api::Context) -> SaplingRows {
+        if self.personless(ctx) { return SaplingRows { why: "forbidden" }; }
+        return habitat_saplings(self.root, a.limit);
+    }
+    fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_nursery_add(self.root, a);
+    }
+    fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_sapling_ratify(self.root, n.name);
+    }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
@@ -1170,6 +1188,18 @@ locus Commands {
     }
     fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
         return self.admission.policy(a, ctx);
+    }
+    fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
+        return self.admission.nurseries(a, ctx);
+    }
+    fn saplings(a: HabitatAsk, ctx: std::api::Context) -> SaplingRows {
+        return self.admission.saplings(a, ctx);
+    }
+    fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.add_nursery(a, ctx);
+    }
+    fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.ratify_sapling(n, ctx);
     }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
@@ -1256,6 +1286,12 @@ api HeadCommands {
     rpc Commands::hosts;
     rpc Commands::allocations;
     rpc Commands::policy;
+    // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
+    // the Board's: a nursery trusted, a sapling's newer revision ratified.
+    rpc Commands::nurseries;
+    rpc Commands::saplings;
+    rpc Commands::add_nursery requires: [owner];
+    rpc Commands::ratify_sapling requires: [owner];
 }
 
 // A seat as a structure command names it: `position:<name>` from a name

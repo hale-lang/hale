@@ -35,6 +35,8 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
+       hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
+       hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
        hale habitat status
        hale habitat down
@@ -94,6 +96,24 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      dna pack apply <pack> --on-holes`, its --set and
                      --as passed on), so one `review all approve`
                      ratifies the starting organization whole.
+graft <sapling>      graft a sapling the habitat pins, by name, with no
+                     checkout: its pinned revision is fetched into the
+                     habitat's store (<habitat>/saplings/<name>), its digest
+                     checked (a mismatch refuses, nothing grafted), the
+                     repository there grafted as the habitat's child, the
+                     packs it adopts proposed to its Board (--set values go
+                     to them), and the sapling, revision and digest recorded
+                     on the graft's row. A bare name only; ./<name> is a
+                     directory.
+nursery add <source> the Board trusts a nursery, a directory or a git
+                     repository (the head's Commands::add_nursery), and what
+                     it offers is read into the habitat's record. `refresh`
+                     reads every nursery again (`up` does too): a sapling
+                     first seen is pinned, a newer revision of one pinned is
+                     filed for the Board and never taken; `ratify <sapling>`
+                     pins the revision filed (nothing grafted moves); `list`
+                     shows the nurseries and saplings. The toolchain's own
+                     nursery is always one.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,

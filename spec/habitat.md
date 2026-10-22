@@ -67,6 +67,47 @@ allocated and placed on that host, each a row written only when the record
 does not already say it (below). The head's surface reads them back
 (`spec/dna.md`, The head's surface).
 
+## Nurseries and saplings
+
+A **sapling** is an organism's seed in a nursery, an entry beside its
+packs (`spec/dna.md`, Packs and the nursery): a repository pinned at a
+revision with a digest, and the packs it adopts at graft. **The habitat's
+nurseries are rows of its record**: the toolchain's bundled nursery,
+always, and each directory or git repository its Board trusts, a
+`habitat.nursery <source>` row written by the head's Board command
+`Commands::add_nursery` (`hale habitat nursery add <source>`). A nursery
+the habitat trusts is trusted for its tenants' `pack apply --from` too.
+
+What the nurseries offer is read into the record by the habitat's acts:
+`up`, `hale habitat nursery add` and `hale habitat nursery refresh`. The
+first nursery to offer a name holds it (the toolchain's, then the
+trusted ones). A sapling first seen is pinned, a `habitat.sapling <name>`
+row. **An upgrade is a proposal, never a pull**: a revision or digest
+other than the pinned one is filed as a `habitat.sapling.proposed <name>`
+row, once, and nothing moves; `Commands::ratify_sapling` (`hale habitat
+nursery ratify <name>`, the Board's) pins the filed revision, and an
+organism already grafted stays at the revision it was grafted at.
+
+`hale habitat graft <sapling>` takes a sapling by name, with no checkout:
+a bare name, with no path of that name, that the record pins (`./<name>`
+is always a directory). The pinned revision is fetched into the habitat's
+own store, `<habitat>/saplings/<name>` (cloned once, its tags fetched
+again for a graft that has not begun), its digest is computed from the
+revision's tree and checked against the pin (a mismatch refuses and
+nothing is grafted), and the repository there is grafted as the habitat's
+child (`--attach`'s path). Its packs are proposed to the child's Board on
+the holes its birth proposed, with the sapling's `set` and the graft's
+`--set` values, each to the packs that take it. The graft's
+`habitat.grafted` row names the `sapling`, `revision`, `digest` and
+`nursery`. A graft that stopped part way goes on at the revision it was
+checked at. Where the organism is placed is the graft's placement
+argument, not built yet.
+
+The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
+commit). A sapling needs nothing beyond what an attached repository
+needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
+a command that runs from a fresh fetch.
+
 ## Long-lived, and only its acts provision
 
 - Nothing tears the local habitat down when work ends. Organisms are
@@ -93,6 +134,8 @@ does not already say it (below). The head's surface reads them back
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
+| `graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name (above). |
+| `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -176,7 +219,10 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
 | `habitat.profile local` | at birth | `profile`, `backends`, `project` |
-| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses) |
+| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
+| `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |
+| `habitat.sapling <name>` | when a nursery's sapling is first read, and at its ratification | `name`, `purpose`, `repo`, `revision`, `digest`, `packs`, `set`, `nursery` |
+| `habitat.sapling.proposed <name>` | when a nursery offers another revision of a pinned sapling, once | the sapling's fields at the new revision, and `from` (the pinned revision) |
 
 An allocation names its provider and its host: `compose` on `local`, or,
 on `operator` backends, `operator` and no host. The latest row for an

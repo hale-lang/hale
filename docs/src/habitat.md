@@ -167,6 +167,14 @@ A **host** is a machine the habitat places on (the program `dna/host` keeps its 
 
 Today there is one provider and one profile. The `local` profile gives every role the `compose` provider, which runs on this machine alone: `hale habitat up` has it produce the host `local` (offering `compose`, and `systemd-user` where the user's systemd answers) and bring every allocation up, the habitat's own and each tenant's. The habitat's head and face are placed there too. The head's surface reads the rows back: `Commands::hosts`, `Commands::allocations` (each with what its provider observes now) and `Commands::policy`. A provider over SSH, to add other machines by name, comes next.
 
+### Saplings, as built
+
+A **sapling** is a whole organism you can grow from a nursery, the way a pack is a piece of structure you can adopt. A nursery entry pins it: a repository, a revision, a digest of that revision's files, and the packs it adopts when it is grafted. The habitat keeps its nurseries in its record. The toolchain's own nursery is always there, and the Board can trust more with `hale habitat nursery add <dir|git-url>`.
+
+`hale habitat graft voice` grafts a sapling by name. Nothing is checked out by hand: the habitat fetches the pinned revision into its own store, checks the digest (a revision whose files are not the pinned ones is refused), grafts it, and proposes its packs to the new organism's Board. The graft's row says which sapling, revision and digest it was.
+
+A nursery that later offers a newer revision does not move anything. The habitat files it for the Board, `hale habitat nursery list` shows it waiting, and `hale habitat nursery ratify <name>` pins it for the next graft.
+
 ## What the tree has today
 
 | piece of the design | in the tree today |
@@ -186,7 +194,8 @@ Today there is one provider and one profile. The `local` profile gives every rol
 | several changes as one Review, and the operations of one organism | **built**: `hale dna apply <file>` (open, fill, vacate, practice, assign, close, merge, split, expose, depend, externalize, internalize) and `hale dna vacate`, planned whole, ratified whole, refused whole when stale |
 | adopting and retiring a pack | **built**: `hale dna pack apply` from the toolchain's nursery, a directory or a git repository at a revision, recorded with its digest and source; `hale dna pack retire` undoes the latest ratified adoption; a git nursery is trusted by the Board first (`hale dna nursery add`) |
 | graft | **built**, local profile: `hale habitat graft <name>` makes a new application, and `hale habitat graft <dir> --attach` takes an existing one, each as the habitat's child, its genesis naming its parent, the roles its genome needs (`[dna] needs`) allocated and recorded in the habitat's record, and the `standard` pack proposed to its Board; it is the one way an organism other than the habitat is born |
-| the habitat's operations: extract, absorb, re-parent | **not built**; they span several records and come with saplings |
+| saplings: an organism grafted by name from a nursery | **built**: `[[sapling]]` entries pinned by repository, revision and digest; `hale habitat graft <sapling>`, `hale habitat nursery add`, `refresh`, `list`, `ratify`; voice is the toolchain's first |
+| the habitat's operations: extract, absorb, re-parent | **not built**; they span several records |
 | the habitat, born and run | **built**, local profile: `hale habitat up` births the habitat from the genome the toolchain ships (no parent; its positions and law proposed to its Board) and runs its body as a systemd user unit or `--foreground`; `status` reads its allocations, rows of its record by organism and role with their schema versions; `down` stops it and keeps its data. The hosted profile is not built |
 | the habitat's face | **built**: `hale habitat up` starts the standard face over the habitat's own head, and `status` prints its address; its index lists the organisms grafted from it with their state and the addresses of their faces and heads: [The head and the face](./dna/head.md) |
 | hosts, providers and placement | **built**, local only: the `compose` provider produces the host `local` and brings every allocation up at `hale habitat up`; allocations, hosts and the `local` profile's policy are rows of the habitat's record, read through the head's surface (above). Hosts over SSH and placing an allocation on another host are not built |

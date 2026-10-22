@@ -1,5 +1,5 @@
-// dna/api/habitat_rows.hl — the habitat's hosts, allocations and policy as
-// the head's surface reads them (phase 4).
+// dna/api/habitat_rows.hl — the habitat's hosts, allocations, policy,
+// nurseries and saplings as the head's surface reads them (phase 4).
 //
 // Three rows of `HeadCommands`, reads like `Commands::index`: `hosts` (each
 // `habitat.host` row: the machine, the provider that produced it and what
@@ -180,4 +180,171 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     }
     out.end_array();
     return AllocationRows { ok: true, revision: j.revision(), allocations: out.result() };
+}
+
+// ---- the habitat's nurseries and saplings (phase 4) --------------------------
+//
+// `Commands::nurseries`: the toolchain's bundled nursery, always, and each
+// `habitat.nursery` row the Board trusts (its source and kind).
+// `Commands::saplings`: each `habitat.sapling` row, the sapling as the
+// habitat pins it (name, purpose, repository, revision, digest, nursery,
+// the packs it adopts), with the revision a newer `habitat.sapling.proposed`
+// row files for the Board (`proposed`, "" when none waits). The operator
+// face's organisms screen reads them.
+
+type NurseryRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    nurseries: String = "[]";
+}
+
+type SaplingRows {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    saplings: String = "[]";
+}
+
+fn habitat_nurseries(root: String, limit: Int) -> NurseryRows {
+    let j = habitat_journal(root);
+    let out = std::json::Builder { };
+    out.begin_array();
+    out.begin_object();
+    out.string_field("source", "toolchain");
+    out.string_field("kind", "bundled");
+    out.end_object();
+    let latest = habitat_latest(j, "habitat.nursery");
+    let cap = habitat_cap(limit);
+    let mut n = 1;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.nursery" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        if std::json::find_string_field(e.body, "state") == "removed" { continue; }
+        n = n + 1;
+        out.begin_object();
+        out.string_field("source", e.entity);
+        out.string_field("kind", std::json::find_string_field(e.body, "kind"));
+        out.end_object();
+    }
+    out.end_array();
+    return NurseryRows { ok: true, revision: j.revision(), nurseries: out.result() };
+}
+
+fn habitat_saplings(root: String, limit: Int) -> SaplingRows {
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.sapling");
+    let proposals = habitat_latest(j, "habitat.sapling.proposed");
+    let out = std::json::Builder { };
+    out.begin_array();
+    let cap = habitat_cap(limit);
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() && n < cap {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.sapling" || !habitat_holds(latest, e.entity, i - 1) { continue; }
+        n = n + 1;
+        let b = e.body;
+        // a proposal filed after the pin, for another revision, waits
+        let p = proposals.get(e.entity) or LatestRow { };
+        let proposed = if p.at > i - 1 {
+            std::json::find_string_field(j.read(p.at).body, "revision")
+        } else {
+            ""
+        };
+        out.begin_object();
+        out.string_field("name", e.entity);
+        out.string_field("purpose", std::json::find_string_field(b, "purpose"));
+        out.string_field("repo", std::json::find_string_field(b, "repo"));
+        out.string_field("revision", std::json::find_string_field(b, "revision"));
+        out.string_field("digest", std::json::find_string_field(b, "digest"));
+        out.string_field("nursery", std::json::find_string_field(b, "nursery"));
+        out.field("packs", std::json::find_field_raw(b, "packs"));
+        out.string_field(
+            "proposed",
+            if proposed != std::json::find_string_field(b, "revision") { proposed } else { "" },
+        );
+        out.end_object();
+    }
+    out.end_array();
+    return SaplingRows { ok: true, revision: j.revision(), saplings: out.result() };
+}
+
+// ---- the Board's nursery acts ------------------------------------------------
+
+type NurseryAdd { source: String = ""; }
+type SaplingNamed { name: String = ""; }
+
+type NurseryReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+}
+
+fn nursery_refused(code: String, why: String) -> NurseryReply {
+    return NurseryReply { code: code, why: why };
+}
+
+// A nursery the Board trusts: a `habitat.nursery <source>` row. What it
+// offers is read into the record by the habitat's next act that reads its
+// nurseries (`hale habitat nursery add` runs it at once).
+fn habitat_nursery_add(root: String, a: NurseryAdd) -> NurseryReply {
+    let source = std::str::trim(a.source);
+    if len(source) == 0 || len(source) > 1024 || std::str::contains(source, " ")
+        || std::str::contains(source, "\n") || source == "toolchain"
+    {
+        return nursery_refused(
+            "invalid_nursery",
+            "a nursery is a directory or a git URL, one word",
+        );
+    }
+    let kind = if std::str::starts_with(source, "/") { "dir" } else { "git" };
+    let j = habitat_journal(root);
+    let latest = habitat_latest(j, "habitat.nursery");
+    let held = latest.get(source) or LatestRow { };
+    if held.at >= 0 && std::json::find_string_field(j.read(held.at).body, "state") == "trusted" {
+        return NurseryReply { ok: true, why: "the Board trusts it already" };
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("source", source);
+    b.string_field("kind", kind);
+    b.string_field("state", "trusted");
+    b.end_object();
+    let r = j.append(j.revision(), "habitat.nursery", source, b.result());
+    if !r.ok {
+        return nursery_refused(
+            "record_refused",
+            "the habitat's record refused the row (" + r.error + ")",
+        );
+    }
+    return NurseryReply { ok: true };
+}
+
+// The newer revision a nursery offered for `name`, ratified: the sapling is
+// pinned at the revision and digest its proposal filed. Nothing grafted
+// moves with it.
+fn habitat_sapling_ratify(root: String, name: String) -> NurseryReply {
+    let j = habitat_journal(root);
+    let pins = habitat_latest(j, "habitat.sapling");
+    let proposals = habitat_latest(j, "habitat.sapling.proposed");
+    let pin = pins.get(name) or LatestRow { };
+    let p = proposals.get(name) or LatestRow { };
+    if pin.at < 0 {
+        return nursery_refused("not_found", "the habitat pins no sapling `" + name + "`");
+    }
+    if p.at < pin.at {
+        return nursery_refused("no_proposal", "no newer revision of `" + name + "` waits");
+    }
+    let r = j.append(j.revision(), "habitat.sapling", name, j.read(p.at).body);
+    if !r.ok {
+        return nursery_refused(
+            "record_refused",
+            "the habitat's record refused the row (" + r.error + ")",
+        );
+    }
+    return NurseryReply { ok: true };
 }

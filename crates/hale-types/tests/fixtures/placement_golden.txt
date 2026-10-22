@@ -11658,6 +11658,8 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/habitat_operator_test.hl
 
+== dna/tests/habitat_saplings_test.hl
+
 == dna/tests/habitat_up_test.hl
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 shared	__lib_dna__core__pond__realtime__nats___client__NatsClient@main2	__lib_dna__core__pond__realtime__nats___client__NatsClient #9d66cf8c
