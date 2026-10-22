@@ -202,23 +202,26 @@ fn api() {
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
-        534,
-        536,
+        573,
+        575,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
+        applied_at  does={syscall,env,alloc}
+        habitat_graft  does={syscall,block,env,alloc}
         habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}
+        placed_body  does={env,alloc}
         ",
     );
 }
@@ -268,17 +271,18 @@ fn host() {
         ReferenceInfrastructure::allocation  does={syscall,block,alloc}
         ReferenceInfrastructure::credential  does={syscall,block,env,alloc}
         ReferenceInfrastructure::install_unit  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::knowledge_database  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::knowledge_database_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::logs  does={syscall,block,env,alloc}
         ReferenceInfrastructure::nerves_if_up  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::nerves_server  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::nerves_server  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::probe  does={syscall,block,env,alloc}
         ReferenceInfrastructure::published  does={syscall,block,env,alloc}
         ReferenceInfrastructure::put_credential  does={syscall,block,env,alloc}
         ReferenceInfrastructure::restart_if_up  does={syscall,block,env,alloc}
         ReferenceInfrastructure::run_at  does={syscall,block,env,alloc}
         ReferenceInfrastructure::senses_if_up  does={syscall,block,env,alloc}
-        ReferenceInfrastructure::senses_store  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::senses_store  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ReferenceInfrastructure::start  does={syscall,block,env,alloc}
         ReferenceInfrastructure::status  does={syscall,block,env,alloc}
         ReferenceInfrastructure::stop  does={syscall,block,env,alloc}
@@ -340,7 +344,7 @@ fn host() {
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
         habitat_address  does={syscall,block,alloc}
-        habitat_apply_verb  does={env,alloc}
+        habitat_apply_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_handover_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         heart_key  does={syscall,env,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
@@ -350,7 +354,7 @@ fn host() {
         kill_faces  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
+        memory_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
         nats_conf_path  does={syscall,block,env,alloc}
@@ -358,7 +362,7 @@ fn host() {
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
         nerves_listening  does={syscall,block,time,entropy,alloc}
         nerves_migrate  does={syscall,block,time,entropy,alloc}
-        nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc}
+        nerves_migrate_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         nerves_restart_hint  does={syscall,env,alloc}
         nerves_urls  does={syscall,block,alloc}
         node_main  does={syscall,env,alloc,stdio}
@@ -378,7 +382,7 @@ fn host() {
         record_identity_verb  does={syscall,alloc}
         route_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        senses_up_verb  does={syscall,block,env,alloc}
+        senses_up_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
