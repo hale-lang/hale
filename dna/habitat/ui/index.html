@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>habitat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&amp;display=swap">
+  <link rel="stylesheet" href="operator.css">
+  <script type="module" src="operator.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="name">habitat</h1>
+      <span id="state" data-state="down">down</span>
+    </header>
+    <section id="crossing" class="crossing" hidden>
+      <div class="edge">crossing: sign in</div>
+      <p id="crossing-why"></p>
+      <p><a id="signin" href="./">sign in through the provider</a></p>
+    </section>
+    <section id="habitat" hidden>
+      <h2>habitat</h2>
+      <dl>
+        <dt>name</dt><dd id="habitat-name"></dd>
+        <dt>state</dt><dd id="habitat-state"></dd>
+        <dt>pulse</dt><dd id="habitat-pulse"></dd>
+        <dt>record</dt><dd id="habitat-record"></dd>
+        <dt>organisms</dt><dd id="habitat-count"></dd>
+      </dl>
+    </section>
+    <section id="organisms" hidden>
+      <h2>organisms</h2>
+      <table>
+        <thead><tr><th>name</th><th>state</th><th>face</th></tr></thead>
+        <tbody id="organism-rows"></tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

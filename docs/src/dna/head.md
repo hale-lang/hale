@@ -42,6 +42,20 @@ its `dna.head.url`, and `hale dna head <organism>` serves there, so the
 address in the list is the one to open. `hale habitat down` stops the face
 with the body.
 
+### The operator face
+
+Beside the index the habitat serves its operator face, under `/app/` of the
+same address: the habitat's own `ui/`, written into its genome at birth, so
+`hale habitat up` is all it takes. Its first screen is the sign-in edge and the
+habitat's name, state (up, degraded or down), record revision and organisms,
+read from the head's `Commands::index` row through a generated ES-module client
+(`hale api client --lang js`, committed as `dna/habitat/ui/head-client.js`) with
+no build step. A visitor without a session is sent to the provider before the
+page is served, and a read the head refuses for want of one is shown as the
+crossing. The visual language is a set of CSS custom properties
+(`dna/habitat/ui/operator.css`): brass marks a boundary crossing, color marks
+state, and nothing else is colored.
+
 ## Start the head
 
 With the toolchain installed, and a project made by `hale habitat graft`:

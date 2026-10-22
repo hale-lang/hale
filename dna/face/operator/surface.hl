@@ -1,0 +1,36 @@
+// dna/face/operator/surface.hl — the one row the operator face reads.
+//
+// The operator face (the habitat's `ui/`, served by the standard face) asks
+// the head's surface for the record's index, `Commands::index`
+// (dna/api/record_index.hl), from the browser. A row of a surface is its
+// member name and the shapes of its request and response, so this declares
+// the same two records and the one row, and `scripts/api-clients.sh`
+// generates the ES-module client the page imports
+// (dna/habitat/ui/head-client.js) from it, as the standard face's own
+// `HeadIndex` (dna/face/standard/index.hl) does for the Hale client.
+
+type IndexAsk { limit: Int = 200; }
+
+type RecordIndex {
+    ok: Bool = false;
+    why: String = "";
+    revision: Int = 0;
+    purpose: String = "";
+    positions: String = "[]";
+    codebases: String = "[]";
+    watched: String = "[]";
+    contracts: String = "[]";
+    links: String = "[]";
+    organisms: String = "[]";
+    faces: String = "[]";
+}
+
+api OperatorIndex {
+    rpc Commands::index;
+}
+
+locus Commands {
+    fn index(a: IndexAsk, ctx: std::api::Context) -> RecordIndex {
+        return RecordIndex { why: "this seed serves no rows" };
+    }
+}

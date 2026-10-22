@@ -64,6 +64,18 @@ their state and the addresses of their faces and heads. A habitat started
 under `HALE_DNA_TRUSTED_LOCAL=1` serves its face without the stub provider,
 as a fixture's head does.
 
+The genome carries a `ui/` (`dna/habitat/ui`), written at birth and tracked,
+which the standard face serves under `/app/` as it serves any attached
+project's: the operator face. Its first screen shows the sign-in edge and
+the habitat's name, state, record revision and organisms, read by the
+page from the head's `Commands::index` row through the generated ES-module
+client committed beside it (`head-client.js`, from `dna/face/operator`). It
+has no build step. A visitor with no session is redirected by the head's
+gate before the page is served; a read refused for want of one is shown as
+the crossing. The page's visual rules are CSS custom properties
+(`operator.css`): near-black ground, one monospace, hairline rules, brass
+only for a crossing, color only for state (up, degraded, down).
+
 ## Backends
 
 Chosen at the habitat's birth and kept.
