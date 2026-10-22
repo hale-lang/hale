@@ -14,6 +14,11 @@
 //! pinned revision into the habitat's own store, checks its digest, grafts
 //! it as a repository, adopts its packs, and records which sapling, revision
 //! and digest on the graft's row.
+//!
+//! Phase 4 adds placement: `hale habitat place <allocation> <host>` and
+//! `hale habitat apply [<host>] [--fresh]` are clients of the head's Board
+//! rows `Commands::place_allocation` and `Commands::apply_allocations`, and
+//! `graft … --host <name>` places the new organism on that host.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -224,7 +229,157 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
             out.push(format!("{:<8}`{p}` proposed to the child's Board, as the sapling adopts it", "pack"));
         }
     }
+    // its own services, on the host its graft names
+    out.extend(place_services(&crate::dna::organism_root(&store)?)?);
     Ok(out)
+}
+
+/// The host `name` as the habitat's record holds it, for a graft's
+/// placement: `None` for `local` (nothing to place), an error for a host
+/// that is not added or not ready.
+pub(super) fn graft_host(name: &str) -> Result<Option<serde_json::Value>, String> {
+    if name == "local" {
+        return Ok(None);
+    }
+    let h = latest(&rows_of(&genome_dir()), "habitat.host").remove(name).ok_or_else(|| format!("no host `{name}` was added (`hale habitat host add {name}`)"))?;
+    if h["state"] != "ready" {
+        return Err(format!("host `{name}` is {}: `hale habitat host probe {name}` checks it again", h["state"].as_str().unwrap_or("not ready")));
+    }
+    Ok(Some(serde_json::json!({
+        "host": name,
+        "provider": h["provider"].as_str().unwrap_or("ssh"),
+        "address": h["address"].as_str().unwrap_or(name),
+        "project": format!("{}-{}", local_habitat_project(), name.replace('.', "-")),
+    })))
+}
+
+/// The organism's own services (a repository's compose file at its root),
+/// an allocation of the host its graft placed it on, and applied there by
+/// the head (`Commands::apply_allocations`). Nothing for an organism with no
+/// compose file or a graft that names no host.
+fn place_services(root: &Path) -> Result<Vec<String>, String> {
+    let Some(h) = GRAFT_HOST.get() else { return Ok(Vec::new()) };
+    if !root.join("compose.yaml").is_file() {
+        return Ok(vec![format!("{:<8}no compose.yaml at its root: no services of its own to place", "note")]);
+    }
+    let id = manifest_pin(&root.join("hale.toml")).ok().flatten().ok_or("the organism pins no record")?;
+    let key = &id[..12];
+    let host = h["host"].as_str().unwrap_or("");
+    // its own compose project on the host, named for it: its services are
+    // its own, never the habitat's
+    let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
+    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "vault": [] });
+    record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
+    let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
+    out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
+    Ok(out)
+}
+
+/// What `Commands::apply_allocations` answered, a line per allocation.
+fn applied_lines(v: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let list: serde_json::Value = v["applied"].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    for a in list.as_array().into_iter().flatten() {
+        let f = |k: &str| a[k].as_str().unwrap_or("").to_string();
+        if a["ok"] == serde_json::json!(true) {
+            out.push(format!("{:<8}{} on {} ({}): {}", "applied", f("allocation"), f("host"), f("provider"), f("state")));
+        } else {
+            out.push(format!("{:<8}{} on {}: {}", "refused", f("allocation"), f("host"), f("why")));
+        }
+    }
+    if let Some(note) = v["why"].as_str().filter(|w| !w.is_empty()) {
+        out.push(format!("{:<8}{note}", "note"));
+    }
+    out
+}
+
+/// The head's `Commands::graft` for `name` on `host`, when the head answers,
+/// followed to its end: what the graft said (`said`) and whether it ended
+/// well (`ok`, else `code` and `why`); `None` when no head is up.
+pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_json::Value> {
+    if !head_socket().is_some_and(|p| p.exists()) {
+        return None;
+    }
+    let v = match head_call("Commands::graft", serde_json::json!({ "sapling": name, "host": host, "library": library })) {
+        Ok(v) => v,
+        Err(e) => return Some(serde_json::json!({ "ok": false, "code": "no_answer", "why": e, "said": "" })),
+    };
+    let Some(log) = v["log"].as_str().filter(|l| !l.is_empty()).map(PathBuf::from) else { return Some(v) };
+    // the graft runs on in the head's keeping: its log, until its exit
+    let exit = log.with_extension("log.exit");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    while !exit.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let code = std::fs::read_to_string(&exit).ok().map(|t| t.trim().to_string()).unwrap_or_default();
+    Some(if code == "0" {
+        serde_json::json!({ "ok": true, "said": said })
+    } else {
+        serde_json::json!({ "ok": false, "code": "not_grafted", "why": format!("the graft ended with {} (its log: {})", if code.is_empty() { "no status".to_string() } else { format!("exit {code}") }, log.display()), "said": said })
+    })
+}
+
+/// `hale habitat place <allocation> <host>`.
+pub(super) fn place_cmd(args: &[String]) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let [allocation, host] = args else {
+        eprintln!("usage: hale habitat place <key>/<role> <host>");
+        return ExitCode::from(2);
+    };
+    match head_call("Commands::place_allocation", serde_json::json!({ "allocation": allocation, "host": host })) {
+        Ok(v) if v["ok"] == serde_json::json!(true) => {
+            println!("{:<8}{allocation} on {host}: `hale habitat apply` applies it", "placed");
+            ExitCode::SUCCESS
+        }
+        Ok(v) => {
+            eprintln!("hale habitat place: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("hale habitat place: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `hale habitat apply [<host>] [--fresh]`: the habitat's allocations
+/// applied where they are placed, and the pulse after; when its own memory
+/// or nerves moved, its face (and the head behind it) restarted on the new
+/// address.
+pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let fresh = args.iter().any(|a| a == "--fresh");
+    let hosts: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    if hosts.len() > 1 || args.iter().any(|a| a.starts_with("--") && a != "--fresh") {
+        eprintln!("usage: hale habitat apply [<host>] [--fresh]");
+        return ExitCode::from(2);
+    }
+    let host = hosts.first().map(|h| h.to_string()).unwrap_or_default();
+    match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": fresh })) {
+        Ok(v) => {
+            for l in applied_lines(&v) {
+                println!("{l}");
+            }
+            // the habitat's own memory or nerves moved: its head and face
+            // pick the new address up on their next start
+            if v["restart"] == serde_json::json!(true) {
+                match restart_face() {
+                    Ok(line) => println!("{line}"),
+                    Err(e) => println!("{:<8}the habitat's face did not restart: {e}", "note"),
+                }
+            }
+            if v["ok"] == serde_json::json!(true) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }
+        Err(e) => {
+            eprintln!("hale habitat apply: {e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// The socket the habitat's head serves its commands on, as

@@ -1,0 +1,464 @@
+// dna/tests/habitat_placement_test.hl — the habitat's allocations placed on
+// its hosts and applied there (phase 4).
+//
+// The habitat is up on this machine, and a machine of the LAN is an sshd in
+// a container of the fixture's own (habitat_hosts_test.hl's: its docker CLI
+// drives this machine's daemon through the socket, so compose over SSH is
+// real compose, its home a directory of the scratch root at the same path).
+// A sapling is grafted with `--host`: its memory, nerves and senses' store
+// and its own services are allocations of that host, brought up there by
+// the ssh provider, and its record is born in the memory there, the
+// organism reaching it at the host's address. Moved back to this machine,
+// its memory is refused, since it holds the record and a moved memory
+// starts empty; `--fresh` moves it, empty, and the pulse says it is up
+// here. A move whose withdrawal fails (the machine stopped answering) is
+// refused as the apply's outcome, and its services stay where they were;
+// moved here once the machine answers again, they are marked applied here,
+// so a move back to the machine withdraws them from here and one copy runs.
+// Without docker compose nothing here is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// `argv` in `dir`, the habitat's memory and nerves its own allocations and
+// the head a fixture's trusted-local one.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// Whether `log` comes to say `text` within `secs`.
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// The address on the `face` line of `status`: `http://127.0.0.1:<port>`.
+fn face_of(status: String) -> String {
+    let at = std::str::index_of(status, "face    http://");
+    if at < 0 { return ""; }
+    let rest = status[(at + 8)..len(status)];
+    let end = std::str::index_of(rest, "/ (");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// The JSON array `field` of what the head's surface answers `member`, read
+// through the face.
+fn surface_read(face: String, member: String, field: String) -> String {
+    let r = dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n--data\n{\"limit\": 50}\n" + face
+            + "/api/hale/v1/head/surface/call/" + member,
+    ).stdout;
+    return std::json::find_string_field(r, field);
+}
+
+// The element of the JSON `array` whose `key` is `value`, "" for none.
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+// The host `name` as `Commands::hosts` lists it, once its state is `state`
+// (within `secs`); "" when it never is.
+fn host_in(face: String, name: String, state: String, secs: Int) -> String {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        let h = element(surface_read(face, "Commands::hosts", "hosts"), "name", name);
+        if std::json::find_string_field(h, "state") == state { return h; }
+        std::time::sleep(500ms);
+    }
+    return "";
+}
+
+// The last non-empty line of `text`.
+fn last_line(text: String) -> String {
+    let t = dna::trim_nl(text);
+    let mut at = len(t);
+    while at > 0 && t[(at - 1)..at] != "\n" { at = at - 1; }
+    return t[at..len(t)];
+}
+
+// The machine: alpine's sshd and docker CLI. Its entrypoint makes the user
+// `hale` with this uid, its home the directory the fixture shares with it,
+// in the group of the docker socket it mounts, and runs sshd with keys only
+// (again, unchanged, when the container is started again).
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY entry.sh /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nid hale >/dev/null 2>&1 || adduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\" 2>/dev/null || true\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
+// `git` in `dir` as a fixture's author.
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool(
+        "git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args,
+    );
+}
+
+// The digest a nursery pins a revision by: the sha256 of its tree's listing.
+fn digest_of(dir: String, rev: String) -> String {
+    let r = dna::run_tool(
+        "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree \"$2\" | sha256sum | cut -d' ' -f1\nsh\n"
+            + dir
+            + "\n" + rev,
+    );
+    return "sha256:" + dna::trim_nl(r.stdout);
+}
+
+// The nursery's index: the sapling `sprout` at `rev`.
+fn index(src: String, rev: String, digest: String) -> String {
+    return "[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism to place\"\nrepo = \""
+        + src + "\"\nrevision = \"" + rev + "\"\ndigest = \"" + digest + "\"\n";
+}
+
+// The allocation `entity` as `Commands::allocations` lists it.
+fn allocation(face: String, entity: String) -> String {
+    return element(
+        surface_read(face, "Commands::allocations", "allocations"),
+        "allocation",
+        entity,
+    );
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("habitat_placement_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "habitat_placement_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    let endpoint = dna::trim_nl(
+        dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+    );
+    if !std::str::starts_with(endpoint, "unix://") {
+        eprintln(
+            "habitat_placement_test: not exercised (the docker daemon is not on a unix socket)",
+        );
+        return;
+    }
+    let socket = endpoint[7..len(endpoint)];
+    let scratch = dna::scratch_root("habitat-placement");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- the habitat, up with its head
+    let log = scratch + "/up.log";
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 1800 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 600),
+        "the habitat is born and its body runs: " + text_of(log),
+    );
+    let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+    std::test::assert(
+        len(host_in(face, "local", "ready", 300)) > 0,
+        "the head answers: " + face,
+    );
+
+    // ---- the machine, added and authorized
+    let port = dna::free_port(0);
+    let sshd = scratch + "/sshd";
+    let home = scratch + "/home";
+    std::io::fs::mkdir(sshd) or discard;
+    std::io::fs::mkdir(home) or discard;
+    sshd_files(sshd);
+    let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+    let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + socket).stdout);
+    std::io::fs::write_file(sshd + "/compose.yaml", sshd_compose(port, home, socket, uid, gid))
+    or discard;
+    let project = "dna-placement-" + to_string(std::process::pid());
+    let compose = "docker\ncompose\n-p\n" + project + "\n--project-directory\n" + sshd;
+    let up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+    std::test::assert_eq_int(up.code, 0, "the machine's sshd is up: " + up.stderr);
+    let mut answered = false;
+    let mut tries = 0;
+    while !answered && tries < 60 {
+        answered = len(dna::ssh_host_key("localhost", port)) > 0;
+        if !answered { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(answered, "the machine answers SSH on " + to_string(port));
+    let container = dna::trim_nl(dna::run_tool(compose + "\nps\n-q\nsshd").stdout);
+    let added = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\nhost\nadd\nlocalhost\n--port\n" + to_string(port)
+            + "\n--user\nhale",
+    );
+    std::test::assert_eq_int(added.code, 0, "the host is added: " + added.stdout + added.stderr);
+    let auth = dna::run_tool(
+        "docker\nexec\n-u\nhale\n" + container
+            + "\nsh\n-c\nmkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && printf '%s\\n' \"$1\" >> \"$HOME/.ssh/authorized_keys\" && chmod 600 \"$HOME/.ssh/authorized_keys\"\nsh\n"
+            + last_line(added.stdout),
+    );
+    std::test::assert_eq_int(auth.code, 0, "the key is authorized: " + auth.stderr);
+    let probed = in_dir(scratch, toolchain() + "\nhabitat\nhost\nprobe\nlocalhost");
+    std::test::assert(
+        probed.code == 0 && std::str::contains(probed.stdout, "): ready"),
+        "the host is ready: " + probed.stdout + probed.stderr,
+    );
+
+    // ---- a sapling with services of its own, in a nursery the Board trusts
+    let src = scratch + "/sprout-src";
+    std::io::fs::mkdir(src) or discard;
+    git(src, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(src + "/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n")
+    or discard;
+    std::io::fs::write_file(src + "/README.md", "# sprout\n\nA small organism to place.\n")
+    or discard;
+    std::io::fs::write_file(
+        src + "/compose.yaml",
+        "services:\n  web:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n",
+    ) or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout");
+    git(src, "tag\nv1");
+    let nursery = scratch + "/nursery";
+    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::write_file(nursery + "/nursery.toml", index(src, "v1", digest_of(src, "v1")))
+    or discard;
+    let trusted = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + nursery);
+    std::test::assert_eq_int(
+        trusted.code,
+        0,
+        "the nursery is trusted: " + trusted.stdout + trusted.stderr,
+    );
+
+    // ---- grafted onto the machine: every allocation of it placed there
+    let grafted = in_dir(
+        scratch,
+        toolchain() + "\nhabitat\ngraft\nsprout\n--host\nlocalhost\n--no-library",
+    );
+    std::test::assert(
+        grafted.code == 0
+            && std::str::contains(
+                grafted.stdout,
+                "placed  its memory, nerves and senses' store on localhost (ssh)",
+            )
+            && std::str::contains(grafted.stdout, "/services) on localhost")
+            && std::str::contains(grafted.stdout, "/services on localhost (ssh): up"),
+        "the sapling is grafted onto the host: " + grafted.stdout + grafted.stderr,
+    );
+    let store = dna::local_habitat_dir() + "/saplings/sprout";
+    let key = dna::allocation_key(store);
+    let memory = allocation(face, key + "/memory");
+    std::test::assert(
+        std::json::find_string_field(memory, "provider") == "ssh"
+            && std::json::find_string_field(memory, "host") == "localhost"
+            && std::json::find_string_field(memory, "state") == "up",
+        "its memory runs on the host, observed over SSH: " + memory,
+    );
+    std::test::assert(
+        std::json::find_string_field(allocation(face, key + "/services"), "state") == "up"
+            && std::json::find_string_field(
+                allocation(face, key + "/nerves"),
+                "host",
+            ) == "localhost",
+        "and its nerves and services: "
+            + surface_read(face, "Commands::allocations", "allocations") + grafted.stdout,
+    );
+    // the habitat's index: the organism's purpose, and its pulse, the worst
+    // its allocations' providers observe
+    let listed = element(surface_read(face, "Commands::index", "organisms"), "name", "sprout");
+    std::test::assert(
+        std::str::contains(std::json::find_string_field(listed, "purpose"), "sprout")
+            && std::json::find_string_field(listed, "pulse") == "up",
+        "the index answers its purpose and pulse: " + listed,
+    );
+    let own = dna::allocation_key(genome);
+    std::test::assert(
+        std::json::find_string_field(allocation(face, own + "/memory"), "host") == "local"
+            && std::json::find_string_field(allocation(face, own + "/memory"), "state") == "up",
+        "the rest is local",
+    );
+    // the memory there is the remote project's, published on the host's
+    // interface: the organism reaches it at the host's address, its record
+    // born there and read back
+    let there = dna::run_tool(
+        "docker\nps\n--filter\nlabel=com.docker.compose.service=memory-" + key
+            + "\n--format\n{{.Label \"com.docker.compose.project.working_dir\"}}",
+    );
+    std::test::assert(
+        std::str::starts_with(dna::trim_nl(there.stdout), home + "/.hale/habitat/"),
+        "the memory was brought up from the host's directory: " + there.stdout,
+    );
+    std::test::assert(
+        std::str::contains(text_of(store + "/.hale/dna/memory.env"), "@localhost:"),
+        "the head's DSN names the host's address",
+    );
+    let rows = in_dir(store, toolchain() + "\ndna\nrecord-rows\n.");
+    std::test::assert(
+        rows.code == 0 && std::str::contains(rows.stdout, "\"kind\": \"record.genesis\""),
+        "its record was written there, and is read from there: " + rows.stdout + rows.stderr,
+    );
+
+    // ---- moved back: refused while it holds the record, then moved empty
+    let back = in_dir(scratch, toolchain() + "\nhabitat\nplace\n" + key + "/memory\nlocal");
+    std::test::assert(
+        back.code == 0 && std::str::contains(back.stdout, "placed  " + key + "/memory on local"),
+        "the memory is placed back on this machine: " + back.stdout + back.stderr,
+    );
+    let refused = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    std::test::assert(
+        refused.code != 0
+            && std::str::contains(
+                refused.stdout,
+                "refused " + key + "/memory on local: memory_holds_rows",
+            ),
+        "a memory holding a record is not moved: " + refused.stdout + refused.stderr,
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(allocation(face, key + "/memory"), "state"),
+        "up",
+        "and stays up where it was applied",
+    );
+    let moved = in_dir(scratch, toolchain() + "\nhabitat\napply\n--fresh");
+    std::test::assert(
+        moved.code == 0
+            && std::str::contains(moved.stdout, "applied " + key + "/memory on local (compose): up")
+            && std::str::contains(moved.stdout, "hale habitat migrate <organism>"),
+        "with --fresh it moves, empty, and the pulse says it is up here: " + moved.stdout
+            + moved.stderr,
+    );
+    let local = allocation(face, key + "/memory");
+    std::test::assert(
+        std::json::find_string_field(local, "host") == "local"
+            && std::json::find_string_field(local, "provider") == "compose"
+            && std::json::find_string_field(local, "state") == "up",
+        "the pulse: " + local,
+    );
+    std::test::assert(
+        len(std::io::fs::read_file(dna::placed_path(key, "memory")) or "") == 0,
+        "its address is this machine's again",
+    );
+
+    // ---- a move whose withdrawal fails stops: with the machine unreachable,
+    // its services placed here are not applied here, the failure is the
+    // apply's outcome, and they stay as they were, there and in the marker
+    // where the organism's services run: the working directories of its
+    // `web` containers, in either of its projects (here, or named for the host)
+    let services = "sh\n-c\ndocker ps --filter label=com.docker.compose.service=web --format '{{.Label \"com.docker.compose.project\"}} {{.Label \"com.docker.compose.project.working_dir\"}}' | awk -v p=\"$1\" -v k=\"$2\" 'index($1, p) == 1 && substr($1, length($1) - length(k) + 1) == k { print $2 }'\nsh\n"
+        + dna::local_habitat_project() + "\n" + key;
+    let before = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        std::str::starts_with(before, home + "/"),
+        "its services run from the host's directory: " + before,
+    );
+    let stopped = dna::run_tool(compose + "\nstop\nsshd");
+    std::test::assert_eq_int(stopped.code, 0, "the machine stops answering: " + stopped.stderr);
+    let to_local = in_dir(scratch, toolchain() + "\nhabitat\nplace\n" + key + "/services\nlocal");
+    std::test::assert_eq_int(to_local.code, 0, "its services are placed here: " + to_local.stderr);
+    let failed = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    std::test::assert(
+        failed.code != 0
+            && std::str::contains(
+                failed.stdout,
+                "refused " + key + "/services on local: withdrawal_failed:",
+            ),
+        "a withdrawal that fails stops the move: " + failed.stdout + failed.stderr,
+    );
+    std::test::assert(
+        std::str::contains(text_of(dna::placed_path(key, "services")), "\"host\": \"localhost\"")
+            || std::str::contains(
+                text_of(dna::placed_path(key, "services")),
+                "\"host\":\"localhost\"",
+            ),
+        "it stays applied on the host: " + text_of(dna::placed_path(key, "services")),
+    );
+    std::test::assert_eq_str(
+        dna::trim_nl(dna::run_tool(services).stdout),
+        before,
+        "and its services run there as they were, and only there",
+    );
+
+    // ---- back with the machine answering: moved here, and marked applied
+    // here, so a move away withdraws them from here
+    let started_again = dna::run_tool(compose + "\nstart\nsshd");
+    std::test::assert_eq_int(started_again.code, 0, "the machine answers again");
+    let mut back_up = false;
+    tries = 0;
+    while !back_up && tries < 120 {
+        let p = in_dir(scratch, toolchain() + "\nhabitat\nhost\nprobe\nlocalhost");
+        back_up = p.code == 0 && std::str::contains(p.stdout, "): ready");
+        if !back_up { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(back_up, "the machine answers SSH again");
+    let here = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    std::test::assert(
+        here.code == 0
+            && std::str::contains(here.stdout, "applied " + key + "/services on local (compose)"),
+        "its services move here: " + here.stdout + here.stderr,
+    );
+    std::test::assert(
+        std::str::contains(text_of(dna::placed_path(key, "services")), "local"),
+        "marked applied here: " + text_of(dna::placed_path(key, "services")),
+    );
+    let local_dir = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        len(local_dir) > 0 && !std::str::starts_with(local_dir, home + "/")
+            && !std::str::contains(local_dir, "\n"),
+        "one copy, run from here: " + local_dir,
+    );
+    let away = in_dir(scratch, toolchain() + "\nhabitat\nplace\n" + key + "/services\nlocalhost");
+    std::test::assert_eq_int(away.code, 0, "placed on the host again: " + away.stderr);
+    let there_again = in_dir(scratch, toolchain() + "\nhabitat\napply");
+    let after = dna::trim_nl(dna::run_tool(services).stdout);
+    std::test::assert(
+        there_again.code == 0
+            && std::str::contains(
+                there_again.stdout,
+                "applied " + key + "/services on localhost (ssh)",
+            )
+            && std::str::starts_with(after, home + "/")
+            && !std::str::contains(after, "\n"),
+        "moved away, they are withdrawn from here: one copy, on the host: " + after
+            + there_again.stdout + there_again.stderr,
+    );
+
+    in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    // what ran on the machine is containers of this daemon in projects of
+    // their own (the habitat's named for the host): taken down with it
+    dna::run_tool(
+        "sh\n-c\nfor id in $(docker ps -aq); do d=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' \"$id\" 2>/dev/null); case \"$d\" in \"$1\"/*) p=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' \"$id\"); docker rm -f -v \"$id\" >/dev/null; docker volume ls -q --filter \"label=com.docker.compose.project=$p\" | xargs -r docker volume rm >/dev/null 2>&1 ;; esac; done\nsh\n"
+            + home,
+    );
+    dna::run_tool(compose + "\ndown\n-v");
+    dna::scratch_done(scratch);
+}

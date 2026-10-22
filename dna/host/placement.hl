@@ -132,11 +132,22 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
 }
 
 // `habitat-apply <dir>`: a tenant's allocations kept at `dir`
-// (`allocations/<key>`) applied on this machine by the compose provider.
+// (`allocations/<key>`) brought up, each role where it is placed, by that
+// host's provider (dna/core/placement.hl).
 fn habitat_apply_verb(dir: String) -> Answer {
     if len(dir) == 0 { return fail("habitat-apply: the allocations' directory"); }
-    let provider = dna::ComposeProvider { };
-    let applied = provider.apply("local", dna::allocations_render(dir));
-    if !applied.ok { return fail(applied.why); }
-    return answer("up\n");
+    let mut at = len(dir);
+    while at > 0 && dir[(at - 1)..at] != "/" { at = at - 1; }
+    let key = dir[at..len(dir)];
+    let mut said = "";
+    let mut roles = "memory nerves senses ";
+    while len(roles) > 0 {
+        let sp = std::str::index_of(roles, " ");
+        let role = roles[0..sp];
+        roles = roles[(sp + 1)..len(roles)];
+        let applied = dna::placed_apply(key, role);
+        if !applied.ok { return fail(role + ": " + applied.why); }
+        said = said + role + " up on " + dna::placed_on(key, role).host + "\n";
+    }
+    return answer(said);
 }

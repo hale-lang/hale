@@ -136,12 +136,16 @@ hale habitat graft voice --host rack-a.lan
 
 ### 4. Apply Allocations and Start `voice` Services
 
-Once placement and apply land (`D4`/`D5`), `hale habitat apply` materializes each placed allocation on its target host via that host's provider and reports live health (`up`, `degraded`, or `down`):
+`hale habitat apply` materializes each placed allocation on its target host via that host's provider and reports live health (`up`, `degraded`, or `down`):
 
 ```sh
-# Materialize placed allocations and print health pulse (Phase 4 D4/D5):
+# Materialize placed allocations and print health pulse:
 hale habitat apply
 ```
+
+Where each allocation runs is a row the Board writes: `hale habitat place <key>/<role> <host>`. `hale habitat apply` makes it so. It takes each moved allocation down where it ran and brings it up on its new host with that host's provider, then prints what each allocation looks like now (up, degraded or down). An allocation on another machine is reached at that machine's name and the port it publishes there, so the DSN and the nerves' URL follow it.
+
+A moved memory starts empty, because nothing migrates. A memory that holds its organism's record moves only with `hale habitat apply --fresh`, and the habitat's own memory does not move at all. `hale habitat graft <sapling> --host <name>` grafts an organism straight onto a host: its memory, nerves and services run there from the start, and its record is born there.
 
 *(To move an allocation to another host before applying: `hale habitat place <key>/<role> <host>`, then `hale habitat apply`. Moving a stateful `memory` allocation across hosts requires `hale habitat apply --fresh`, which initializes a fresh store on the destination host.)*
 
@@ -310,7 +314,7 @@ Financial operations follow four structural rules:
 | **Root habitat organism (`hale habitat up`, `status`, `down`)** | **Built** for the `local` profile (`systemd --user` or `--foreground`); `hosted` profile is **not built** |
 | **Habitat child birth & role allocation (`hale habitat graft`)** | **Built:** Allocates `[dna] needs` (`memory`, `nerves`, `senses`, heart `database`), links parent genesis, and proposes `standard` pack |
 | **Habitat standard & operator browser face (`/index`, `/app/`)** | **Built:** Started automatically by `hale habitat up` ([The head and the face](./dna/head.md)) |
-| **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH (placing allocations onto remote SSH hosts is **not built**) |
+| **Hosts, `compose` provider, and `ssh` host registration** | **Built:** `compose` provider places on `local`; `hale habitat host add\|probe\|remove` registers LAN hosts over SSH and placing allocations on them is **built** (`hale habitat place`, `apply`, `graft --host`) |
 | **An agent pairing with a person (MCP, `hale habitat brief`)** | **Built:** the head's commands over `mcp::Rpc` under the person's bearer and roles (`hale mcp --app`, the endpoint `hale habitat status` prints), every act a row in their name; `agents/operator.md` |
 | **Saplings & nurseries (`hale habitat graft <sapling>`, `nursery`)** | **Built:** Digest-pinned `[[sapling]]` entries, `hale habitat nursery add\|refresh\|list\|ratify`, and `voice` sapling |
 | **Verified OIDC principal source** | **Built:** `git config dna.principal oidc` ([The head and the face](./dna/head.md), [The skin](./dna/skin.md)) |

@@ -23,7 +23,9 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
-       hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
+       hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
+       hale habitat place <key>/<role> <host>
+       hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]

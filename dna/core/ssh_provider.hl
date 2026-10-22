@@ -372,7 +372,8 @@ locus SshProvider {
                 why: "the render's directory on " + host + ": " + trim_nl(made.stderr),
             };
         }
-        let mut rest = render.files;
+        let mut rest = render.files
+            + (if len(render.mounted) > 0 { "\n" + render.mounted } else { "" });
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let f = if nl < 0 { rest } else { rest[0..nl] };
@@ -381,7 +382,7 @@ locus SshProvider {
             let copied = ssh_run(
                 self.root,
                 h,
-                "cat > '" + remote + "/" + f + "'",
+                "umask 077; cat > '" + remote + "/" + f + "'",
                 render.dir + "/" + f,
             );
             if copied.code != 0 {
@@ -424,12 +425,17 @@ locus SshProvider {
         } else {
             compose_service(a.role, a.instance)
         };
+        // an organism's own services: every container of its project
+        let by_service = if len(service) > 0 {
+            " --filter label=com.docker.compose.service='" + service + "'"
+        } else {
+            ""
+        };
         let ps = ssh_run(
             self.root,
             h,
-            "docker ps -a --filter label=com.docker.compose.project='" + a.project
-                + "' --filter label=com.docker.compose.service='" + service
-                + "' --format '{{.State}} {{.Status}}'",
+            "docker ps -a --filter label=com.docker.compose.project='" + a.project + "'"
+                + by_service + " --format '{{.State}} {{.Status}}'",
             "",
         );
         let failed = ssh_failure(ps);
@@ -437,6 +443,9 @@ locus SshProvider {
         if ps.code != 0 {
             return AllocationState { detail: "docker on " + a.host + ": " + trim_nl(ps.stderr) };
         }
-        return container_state(service, trim_nl(ps.stdout));
+        return containers_state(
+            if len(service) > 0 { service } else { a.project },
+            trim_nl(ps.stdout),
+        );
     }
 }

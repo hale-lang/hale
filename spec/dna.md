@@ -6416,7 +6416,10 @@ record that grafted organisms lists them under **Organisms** (the
 entry is read from a `habitat.grafted` row and says the organism's name (the
 directory it was grafted into), its state (`up` while its face accepts
 connections on the loopback, `grafted` otherwise), the address of its face
-and the address of its head. No manifest table, record family or row kind
+and the address of its head, its declared `purpose` (the `PURPOSE` of its
+`dna/org/purpose.hl`, taken at its graft) and its `pulse` (the worst state
+the providers of its allocations observe now, each where it was last
+applied: `down` over `degraded` over `up`, `""` when none is observed). No manifest table, record family or row kind
 is added: the addresses are fields of the existing `habitat.grafted` row
 (`name`, `face`, `head`), taken at the graft. An organism's address is a
 block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a
@@ -6461,7 +6464,13 @@ host, public_key, authorize}`: the host as its row now states it, and for
 `record_refused`). Each row they write is in the name of the person the
 caller maps to. They are what `hale habitat host add|probe|remove`
 calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
-placement).
+placement). Two more Board rows place and apply the allocations:
+`Commands::place_allocation` (`{allocation, host}`, answering `{ok, code,
+why, allocation}`, the row it wrote) and `Commands::apply_allocations`
+(`{host, fresh}`, answering `{ok, code, why, restart, applied}`, `applied`
+a JSON array of each allocation's `allocation`, `host`, `provider`, `ok`,
+`why`, `state` and `detail`): `hale habitat place` and `hale habitat apply`
+call them (`spec/habitat.md`, Placing and applying).
 Two more reads list the habitat's nurseries and saplings for the operator
 face's organisms screen: `Commands::nurseries` (`source`, `kind`: the
 toolchain's, `bundled`, then each `habitat.nursery` row the Board trusts)
