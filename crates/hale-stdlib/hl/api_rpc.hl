@@ -2304,8 +2304,10 @@ locus __StdApiHttpPeer {
                         std::str::from_bytes(std::bytes::slice(whole, 0, head_end + 4 + want)),
                     );
                     req.conn_fd = self.fd;
-                    let serve = self.serve_fallback;
-                    if serve(self.fallback, self.stream, req) {
+                    // a name no program binds: a program's own `serve`
+                    // would otherwise be the one called
+                    let __api_rest_fallback_fn = self.serve_fallback;
+                    if __api_rest_fallback_fn(self.fallback, self.stream, req) {
                         // taken over: the connection is the handler's now
                         self.fd = -1;
                     }

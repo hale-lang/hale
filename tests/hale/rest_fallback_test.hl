@@ -77,6 +77,12 @@ fn post(url: String, body: String) -> std::http::ClientResponse {
     };
 }
 
+// The program's own `serve`, a name the fallback's expansion once called:
+// what the stdlib expands into a program calls only names no program binds.
+fn serve(root: String, port: Int, policy: String, webroot: String) -> String {
+    return root + ":" + to_string(port) + policy + webroot;
+}
+
 fn text(r: std::http::ClientResponse) -> String {
     return std::str::from_bytes(r.body);
 }
@@ -156,6 +162,7 @@ locus Driver {
         );
 
         // ---- no fallback: a path no row serves is Rest's 404
+        std::test::assert_eq_str(serve("r", 1, "p", "w"), "r:1pw", "the program's own serve");
         let none = call("GET", "http://" + self.bare + "/plain", user);
         std::test::assert_eq_int(none.status, 404, "no fallback");
         std::test::assert(std::str::contains(text(none), "not_found"), "Rest's 404: " + text(none));
