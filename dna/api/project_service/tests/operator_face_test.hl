@@ -68,6 +68,24 @@ fn index_call(face: String, jar: String) -> fixture::HttpResponse {
     );
 }
 
+// Any row the hardware screen's client calls, as it calls it: the member's
+// own digest, the body as the client encodes it.
+fn row_call(
+    face: String,
+    jar: String,
+    member: String,
+    digest: String,
+    body: String
+) -> fixture::HttpResponse {
+    return fixture::curl(
+        "POST",
+        face + "/api/hale/v1/head/surface/call/Commands::" + member,
+        "Content-Type: application/json\nHale-Surface-Digest: " + digest + "\nOrigin: " + face
+            + (if len(jar) > 0 { "\nCookie: " + cookie_of(jar) } else { "" }),
+        body,
+    );
+}
+
 // The session cookie a jar holds, as `name=value`.
 fn cookie_of(jar: String) -> String {
     let text = std::io::fs::read_file(jar) or "";
@@ -138,6 +156,26 @@ fn main() {
         ops::graph_node_body("purpose", "shop", "Keep the shop honest.", ""),
     );
     std::test::assert(purpose.ok, "the record's purpose landed");
+    // a pending-key host with an allocation placed on it, as the ssh provider
+    // and a graft would have recorded them
+    let rack = dna::Host {
+        name: "rack-a.lan",
+        provider: "ssh",
+        state: "pending-key",
+        address: "rack-a.lan",
+        port: 22,
+        user: "ops",
+        fingerprint: "SHA256:invented",
+    };
+    let hosted = j.append(j.revision(), "habitat.host", rack.name, dna::host_row_body(rack));
+    std::test::assert(hosted.ok, "the host's row landed");
+    let placed = j.append(
+        j.revision(),
+        "habitat.allocated",
+        "shop/db",
+        "{\"role\":\"db\",\"provider\":\"operator\",\"host\":\"rack-a.lan\",\"organism\":\"shop\"}",
+    );
+    std::test::assert(placed.ok, "the allocation's row landed");
     let added = f.git("add\n-A");
     let committed = f.git("commit\n-q\n-m\nthe operator face");
     f.start_with_project(f.project, 0);
@@ -191,6 +229,229 @@ fn main() {
             && std::str::contains(read.body, "Keep the shop honest.")
             && std::str::contains(read.body, "\"ok\":true"),
         "the call the client makes answers the record: " + to_string(read.status) + read.body,
+    );
+
+    // screen 2: its assets, and the calls its page makes
+    let hardware = get(face + "/app/hardware.js", jar);
+    std::test::assert(
+        hardware.status == 200
+            && std::str::contains(hardware.body, "commandsAddHost")
+            && std::str::contains(hardware.body, "commandsRemoveHost"),
+        "signed in, the face serves screen 2's module: " + to_string(hardware.status),
+    );
+    std::test::assert(
+        std::str::contains(shell.body, "id=\"screen-hardware\"")
+            && std::str::contains(shell.body, "id=\"add-form\""),
+        "and the page carries both screens",
+    );
+    let infra = get(face + "/app/infrastructure.js", jar);
+    std::test::assert(
+        infra.status == 200 && std::str::contains(infra.body, "commandsPolicy")
+            && std::str::contains(shell.body, "id=\"screen-infrastructure\""),
+        "and screen 3's module: " + to_string(infra.status),
+    );
+    let policy = row_call(face, jar, "policy", "fnv1a64:df9e37e3ed7ef23e", "{\"limit\": 200}");
+    std::test::assert(
+        policy.status == 200 && std::str::contains(policy.body, "\"ok\":true"),
+        "policy answers through the same rows: " + policy.body,
+    );
+    let organisms = get(face + "/app/organisms.js", jar);
+    std::test::assert(
+        organisms.status == 200 && std::str::contains(organisms.body, "commandsSaplings")
+            && std::str::contains(shell.body, "id=\"screen-organisms\""),
+        "and screen 4's module: " + to_string(organisms.status),
+    );
+    let nurseries = row_call(
+        face,
+        jar,
+        "nurseries",
+        "fnv1a64:d751f5f850313908",
+        "{\"limit\": 200}",
+    );
+    std::test::assert(
+        nurseries.status == 200 && std::str::contains(nurseries.body, "toolchain"),
+        "nurseries answers, the toolchain's first: " + nurseries.body,
+    );
+    let saplings = row_call(face, jar, "saplings", "fnv1a64:6507f94ebe01a7e9", "{\"limit\": 200}");
+    std::test::assert(
+        saplings.status == 200 && std::str::contains(saplings.body, "\"ok\":true"),
+        "saplings answers: " + saplings.body,
+    );
+    let unsigned = row_call(face, "", "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
+    // a write is refused with no session, whatever the member, and nothing is made
+    let no_add = row_call(
+        face, "", "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"never.invalid\", \"user\": \"ops\", \"port\": 22}",
+    );
+    std::test::assert_eq_int(no_add.status, 401, "add_host without a session: " + no_add.body);
+    let no_graft = row_call(
+        face, "", "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}",
+    );
+    std::test::assert_eq_int(no_graft.status, 401, "graft without a session: " + no_graft.body);
+    let no_apply = row_call(
+        face, "", "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+        "{\"host\": \"\", \"fresh\": false}",
+    );
+    std::test::assert_eq_int(no_apply.status, 401, "apply_allocations without a session");
+    let hosts = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        hosts.status == 200
+            && std::str::contains(hosts.body, "rack-a.lan")
+            && std::str::contains(hosts.body, "pending-key")
+            && std::str::contains(hosts.body, "SHA256:invented"),
+        "hosts answers the host with its state and first-seen key: " + hosts.body,
+    );
+    let allocations = row_call(
+        face,
+        jar,
+        "allocations",
+        "fnv1a64:baa8d6472387e176",
+        "{\"limit\": 1000}",
+    );
+    std::test::assert(
+        allocations.status == 200 && std::str::contains(allocations.body, "shop/db"),
+        "allocations answers what is placed on it: " + allocations.body,
+    );
+    // the Board's acts are relayed to the row, which keeps its gate: the
+    // person who signed in holds no Board position yet, so the row refuses
+    // as it says
+    let refused_remove = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+    );
+    std::test::assert(
+        std::str::contains(refused_remove.body, "Commands::remove_host requires owner"),
+        "a visitor off the Board is refused: " + refused_remove.body,
+    );
+
+    // the person seated on the Board (the demo's founder) acts
+    let seated = ops::graph_seat(j, "position:board", "tester");
+    std::test::assert_eq_str(seated, "", "the person is seated on the Board");
+    let mut kept = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+    );
+    let mut tries = 0;
+    while std::str::contains(kept.body, "requires owner") && tries < 30 {
+        std::time::sleep(500ms);
+        kept = row_call(
+            face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"rack-a.lan\"}",
+        );
+        tries = tries + 1;
+    }
+    std::test::assert(
+        std::str::contains(kept.body, "allocations_placed")
+            && std::str::contains(kept.body, "shop/db"),
+        "the Board's remove_host is refused while an allocation is placed: " + kept.body,
+    );
+    let probed = row_call(
+        face, jar, "probe_host", "fnv1a64:82dd0a3b0224e415", "{\"name\": \"rack-a.lan\"}",
+    );
+    std::test::assert(
+        std::str::contains(probed.body, "unreachable")
+            || std::str::contains(probed.body, "\"ok\":true"),
+        "probe_host answers with its stated outcome: " + probed.body,
+    );
+    // a machine that answers SSH: an unprivileged sshd of the fixture's own
+    // on the loopback, which has not authorized the habitat's key
+    let keygen = dna::run_tool("ssh-keygen\n-q\n-t\ned25519\n-N\n\n-f\n" + root + "/sshd-host-key");
+    std::test::assert_eq_int(keygen.code, 0, "the machine's host key made: " + keygen.stderr);
+    let ssh_port = dna::free_port(12);
+    let sshd = std::process::spawn(
+        "/usr/sbin/sshd\n-D\n-e\n-f\n/dev/null\n-h\n" + root + "/sshd-host-key\n-p\n"
+            + to_string(ssh_port)
+            + "\n-o\nPidFile=none\n-o\nUsePAM=no\n-o\nPasswordAuthentication=no\n-o\nAuthorizedKeysFile=none\n-o\nListenAddress=127.0.0.1",
+    ) or std::process::Child { };
+    std::test::assert(sshd.pid > 0, "the machine's sshd spawned");
+    std::time::sleep(1s);
+    let added_host = row_call(
+        face, jar, "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"127.0.0.1\", \"user\": \"ops\", \"port\": " + to_string(ssh_port) + "}",
+    );
+    std::test::assert(
+        std::str::contains(added_host.body, "\"ok\":true")
+            && std::str::contains(added_host.body, "pending-key")
+            && std::str::contains(added_host.body, "\"authorize\":\"ssh-ed25519 "),
+        "add_host answers a pending-key host and the line to authorize: " + added_host.body,
+    );
+    let listed = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        std::str::contains(listed.body, "127.0.0.1") && std::str::contains(listed.body, "SHA256:"),
+        "hosts lists it with the fingerprint first seen: " + listed.body,
+    );
+    let again = row_call(
+        face, jar, "probe_host", "fnv1a64:82dd0a3b0224e415", "{\"name\": \"127.0.0.1\"}",
+    );
+    std::test::assert(
+        std::str::contains(again.body, "pending-key"),
+        "probe_host finds it still pending the key: " + again.body,
+    );
+    let gone = row_call(
+        face, jar, "remove_host", "fnv1a64:1d4e44479d3b72db", "{\"name\": \"127.0.0.1\"}",
+    );
+    std::test::assert(
+        std::str::contains(gone.body, "\"ok\":true"),
+        "remove_host removes a host with nothing placed: " + gone.body,
+    );
+    std::process::kill(sshd) or discard;
+    // placement, apply and the pulse, as the Board
+    let memory = j.append(
+        j.revision(),
+        "habitat.allocated",
+        "shop/memory",
+        "{\"role\":\"memory\",\"provider\":\"compose\",\"host\":\"local\",\"organism\":\"shop\"}",
+    );
+    std::test::assert(memory.ok, "a placeable allocation's row landed");
+    let place_digest = "fnv1a64:b5163ad15ef2dfca";
+    let refused_place = row_call(
+        face, jar, "place_allocation", place_digest,
+        "{\"allocation\": \"shop/db\", \"host\": \"local\"}",
+    );
+    std::test::assert(
+        std::str::contains(refused_place.body, "not_placeable"),
+        "an adopted allocation is not placed, in the row's words: " + refused_place.body,
+    );
+    let placed_row = row_call(
+        face, jar, "place_allocation", place_digest,
+        "{\"allocation\": \"shop/memory\", \"host\": \"local\"}",
+    );
+    std::test::assert(
+        std::str::contains(placed_row.body, "\"ok\":true"),
+        "place_allocation places on a ready host: " + placed_row.body,
+    );
+    let pulse = row_call(
+        face, jar, "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+        "{\"host\": \"rack-a.lan\", \"fresh\": false}",
+    );
+    std::test::assert(
+        pulse.status == 200 && std::str::contains(pulse.body, "\"applied\""),
+        "apply_allocations answers the pulse: " + pulse.body,
+    );
+
+    // graft through the row: it answers at once with its log, and the log
+    // ends (`<log>.exit`) whatever the graft came to
+    let grafted = row_call(
+        face, jar, "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"no-such-sapling\", \"host\": \"\", \"library\": false}",
+    );
+    std::test::assert(
+        std::str::contains(grafted.body, "\"code\":\"started\""),
+        "graft answers at once with where it writes: " + grafted.body,
+    );
+    let log = std::json::find_string_field(grafted.body, "log");
+    let mut ended = 0;
+    while ended < 120 && !std::io::fs::file_exists(log + ".exit") {
+        std::time::sleep(500ms);
+        ended = ended + 1;
+    }
+    std::test::assert(
+        std::io::fs::file_exists(log + ".exit"),
+        "the graft reached a terminal state in its log: " + log,
+    );
+    let hosts_after = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
+    std::test::assert(
+        std::str::contains(hosts_after.body, "rack-a.lan"),
+        "a refused act leaves the host where it was: " + hosts_after.body,
     );
 
     f.stop();

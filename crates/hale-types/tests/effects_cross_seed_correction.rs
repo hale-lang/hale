@@ -202,22 +202,23 @@ fn api() {
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
-        573,
-        575,
+        583,
+        585,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_23  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_24  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
         applied_at  does={syscall,env,alloc}
         habitat_graft  does={syscall,block,env,alloc}
+        habitat_graft_log  does={syscall,env,alloc}
         habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}

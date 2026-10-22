@@ -9081,6 +9081,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/project_service/tests/operator_face_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
+row	__StdProcessChild@main3	__StdProcessChild	main	default
 shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main2	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #d44fe71e
 shared	dynamic	sites in api/project_service/tests/fixture #06baa4c5
 shared	dynamic	sites in core #8e1938c5

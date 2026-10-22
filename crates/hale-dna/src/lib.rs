@@ -219,6 +219,9 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
 /// pack and the `law` items its document marks.
 pub const HABITAT_FILES: &[EmbeddedFile] = at![
     "dna/habitat/README.md",
+    "dna/habitat/ui/hardware.js",
+    "dna/habitat/ui/infrastructure.js",
+    "dna/habitat/ui/organisms.js",
     "dna/habitat/ui/head-client.js",
     "dna/habitat/ui/index.html",
     "dna/habitat/ui/operator.css",

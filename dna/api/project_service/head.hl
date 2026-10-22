@@ -23,18 +23,33 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // The head's surface as the standard face's client calls it: `POST
 // <base>/call/<member>` under `<base>` = `/api/hale/v1/head/surface`, the
 // bearer being the visitor's own Cookie header, which the face received and
-// presents on the visitor's behalf. The members relayed are the surface's
-// reads (`HEAD_SURFACE_READS`): the record's index and the habitat's hosts,
-// allocations, policy, nurseries and saplings.
+// presents on the visitor's behalf. The members relayed
+// (`HEAD_SURFACE_CALLS`) are the surface's reads, the record's index and the
+// habitat's hosts, allocations, policy, nurseries and saplings, and the Board's acts the
+// operator face makes (hosts, placement, graft): the API child
+// decides each by the visitor's own credential, as for any proxied command.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_READS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
 
-// The read `path` calls through the head's surface, "" for anything else.
+// The members of the surface that act or read a graft's log (the Board's):
+// not the reads. In a trusted-local session each carries the launch token as a
+// head's own command does, over either route.
+const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+
+// Whether `path` is the relay of one of those.
+fn surface_act(path: String) -> Bool {
+    let prefix = HEAD_PREFIX + "/read-call/";
+    if !std::str::starts_with(path, prefix) { return false; }
+    let member = path[len(prefix)..len(path)];
+    return std::str::contains(" " + HEAD_SURFACE_ACTS + " ", " " + member + " ");
+}
+
+// The row `path` calls through the head's surface, "" for anything else.
 fn surface_read(path: String) -> String {
     if !std::str::starts_with(path, HEAD_SURFACE_CALL) { return ""; }
     let member = path[len(HEAD_SURFACE_CALL)..len(path)];
     if len(member) == 0 || std::str::contains(member, " ") { return ""; }
-    return if std::str::contains(" " + HEAD_SURFACE_READS + " ", " " + member + " ") {
+    return if std::str::contains(" " + HEAD_SURFACE_CALLS + " ", " " + member + " ") {
         member
     } else {
         ""
@@ -1306,12 +1321,11 @@ locus Head {
         return proxied_response(up);
     }
 
-    // The face's read of the surface (`HEAD_SURFACE_READS`: the record's
-    // index, the habitat's hosts, allocations, policy, nurseries and
-    // saplings) for a visitor: the call reaches the API child's commands
-    // port under the visitor's own credential, a session's ID token under
-    // OIDC and the child's launch token in a trusted-local session, exactly
-    // as a proxied command does.
+    // The face's call of the surface (`HEAD_SURFACE_CALLS`: the record's
+    // index, the habitat's hosts, allocations and policy, and the host acts) for a visitor: the
+    // call reaches the API child's commands port under the visitor's own
+    // credential, a session's ID token under OIDC and the child's launch token
+    // in a trusted-local session, exactly as a proxied command does.
     fn read_call(req: std::http::Request, member: String) -> std::http::Response {
         let ctx = context_of(self.cfg);
         let child = child_view(self.cfg, "api");
@@ -1551,6 +1565,7 @@ locus Head {
                     path == HEAD_PREFIX + "/commands"
                         || path == APPLICATIONS_PREFIX
                         || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")
+                        || surface_act(path)
                 )
             {
                 let sent = std::http::header(req, "X-Hale-Token");
@@ -1620,7 +1635,7 @@ locus Head {
         }
         if std::str::starts_with(path, HEAD_PREFIX + "/read-call/") && req.method == "POST" {
             let member = path[len(HEAD_PREFIX + "/read-call/")..len(path)];
-            if std::str::contains(" " + HEAD_SURFACE_READS + " ", " " + member + " ") {
+            if std::str::contains(" " + HEAD_SURFACE_CALLS + " ", " " + member + " ") {
                 return self.read_call(req, member);
             }
         }

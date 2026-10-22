@@ -1110,6 +1110,12 @@ locus CommandAdmission {
         if self.personless(ctx) { return GraftReply { code: "forbidden" }; }
         return habitat_graft(self.root, a);
     }
+    // The log of a graft this head started (habitat_placement.hl): read by
+    // the graft's id, the Board's like the graft.
+    fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
+        if self.personless(ctx) { return GraftLogReply { code: "forbidden" }; }
+        return habitat_graft_log(a);
+    }
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's acts on them.
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
@@ -1237,6 +1243,9 @@ locus Commands {
     fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
         return self.admission.graft(a, ctx);
     }
+    fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
+        return self.admission.graft_log(a, ctx);
+    }
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
         return self.admission.nurseries(a, ctx);
     }
@@ -1355,6 +1364,7 @@ api HeadCommands {
     rpc Commands::apply_allocations requires: [owner];
     // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
     rpc Commands::graft requires: [owner];
+    rpc Commands::graft_log requires: [owner];
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's: a nursery trusted, a sapling's newer revision ratified.
     rpc Commands::nurseries;

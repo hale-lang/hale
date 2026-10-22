@@ -31,10 +31,11 @@ import "../../operations" as ops;
 
 const USAGE: String = "hale dna face: expected <port 1..65535> <webroot> <head-port 1..65535>";
 const HEAD_READ: String = "/api/hale/v1/head";
-// The head's row for the record's index. The head reads the call's bearer as
-// the visitor's cookies; a page cannot write that header, so the face does,
-// from the cookies the page's own request carries.
-const HEAD_INDEX_CALL: String = "/api/hale/v1/head/surface/call/Commands::index";
+// The head's rows, called by a page. The head reads the call's bearer as the
+// visitor's cookies; a page cannot write that header, so the face does, from
+// the cookies the page's own request carries. The head's gate and each row's
+// authority (a Board act is the Board's) decide, as for any caller.
+const HEAD_CALLS: String = "/api/hale/v1/head/surface/call/Commands::";
 // A request to the head is answered within this; an event stream's
 // heartbeat (the head writes one every 15 s) keeps its read alive.
 const RELAY_RECV_NS: Int = 60000000000;
@@ -61,10 +62,10 @@ fn lower_name(line: String) -> String {
     return std::str::lower(line[0..colon]);
 }
 
-// Whether `req` is a page's call of the head's index row: its cookies are the
-// call's bearer (HEAD_INDEX_CALL).
+// Whether `req` is a page's call of one of the head's rows: its cookies are
+// the call's bearer (HEAD_CALLS).
 fn presents_cookies(req: std::http::Request) -> Bool {
-    return req.method == "POST" && req.path == HEAD_INDEX_CALL
+    return req.method == "POST" && std::str::starts_with(req.path, HEAD_CALLS)
         && len(std::http::header(req, "Cookie")) > 0;
 }
 

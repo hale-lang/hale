@@ -384,7 +384,90 @@ type GraftReply {
     ok: Bool = false;
     code: String = "";
     why: String = "";
+    // the graft's id, which `Commands::graft_log` reads it by, and the path
+    // it writes
+    graft: String = "";
     log: String = "";
+}
+
+type GraftLogAsk {
+    graft: String = "";
+    from: Int = 0;
+}
+
+type GraftLogReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    // the log from `from`, at most one page, and where the next page starts
+    text: String = "";
+    next: Int = 0;
+    // the graft ended, and its exit status (-1 until it has)
+    done: Bool = false;
+    exit: Int = -1;
+}
+
+// A page of a graft's log is at most this many bytes.
+const GRAFT_LOG_PAGE: Int = 65536;
+
+// A sapling's name is one word of letters, digits, `.`, `_` and `-`.
+fn graft_word_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 128 || std::str::starts_with(name, "-")
+        || std::str::starts_with(name, ".")
+    {
+        return false;
+    }
+    let mut i = 0;
+    while i < len(name) {
+        let c = name[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "." || c == "_" || c == "-";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The log of the graft `graft` names: the one `Commands::graft` made, read by
+// its id (the sapling's name) and never by a path the caller supplies. The
+// path `Commands::graft` returned is accepted only when it is exactly that
+// log's.
+fn habitat_graft_log(a: GraftLogAsk) -> GraftLogReply {
+    let dir = dna::local_habitat_dir() + "/grafts";
+    let name = if std::str::starts_with(a.graft, dir + "/")
+        && std::str::ends_with(a.graft, ".log")
+    {
+        a.graft[(len(dir) + 1)..(len(a.graft) - 4)]
+    } else {
+        a.graft
+    };
+    if !graft_word_ok(name) {
+        return GraftLogReply {
+            code: "invalid_graft",
+            why: "a graft is named by the sapling's name",
+        };
+    }
+    let log = dir + "/" + name + ".log";
+    if !std::io::fs::file_exists(log) {
+        return GraftLogReply { code: "not_found", why: "no graft of `" + name + "` was started" };
+    }
+    let text = std::io::fs::read_file(log) or "";
+    let size = len(text);
+    let from = if a.from < 0 { 0 } else if a.from > size { size } else { a.from };
+    let to = if size - from > GRAFT_LOG_PAGE { from + GRAFT_LOG_PAGE } else { size };
+    let ended = std::io::fs::file_exists(log + ".exit");
+    let code = if ended {
+        dna::trim_nl(std::io::fs::read_file(log + ".exit") or "-1")
+    } else {
+        "-1"
+    };
+    return GraftLogReply {
+        ok: true,
+        text: text[from..to],
+        next: to,
+        done: ended && to == size,
+        exit: if ended { std::str::parse_int(code) or - 1 } else { -1 },
+    };
 }
 
 fn habitat_graft(root: String, a: GraftAsk) -> GraftReply {
@@ -420,5 +503,5 @@ fn habitat_graft(root: String, a: GraftAsk) -> GraftReply {
     if started.code != 0 {
         return GraftReply { code: "not_started", why: dna::trim_nl(started.stderr) };
     }
-    return GraftReply { ok: true, code: "started", log: log };
+    return GraftReply { ok: true, code: "started", graft: name, log: log };
 }

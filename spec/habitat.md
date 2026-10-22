@@ -280,6 +280,41 @@ the crossing. The page's visual rules are CSS custom properties
 (`operator.css`): near-black ground, one monospace, hairline rules, brass
 only for a crossing, color only for state (up, degraded, down).
 
+The page is one session with four screens, each a module of the same
+directory, switched by the hash (`#habitat`, `#hardware`,
+`#infrastructure`, `#organisms`), with no build step and no graph
+renderer. Every call is the generated client's; the page speaks no other
+HTTP. The head relays the surface's reads and the Board's acts for a
+signed-in visitor: the standard face presents the visitor's session as the
+call's bearer on any `Commands::` row, and the row keeps its own gate (a
+person who does not hold the Board is refused as the row says).
+
+- **Hardware** (`hardware.js`): the hosts (`Commands::hosts`) with state,
+  offers, the host key fingerprint first seen there and the allocations
+  placed on each (`Commands::allocations`). A form adds a host
+  (`Commands::add_host`: name, user, port) and then shows the habitat's
+  public key line for the machine's `authorized_keys`, with a copy button
+  (the form and the line are crossings, so brass); a `pending-key` host
+  offers `probe` (`Commands::probe_host`); every host offers `remove`
+  (`Commands::remove_host`). A refusal is shown as the row answered it.
+- **Infrastructure** (`infrastructure.js`): the allocations (role,
+  instance, provider, host, the state the provider observes) and the policy
+  (`Commands::policy`). A host picker per allocation calls
+  `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
+  and shows the pulse, what each provider observes of each allocation
+  after it. A move of a memory that holds a record is refused by the row;
+  the page shows the refusal's text with a confirm step that applies again
+  with `fresh`.
+- **Organisms** (`organisms.js`): the organisms the index lists (name,
+  purpose, state, pulse) with their allocations, the saplings the habitat
+  pins (`Commands::saplings`) and the nurseries it trusts
+  (`Commands::nurseries`). A sapling has a host picker and `graft`
+  (`Commands::graft`), which answers at once with the graft's id; the page
+  follows the graft's log through `Commands::graft_log` (`{graft, from}`
+  answering `{text, next, done, exit}`, the Board's like the graft) until it
+  is done, then refreshes. `graft_log` reads only the log of a graft this
+  head started, by its id, and refuses any other name or path.
+
 ## Pairing: an agent beside a person
 
 The head serves its surface, `HeadCommands`, over a third transport beside
@@ -317,6 +352,27 @@ settled, with the authority it requires and its question, and each sapling
 revision filed and not ratified. It reads the record and nothing else; no
 vault is opened, so no secret value can reach it. `hale habitat brief`
 prints it.
+
+The third screen, infrastructure (`infrastructure.js`, `#infrastructure`),
+lists the allocations (`Commands::allocations`: role, instance, provider,
+host and the state the provider observes) and the policy
+(`Commands::policy`: the provider and profile each role is allocated by).
+Each allocation has a host picker (this machine and the `ready` hosts) that
+calls `Commands::place_allocation`; `apply` calls `Commands::apply_allocations`
+and shows its pulse, what each provider observes of each allocation after it.
+A move of a memory that holds a record is refused by the row; the page shows
+the refusal's text with a confirm step that applies again with `fresh`.
+
+The fourth screen, organisms (`organisms.js`, `#organisms`), lists the
+organisms the index shows (name, purpose, state and pulse) with the
+allocations placed for each, then the saplings the habitat pins
+(`Commands::saplings`: name, purpose, revision, digest, nursery) and the
+nurseries it trusts (`Commands::nurseries`). A sapling has a host picker and
+a `graft` action (`Commands::graft`), which answers at once with the graft's
+id; the page follows the graft's log through `Commands::graft_log` (`{graft,
+from}` answering `{text, next, done, exit}`, the Board's like the graft; it
+reads only the log of a graft this head started, by its id, and refuses any
+other name or path) until it is done, then refreshes the lists.
 
 ## Backends
 
