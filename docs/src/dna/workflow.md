@@ -124,7 +124,7 @@ carries the exit code and the digest.
 | --- | --- | --- |
 | `evidence.base` | record | the base artifact, cut from the genome at the same moment |
 | `evidence.fmt`, `evidence.check`, `evidence.verify`, `evidence.test` | record | the toolchain on the candidate, your tests included |
-| `evidence.fleet` | record | every fleet plan the workspace declares, composed with the candidate |
+| `evidence.fleet` | record | every fleet the workspace declares, composed with the candidate |
 | `evidence.rollback` | record | the worktree stepped back to the base and forward again |
 | `evidence.diff` | record | the semantic diff, base to candidate |
 | `evidence.magnitude` | record | how big the change is, axis by axis |

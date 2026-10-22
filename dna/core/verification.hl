@@ -236,24 +236,30 @@ fn has_hale_source(worktree: String, rev: String, seed: String) -> Bool {
         );
 }
 
-// Does a `git diff --name-only` name the fleet's shape — a plan
-// (`*.plan.json`) or the manifest (`hale.toml`)? Such a change is a
-// `topology` mutation whatever it was asked as (GH #566 F5).
-fn names_topology(names: String) -> Bool {
+// Does a `git diff --name-only` name the fleet's shape — a fleet seed's
+// source (a `.hl` file in `worktree` declaring `fleet locus`) or the
+// manifest (`hale.toml`)? Such a change is a `topology` mutation whatever
+// it was asked as (GH #566 F5).
+fn names_topology(worktree: String, names: String) -> Bool {
     let mut line = "";
     let mut p = 0;
-    let n = len(names);
+    let n = len(names + "\n");
+    let all = names + "\n";
     while p < n {
-        let ch = names[p..(p + 1)];
+        let ch = all[p..(p + 1)];
         if ch == "\n" {
-            if std::str::contains(line, ".plan.json") || line == "hale.toml" { return true; }
+            if line == "hale.toml" { return true; }
+            if std::str::ends_with(line, ".hl") {
+                let src = std::io::fs::read_file(worktree + "/" + line) or "";
+                if std::str::contains(src, "fleet locus") { return true; }
+            }
             line = "";
         } else {
             line = line + ch;
         }
         p = p + 1;
     }
-    return std::str::contains(line, ".plan.json") || line == "hale.toml";
+    return false;
 }
 
 fn magnitude_json(m: Magnitude) -> String {
@@ -417,7 +423,7 @@ locus HaleVerification {
             let names = run_tool(
                 "git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + cand,
             );
-            topology = names_topology(names.stdout);
+            topology = names_topology(m.worktree, names.stdout);
         }
         let mut replay_ok = false;
         if len(self.recording) > 0 {

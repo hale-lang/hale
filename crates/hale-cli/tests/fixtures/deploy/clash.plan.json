@@ -1,3 +1,0 @@
-{"schema":"1.2","name":"clash","instances":[
- {"id":"worker_a","seed":"svc"},
- {"id":"worker-a","seed":"bare"}]}

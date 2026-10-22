@@ -1314,10 +1314,9 @@ than assume equivalence.
 ## Fleet composition (GH #408 Phase 1)
 
 A **fleet** is a named deployed system of application *instances* —
-not "every main in a repository". It is declared in source as a
-`fleet locus` (below) or, until that replaces it as an input, as a plan
-JSON; `hale fleet check|dump <fleet seed | plan.json>` composes
-**artifacts**, never source.
+not "every main in a repository". It is declared in source, as a
+`fleet locus` in a seed of its own (below); `hale fleet check|dump
+<fleet seed>` composes the instances' **artifacts**, never source.
 
 That distinction is the design. A source-merged "super-main" would be
 unsound in both directions: an unbound topic is in-process by
@@ -1326,22 +1325,11 @@ subscribers look locally connected when no deployed route joins them;
 deploy-time routes that exist only in configuration would not appear
 at all; and calls, which cannot cross a process boundary, would
 become ordinary reachability. So **matching wire identities establish
-compatibility; only an explicit route creates a fleet edge.**
+compatibility; only a fleet's binding creates a fleet edge.**
 
-A plan names exact, finite instances and routes. Autoscaling ranges
-and wildcard discovery are elaborator inputs, not sealed-plan
-contents: a bounded range is not one truth value for a cardinality
-claim.
-
-```json
-{
-  "schema": "1.1", "name": "prod",
-  "instances": [{"id": "oms-0", "artifact": "artifacts/oms.json", "labels": ["oms"]}],
-  "routes": [{"id": "request", "transport": "unix",
-              "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
-              "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}]
-}
-```
+A fleet names exact, finite instances. Autoscaling ranges and wildcard
+discovery are not its contents: a bounded range is not one truth value
+for a cardinality claim.
 
 Composition:
 
@@ -1358,7 +1346,7 @@ Composition:
    there is no cross-process call to invent.
 4. **Join on the wire identity** — `(subject, payload_hash)`, never
    the local topic name, which can mean different shapes in different
-   applications. Endpoints that disagree are a plan that cannot be
+   applications. Endpoints that disagree are a fleet that cannot be
    formed. A topic with no declared `subject:` is not portable and is
    rejected on a route.
 5. **Insert route edges explicitly**, so a cross-process hop keeps
@@ -1372,10 +1360,6 @@ hashes, the composed relations. Provenance and unknowns stay outside
 it, mirroring the application artifact's split: moving source must not
 change the identity of a deployment, but a changed transport or a
 second instance must.
-
-Unknown keys in a plan are rejected, for the reason they are rejected
-in the environment manifest: a misspelled field and an omitted one
-look identical to a verifier.
 
 ### The fleet locus
 
@@ -1415,18 +1399,24 @@ instances, each built from its own seed. So a fleet seed holds its
 fleet and its imports and nothing else: the check refuses any other
 declaration of the seed's own (a `fn`, an `@export fn`, a `locus`, a
 `main locus`, a `type`, a `target`, …), since nothing in it is ever
-built; a program to build is a seed of its own.
+built; a program to build is a seed of its own. The fleet seed is
+never merged with the seeds it imports: those are its instances, so its
+laws are judged over its own source and what each import declares (its
+`main locus`, its loci, its topics and their subjects), read from that
+seed's own files; `hale check <fleet seed>` reports them, and `hale
+fleet check` checks each instance's seed as it cuts its artifact.
 
 - **params** are the instances: each names another seed's `main locus`
   through the fleet seed's import (`alias::Main`) and takes no value. A
   param naming a locus that is not its seed's main, a locus of the
   fleet seed itself, or nothing an import declares is refused. A seed
   declares at most one fleet.
-- **placement** is a default per instance, `host("<name>")` or
-  `replicas(<n>)` (n ≥ 1). `replicas(n)` deploys n instances,
-  `<param>-0` … `<param>-(n-1)`; any other param deploys one instance
-  whose id is the param. The habitat's allocation rows bind instances
-  to hosts; the placement block is what they default to.
+- **placement** is a default per param: `host("<name>")`, one instance
+  on each of several hosts (`host("a"), host("b")`), or `replicas(<n>)`
+  (n ≥ 1) on no named host. An instance is a process, and its id is
+  `<param>-<i>`: `orders-0`, `gw-0` … `gw-(n-1)`. The habitat's
+  allocation rows bind instances to hosts; the placement block is what
+  they default to (`hale deploy render --placement`, below).
 - **bindings** wire the instances, in a main binding's shape: each
   names a topic with a declared `subject:` (a local wire name joins
   nothing) and the route's transport. Constraints, codecs and hubs are
@@ -1439,33 +1429,54 @@ built; a program to build is a seed of its own.
   one program and belong in its main; `adopt` is refused.
 
 **The `deployment` rows.** `hale fleet check <fleet seed>` checks the
-seed, cuts each instance seed's artifact into
-`.hale/fleet/<Fleet>/<param>.topology.json` beside it, and derives the
+seed, cuts each instance seed's artifact into the workspace's cache
+(`.hale/fleet/<the fleet seed's directory>/<param>.topology.json`,
+under the nearest `hale.toml`), and derives the
 deployment as rows (spec/registry.md, `deployment`): the components
 (each param's main, its seed, its artifact and shape), the instances,
 each component's placement default, the endpoints each artifact
 records (topic, wire subject, direction, and the transport its own main
 binds the subject to), and the routes. A route is derived, never
 written: one per binding, from every instance whose artifact publishes
-the subject to every instance that subscribes it. An instance joins a
-route only through its own main's binding of the subject, over the
-transport kind the fleet's binding names, since an unbound topic never
-leaves its process; a binding with no publisher or no subscriber among
-the instances wires nothing; each is refused. Composition then reads
-the rows exactly as it reads a plan — the steps above, the claims
-below — so the seeds stay artifacts and the fleet is never a merged
-super-main.
+the subject to every instance that subscribes it, each end named by its
+own artifact's local topic. The fleet's binding is the deployment's
+configuration of the route; an end whose own main binds the subject
+too must bind it over the transport kind the fleet's binding names. A
+binding with no publisher or no subscriber among the instances wires
+nothing, and is refused. Composition reads the rows as its one input —
+the steps above, the claims below — so the seeds stay artifacts and the
+fleet is never a merged super-main.
+
+**The plan document is an export.** `hale fleet export <fleet seed>`
+writes the rows as JSON, for whoever reads one: the fleet's name, each
+instance (`id`, `labels`, `seed` relative to the fleet seed, `node`: its
+host, `app_shape_hash`: its component's shape), each derived route,
+the groups (one per param) and the claims. The same source exports the
+same bytes. Nothing reads it back: no verb, manifest entry or DNA part
+takes a plan as input.
+
+```json
+{
+  "schema": "1.2", "name": "Prod",
+  "instances": [{"id": "orders-0", "labels": ["orders"], "seed": "../desk",
+                 "node": "box-a", "app_shape_hash": "df797a198bf3ff2d"}],
+  "routes": [{"id": "t::OrderRequest", "transport": "unix",
+              "publishers":  [{"instance": "orders-0", "topic": "t::OrderRequest"}],
+              "subscribers": [{"instance": "gw-0",     "topic": "t::OrderRequest"}]}]
+}
+```
 
 ### The workspace's deployments
 
 ```toml
 [fleets]
-production = "ops/fleet/prod.plan.json"
-staging    = "ops/fleet/staging.plan.json"
+production = "fleets/prod"
+staging    = "fleets/staging"
 ```
 
-An entry may name a fleet seed instead of a plan. `hale fleet check`
-with no plan checks every declared deployment.
+Each entry names a fleet seed; an entry naming a `.json` plan is
+refused. `hale fleet check` with no seed checks every declared
+deployment.
 A repository usually has more than one, and checking whichever one
 somebody remembered to name is the same partial-coverage problem
 `--matrix` solves for entrypoints. Every fleet runs even when an
@@ -1474,15 +1485,7 @@ earlier one fails, and the exit status is the worst of them.
 candidate's worktree); `--if-declared` makes a workspace that declares
 none a success that says so, for a step that runs on every workspace.
 
-**Schema 1.2 (GH #566 F5): seeds and nodes.** An instance may name a
-`seed` — a directory relative to the plan — instead of an `artifact`;
-composition then cuts the artifact from the seed first (`hale check
-<seed> --dump-topology`, into `.hale/fleet/<plan>/<id>.topology.json`
-beside the plan), so the plan can describe the workspace's own
-services and a change is checked as the fleet it would deploy. A seed
-that does not check is an instance with no admissible artifact; an
-instance with neither is a plan that cannot be formed. An instance may
-also name the `node` that expresses it (`hale node <name>`,
+An instance's host is the node that expresses it (`hale node <name>`,
 `spec/dna.md`); composition ignores it. `[dna] fleet = "<name>"` in
 `hale.toml` names which declared fleet the DNA expresses.
 
@@ -1496,22 +1499,37 @@ of some deployment it may not even appear in.
 ### Rendering a deployment (GH #1477)
 
 `hale deploy render <path> --backend compose|kubernetes [--env <name>]
-[--out <dir>]` writes a platform description of a program's own
-placement, to stdout or to `<dir>/compose.yaml` / `kubernetes.yaml`.
-`<path>` is a seed or a fleet plan. It is a pure function of what the
-program already declares, and it never builds, applies or contacts
-anything:
+[--placement <file>] [--out <dir>]` writes a platform description of a
+program's own placement, to stdout or to `<dir>/compose.yaml` /
+`kubernetes.yaml`. `<path>` is a seed or a fleet seed. It is a pure
+function of what the program already declares and of the allocation
+it is handed, and it never builds, applies or contacts anything:
 
 - the seed's checked topology (`hale check --dump-topology`): the
   `std::observe::Scrape` endpoint (host, port, path) and the bindings;
 - the main locus's `std::observe::Probes` param, when its port is
   literal, defaulted, or `self.<param>` of a param whose default is a
   literal (the port the program runs on when nothing overrides it);
-- a plan's instances and routes: one compose service per instance, one
-  Kubernetes Deployment per program with `replicas` the number of
-  instances that run it, and a compose `depends_on` from a route's
-  subscriber to its publishers (`service_healthy` when the publisher
-  holds probes, else `service_started`);
+- a fleet seed's `deployment` rows: its instances, their placement
+  defaults and the derived routes. Placement is the record's: the
+  source declares each instance's default host, and `--placement
+  <file>`, the allocation the habitat passes, binds instances to hosts
+  over those defaults. The file is a JSON array of `{"instance",
+  "host"}` rows (`"provider"` and `"role"` beside them, as the
+  habitat's allocation rows export them, are accepted and not read); an
+  instance the fleet does not deploy is refused, and an instance with
+  no host in either is rendered for the host `local`, with a note. The
+  render is **one description per host**, since the habitat applies
+  each host on its own: a compose project per host (its `name:` the
+  host; with `--out`, `<dir>/<host>/compose.yaml`; on stdout, one YAML
+  document per host). Within a host, one compose service per instance,
+  one Kubernetes Deployment per program with `replicas` the number of
+  its instances there, and a compose `depends_on` from a route's
+  subscriber to its publishers on the same host (`service_healthy` when
+  the publisher holds probes, else `service_started`). A route that
+  leaves the host is no dependency: each description it touches
+  declares it, by its endpoints `instance@host` (compose's top-level
+  `x-hale-routes`, a comment for Kubernetes);
 - `[environments.<name>]`: `backend = "compose" | "kubernetes"` (the
   `--backend` flag overrides it) and `[environments.<name>.env]`, string
   values every rendered workload carries.
@@ -1527,31 +1545,21 @@ scale policy. Output is ordered by instance id and program name, so it
 diffs. A directory with no `.hl` source (a repository) is refused: a
 backend renders an organism's own programs, never a foreign heart's.
 
-There is deliberately no coverage check over plans — unlike
-entrypoints, which are discoverable seeds, a plan is an arbitrary
-file path, so "every plan in the repository is declared" is not a
-question that can be asked without guessing.
-
 ### Fleet claims (GH #408 Phase 2)
 
-Claims over the composed model, carried in the plan as normalized
-rows rather than source grammar — the plan is an IR, so a generator
-can produce one without Hale syntax committing to a deployment
-format.
+Claims over the composed model are written in the fleet locus's
+`claims` block and lowered to normalized rows (the export carries
+them):
 
-```json
-"groups": { "strategies": {"labels": ["strategy"]}, "oms": {"instances": ["oms-0"]} },
-"claims": [
-  {"name": "orders_pass_oms",
-   "forbid_reaches": {"from": "strategies", "to": "gateways", "avoiding": "oms"}},
-  {"name": "one_order_authority",
-   "count_publisher_instances": {"subject": "svc.order.request", "eq": 1}},
-  {"name": "gw_receives_orders",
-   "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}}
-]
+```text
+claims {
+    orders_pass_oms: forbid reaches(strategy, gw) avoiding oms;
+    one_order_authority: count publishers(topic t::OrderRequest) == 1;
+    gw_receives_orders: require subscribes(some gw, topic t::OrderRequest);
+}
 ```
 
-A fleet group quantifies over **instances**, by id or by label; its
+A fleet group is a param, and quantifies over its **instances**; its
 vertices are every vertex of those instances — the same projection an
 application group makes from a locus to its methods, one altitude up.
 An unknown name or an empty resolution is an error, never an empty
@@ -1559,7 +1567,7 @@ set.
 
 - **`forbid_reaches`** walks the composed edge set: interior calls
   **including the through-stdlib contracted edges**
-  (`calls_via_stdlib`), interior bus hops, and explicit routes.
+  (`calls_via_stdlib`), interior bus hops, and the derived routes.
   Reading only `calls` loses a path the component's own claims can
   see — a handler reaching its publisher through `std::http::Router`
   contributes no direct edge at all. `avoiding` masks a group's
@@ -1573,23 +1581,19 @@ set.
   address. There are no cross-process calls to grant.
 - **`require_subscribes` / `require_publishes`** are structural
   deployment statements: some instance in the group exposes the
-  endpoint **and the plan connects it**. Both halves are load-bearing
-  — checking only that the endpoint exists lets a plan where nothing
+  endpoint **and a route connects it**. Both halves are load-bearing
+  — checking only that the endpoint exists lets a fleet where nothing
   publishes a subject satisfy "the ledger receives fills", which is
   the one thing that claim is for. "Ledger listens for fills" is
   provable; "every fill is durably booked" is not implied by it.
-- **`count_publisher_instances` / `count_subscriber_instances`**
-  count instance-qualified **endpoints**, which is a different sort
-  from the application tier's declaration count — hence the different
-  spelling. Two components can each be individually legal while the
-  deployment has two publishers. A count must name at least one of
-  `eq`, `min`, `max`: with none of them a claim compares nothing and
-  holds against every fleet while reading like law.
+- **`count publishers|subscribers`** in a fleet counts
+  instance-qualified **endpoints**, a different sort from the
+  application tier's declaration count: two components can each be
+  individually legal while the deployment has two publishers, and
+  `replicas(2)` of one publisher is two.
 
-A claim names **exactly one** verb. Several verbs under one name
-would be judged one at a time and recorded under that name as though
-the whole sentence held, so the shape is refused: split it, and each
-half gets its own name and verdict.
+A claim names **exactly one** verb, and its row carries one: the
+source grammar has no way to write two.
 
 Fleet composition decodes each admitted component ONCE into a
 typed interior (GH #476 Change 7) — the vertex universe, both
@@ -1597,7 +1601,7 @@ call relations unioned, the publish/subscribe rows, the topics
 join surface, the component's own unknowns, decl provenance, and
 the hashed endpoint identity — and composes from those typed rows
 exclusively; no modeled fact is recovered from generic JSON after
-admission. Route identity is ONE grain (round 2): a plan endpoint
+admission. Route identity is ONE grain (round 2): a route endpoint
 names a local topic, so the role check AND the edge builder both
 read the typed rows carrying that topic identity — a literal end
 on the same wire is a different endpoint and satisfies neither —
@@ -1611,7 +1615,7 @@ their withdrawn capability flags, scoped by the
 unreachable-unknown rule. The endpoint and count forms handle
 completeness INSIDE their evaluators: a known, routed `require_*`
 witness is a positive fact no incomplete set can erase, and a
-route-backed structural failure is definite (the plan's route
+route-backed structural failure is definite (the fleet's route
 table is complete). Counts follow the canonical monotone rule
 over a [known, known+hidden] interval — known endpoint rows are
 the lower bound; an uncounted component that withdraws the
@@ -1654,15 +1658,15 @@ walk (`scan_top_level`) yields the top-level entries, and both
 top-level field the parsed document consumes, so a nested decoy
 in some other section is data, never the verified value.
 
-Route admission validates **roles**, not just topic identity. A
-publisher endpoint must publish the subject and a subscriber endpoint
-must subscribe it, as its own artifact records — declaring a topic is
-not using it, and any component importing a topic module declares
-every topic in it. Without this a plan could name a producer that
-does not exist and satisfy a law about the consumer side with nothing
-feeding it. A plan that misdescribes its components is an invalid
-model, refused before any claim is evaluated rather than reported as
-a law failure.
+Route derivation reads **roles**, not just topic identity. A
+publisher end is an instance whose artifact has a send site on the
+subject's topic, a subscriber end one that subscribes it — declaring a
+topic is not using it, and any component importing a topic module
+declares every topic in it. So no route can name a producer that does
+not exist and satisfy a law about the consumer side with nothing
+feeding it: a binding no instance publishes wires nothing, and is
+refused before any claim is evaluated rather than reported as a law
+failure.
 
 **Uncertainty propagates.** A component's `unknowns` are part of the
 composed model, not a footnote beside it. A prohibition whose source
@@ -1692,86 +1696,69 @@ fleet claim `orders_pass_oms` violated — witness:
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
 
-### Signed components & attestation (GH #408 Phase 7)
+### A signed fleet (GH #408 Phase 7)
 
-A composition proves a world against artifacts it can read; a
-signature proves those artifacts are the ones a key-holder meant.
-It certifies **provenance and integrity, never behavior** — the
-artifact never claims a message will arrive, and a signature never
-claims the code is good. Out of scope, deliberately: a compromised
-builder, a malicious compiler, runtime memory tampering.
+A composition proves a world against the rows and artifacts it reads;
+a signature proves those rows are the ones a key-holder meant. It
+certifies **provenance and integrity, never behavior** — the rows never
+claim a message will arrive, and a signature never claims the code is
+good. Out of scope, deliberately: a compromised builder, a malicious
+compiler, runtime memory tampering.
 
 The scheme is **ES256** (ECDSA P-256 over SHA-256), because the
 system already speaks it: it is `std::crypto`'s signature suite,
 OpenSSL-backed in the runtime, PEM keys, raw `r‖s` 64-byte
 signatures. One algorithm end to end means a Hale program — a
-supervisor, a deploy gate — verifies the same sidecar with the
+supervisor, a deploy gate — verifies the same signature with the
 language's own stdlib.
 
-Signatures cover the artifact's **exact bytes**. That is sound
-because artifacts are byte-reproducible (schema 1.8), and it is
-necessary because the in-band `artifact_digest` is FNV-1a — an
-integrity tripwire, not a trust anchor. Nothing signs a digest.
-The sidecar is `<artifact>.sig`, one line, `es256:<128 hex>`; an
-unknown prefix is a refusal, not a skip.
+A signature covers the fleet's `deployment` rows: the **exact bytes**
+`hale fleet export <seed>` writes — each instance's seed, host and
+component shape hash, the derived routes, the claims. That is sound
+because the rows re-derive byte for byte from the same source, and a
+component whose model changes moves its shape hash. Nothing signs a
+digest. The signature lives beside the fleet seed's source, in
+`fleet.sig`, one line, `es256:<128 hex>`; an unknown prefix is a
+refusal, not a skip.
 
 ```sh
-hale fleet keygen ops                      # ops.pem (0600) + ops.pub.pem
-hale fleet sign app.topo.json --key ops.pem
-hale fleet check prod.plan.json --trust ops.pub.pem
+hale fleet keygen ops                     # ops.pem (0600) + ops.pub.pem
+hale fleet sign fleets/prod --key ops.pem # fleets/prod/fleet.sig
+hale fleet check fleets/prod --trust ops.pub.pem
 ```
 
 **Trust is strict when declared.** Passing `--trust` (repeatable),
-or declaring keys in the manifest, makes an unsigned or
-unverifiable component a composition **error**:
+or declaring keys in the manifest, makes unsigned or unverifiable rows
+a composition **error**:
 
 ```toml
 [fleet_trust]
 keys = ["keys/ops.pub.pem"]    # SPKI PEM, manifest-relative
 ```
 
-There is no `require = true` knob, for the reason `no_base` exists
-in `[claims]`: a trust set that quietly admits unsigned artifacts
-is law that looks bound and binds nothing. An absent section means
-signatures are not checked — the pre-Phase-7 meaning of a
-composition, unchanged. Signature verification runs **before** the
-integrity digest: provenance before integrity before meaning, each
-check covering the bytes the next one reads. The all-fleets form
-(`hale fleet check` with no plan) takes trust from the manifest
-only; `--trust` there is an error, so one flag cannot quietly
-rebind every declared deployment.
+There is no `require = true` knob, for the reason `no_base` exists in
+`[claims]`: a trust set that quietly admits unsigned rows is law that
+looks bound and binds nothing. An absent section means signatures are
+not checked. The signature is verified before anything is composed,
+over the rows just derived. The all-fleets form (`hale fleet check`
+with no seed) takes trust from the manifest only; `--trust` there is an
+error, so one flag cannot quietly rebind every declared deployment.
 
 The fleet artifact records what admitted each component — unhashed
 provenance, like the rest of the `components` section:
 
 ```json
-{"id": "app-0", "artifact": "artifacts/app.json",
+{"id": "app-0", "artifact": ".hale/fleet/fleets/prod/app.topology.json",
  "sha256": "59ad65d4…", "signed_by": "a88ca61a96ffa055"}
 ```
 
-`sha256` is the admitted bytes; `signed_by` is the key's identity
-(first 8 bytes of SHA-256 over the SPKI DER) or `null` when trust
+`sha256` is the admitted artifact's bytes; `signed_by` is the rows'
+key (first 8 bytes of SHA-256 over the SPKI DER) or `null` when trust
 was not declared — a fact, not an omission, so a reader can tell
-"unsigned admission" from "verified under this key".
-
-**Attestation** answers the remaining question: are the executables
-this plan deploys the ones the operator hashed? Plan schema 1.1
-adds two optional rows per instance, and `hale fleet attest` is
-all-or-nothing over them:
-
-```json
-{"id": "app-0", "artifact": "artifacts/app.json",
- "binary": "bin/app", "binary_sha256": "de55ee70…"}
-```
-
-A missing row is a refusal, not a skip — a partial attestation
-would report coverage it does not have. `binary_sha256` is
-cryptographic where `artifact_digest` deliberately is not: this
-hash is the thing an operator asserts across a trust boundary.
-Attestation checks bytes at rest at deploy time; whether a
-*running* process is still that binary is runtime territory
-(sent/delivered observation, 7b), and the artifact never claims
-otherwise.
+"unsigned admission" from "verified under this key". A fleet seed
+names no binaries, so there is no binary attestation: whether a
+running process is the binary its seed builds is runtime territory
+(sent/delivered observation), and the rows never claim otherwise.
 
 ## Secrets — confine, classify, claim (GH #436)
 

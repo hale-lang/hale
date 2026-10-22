@@ -420,7 +420,7 @@ or the seed may not build there.
 …: denied: candidate breaks the fleet
 ```
 
-The candidate's services compose, but a claim the fleet plan makes over
+The candidate's services compose, but a claim the fleet makes over
 them fails. The `mutation.deny` row names the failing steps.
 
 `mutation.refused` with `candidate moved after review: … != …`: the

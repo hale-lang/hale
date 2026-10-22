@@ -344,74 +344,31 @@ instance's artifact from its seed and derives the routes — you write
 the subject, never the endpoints:
 
 ```text
-component `orders` runs `desk::Orders` from …/desk (shape …), on host `box-a`: orders
+component `orders` runs `desk::Orders` from …/desk (shape …), on host `box-a`: orders-0
   publishes svc.order.request as `t::OrderRequest`, bound unix
 component `gw` runs `venue::Gateway` from …/venue (shape …), 2 replicas: gw-0, gw-1
   subscribes svc.order.request as `t::OrderRequest`, bound unix
-route `t::OrderRequest` (svc.order.request, unix): orders -> gw-0, gw-1
+route `t::OrderRequest` (svc.order.request, unix): orders-0 -> gw-0, gw-1
 ok: fleet `Prod` composed — 3 instance(s), 1 route(s), fleet_shape_hash …
 ```
 
-Each end must bind the subject in its own main, over the same
-transport: a topic an instance does not bind never leaves its process,
-so the fleet refuses a route through it rather than drawing one. A
-binding nobody publishes (or nobody subscribes) wires nothing and is
-refused too.
-
-### A fleet as a plan
-
-The same composition reads a plan JSON, which names the artifacts and
-the routes by hand:
-
-```sh
-hale check apps/prober --dump-topology=artifacts/prober.json
-hale check apps/oms    --dump-topology=artifacts/oms.json
-hale check apps/gw     --dump-topology=artifacts/gw.json
-hale fleet check prod.plan.json
-```
-
-A plan names deployed **instances** and the routes between them:
-
-```json
-{ "schema": "1.0", "name": "prod",
-  "instances": [
-    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
-    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
-    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}],
-  "routes": [
-    {"id": "intent",
-     "publishers":  [{"instance": "prober-0", "topic": "OrderIntent"}],
-     "subscribers": [{"instance": "oms-0",    "topic": "OrderIntent"}]}],
-  "groups": {"strategy": {"labels": ["strategy"]},
-             "gateway":  {"labels": ["gateway"]}},
-  "claims": [
-    {"name": "orders_pass_oms",
-     "forbid_reaches": {"from": "strategy", "to": "gateway",
-                        "avoiding": "oms"}}] }
-```
+The fleet's binding is the route's configuration. An end whose own main
+binds the subject too must bind it over the same transport, and a binding
+nobody publishes (or nobody subscribes) wires nothing; both are refused.
 
 Why an *instance* rather than an application: `oms` is a program,
 `oms-0` is a process. Cardinality, witnesses, and running two copies
-of one binary all need the distinction.
-
-When the services live in the same workspace, an instance can name
-the **seed** it is built from instead of a committed artifact (schema
-1.2), and the node that runs it:
-
-```json
-{"id": "oms-0", "seed": "apps/oms", "node": "edge-1", "labels": ["oms"]}
-```
-
-`hale fleet check` cuts the artifact from the seed first, so the plan
-is checked against what the source is right now. The `node` is for
-the DNA (`hale node <name>` expresses the plan's instances on that
-machine; see the DNA chapters), and composition ignores it.
+of one binary all need the distinction, so an instance's id is
+`<param>-<i>`, one per replica or named host.
 
 Why artifacts rather than source: merging the programs would invent
 edges that no deployed route creates (an unbound topic is in-process
-by default), erase routes that exist only in config, and turn
-messaging into ordinary call reachability. Matching wire identities
-establish *compatibility*; only an explicit route creates an edge.
+by default) and turn messaging into ordinary call reachability. So the
+fleet seed is never merged with the seeds it imports: `hale check`
+judges it over its own source and what each import declares, and
+`hale fleet check` checks each instance's seed as it cuts its artifact.
+Matching wire identities establish *compatibility*; only a binding
+creates an edge.
 
 A violation names the path across binaries — each hop, the route
 carrying it, and the file each vertex lives in:
@@ -419,42 +376,46 @@ carrying it, and the file each vertex lives in:
 ```
 fleet claim `orders_pass_oms` violated — witness:
   prober-0::Probe::submit  [prober/main.hl]
-  -(route `bypass`)->
+  -(route `t::OrderRequest`)->
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
 
-Declare your deployments in `hale.toml` and check them all at once; an
-entry names a fleet seed or a plan:
+Declare your deployments in `hale.toml` and check them all at once;
+each entry names a fleet seed:
 
 ```toml
 [fleets]
 production = "fleets/prod"
-staging    = "ops/fleet/staging.plan.json"
+staging    = "fleets/staging"
 ```
+
+Whoever wants the old plan document gets it as an export of the rows —
+`hale fleet export fleets/prod` writes the instances, their seeds and
+hosts, the derived routes and the claims as JSON. Nothing reads one
+back.
 
 ### Signing the certificate
 
-A composition proves a world against the artifacts it reads. When
-the artifacts travel — a deploy box that didn't build them, a CI
-stage that didn't run the checks — a signature proves they are the
+A composition proves a world against the rows it derives. When the
+fleet travels — a deploy box that didn't write it, a CI stage that
+didn't run the checks — a signature over the rows proves they are the
 ones you meant:
 
 ```sh
-hale fleet keygen ops                        # ops.pem + ops.pub.pem
-hale fleet sign artifacts/oms.json --key ops.pem
-hale fleet check prod.plan.json --trust ops.pub.pem
+hale fleet keygen ops                    # ops.pem + ops.pub.pem
+hale fleet sign fleets/prod --key ops.pem
+hale fleet check fleets/prod --trust ops.pub.pem
 ```
 
-Trust is **strict when declared**: with `--trust` given (or
-`[fleet_trust] keys = [...]` in `hale.toml`), an unsigned component
-is refused, not skipped. The signature is ES256 over the artifact's
-exact bytes — the same suite as `std::crypto`, so a Hale program
-can verify the sidecar itself.
+The signature (`fleets/prod/fleet.sig`) covers the export's exact bytes:
+each instance's seed, host and component shape, the routes and the
+claims. A component whose model changes after signing changes the rows,
+and the check refuses them.
 
-To pin the executables too, give each instance a `binary` and
-`binary_sha256` row and run `hale fleet attest prod.plan.json` —
-all-or-nothing: an instance without the rows fails the attestation
-rather than thinning it.
+Trust is **strict when declared**: with `--trust` given (or
+`[fleet_trust] keys = [...]` in `hale.toml`), unsigned rows are
+refused, not skipped. The signature is ES256 — the same suite as
+`std::crypto`, so a Hale program can verify it itself.
 
 ### What it does not tell you
 
@@ -467,8 +428,8 @@ connect, what each carries. It does not prove a message will
 your code, and no amount of static analysis changes that. Runtime
 observation is what measures delivery.
 
-Nor is it a rolling-upgrade proof. A clean old plan and a clean new
-plan say nothing about the arrangement that exists midway between
+Nor is it a rolling-upgrade proof. A clean old fleet and a clean new
+fleet say nothing about the arrangement that exists midway between
 them.
 
 Where the model is uncertain it says so rather than guessing. If a
@@ -522,7 +483,8 @@ is served, or measured, in a program without the param.
 platform description, and stops there: it never builds or deploys.
 
 ```sh
-hale deploy render fleet.plan.json --env prod        # backend from hale.toml
+hale deploy render fleets/prod --env prod            # backend from hale.toml
+hale deploy render fleets/prod --backend compose --placement alloc.json --out deploy/
 hale deploy render ./svc --backend kubernetes --out deploy/
 ```
 
@@ -535,10 +497,20 @@ backend = "compose"
 LOG_LEVEL = "info"
 ```
 
-Given a seed it renders one workload; given a fleet plan, one per
-instance (compose) or one Deployment per program with `replicas` the
-instance count (Kubernetes), with `depends_on` where a route joins two
-instances. The probes above become a compose `healthcheck` and the
+Given a seed it renders one workload. Given a fleet seed it renders one
+description **per host** — the habitat applies each host on its own — with
+one service per instance there (compose) or one Deployment per program
+with `replicas` its instance count there (Kubernetes), and `depends_on`
+where a route joins two instances on the host. Each instance runs on the
+host its placement names, unless the allocation you pass overrides it:
+
+```json
+[{"instance": "gw-0", "host": "box-a"}, {"instance": "gw-1", "host": "box-b"}]
+```
+
+A route between hosts is declared in each description it touches, by its
+endpoints (`gw-1@box-b`): compose's `x-hale-routes`, a comment for
+Kubernetes. With `--out`, each host's file goes into `<dir>/<host>/`. The probes above become a compose `healthcheck` and the
 Kubernetes liveness and readiness probes; a `std::observe::Scrape`
 becomes a published port and `prometheus.io/*` annotations. A port read
 from another param (`port: self.probe_port`) renders as that param's

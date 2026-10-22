@@ -2136,10 +2136,33 @@ fn normalize(path: String) -> String {
     return out;
 }
 
-fn plan_dir_of(plan_rel: String) -> String {
-    let sl = last_index_of(plan_rel, "/");
+// The directory a fleet seed's instances' seeds are relative to: the
+// seed itself, or a `.hl` file's directory.
+fn fleet_dir_of(fleet_rel: String) -> String {
+    if !std::str::ends_with(fleet_rel, ".hl") { return fleet_rel; }
+    let sl = last_index_of(fleet_rel, "/");
     if sl < 0 { return ""; }
-    return plan_rel[0..sl];
+    return fleet_rel[0..sl];
+}
+
+// The fleet's deployment rows as `hale fleet export` writes them, from
+// the fleet seed `fleet_rel` under `root` ("" when they do not derive).
+fn fleet_export(root: String, fleet_rel: String) -> String {
+    let r = dna::run_tool(std::env::var("HALE_BIN") + "\nfleet\nexport\n" + root + "/" + fleet_rel);
+    if r.code != 0 { return ""; }
+    return r.stdout;
+}
+
+// The same at a revision of the genome: the revision checked out into a
+// scratch worktree for the export, which is removed after.
+fn fleet_export_at(root: String, rev: String, fleet_rel: String) -> String {
+    let dir = "/tmp/dna-fleet-" + to_string(std::process::pid()) + "-" + short(rev);
+    let add = genome(root, "worktree\nadd\n--detach\n" + dir + "\n" + rev);
+    if add.code != 0 { return ""; }
+    let out = fleet_export(dir, fleet_rel);
+    let removed = genome(root, "worktree\nremove\n--force\n" + dir);
+    if removed.code != 0 { return out; }
+    return out;
 }
 
 type Deploy {
@@ -2152,8 +2175,9 @@ type Deploy {
 
 // The instances a change to `seed` touches: every instance a node
 // expresses whose seed is that directory; every one when the seed is "".
-fn touched_by(root: String, plan_rel: String, plan: String, seed: String) -> String {
-    let plan_dir = plan_dir_of(plan_rel);
+// `plan`: the fleet's rows as `hale fleet export` writes them.
+fn touched_by(root: String, fleet_rel: String, plan: String, seed: String) -> String {
+    let plan_dir = fleet_dir_of(fleet_rel);
     let want = if len(seed) == 0 { "" } else { normalize(root + "/" + seed) };
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(plan, "instances"));
@@ -2195,7 +2219,7 @@ fn touched_json(touched: String) -> String {
 fn fleet_deploy(
     root: String,
     fleet: String,
-    plan_rel: String,
+    fleet_rel: String,
     rev_in: String,
     seed: String,
     entity: String,
@@ -2204,9 +2228,13 @@ fn fleet_deploy(
 ) -> Deploy {
     let rev = genome_commit(root, rev_in);
     if len(rev) == 0 { return Deploy { error: "no such revision: " + rev_in }; }
-    let plan = genome_show(root, rev, plan_rel);
-    if len(plan) == 0 { return Deploy { error: "no plan " + plan_rel + " at " + short(rev) }; }
-    let touched = touched_by(root, plan_rel, plan, seed);
+    let plan = fleet_export_at(root, rev, fleet_rel);
+    if len(plan) == 0 {
+        return Deploy {
+            error: "the fleet seed " + fleet_rel + " does not derive at " + short(rev),
+        };
+    }
+    let touched = touched_by(root, fleet_rel, plan, seed);
     let remote = genome_remote(root);
     if len(remote) > 0 {
         let pushed = genome_push_branch(root, remote, rev, revision_branch(rev), true);
@@ -2245,7 +2273,7 @@ fn base_of(p: Projection, id: String) -> String {
 fn deploy_verb(
     root: String,
     fleet: String,
-    plan_rel: String,
+    fleet_rel: String,
     what: String,
     rollback: Bool,
     memory: dna::Memory
@@ -2278,7 +2306,7 @@ fn deploy_verb(
         rev = full;
         entity = short(full);
     }
-    let d = fleet_deploy(root, fleet, plan_rel, rev, "", entity, reason, memory);
+    let d = fleet_deploy(root, fleet, fleet_rel, rev, "", entity, reason, memory);
     if !d.ok { return fail(d.error); }
     return answer(
         "fleet.deploy #" + to_string(d.seq) + ": " + fleet + " at " + short(d.revision)

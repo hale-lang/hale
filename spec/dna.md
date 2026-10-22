@@ -1536,7 +1536,7 @@ record's.
 | `mutation.located` | record | the files found, and the grant they were found under |
 | `mutation.candidate` | record | the commit the editor produced |
 | `mutation.<disposition>` | record | what the autonomy boundary decided: `review`, `stage`, `escalate`, `release`, `deny` |
-| `mutation.topology` | record | the diff names a plan or the manifest: re-classed for the Board |
+| `mutation.topology` | record | the diff names a fleet seed's source or the manifest: re-classed for the Board |
 | `mutation.applied` | record | the candidate applied to the genome |
 | `mutation.apply_retried` | record | the apply ran again on a settled review |
 | `mutation.retained` | record | kept after its observation window |
@@ -1605,7 +1605,7 @@ record's.
 | `expression.restarted` / `expression.deployed` | record | the shape and build the new expression reports, or what a deployment gateway expressed and judged |
 | `expression.observed` / `expression.crashed` | record | the observation window's outcome; `crashed` names the instance and node on a fleet |
 | `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
-| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
+| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the fleet |
 | `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
 | `gate.observed` | record | a gate's check run at the candidate as the forge reported it: `gate`, `sha`, `conclusion`, `url`, `forge`, `run`; written only by the host's forge sync, once per run (GH #1161) |
 
@@ -4016,10 +4016,10 @@ The organization's models are a catalog in source (GH #583 M1):
   handles recorded outcomes; model quality is only ever tested by a
   fresh run.
 - **The fixture.** `dna/acceptance/trio`: a gateway (the root seed),
-  an api and a worker under a plan of four instances on two nodes
-  with routes between them and claims across them
-  (`require_publishes` on the gateway and the api, `forbid_reaches`
-  gateway → worker avoiding the api). Its organization, with every
+  an api and a worker under a fleet seed (`trio/fleet`) of four
+  instances on two hosts, with the routes its bindings derive and claims
+  across them (`require publishes` on the gateway and the api, `forbid
+  reaches` gateway → worker avoiding the api). Its organization, with every
   backend a `RecordedModel` over the real adapter
   (`dna/acceptance/trio.fixture/catalog.hl`; mode from
   `HALE_DNA_TAPE`, the tape from `HALE_DNA_TAPE_DIR`), is driven by
@@ -5925,30 +5925,35 @@ secret, by its vault name, and never creates one.
 
 ## The fleet
 
-The genome's topology is the fleet plan Hale already checks
-(`spec/verification.md`, "Fleet composition"), and the DNA expresses
-one arrangement of it:
+The genome's topology is a fleet seed Hale already checks — a seed
+declaring `fleet locus` (`spec/verification.md`, "Fleet composition")
+— and the DNA expresses one arrangement of it:
 
-- **The plan describes the workspace's own services.** Plan schema
-  1.2 lets an instance name a `seed` (relative to the plan) instead
-  of an `artifact`; composition cuts the artifact from the seed first,
-  so a candidate is checked as the fleet it would deploy. An instance
-  may name the `node` that expresses it. `[dna] fleet = "<name>"` in
-  `hale.toml` names which entry of `[fleets]` the DNA expresses.
+- **The fleet seed describes the workspace's own services.** Its params
+  are the workspace's seeds' mains, and composition cuts each one's
+  artifact from its seed, so a candidate is checked as the fleet it
+  would deploy. An instance's placement host (`host("edge-1")`) is the
+  node that expresses it. `[dna] fleet = "<name>"` in `hale.toml` names
+  which entry of `[fleets]` (a fleet seed) the DNA expresses. The DNA
+  reads the fleet as its rows: `hale fleet export <seed>` (`hale dna
+  fleet-of` resolves the name to the seed in a checkout's manifest);
+  a plan JSON is read nowhere.
 - **The fleet is evidence.** Verification runs `hale fleet check --in
   <worktree> --if-declared` on every candidate (`evidence.fleet`;
   `fleet_clean`, true when the workspace declares no fleet). A change
   to one service that breaks a claim the fleet makes over all of them
   is `mutation.deny` ("candidate breaks the fleet") with the witness
-  in the receipt. A candidate whose diff names a plan (`*.plan.json`)
-  or the manifest (`hale.toml`) changes the fleet's shape: it is
+  in the receipt. A candidate whose diff names a fleet seed's source (a
+  `.hl` file declaring `fleet locus`) or the manifest (`hale.toml`)
+  changes the fleet's shape: it is
   re-classed `topology` (`mutation.topology`) whatever it was asked
   as, and `OrgPolicy` sends it to the Board.
 - **A deploy is a row.** `fleet.deploy` (entity: the Mutation, or the
-  short revision for an operator's deploy) carries the plan name, the
-  revision, the seed the change edits (`""` for the whole genome), the
-  instances touched — every instance with a node whose seed is that
-  directory — and the reason (`apply`, `rollback`, or the operator's).
+  short revision for an operator's deploy) carries the fleet's name
+  (`plan`), the revision, the seed the change edits (`""` for the whole
+  genome), the instances touched — every instance with a host whose
+  seed is that directory, read from the fleet's export at that revision
+  (checked out into a scratch worktree for it) — and the reason (`apply`, `rollback`, or the operator's).
   The revision is published first on the genome's forge (the record's
   remote) as the branch `dna/revision/<rev>`, and every node fetches it
   by its sha, as `hale fetch` fetches a pinned dependency (GH #1590: a
@@ -5962,15 +5967,16 @@ one arrangement of it:
   Every tick it syncs the record and reads the latest `fleet.deploy`;
   when that names a revision it does not express, it fetches the
   revision by its sha from the forge (`git fetch <remote> <sha>`; a
-  fetch that fails is said and tried next tick), checks it out, and for each instance the plan assigns to
-  the node that the deploy touches (or that is not up) cuts the
+  fetch that fails is said and tried next tick), checks it out, reads
+  the fleet's export there, and for each instance the fleet places on
+  the node's host that the deploy touches (or that is not up) cuts the
   artifact, builds the seed, restarts the process (cwd the clone,
   `LOTUS_OBS=1`, `HALE_DNA_NODE`, `HALE_DNA_INSTANCE`,
   `HALE_DNA_EXPRESSION`) and appends `instance.up` as `node/<name>`:
   node, instance, revision, model hash, build digest, pid. An instance
   that exits appends `instance.exited` with its code. The expression
   identity per instance is therefore reported by the node that
-  expresses it and joined to the plan by instance id. The node decides
+  expresses it and joined to the fleet by instance id. The node decides
   nothing. `.hale/node/<name>/<instance>.pid` is the only local state.
 - **The window is over every touched instance.** After an apply's
   deploy row the host waits for every touched instance's `instance.up`
@@ -5983,7 +5989,7 @@ one arrangement of it:
   instances, which every node answers. Never up: `expression.crashed`
   "never expressed by …" and `Observation build_failed`.
 - **`hale dna fleet`** renders what the fleet expresses from the
-  record: every instance of the plan, its node, whether it is up, the
+  record: every instance of the fleet, its node, whether it is up, the
   revision and model hash it last came up at, and the last deploy.
 
 ## The senses and the reflexes
@@ -6110,11 +6116,11 @@ over one seed, one command per process (GH #1490):
   judges it as it judges a script (`spec/verification.md`).
 
 `hale dna <verb>` resolves the project from the manifest (the root, the
-application's seed, the fleet and its plan under `[dna]`), builds both
+application's seed, the fleet and its fleet seed under `[dna]`), builds both
 programs once into the toolchain cache (side by side, the first time
 any host verb needs either), and execs the one the verb belongs to in
 place — the pid that ran `hale dna <verb>` is the host:
-`<program> <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
+`<program> <verb> <root> <seed> <fleet> <fleet seed> …`, with `HALE_BIN` (the
 toolchain) and `HALE_DNA_TOOLCHAIN` in the environment. Either program
 refuses a verb that is the other's. The host reads the record through
 the core's `RecordJournal`, appends in a person's or a node's name
@@ -6123,7 +6129,7 @@ organization, the application, iris, an instance — through `sh`,
 detached, with its pid, its exit code and its log as files under
 `.hale/dna/` or `.hale/node/<name>/`, echoing the log to the terminal
 a tick at a time. The compiler keeps the graft and `upgrade` (they
-embed the sources), `hale fleet check` and the plan schema, and the
+embed the sources), `hale fleet check` and `export`, and the
 exec shims. The host decides nothing.
 
 ## A seed is built once per content fingerprint

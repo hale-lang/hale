@@ -509,12 +509,16 @@ per deployment target; `hale check --matrix` proves every
 
 Multi-binary law lives one tier up: `hale check <app>
 --dump-topology=<f.json>` emits a byte-reproducible artifact per
-application; a fleet plan (JSON) names deployed INSTANCES and
-explicit routes; `hale fleet check <plan>` composes the artifacts
-and proves cross-binary claims. Only an explicit route creates a
-fleet edge — matching topic declarations alone connect nothing.
-`hale fleet sign/keygen/attest` + `[fleet_trust]` pin the artifacts
-and binaries a deployment admits (strict when declared).
+application; a fleet seed's `fleet locus NAME { params placement
+bindings claims }` names deployed INSTANCES (other seeds' mains), their
+default hosts, the topics that wire them and the law across them;
+`hale fleet check <seed>` derives the routes, composes the artifacts
+and proves cross-binary claims. Only a fleet's binding creates a fleet
+edge — matching topic declarations alone connect nothing. `hale fleet
+sign/keygen` + `[fleet_trust]` pin the rows a deployment admits
+(strict when declared); `hale deploy render <seed> --placement <file>`
+renders one description per host; `hale fleet export` writes the rows
+as the old plan JSON, which nothing reads.
 
 ## Matching
 

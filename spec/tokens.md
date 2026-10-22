@@ -530,8 +530,9 @@ composition), ordinary names everywhere else:
 - **`fleet`** — at top level, directly before `locus`: `fleet locus
   Prod { … }` declares a deployment of other seeds' mains. A fleet is
   a locus KIND, beside `main`.
-- **`host`** — at the head of a placement entry inside a fleet locus:
-  `orders: host("box-a");`. A fleet's other placement, `replicas(n)`,
+- **`host`** — in a placement entry inside a fleet locus, once per host
+  the param runs an instance on: `orders: host("box-a");`,
+  `gw: host("box-a"), host("box-b");`. A fleet's other placement, `replicas(n)`,
   reuses the placement word.
 
 ## Operators

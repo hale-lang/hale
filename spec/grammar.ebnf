@@ -319,8 +319,10 @@ fleet_decl        = "fleet" , "locus" , IDENTIFIER , "{" ,
                     { params_block | fleet_placement | bindings_block
                     | claims_block } , "}" ;
 fleet_placement   = "placement" , "{" , { IDENTIFIER , ":" ,
-                    ( "host" , "(" , STRING_LIT , ")"
+                    ( fleet_host , { "," , fleet_host }
                     | "replicas" , "(" , INT_LIT , ")" ) , ";" } , "}" ;
+(* one instance per host named, `<param>-0` on the first *)
+fleet_host        = "host" , "(" , STRING_LIT , ")" ;
 (* `@export locus` (export_annotation, defined in § 13) marks the
    persistent singleton "app" of a wasm program — instantiated once,
    never dissolved, its `fn` methods exported. See `spec/ffi.md`

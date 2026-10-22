@@ -4033,16 +4033,26 @@ impl Parser {
             let head = self.peek_token().clone();
             let spec = match &head.kind {
                 TokenKind::Ident(w) if w == "host" => {
-                    self.bump();
-                    self.expect(TokenKind::LParen, "(")?;
-                    let t = self.peek_token().clone();
-                    let TokenKind::StringLit(h) = &t.kind else {
-                        return Err(Diag::parse(t.span, "`host(…)` names its host as a string: `host(\"box-a\")`"));
-                    };
-                    let h = h.clone();
-                    self.bump();
-                    self.expect(TokenKind::RParen, ")")?;
-                    FleetPlacementSpec::Host(h)
+                    let mut hosts = Vec::new();
+                    loop {
+                        let head = self.peek_token().clone();
+                        if !matches!(&head.kind, TokenKind::Ident(w) if w == "host") {
+                            return Err(Diag::parse(head.span, "after `,` a fleet placement names another `host(\"<name>\")`"));
+                        }
+                        self.bump();
+                        self.expect(TokenKind::LParen, "(")?;
+                        let t = self.peek_token().clone();
+                        let TokenKind::StringLit(h) = &t.kind else {
+                            return Err(Diag::parse(t.span, "`host(…)` names its host as a string: `host(\"box-a\")`"));
+                        };
+                        hosts.push(h.clone());
+                        self.bump();
+                        self.expect(TokenKind::RParen, ")")?;
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    FleetPlacementSpec::Hosts(hosts)
                 }
                 TokenKind::Ident(w) if w == "replicas" => {
                     self.bump();

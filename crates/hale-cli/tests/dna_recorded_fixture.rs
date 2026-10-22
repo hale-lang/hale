@@ -1,5 +1,5 @@
 //! GH #583 M4 — the recorded fixture: a workspace of three services
-//! under a plan with claims across them (`dna/acceptance/trio`), whose
+//! under a fleet with claims across them (`dna/acceptance/trio`), whose
 //! organization is driven by scripted asks end to end — a change
 //! deployed to two nodes, the organization grown by a supervisor under
 //! pressure, a cross-service change denied by the fleet's law — every

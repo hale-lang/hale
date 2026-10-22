@@ -78,7 +78,7 @@ const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 /// GH #566 F8: the host is Hale (`dna/host`, embedded beside the core
 /// and built once into the toolchain cache). A verb that is DNA
 /// behaviour — a projection, a relay, supervision — execs it with the
-/// project resolved: `<program> <verb> <root> <seed> <fleet> <plan> …`,
+/// project resolved: `<program> <verb> <root> <seed> <fleet> <fleet seed> …`,
 /// with the toolchain and the toolchain version in the environment.
 /// This shim resolves the project (the manifest is the compiler's) and
 /// forwards the exit status.
@@ -94,7 +94,7 @@ const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     let (root, seed) = project(dir)?;
     let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
-    let (fleet, plan_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
+    let (fleet, fleet_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
         Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
         None => (String::new(), String::new()),
     };
@@ -108,7 +108,7 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         .arg(&root)
         .arg(&seed_rel)
         .arg(&fleet)
-        .arg(&plan_rel)
+        .arg(&fleet_rel)
         .current_dir(&root)
         .env("HALE_BIN", &me)
         // GH #583: the genome a harness must never reach. The
@@ -511,9 +511,10 @@ fn host_exec_env(
 pub(crate) fn node_usage() -> &'static str {
     "usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]\n\
      \n\
-     The agent that expresses a fleet plan's instances on one machine,\n\
-     from the record: it reconciles what the plan says this node runs\n\
-     against what is running here (GH #566 F5). With HALE_DNA_NATS_URL_APP\n\
+     The agent that expresses a fleet's instances on one machine, from\n\
+     the record: it reconciles the instances the fleet places on this\n\
+     host (`host(\"<name>\")`) with what is running here\n\
+     (GH #566 F5). With HALE_DNA_NATS_URL_APP\n\
      and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it\n\
      hands both to every instance, which says what it says onto the\n\
      nerves itself (GH #986).\n"
@@ -844,9 +845,9 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             host_exec_env("dev", &dir, &rest, &env, &NOT_THE_HOSTS)
         }
-        // the plan path a fleet name resolves to in this checkout's manifest
-        // (a node asks, at the revision it checked out)
-        Some("plan-of") => {
+        // the fleet seed a fleet name resolves to in this checkout's
+        // manifest (a node asks, at the revision it checked out)
+        Some("fleet-of") => {
             let root = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             let name = args.get(2).cloned().unwrap_or_default();
             let manifest = root.join("hale.toml");
@@ -1370,7 +1371,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state");
     eprintln!("       hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)");
     eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");
-    eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
+    eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the fleet seed; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` writes one signal into the record, which a node relays");
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");

@@ -21,9 +21,8 @@ crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	wired	require subs
 crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl	iso_dg	forbid reaches(delta_wing, gamma_wing)	Invalid	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	single_settle	count subscribers(topic Charges) <= 1	Holds	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	wired	require subscribes(some settlers, topic Charges)	Holds	None
-crates/hale-cli/tests/fleet_compose.rs#23	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
-crates/hale-cli/tests/fleet_cross_tier.rs#5	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
+crates/hale-cli/tests/fleet_cross_tier.rs#3	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
+crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0	isolation	forbid reaches(probes, workers)	Invalid	None
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#1	isolation	forbid reaches(probes, workers)	Invalid	None
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#2	isolation	forbid reaches(probes, workers)	Holds	None

@@ -1,5 +1,7 @@
-# Rendered by `hale deploy render` from fleet.plan.json: a pure function of the checked program.
+# Rendered by `hale deploy render` from demo: a pure function of the checked program.
 # environment: prod
+# host: local (one project per host; each is applied on its own)
+name: "local"
 # Build each program first (`hale build <seed>`); a service runs its built binary from
 # the mount, in a glibc image compatible with the build host.
 services:
@@ -49,3 +51,9 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+x-hale-routes:
+  "s::Tick":
+    subject: "svc.tick"
+    transport: "unix"
+    publishers: ["svc-0@local", "svc-1@local"]
+    subscribers: ["bare-0@local"]

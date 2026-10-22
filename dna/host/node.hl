@@ -1,5 +1,5 @@
 // dna/host/node.hl — `hale node <name>`: the agent that expresses, on
-// one machine, the instances a fleet plan assigns to that node
+// one machine, the instances a fleet places on that host
 // (GH #566 F5, in Hale since F8). It never decides: it expresses what
 // the record's latest `fleet.deploy` says and reports what it sees.
 
@@ -14,13 +14,12 @@ type Instance {
 @form(vec)
 locus Instances { capacity { heap items of Instance; } }
 
-// The plan file this clone's manifest names for `fleet` ("" = the one
-// under `[dna]`), read by the toolchain: `hale dna` resolved it into
-// HALE_DNA_PLAN for the host, but a node reads the manifest at the
-// revision it checked out — through `hale fleet plan-of`.
-fn plan_rel_of(root: String, fleet: String) -> String {
+// The fleet seed this clone's manifest names for `fleet` ("" = the one
+// under `[dna]`), read by the toolchain: a node reads the manifest at
+// the revision it checked out — through `hale dna fleet-of`.
+fn fleet_rel_of(root: String, fleet: String) -> String {
     let hale = std::env::var("HALE_BIN");
-    let r = dna::run_tool(hale + "\ndna\nplan-of\n" + root + "\n" + fleet);
+    let r = dna::run_tool(hale + "\ndna\nfleet-of\n" + root + "\n" + fleet);
     if r.code != 0 { return ""; }
     return dna::trim_nl(r.stdout);
 }
@@ -130,16 +129,25 @@ locus Node {
             return false;
         }
         let plan_name = std::json::find_string_field(deploy.body, "plan");
-        let plan_rel = plan_rel_of(self.root, plan_name);
-        if len(plan_rel) == 0 {
+        let fleet_rel = fleet_rel_of(self.root, plan_name);
+        if len(fleet_rel) == 0 {
             self.say(
                 "fleet.deploy #" + to_string(deploy.seq) + ": no fleet `" + plan_name
                     + "` in hale.toml at " + short(rev) + " (retrying next tick)",
             );
             return false;
         }
-        let plan = std::io::fs::read_file(self.root + "/" + plan_rel) or "";
-        let plan_dir = plan_dir_of(plan_rel);
+        // the fleet's rows at the revision checked out: each instance, its
+        // seed and the host its placement names
+        let plan = fleet_export(self.root, fleet_rel);
+        if len(plan) == 0 {
+            self.say(
+                "fleet.deploy #" + to_string(deploy.seq) + ": the fleet seed " + fleet_rel
+                    + " does not derive at " + short(rev) + " (retrying next tick)",
+            );
+            return false;
+        }
+        let plan_dir = fleet_dir_of(fleet_rel);
         let touched = " "
             + std::str::replace(
                 std::str::replace(

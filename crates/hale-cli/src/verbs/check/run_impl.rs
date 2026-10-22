@@ -288,6 +288,29 @@ pub(crate) fn run_check_impl_labelled(
     adopt_env: &[String],
     env_label: Option<&str>,
 ) -> u8 {
+    // Phase 4: a fleet seed is checked over its own source and what each
+    // import declares, never merged with the seeds it imports (they are
+    // its instances, composed as artifacts by `hale fleet check`).
+    if crate::deployment::is_fleet_seed(target) {
+        return match crate::deployment::check_fleet_seed(target) {
+            Ok((fleet, _, _)) => {
+                println!(
+                    "ok: fleet `{}` checked — {} instance param(s), {} binding(s), {} claim(s)",
+                    fleet.name,
+                    fleet.instances.len(),
+                    fleet.bindings.len(),
+                    fleet.claims.len()
+                );
+                0
+            }
+            Err(errs) => {
+                for e in &errs {
+                    eprintln!("{e}");
+                }
+                1
+            }
+        };
+    }
     match load_for_check(target, adopt_env, env_label) {
         Ok(snap) => check_loaded(target, gate_warnings, &snap),
         Err(code) => code,

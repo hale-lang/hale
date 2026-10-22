@@ -203,7 +203,7 @@ shift_struct!(FleetPlacement { instance, spec, span });
 impl Shift for FleetPlacementSpec {
     fn shift(&mut self, _: Move) {
         match self {
-            FleetPlacementSpec::Host(_) | FleetPlacementSpec::Replicas(_) => {}
+            FleetPlacementSpec::Hosts(_) | FleetPlacementSpec::Replicas(_) => {}
         }
     }
 }

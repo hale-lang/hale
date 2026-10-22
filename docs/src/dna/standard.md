@@ -17,11 +17,11 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 - *Instead of:* processes, threads or registries kept beside the tree.
 - *Today:* followed. The organization is one tower (`dna/core/assembly.hl`'s `Dna`), and an execution's workflows, tasks and steps are accepted children.
 
-**Every process is an instance of a fleet plan, and every deployment is derived from it.** The organism's programs (the host, the organization, the head, the application, the reflexes) are instances of one plan, their routes the topics they bind; `hale fleet check` composes them. A deployment backend renders the plan for the platform it runs on (GH #1477).
-- *Why:* only a plan lets the compiler check what crosses between processes, and only a derived deployment cannot drift from the program.
+**Every process is an instance of a fleet, and every deployment is derived from it.** The organism's programs (the host, the organization, the head, the application, the reflexes) are instances of one `fleet locus`, their routes the topics it binds; `hale fleet check` composes them. A deployment backend renders the fleet for the platform it runs on, one description per host (GH #1477).
+- *Why:* only a fleet lets the compiler check what crosses between processes, and only a derived deployment cannot drift from the program.
 - *Instead of:* hand-written compose files, pid files and ports repeated in several places.
 - *Enforced by:* `hale fleet check` in verification, on every candidate.
-- *Today:* **goal.** The organism has no plan of its own; its bindings are copied by hand between the host, the generated organization and the reference organism, and its processes are started by the host.
+- *Today:* **goal.** The organism has no fleet of its own; its bindings are copied by hand between the host, the generated organization and the reference organism, and its processes are started by the host.
 
 **Placement is declared on the main locus.** Pools, pinning and replicas are `placement { }`, never threads or process flags.
 - *Today:* followed by the host, the head, the reflexes and the generated organization.
@@ -130,4 +130,4 @@ An organism is a distributed system: the record and its memory, a head, nodes, l
 
 Followed, these rules make a change to the organism checkable before it runs: a new topic that no instance binds, a surface field whose type changed under a caller, a function that reaches a secret or the network without its purpose, a deployment that no longer matches its program, a money value passed where a duration was meant. Each is a build error with a path through the source, not an incident.
 
-The *goal* rules above are DNA's own migration, in the order they tighten the system most: typed rows; the organism as a fleet plan, with its broker permissions derived from its bindings; the head's reads as surfaces with generated clients; a typed heart; law and attributed effects on every program; verification reading data; units for money and time; enums; secrets provisioned on the sealed side.
+The *goal* rules above are DNA's own migration, in the order they tighten the system most: typed rows; the organism as a fleet, with its broker permissions derived from its bindings; the head's reads as surfaces with generated clients; a typed heart; law and attributed effects on every program; verification reading data; units for money and time; enums; secrets provisioned on the sealed side.

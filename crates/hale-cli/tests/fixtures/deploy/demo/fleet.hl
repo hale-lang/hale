@@ -1,0 +1,17 @@
+// The deploy fixtures' fleet: the listener and two replicas of the
+// service, wired by the tick topic.
+import "../bare" as b;
+import "../svc" as s;
+
+fleet locus Demo {
+    params {
+        bare: b::App;
+        svc: s::App;
+    }
+    placement {
+        svc: replicas(2);
+    }
+    bindings {
+        s::Tick: unix("/tmp/svc.tick.sock");
+    }
+}

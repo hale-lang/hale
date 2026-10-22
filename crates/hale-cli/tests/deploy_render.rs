@@ -29,6 +29,27 @@ fn render(cwd: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// The fixtures copied out of the tree: a fleet's render cuts each
+/// instance's artifact beside the fleet seed.
+fn workspace(tag: &str) -> PathBuf {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let p = e.unwrap().path();
+            let dest = to.join(p.file_name().unwrap());
+            if p.is_dir() {
+                copy(&p, &dest);
+            } else {
+                std::fs::copy(&p, &dest).unwrap();
+            }
+        }
+    }
+    let d = std::env::temp_dir().join(format!("hale_deploy_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&d);
+    copy(&fixtures(), &d);
+    d
+}
+
 fn golden(name: &str) -> String {
     std::fs::read_to_string(fixtures().join("goldens").join(name)).expect("golden")
 }
@@ -83,40 +104,65 @@ fn a_program_without_probes_renders_no_probe_section() {
 }
 
 #[test]
-fn a_fleet_plan_renders_its_instances_routes_and_environment() {
-    let (ok, out, err) = render(&fixtures(), &["fleet.plan.json", "--env", "prod"]);
+fn a_fleet_seed_renders_its_instances_routes_and_environment() {
+    let d = workspace("fleet");
+    let (ok, out, err) = render(&d, &["demo", "--env", "prod"]);
     assert!(ok, "{err}");
     assert_eq!(out, golden("fleet.prod.compose.yaml"));
     // the subscriber waits for its publishers, which have a healthcheck to wait on
     assert!(out.contains("condition: service_healthy"));
-    let (ok, out, err) = render(&fixtures(), &["fleet.plan.json", "--env", "staging"]);
+    // no host in the source and none allocated: one project, said so
+    assert!(err.contains("rendered for the host `local`"), "{err}");
+    let (ok, out, err) = render(&d, &["demo", "--env", "staging"]);
     assert!(ok, "{err}");
     assert_eq!(out, golden("fleet.staging.kubernetes.yaml"));
     assert!(out.contains("replicas: 2"));
+    let _ = std::fs::remove_dir_all(&d);
 }
 
+/// The habitat's allocation rows place each instance on a host; the
+/// render is one compose project per host, and a route between hosts is
+/// declared in both, by `instance@host` endpoints, never wired by
+/// compose.
 #[test]
-fn the_output_is_the_same_every_time_and_out_writes_a_file() {
-    let a = render(&fixtures(), &["fleet.plan.json", "--env", "prod"]).1;
-    let b = render(&fixtures(), &["fleet.plan.json", "--env", "prod"]).1;
-    assert_eq!(a, b);
-    let d = std::env::temp_dir().join(format!("hale_deploy_out_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    let (ok, out, err) = render(
-        &fixtures(),
-        &[
-            "svc",
-            "--backend",
-            "kubernetes",
-            "--out",
-            &d.to_string_lossy(),
-        ],
-    );
-    assert!(ok && out.is_empty(), "{err}");
-    assert_eq!(
-        std::fs::read_to_string(d.join("kubernetes.yaml")).unwrap(),
-        golden("svc.kubernetes.yaml")
-    );
+fn a_two_host_fleet_renders_a_project_per_host() {
+    let d = workspace("hosts");
+    std::fs::write(
+        d.join("alloc.json"),
+        r#"[{"instance": "bare-0", "host": "box-a", "provider": "compose", "role": "instance"},
+            {"instance": "svc-0", "host": "box-a"},
+            {"instance": "svc-1", "host": "box-b"}]"#,
+    )
+    .unwrap();
+    let (ok, _, err) = render(&d, &["demo", "--backend", "compose", "--placement", "alloc.json", "--out", "out"]);
+    assert!(ok, "{err}");
+    let a = std::fs::read_to_string(d.join("out/box-a/compose.yaml")).expect("box-a's project");
+    let b = std::fs::read_to_string(d.join("out/box-b/compose.yaml")).expect("box-b's project");
+    assert!(a.contains("name: \"box-a\"") && b.contains("name: \"box-b\""), "{a}\n{b}");
+    assert!(a.contains("  bare-0:") && a.contains("  svc-0:") && !a.contains("  svc-1:"), "{a}");
+    assert!(b.contains("  svc-1:") && !b.contains("  bare-0:"), "{b}");
+    // in-host order is a dependency; the cross-host publisher is not
+    assert!(a.contains("depends_on:\n      svc-0:"), "{a}");
+    assert!(!a.contains("      svc-1:\n        condition"), "{a}");
+    for project in [&a, &b] {
+        assert!(
+            project.contains("x-hale-routes:\n  \"s::Tick\":")
+                && project.contains("publishers: [\"svc-0@box-a\", \"svc-1@box-b\"]")
+                && project.contains("subscribers: [\"bare-0@box-a\"]"),
+            "the route is declared in each project it touches:\n{project}"
+        );
+    }
+    // the source's default and the allocation agree on one host: one project
+    std::fs::write(d.join("one.json"), r#"[{"instance": "svc-1", "host": "local"}]"#).unwrap();
+    let (ok, out, err) = render(&d, &["demo", "--backend", "kubernetes", "--placement", "one.json"]);
+    assert!(ok && out.matches("# host: ").count() == 1, "{err}{out}");
+    // an allocation of nothing the fleet deploys is refused
+    std::fs::write(d.join("ghost.json"), r#"[{"instance": "ghost", "host": "box-a"}]"#).unwrap();
+    let (ok, _, err) = render(&d, &["demo", "--backend", "compose", "--placement", "ghost.json"]);
+    assert!(!ok && err.contains("allocates `ghost`, which fleet `Demo` does not deploy"), "{err}");
+    // a placement is a fleet's
+    let (ok, _, err) = render(&d, &["svc", "--backend", "compose", "--placement", "one.json"]);
+    assert!(!ok && err.contains("no fleet seed"), "{err}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -156,25 +202,15 @@ fn the_selected_environment_gates_the_seed_check() {
 }
 
 #[test]
-fn instances_of_one_seed_keep_their_own_binaries() {
-    let (ok, out, err) = render(&fixtures(), &["env.plan.json", "--backend", "compose"]);
-    assert!(ok, "{err}");
-    assert!(
-        out.contains("[\"/app/out/a\"]") && out.contains("[\"/app/out/b\"]"),
-        "{out}"
-    );
-    let (ok, _, err) = render(&fixtures(), &["env.plan.json", "--backend", "kubernetes"]);
-    assert!(
-        !ok && err.contains("`svc-0` and `svc-1`") && err.contains("different binaries"),
-        "{err}"
-    );
-}
-
-#[test]
 fn names_that_normalize_alike_are_refused_with_both_ids() {
-    let (ok, _, err) = render(&fixtures(), &["clash.plan.json", "--backend", "kubernetes"]);
-    assert!(
-        !ok && err.contains("`worker_a`") && err.contains("`worker-a`"),
-        "{err}"
-    );
+    let d = workspace("clash");
+    std::fs::create_dir_all(d.join("clash")).unwrap();
+    std::fs::write(
+        d.join("clash/fleet.hl"),
+        "import \"../svc\" as s;\nimport \"../bare\" as b;\n\nfleet locus Clash {\n    params {\n        worker: s::App;\n        Worker: b::App;\n    }\n}\n",
+    )
+    .unwrap();
+    let (ok, _, err) = render(&d, &["clash", "--backend", "kubernetes"]);
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(!ok && err.contains("`worker-0`") && err.contains("`Worker-0`"), "{err}");
 }

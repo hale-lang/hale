@@ -889,10 +889,10 @@ fleet locus Prod {
   never runs: a `fn` (an `@export` one too), a `locus`, a `type` or a
   `target` beside the fleet is refused, and `hale build` refuses the
   seed and builds each instance from its own. **[error]**
-- **Bind each end in its own main too.** A route reaches an instance
-  only through that instance's binding of the subject, over the same
-  transport kind; a topic it does not bind never leaves its process,
-  and the fleet refuses the binding. **[error]**
+- **An end that binds the subject binds it over the route's
+  transport.** The fleet's binding configures the route; an instance
+  whose own main binds the subject over another transport kind is
+  refused. **[error]**
 - **Give every wired topic a `subject:`.** A local wire name cannot
   join two programs. **[error]**
 - **Count instances in the fleet, not in a main.** `count
@@ -1964,7 +1964,7 @@ or from outside with `hale check --adopt std::law::Standard`.
   can only add law.
 - **In a library's `claims { }`** — obligations about the surface the
   library exports, re-evaluated in every importer.
-- **In a fleet plan** — law no single binary can state, because it is
+- **In a fleet locus** — law no single binary can state, because it is
   about the arrangement. `count publishers == 1` inside one program
   is a different sentence from "one deployed publisher"; write the
   second where instances exist.

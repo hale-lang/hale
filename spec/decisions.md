@@ -3797,6 +3797,35 @@ a fleet has none. *Routes written in the fleet*: they restate the
 instances' own topics and bindings, and the restatement is where a
 plan and its programs drifted apart.
 
+### F.45 — The fleet seed is the one input; the plan is an export
+
+**Problem.** After F.44 a deployment had two inputs, the fleet seed and
+the plan JSON it replaced, and every consumer (composition, signing,
+the renderer, the DNA) read the plan. A fleet seed checked as a merged
+program also merged the seeds it imports, the super-main F.44 rules
+out: their world law, their constitutions and their wire subjects met
+in one check.
+
+**Decision.** A fleet seed is the only input. `hale fleet check|dump`,
+`[fleets]`, the DNA's `[dna] fleet` and `hale deploy render` take the
+seed; the plan JSON is written by `hale fleet export <seed>` for whoever
+reads one, and read by nothing. A signature covers the export's exact
+bytes. A fleet seed is never merged with the seeds it imports: its laws
+are judged over its own source and what each import declares, and each
+instance's seed is checked as its artifact is cut. Placement is the
+record's: the source declares each instance's default host (one
+instance per named host, ids `<param>-<i>`), the habitat's allocation
+rows override it per instance, and a render reads both and writes one
+description per host. The fleet's binding is the route's configuration:
+an instance whose own main does not bind the subject still joins the
+route (F.44 refused it), and one that binds it must bind it over the
+route's transport kind.
+
+**Considered and rejected.** *Keeping the plan as an input beside the
+seed*: two inputs drift, and every consumer pays for both. *Binary
+attestation*: a fleet seed names no binaries; what a host runs is the
+build of the seed, observed at runtime.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

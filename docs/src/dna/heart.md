@@ -438,20 +438,30 @@ way it would be across any deploy.
 ### The fleet
 
 The organization can run on one machine while the application runs on
-many. The fleet is the plan Hale already checks ([Multiple
-binaries](../services/multi-binary.md)), with plan schema 1.2 letting an
-instance name the `seed` it is built from and the `node` that runs it:
+many. The fleet is a fleet seed Hale already checks ([Multiple
+binaries](../services/multi-binary.md)): its params are the services'
+mains, and each one's placement names the host, and so the node, that
+runs it:
 
-```json
-{"schema": "1.2", "name": "production", "instances": [
-  {"id": "api-0", "seed": "services/api", "node": "edge-1", "labels": ["api"]},
-  {"id": "api-1", "seed": "services/api", "node": "edge-2", "labels": ["api"]},
-  {"id": "worker-0", "seed": "services/worker", "node": "edge-1", "labels": ["worker"]}]}
+```hale
+import "../../services/api" as api;
+import "../../services/worker" as worker;
+
+fleet locus Production {
+    params {
+        api: api::Api;
+        worker: worker::Worker;
+    }
+    placement {
+        api: host("edge-1"), host("edge-2");
+        worker: host("edge-1");
+    }
+}
 ```
 
 ```toml
 [fleets]
-production = "ops/production.plan.json"
+production = "ops/production"
 
 [dna]
 fleet = "production"
@@ -465,7 +475,7 @@ hale node edge-1                  # [--repo <clone>] [--fleet <name>] [--tick <m
 
 A node syncs the record every tick and reads the latest `fleet.deploy`.
 When that names a revision it does not express, it fetches and checks
-it out, then builds and restarts each instance the plan assigns to it
+it out, then builds and restarts each instance the fleet places on its host
 that the deploy touches, and reports each in its own name (`node/<name>`):
 `instance.up` with the revision, model hash, build digest and pid, and
 `instance.exited` with the code when one goes. It decides nothing.
@@ -480,9 +490,10 @@ hale node edge-1: fleet.deploy #<n> expressed (<k> instance(s) started)
 A deploy is a row. The revision is published first as the branch
 `dna/revision/<rev>` on the genome's forge, and every node fetches it by
 its sha; the row
-carries the plan, the revision, the seed the change edited, the
-instances touched (every instance with a node whose seed is that
-directory) and the reason. By hand:
+carries the fleet's name, the revision, the seed the change edited, the
+instances touched (every instance with a host whose seed is that
+directory, from the fleet's export at that revision) and the reason. By
+hand:
 
 ```sh
 hale dna deploy HEAD          # fleet.deploy #<n>: production at <rev> touching api-0 api-1 worker-0

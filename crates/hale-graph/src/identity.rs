@@ -298,7 +298,7 @@ pub enum Input {
     SnapshotConfig,
     /// The editor buffers a load read over the disk.
     EditorBuffers,
-    /// A fleet plan's model text.
+    /// A fleet's model text.
     FleetPlan,
     /// The C compiler, its version and its flags.
     CCompiler,
@@ -643,8 +643,8 @@ pub const IDENTITIES: &[Identity] = &[
     },
     Identity {
         name: "fleet_shape_hash",
-        identifies: "a fleet plan's model text is the one printed: the plan artifact's own shape",
-        computed: "fleet plan emission",
+        identifies: "a fleet's model text is the one printed: the fleet artifact's own shape",
+        computed: "fleet artifact emission",
         fold: Fold::Fnv64,
         covers: &[Input::FleetPlan],
         leaves_out: &[],

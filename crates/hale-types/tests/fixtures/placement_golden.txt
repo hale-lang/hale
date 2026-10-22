@@ -897,19 +897,19 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.sink	Sink	main	default
 
-== crates/hale-cli/tests/fleet_claim_shapes.rs#fe435139
+== crates/hale-cli/tests/fleet_compose.rs#fe435139
 root	Prober	the entry
 row	Prober@literal1	Prober	main	default
 row	Prober@literal1.p	Probe	main	default
 dynamic	<hole>	on main|unresolved declaration `t::Intent`	in the seed
 
-== crates/hale-cli/tests/fleet_claim_shapes.rs#2234c448
+== crates/hale-cli/tests/fleet_compose.rs#2234c448
 root	OmsApp	the entry
 row	OmsApp@literal1	OmsApp	main	default
 row	OmsApp@literal1.o	Oms	main	default
 dynamic	<hole>	on main|unresolved declaration `t::Order`	in the seed
 
-== crates/hale-cli/tests/fleet_claim_shapes.rs#4d60c737
+== crates/hale-cli/tests/fleet_compose.rs#4d60c737
 root	GwApp	the entry
 row	GwApp@literal1	GwApp	main	default
 row	GwApp@literal1.g	Gateway	main	default
@@ -919,23 +919,11 @@ root	GwApp	the entry
 row	GwApp@literal1	GwApp	main	default
 row	GwApp@literal1.g	Gateway	main	default
 
-== crates/hale-cli/tests/fleet_compose.rs#7e6a5a96
-root	Prober	the entry
-row	Prober@literal1	Prober	main	default
-row	Prober@literal1.p	Probe	main	default
-dynamic	<hole>	on main|unresolved declaration `t::Intent`	in the seed
-
 == crates/hale-cli/tests/fleet_compose.rs#22eef746
 root	Prober	the entry
 row	Prober@literal1	Prober	main	default
 row	Prober@literal1.p	Probe	main	default
 dynamic	<hole>	on main|unresolved declaration `t::Intent`	in the seed
-
-== crates/hale-cli/tests/fleet_compose.rs#1d5e033d
-root	OmsApp	the entry
-row	OmsApp@literal1	OmsApp	main	default
-row	OmsApp@literal1.o	Oms	main	default
-dynamic	<hole>	on main|unresolved declaration `t::Order`	in the seed
 
 == crates/hale-cli/tests/fleet_cross_tier.rs#70a3709b
 root	App	the entry
@@ -957,14 +945,16 @@ row	OmsApp@literal1	OmsApp	main	default
 row	OmsApp@literal1.o	Oms	main	default
 dynamic	Sink	on main	in the seed
 
-== crates/hale-cli/tests/fleet_seed_instances.rs#b4adc39b
-row	Svc@main1	Svc	main	default
+== crates/hale-cli/tests/fleet_sign.rs#f8f68f48
+root	ClockApp	the entry
+row	ClockApp@literal1	ClockApp	main	default
+row	ClockApp@literal1.c	Clock	main	default
+dynamic	<hole>	on main|unresolved declaration `t::Tick`	in the seed
 
-== crates/hale-cli/tests/fleet_sign.rs#1a089031
-root	M	the entry
-row	M@literal1	M	main	default
-row	M@literal1.r	Recv	main	default
-row	M@literal1.s	Send	main	default
+== crates/hale-cli/tests/fleet_sign.rs#3d2fdd87
+root	CounterApp	the entry
+row	CounterApp@literal1	CounterApp	main	default
+row	CounterApp@literal1.c	Counter	main	default
 
 == crates/hale-cli/tests/harness_vault.rs#8c0bf18f
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default

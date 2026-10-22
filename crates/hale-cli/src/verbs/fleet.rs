@@ -41,9 +41,9 @@ pub(crate) fn run_fleet_all(from: Option<&Path>, if_declared: bool) -> ExitCode 
             return ExitCode::SUCCESS;
         }
         eprintln!(
-            "`hale fleet check` with no plan checks every fleet in \
+            "`hale fleet check` with no fleet seed checks every fleet in \
              `[fleets]`, and no `hale.toml` was found at or above the \
-             current directory. Name a plan explicitly, or add one."
+             current directory. Name a fleet seed explicitly, or add one."
         );
         return ExitCode::from(2);
     };
@@ -77,8 +77,8 @@ pub(crate) fn run_fleet_all(from: Option<&Path>, if_declared: bool) -> ExitCode 
             return ExitCode::SUCCESS;
         }
         eprintln!(
-            "{} declares no `[fleets]`. Add `<name> = \"<plan path>\"` \
-             entries, or name a plan explicitly — reporting success for \
+            "{} declares no `[fleets]`. Add `<name> = \"<fleet seed>\"` \
+             entries, or name a fleet seed explicitly — reporting success for \
              zero deployments would say nothing.",
             manifest.display()
         );
@@ -91,7 +91,7 @@ pub(crate) fn run_fleet_all(from: Option<&Path>, if_declared: bool) -> ExitCode 
         let path = base.join(rel);
         println!("=== fleet `{}` ({}) ===", name, path.display());
         if !path.exists() {
-            eprintln!("  plan not found: {}", path.display());
+            eprintln!("  fleet seed not found: {}", path.display());
             failed.push((name.clone(), 2));
             continue;
         }
@@ -126,23 +126,20 @@ pub(crate) fn run_fleet_all(from: Option<&Path>, if_declared: bool) -> ExitCode 
     for (n, _) in &failed {
         eprintln!("  {}", n);
     }
-    // Worst code wins, so a missing plan is not masked by an ordinary
+    // Worst code wins, so a missing seed is not masked by an ordinary
     // claim failure elsewhere.
     ExitCode::from(failed.iter().map(|(_, c)| *c).max().unwrap_or(1))
 }
 
-/// `hale fleet check <plan>` / `hale fleet dump <plan>`.
+/// `hale fleet check|dump|export|sign <fleet seed>` and `keygen`.
 ///
-/// `check` composes and reports; `dump` writes the fleet artifact.
-/// Both fail on anything a composition cannot honestly build on — an
-/// unverifiable component, a semantics mismatch, a component whose
-/// own law fails, or endpoints that disagree about a wire contract.
+/// A fleet is a seed declaring `fleet locus`; its `deployment` rows are
+/// the one input. `check` derives and composes them and reports;
+/// `dump` writes the fleet artifact; `export` writes the rows as the
+/// plan document, for whoever reads one; `sign` writes a signature over
+/// the rows that `--trust` (or `[fleet_trust]`) verifies.
 pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
     let sub = rest.first().map(String::as_str);
-
-    // GH #408 Phase 7: key handling and attestation live under the
-    // same verb as composition — the fleet is where certificates
-    // change hands.
     match sub {
         Some("keygen") => {
             let Some(prefix) = rest.get(1) else {
@@ -164,20 +161,21 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
             };
         }
         Some("sign") => {
-            let (file, key) = match (rest.get(1), rest.get(2), rest.get(3)) {
+            let (seed, key) = match (rest.get(1), rest.get(2), rest.get(3)) {
                 (Some(f), Some(flag), Some(k)) if flag == "--key" => (f, k),
                 _ => {
-                    eprintln!("hale fleet sign <file> --key <priv.pem>   write <file>.sig (ES256 over exact bytes)");
+                    eprintln!("hale fleet sign <fleet seed> --key <priv.pem>   sign the fleet's deployment rows (ES256)");
                     return ExitCode::from(2);
                 }
             };
-            return match sign::sign(Path::new(file), Path::new(key)) {
-                Ok((sig_path, key_id)) => {
-                    println!(
-                        "ok: {} — key_id {}",
-                        sig_path.display(),
-                        key_id
-                    );
+            let rows = match derive(Path::new(seed)) {
+                Ok(r) => r,
+                Err(code) => return code,
+            };
+            let sig = rows.signature_path();
+            return match sign::sign(rows.export().as_bytes(), &sig, Path::new(key)) {
+                Ok(key_id) => {
+                    println!("ok: {} — key_id {}", sig.display(), key_id);
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -186,22 +184,17 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
                 }
             };
         }
-        Some("attest") => {
-            let Some(plan) = rest.get(1) else {
-                eprintln!("hale fleet attest <plan.json>   compare each instance's binary to its binary_sha256");
+        Some("export") => {
+            let Some(seed) = rest.get(1) else {
+                eprintln!("hale fleet export <fleet seed>   write the deployment rows as the plan document");
                 return ExitCode::from(2);
             };
-            return match fleet::attest(Path::new(plan)) {
-                Ok(msg) => {
-                    println!("{}", msg);
+            return match derive(Path::new(seed)) {
+                Ok(rows) => {
+                    print!("{}", rows.export());
                     ExitCode::SUCCESS
                 }
-                Err(errs) => {
-                    for e in &errs {
-                        eprintln!("{}", e);
-                    }
-                    ExitCode::from(1)
-                }
+                Err(code) => code,
             };
         }
         _ => {}
@@ -242,17 +235,13 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
         }
     }
     let sub = args.first().map(|s| s.as_str());
-    let plan = args.get(1);
-    // GH #408 Phase 5: `hale fleet check` with no plan checks EVERY
-    // deployment the workspace declares. A repository usually has
-    // more than one — production, staging, a reconciliation
-    // arrangement — and checking whichever one you remembered to name
-    // is the same partial-coverage problem `--matrix` solves for
-    // entrypoints.
-    if sub == Some("check") && plan.is_none() {
+    let seed = args.get(1);
+    // GH #408 Phase 5: `hale fleet check` with no seed checks EVERY
+    // deployment the workspace declares.
+    if sub == Some("check") && seed.is_none() {
         if !trust_paths.is_empty() {
             eprintln!(
-                "--trust with no plan: the all-fleets form takes its \
+                "--trust with no fleet seed: the all-fleets form takes its \
                  trust roots from `[fleet_trust]` in hale.toml, so one \
                  flag cannot quietly rebind every deployment"
             );
@@ -260,10 +249,8 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
         }
         return run_fleet_all(from.as_deref(), if_declared);
     }
-    let (sub, plan) = match (sub, plan) {
-        (Some("check"), Some(p)) | (Some("dump"), Some(p)) => {
-            (sub.unwrap(), p)
-        }
+    let (sub, seed) = match (sub, seed) {
+        (Some("check"), Some(p)) | (Some("dump"), Some(p)) => (sub.unwrap(), p),
         _ => {
             eprint!("{}", fleet_usage());
             return ExitCode::from(2);
@@ -276,22 +263,15 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // Phase 4 (C2): a fleet seed composes through its `deployment`
-    // rows; `check` says what it derived.
-    let target = Path::new(plan);
-    let composed = if crate::deployment::is_fleet_seed(target) {
-        match crate::deployment::derive_deployment(target) {
-            Ok(rows) => {
-                if sub == "check" {
-                    print_rows(&rows);
-                }
-                fleet::compose_plan(&rows.composition(), &rows.root, &trust)
-            }
-            Err(e) => Err(e),
-        }
-    } else {
-        fleet::compose(target, &trust)
+    let rows = match derive(Path::new(seed)) {
+        Ok(r) => r,
+        Err(code) => return code,
     };
+    if sub == "check" {
+        print_rows(&rows);
+    }
+    let composed = fleet::verify_rows(&rows, &trust)
+        .and_then(|signed_by| fleet::compose_plan(&rows.composition(), &rows.root, signed_by));
     match composed {
         Ok(artifact) => {
             if sub == "dump" {
@@ -319,13 +299,34 @@ pub(crate) fn run_fleet(rest: &[String]) -> ExitCode {
     }
 }
 
+/// The `deployment` rows of the fleet seed `path`, or the exit code
+/// after saying why there are none.
+fn derive(path: &Path) -> Result<crate::deployment::Deployment, ExitCode> {
+    if !crate::deployment::is_fleet_seed(path) {
+        eprintln!(
+            "{}: not a fleet seed. A fleet is a seed (a directory or .hl file) declaring \
+             `fleet locus NAME {{ … }}`; a plan JSON is not an input (`hale fleet export \
+             <seed>` writes one)",
+            path.display()
+        );
+        return Err(ExitCode::from(2));
+    }
+    crate::deployment::derive_deployment(path).map_err(|errs| {
+        for e in &errs {
+            eprintln!("{}", e);
+        }
+        ExitCode::from(1)
+    })
+}
+
 /// What a fleet seed's `deployment` rows say: each component's
 /// instances and placement default, and each derived route.
 fn print_rows(rows: &crate::deployment::Deployment) {
     for c in &rows.components {
         let ids: Vec<&str> = rows.instances.iter().filter(|i| i.component == c.param).map(|i| i.id.as_str()).collect();
         let at = match rows.placement.iter().find(|p| p.component == c.param) {
-            Some(p) if p.host.is_some() => format!(", on host `{}`", p.host.as_deref().unwrap_or_default()),
+            Some(p) if p.hosts.len() == 1 => format!(", on host `{}`", p.hosts[0]),
+            Some(p) if !p.hosts.is_empty() => format!(", on hosts `{}`", p.hosts.join("`, `")),
             Some(p) if p.replicas > 1 => format!(", {} replicas", p.replicas),
             _ => String::new(),
         };
@@ -368,24 +369,24 @@ fn print_rows(rows: &crate::deployment::Deployment) {
 /// error (stderr, exit 2) and `--help` (stdout, exit 0).
 pub(crate) fn fleet_usage() -> &'static str {
     "\
-hale fleet check [fleet seed]  compose and check
-                                (a seed declaring `fleet locus`, or a plan.json;
-                                 none: every fleet in [fleets];
-                                 --in <dir> another workspace's, --if-declared: none is ok)
-hale fleet dump  <fleet seed>   write the fleet artifact
-hale fleet attest <plan.json>   binaries match the plan's sha256 rows
+hale fleet check [fleet seed]   derive the deployment rows, compose and check
+                                 (none: every fleet in [fleets];
+                                  --in <dir> another workspace's, --if-declared: none is ok)
+hale fleet dump   <fleet seed>  write the fleet artifact
+hale fleet export <fleet seed>  write the deployment rows as the plan document
+hale fleet sign   <fleet seed> --key K   sign the rows (fleet.sig beside the seed)
 hale fleet keygen <prefix>      ES256 keypair for signing
-hale fleet sign <file> --key K  detached .sig over exact bytes
 
-check/dump take --trust <pub.pem> (repeatable):
-with trust roots declared, every component must
-verify under one of them.
+check/dump take --trust <pub.pem> (repeatable): with
+trust roots declared, the rows must carry a signature
+under one of them.
 
-A fleet names exact application INSTANCES (other
-seeds' mains) and the topics that wire them; its
-routes are derived from the instances' artifacts.
-It composes artifacts, never source: matching wire
-identities establish compatibility, but only a
-binding creates a fleet edge.
+A fleet seed declares `fleet locus NAME { … }`: its
+INSTANCES (other seeds' mains), their placement
+defaults, the topics that wire them and the claims
+across them. Its routes are derived from the
+instances' artifacts: matching wire identities
+establish compatibility, but only a binding creates
+a fleet edge.
 "
 }

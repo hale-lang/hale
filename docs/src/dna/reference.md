@@ -270,7 +270,7 @@ hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--d
 hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state
 hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)
 hale dna rollback <mutation> express the base a Mutation was applied on, again
-                             (`[dna] fleet = "<name>"` in hale.toml names the plan; `hale node <name>` runs a node)
+                             (`[dna] fleet = "<name>"` in hale.toml names the fleet seed; `hale node <name>` runs a node)
 ```
 
 A node is its own command. `hale node --help`:
@@ -278,9 +278,10 @@ A node is its own command. `hale node --help`:
 ```text
 usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]
 
-The agent that expresses a fleet plan's instances on one machine,
-from the record: it reconciles what the plan says this node runs
-against what is running here (GH #566 F5). With HALE_DNA_NATS_URL_APP
+The agent that expresses a fleet's instances on one machine, from
+the record: it reconciles the instances the fleet places on this
+host (`host("<name>")`) with what is running here
+(GH #566 F5). With HALE_DNA_NATS_URL_APP
 and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it
 hands both to every instance, which says what it says onto the
 nerves itself (GH #986).

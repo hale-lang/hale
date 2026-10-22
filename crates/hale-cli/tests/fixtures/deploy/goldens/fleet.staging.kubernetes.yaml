@@ -1,5 +1,7 @@
-# Rendered by `hale deploy render` from fleet.plan.json: a pure function of the checked program.
+# Rendered by `hale deploy render` from demo: a pure function of the checked program.
 # environment: staging
+# host: local (one description per host; each is applied on its own)
+# route s::Tick (svc.tick, unix): svc-0@local, svc-1@local -> bare-0@local
 # Each image <name>:latest holds the built binary under /app (`hale build <seed>`); it is
 # named here and never built or pushed.
 # No HorizontalPodAutoscaler: no scale policy is declared for this environment.

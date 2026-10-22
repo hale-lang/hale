@@ -184,10 +184,9 @@ fn main() -> ExitCode {
         return run_doc(&rest);
     }
 
-    // GH #408: `hale fleet check|dump <plan.json>` — compose
-    // topology artifacts into one fleet model. A CLIENT of the
-    // artifact, never a second source analyzer: it reads exactly what
-    // a third party would read.
+    // GH #408: `hale fleet check|dump <fleet seed>` — derive the
+    // deployment rows and compose the instances' topology artifacts into
+    // one fleet model, never merged source.
     if cmd == "fleet" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_fleet(&rest);

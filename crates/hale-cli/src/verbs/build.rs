@@ -435,6 +435,20 @@ pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Phase 4: a fleet seed is checked, never built or run; refused
+    // before anything loads, so no entry path is chosen for it.
+    if crate::deployment::is_fleet_seed(&target) {
+        let fleet = match crate::deployment::check_fleet_seed(&target) {
+            Ok((f, _, _)) => format!("`fleet locus {}`", f.name),
+            Err(_) => "a fleet seed".to_string(),
+        };
+        eprintln!(
+            "{}: {fleet} is checked, never built: a fleet runs as its instances, each built from its \
+             own seed (`hale build <seed>`); check the fleet with `hale check` or `hale fleet check`",
+            target.display()
+        );
+        return ExitCode::from(1);
+    }
     if cmd == "build" {
         // `build` has no trailing operand of its own, so the
         // flags on both sides are one list.

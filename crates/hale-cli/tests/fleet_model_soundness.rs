@@ -15,36 +15,11 @@
 //! (`hale_types::model_graph`) rather than a second graph walk that
 //! has to remember every rule the first one learned.
 
+#[path = "support/fleet_seed.rs"]
+mod fleet_seed;
+
+use fleet_seed::{fleet, hale_in, root, write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn root(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir()
-        .join(format!("hale_fms_{}_{}", std::process::id(), tag));
-    let _ = std::fs::remove_dir_all(&d);
-    d
-}
-
-fn write(root: &Path, rel: &str, src: &str) {
-    let p = root.join(rel);
-    std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
-    std::fs::write(&p, src).expect("write");
-}
-
-fn hale(args: &[&str]) -> (String, i32) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(args)
-        .output()
-        .expect("run hale");
-    (
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        out.status.code().unwrap_or(-1),
-    )
-}
 
 const TOPICS: &str = r#"
 type Intent { id: Int; }
@@ -126,72 +101,49 @@ main locus GwApp { params { g: Gateway = Gateway { }; } }
 fn main() { GwApp { }; }
 "#;
 
-const INSTANCES: &str = r#"[
-    {"id": "a-0", "artifact": "artifacts/a.json", "labels": ["strategy"]},
-    {"id": "b-0", "artifact": "artifacts/b.json", "labels": ["oms"]},
-    {"id": "c-0", "artifact": "artifacts/c.json", "labels": ["gateway"]}]"#;
+const INTENT: &str = "t::OrderIntent: unix(\"/tmp/hale-fms-intent.sock\");";
+const REQUEST: &str = "t::OrderRequest: unix(\"/tmp/hale-fms-request.sock\");";
 
-const GROUPS: &str = r#"{
-    "strategy": {"labels": ["strategy"]},
-    "gateway":  {"labels": ["gateway"]}}"#;
-
-const NO_REACH: &str = r#"[{"name": "no_reach",
-    "forbid_reaches": {"from": "strategy", "to": "gateway"}}]"#;
-
-/// Build the three components with the given middle one.
+/// The three components with the given middle one.
 fn fixture(tag: &str, middle: &str) -> PathBuf {
-    let r = root(tag);
+    let r = root(&format!("fms_{tag}"));
     write(&r, "lib/topics.hl", TOPICS);
     write(&r, "a/main.hl", A);
     write(&r, "b/main.hl", middle);
     write(&r, "c/main.hl", C);
     write(&r, "hale.toml", "[deps]\n");
-    for app in ["a", "b", "c"] {
-        let dst = r.join(format!("artifacts/{}.json", app));
-        std::fs::create_dir_all(dst.parent().expect("parent")).expect("mkdir");
-        let (out, code) = hale(&[
-            "check",
-            r.join(app).to_str().expect("utf8"),
-            &format!("--dump-topology={}", dst.display()),
-        ]);
-        assert_eq!(code, 0, "component `{}` must check clean: {}", app, out);
-    }
     r
 }
 
-fn check(r: &Path, routes: &str) -> (String, i32) {
-    let plan = format!(
-        r#"{{"schema": "1.0", "name": "prod",
-            "instances": {INSTANCES}, "routes": {routes},
-            "groups": {GROUPS}, "claims": {NO_REACH}}}"#
+/// Check a fleet of the three wired by `bindings`, under the claim
+/// that the strategy never reaches the gateway.
+fn check(r: &Path, bindings: &[&str]) -> (String, i32) {
+    let src = fleet(
+        &[("aa", "../a"), ("ba", "../b"), ("ca", "../c"), ("t", "../lib")],
+        &["a: aa::Prober;", "b: ba::OmsApp;", "c: ca::GwApp;"],
+        &[],
+        bindings,
+        &["no_reach: forbid reaches(a, c);"],
     );
-    write(r, "plan.json", &plan);
-    hale(&["fleet", "check", r.join("plan.json").to_str().expect("utf8")])
+    write(r, "prod/fleet.hl", &src);
+    hale_in(r, &["fleet", "check", "prod"])
 }
 
-const BOTH_ROUTES: &str = r#"[
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "a-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "b-0", "topic": "t::OrderIntent"}]},
-    {"id": "request", "transport": "unix",
-     "publishers":  [{"instance": "b-0", "topic": "t::OrderRequest"}],
-     "subscribers": [{"instance": "c-0", "topic": "t::OrderRequest"}]}]"#;
-
-const INTENT_ONLY: &str = r#"[
-    {"id": "intent", "transport": "unix",
-     "publishers":  [{"instance": "a-0", "topic": "t::OrderIntent"}],
-     "subscribers": [{"instance": "b-0", "topic": "t::OrderIntent"}]}]"#;
+/// The middle component's artifact, as the fleet cut it.
+fn middle_artifact(r: &Path) -> String {
+    std::fs::read_to_string(r.join(".hale/fleet/prod/b.topology.json")).expect("artifact")
+}
 
 /// F-1: the hop through stdlib is part of the path.
 #[test]
 fn a_path_through_stdlib_survives_composition() {
     let r = fixture("viastdlib", B_VIA_STDLIB);
+    let (out, code) = check(&r, &[INTENT, REQUEST]);
 
     // The premise: this component's user→user edge exists ONLY in
     // `calls_via_stdlib`. If that ever stops being true the test
     // still passes but stops testing anything, so assert it.
-    let art = std::fs::read_to_string(r.join("artifacts/b.json"))
-        .expect("artifact");
+    let art = middle_artifact(&r);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("parses");
     assert!(
@@ -207,7 +159,6 @@ fn a_path_through_stdlib_survives_composition() {
         "the middle component must have a through-stdlib edge"
     );
 
-    let (out, code) = check(&r, BOTH_ROUTES);
     assert_eq!(
         code, 1,
         "strategy reaches gateway through the middle component's \
@@ -224,18 +175,16 @@ fn a_path_through_stdlib_survives_composition() {
 #[test]
 fn a_reachable_unknown_makes_an_absence_uncertified() {
     let r = fixture("unknown", B_UNKNOWN);
-
-    let art = std::fs::read_to_string(r.join("artifacts/b.json"))
-        .expect("artifact");
+    // Nothing routes b -> c, so the modeled graph has no path. The
+    // old answer was `holds`.
+    let (out, code) = check(&r, &[INTENT]);
+    let art = middle_artifact(&r);
     assert!(
         art.contains("untyped_receiver_call"),
         "the middle component must carry an unknown, or this test \
          does not exercise uncertainty:\n{art}"
     );
 
-    // Nothing routes b -> c, so the modeled graph has no path. The
-    // old answer was `holds`.
-    let (out, code) = check(&r, INTENT_ONLY);
     assert_eq!(
         code, 1,
         "an unknown reachable from the source could conceal the path, \
@@ -257,13 +206,13 @@ fn a_reachable_unknown_makes_an_absence_uncertified() {
 /// The rule that keeps `uncertified` usable: an unknown the claim's
 /// source cannot reach is not evidence about that claim.
 ///
-/// Same artifacts and same claim as the test above — only the route
-/// differs. With nothing routed into the component that carries the
+/// Same components and same claim as the test above — only the
+/// binding differs. With nothing routed into the component that carries the
 /// unknown, the absence is real and certified.
 #[test]
 fn an_unreachable_unknown_does_not_poison_the_fleet() {
     let r = fixture("unrelated", B_UNKNOWN);
-    let (out, code) = check(&r, "[]");
+    let (out, code) = check(&r, &[]);
     assert_eq!(
         code, 0,
         "with nothing routed from strategy, the unknown in the middle \

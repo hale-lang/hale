@@ -6,23 +6,32 @@
 //! graph (the routes between its instances, the claims across them) and
 //! never runs itself, where a param is a thing a running program holds.
 //!
-//! This module reads the fleet out of a checked bundle: the laws a fleet
-//! seed obeys ([`fleet_laws`]), and the fleet as resolved source
-//! ([`fleet_source`]), which the `deployment` family's producer
+//! A fleet seed is never merged with the seeds it imports: they are its
+//! instances, composed as artifacts (spec/verification.md § Fleet
+//! composition). So the fleet is judged over its own source and an index
+//! of what each import declares ([`Imported`], read from that seed's own
+//! files): [`fleet_source`] returns every law the seed breaks, or the
+//! fleet as resolved source, which the `deployment` family's producer
 //! (`hale-cli`'s `deployment::derive_deployment`) joins with each
-//! instance's artifact to derive the deployment's rows. The bundle's
-//! own analyses never see a fleet: it holds no code, and the seeds it
-//! names are composed as artifacts, never merged as source
-//! (spec/verification.md § Fleet composition).
+//! instance's artifact to derive the deployment's rows.
 
 use hale_syntax::ast::{
-    flat_decls, ClaimForm, ClaimSet, CountCmp, FleetDecl, FleetPlacementSpec, LocusDecl, ParamInit,
-    Program, TopDecl, TopicDecl, TransportSpec, TypeExpr,
+    flat_decls, ClaimForm, ClaimSet, CountCmp, FleetDecl, FleetPlacementSpec, ParamInit, Program,
+    TopDecl, TransportSpec, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
-use crate::resolve::TopScope;
-use crate::symbol::{Bundle, TopSymbol};
+/// What a seed the fleet imports declares under a name, read from that
+/// seed's own files.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Imported {
+    /// Its `main locus`: what an instance runs.
+    Main,
+    /// Another locus.
+    Locus,
+    /// A topic, with its declared `subject:` if it has one.
+    Topic { subject: Option<String> },
+}
 
 /// A fleet as resolved source: its instances with the main each runs
 /// and its placement default, its routes' topics with their wire
@@ -47,7 +56,9 @@ pub struct FleetInstance {
     pub alias: String,
     /// The main locus as its importer spells it (`oms::Oms`).
     pub main: String,
-    pub host: Option<String>,
+    /// The hosts its placement names, one instance on each; empty when
+    /// it names none.
+    pub hosts: Vec<String>,
     pub replicas: u64,
 }
 
@@ -92,51 +103,23 @@ pub enum FleetClaim {
     },
 }
 
-/// Every fleet the bundle declares, with the program that holds it.
-fn fleets<'a>(bundle: &'a Bundle<'_>) -> Vec<&'a FleetDecl> {
-    let mut out = Vec::new();
-    for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
-            if let TopDecl::Fleet(f) = d {
-                out.push(f);
-            }
-        }
-    }
-    out
-}
-
-fn locus_named<'a>(bundle: &'a Bundle<'_>, name: &str) -> Option<&'a LocusDecl> {
-    bundle
-        .programs
-        .values()
-        .flat_map(|p: &&Program| flat_decls(&p.items))
-        .find_map(|d| match d {
-            TopDecl::Locus(l) if l.name.name == name => Some(l),
+/// The fleet the seed's own programs declare, judged: `None` with the
+/// diagnostics of every law it breaks, or the fleet as resolved source.
+/// `resolve(alias, name)` answers what the seed imported as `alias`
+/// declares as `name`. `None` and no diagnostics when the seed declares
+/// no fleet.
+pub fn fleet_source(
+    own: &[&Program],
+    resolve: &dyn Fn(&str, &str) -> Option<Imported>,
+) -> (Option<FleetSource>, Vec<Diag>) {
+    let all: Vec<&FleetDecl> = own
+        .iter()
+        .flat_map(|p| flat_decls(&p.items))
+        .filter_map(|d| match d {
+            TopDecl::Fleet(f) => Some(f),
             _ => None,
         })
-}
-
-fn topic_named<'a>(bundle: &'a Bundle<'_>, name: &str) -> Option<&'a TopicDecl> {
-    bundle
-        .programs
-        .values()
-        .flat_map(|p: &&Program| flat_decls(&p.items))
-        .find_map(|d| match d {
-            TopDecl::Topic(t) if t.name.name == name => Some(t),
-            _ => None,
-        })
-}
-
-/// The laws a fleet seed obeys. Empty for a bundle with no fleet.
-pub fn fleet_laws(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
-    fleet_source(bundle, top).1
-}
-
-/// The bundle's fleet as resolved source, with the diagnostics of every
-/// law it breaks. `None` when the bundle declares no fleet, or when a
-/// law is broken (the diagnostics say which).
-pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>, Vec<Diag>) {
-    let all = fleets(bundle);
+        .collect();
     let Some(fl) = all.first().copied() else {
         return (None, Vec::new());
     };
@@ -153,37 +136,10 @@ pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>
     }
     // A fleet seed holds its fleet and its imports, nothing else: it
     // never runs, so nothing in it is built — its instances are, each
-    // from its own seed. Its own files are the fleet's directory's (the
-    // instances' seeds sit elsewhere, imported).
-    let dir_of = |span: Span| -> Option<String> {
-        bundle
-            .sources
-            .iter()
-            .find(|f| span.start.0 >= f.base && span.start.0 < f.base + f.len.max(1))
-            .map(|f| {
-                f.path
-                    .rsplit_once('/')
-                    .map(|(d, _)| d.to_string())
-                    .unwrap_or_default()
-            })
-    };
-    let home = dir_of(fl.span);
-    for p in bundle.programs.values() {
+    // from its own seed.
+    for p in own {
         for d in flat_decls(&p.items) {
             if matches!(d, TopDecl::Fleet(_)) {
-                continue;
-            }
-            let own = match &home {
-                Some(h) => dir_of(d.span()).as_ref() == Some(h),
-                // no source map: the seed's own declarations are the ones
-                // no import renamed
-                None => match d {
-                    TopDecl::Locus(l) => !l.imported,
-                    TopDecl::Fn(f) => f.name.name == "main",
-                    _ => false,
-                },
-            };
-            if !own {
                 continue;
             }
             let (span, what) = match d {
@@ -231,38 +187,31 @@ pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>
             ));
             continue;
         }
-        let written = fl.written.iter().find(|(n, _, _)| *n == p.name.name);
-        let resolved = match &p.ty {
-            Some(TypeExpr::Named { path, .. }) if path.segments.len() == 1 => {
-                locus_named(bundle, &path.segments[0].name)
+        let path: Vec<&str> = match &p.ty {
+            Some(TypeExpr::Named { path, .. }) => {
+                path.segments.iter().map(|s| s.name.as_str()).collect()
             }
-            _ => None,
+            _ => Vec::new(),
         };
-        let spelled = match written {
-            Some((_, a, m)) => format!("{a}::{m}"),
-            None => match &p.ty {
-                Some(TypeExpr::Named { path, .. }) => path
-                    .segments
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-                Some(t) => t.form_name().to_string(),
-                None => "no type".to_string(),
-            },
+        let spelled = match &p.ty {
+            Some(TypeExpr::Named { .. }) => path.join("::"),
+            Some(t) => t.form_name().to_string(),
+            None => "no type".to_string(),
         };
         let span = p.ty.as_ref().map(|t| t.span()).unwrap_or(p.name.span);
-        match (written, resolved) {
-            (Some((_, alias, _)), Some(l)) if l.is_main && l.imported => {
-                instances.push(FleetInstance {
-                    param: p.name.name.clone(),
-                    alias: alias.clone(),
-                    main: l.display.clone().unwrap_or_else(|| spelled.clone()),
-                    host: None,
-                    replicas: 1,
-                });
-            }
-            (_, Some(l)) if l.imported => diags.push(Diag::ty(
+        let resolved = match path.as_slice() {
+            [alias, name] => resolve(alias, name),
+            _ => None,
+        };
+        match resolved {
+            Some(Imported::Main) => instances.push(FleetInstance {
+                param: p.name.name.clone(),
+                alias: path[0].to_string(),
+                main: spelled.clone(),
+                hosts: Vec::new(),
+                replicas: 1,
+            }),
+            Some(Imported::Locus) => diags.push(Diag::ty(
                 span,
                 format!(
                     "fleet param `{}` names `{}`, which is not its seed's `main locus`: a fleet's \
@@ -270,15 +219,7 @@ pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>
                     p.name.name, spelled
                 ),
             )),
-            (_, Some(_)) => diags.push(Diag::ty(
-                span,
-                format!(
-                    "fleet param `{}` names `{}`, a locus of this seed: a fleet's instances are \
-                     other seeds' mains, named through the seed's import (`alias::Main`)",
-                    p.name.name, spelled
-                ),
-            )),
-            (_, None) => diags.push(Diag::ty(
+            _ => diags.push(Diag::ty(
                 span,
                 format!(
                     "fleet param `{}` names `{}`, which no import declares: a fleet's instances \
@@ -323,11 +264,16 @@ pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>
             continue;
         };
         match &e.spec {
-            FleetPlacementSpec::Host(h) if h.trim().is_empty() => diags.push(Diag::ty(
-                e.span,
-                format!("instance `{name}`: `host(\"\")` names no host"),
-            )),
-            FleetPlacementSpec::Host(h) => inst.host = Some(h.clone()),
+            FleetPlacementSpec::Hosts(hs) if hs.iter().any(|h| h.trim().is_empty()) => {
+                diags.push(Diag::ty(
+                    e.span,
+                    format!("instance `{name}`: `host(\"\")` names no host"),
+                ))
+            }
+            FleetPlacementSpec::Hosts(hs) => {
+                inst.hosts = hs.clone();
+                inst.replicas = hs.len() as u64;
+            }
             FleetPlacementSpec::Replicas(0) => diags.push(Diag::ty(
                 e.span,
                 format!("instance `{name}`: `replicas(0)` deploys nothing; drop the param instead"),
@@ -338,20 +284,18 @@ pub fn fleet_source(bundle: &Bundle<'_>, top: &TopScope) -> (Option<FleetSource>
 
     // Bindings: each a topic with a declared subject, and the route's
     // transport.
+    // A topic the fleet names, through an import: its wire subject (the
+    // declared `subject:`) and whether it declares one.
     let subject_of = |name: &str| -> Option<(String, Option<String>)> {
-        match top.lookup(name) {
-            Some(TopSymbol::Topic(t)) => {
-                let declared = topic_named(bundle, name).and_then(|d| d.subject.clone());
-                Some((t.wire_subject.clone(), declared))
+        let (alias, topic) = name.split_once("::")?;
+        match resolve(alias, topic) {
+            Some(Imported::Topic { subject }) => {
+                Some((subject.clone().unwrap_or_else(|| name.to_string()), subject))
             }
             _ => None,
         }
     };
-    let display_of = |name: &str| {
-        topic_named(bundle, name)
-            .and_then(|d| d.display.clone())
-            .unwrap_or(name.to_string())
-    };
+    let display_of = |name: &str| name.to_string();
     let mut bindings: Vec<FleetBinding> = Vec::new();
     if let Some(bb) = &fl.bindings {
         for h in &bb.hubs {

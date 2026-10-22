@@ -103,62 +103,51 @@ fn a_binding_may_name_an_imported_topic() {
 #[test]
 fn the_nerves_edge_is_a_declared_route_in_the_fleet_model() {
     let dir = workdir("fleet");
-    let seed = organism_fixture(&dir);
-    let org = dir.join("organism.topology");
-    let out = hale().arg("check").arg(&seed).arg(format!("--dump-topology={}", org.display())).output().unwrap();
-    assert!(org.is_file(), "organism artifact: {}", String::from_utf8_lossy(&out.stderr));
+    organism_fixture(&dir);
     // the host, not a socket client: `NodeRelay` (dna/host/host.hl)
-    // publishes every fact topic once its row is in the record
-    let host_artifact = dir.join("host.topology");
-    let out = hale()
-        .arg("check")
-        .arg(repo().join("dna/host"))
-        .arg(format!("--dump-topology={}", host_artifact.display()))
-        .output()
-        .unwrap();
-    assert!(host_artifact.is_file(), "host artifact: {}", String::from_utf8_lossy(&out.stderr));
-    let plan = |routes: &str, claims: &str| -> (bool, String) {
-        let p = dir.join("plan.json");
-        std::fs::write(
-            &p,
-            format!(
-                r#"{{"schema": "1.0", "name": "organism-with-host",
-  "instances": [
-    {{"id": "organism-0", "artifact": "organism.topology", "labels": ["organism"]}},
-    {{"id": "host-0", "artifact": "host.topology", "labels": ["host"]}}],
-  "routes": {routes},
-  "groups": {{"organism": {{"labels": ["organism"]}}, "host": {{"labels": ["host"]}}}},
-  "claims": {claims}}}"#
-            ),
-        )
-        .unwrap();
-        let out = hale().args(["fleet", "check"]).arg(&p).output().unwrap();
+    // publishes every fact topic once its row is in the record. A fleet
+    // of the organism and the host, wired by the nerves' topics.
+    let fleet = |bindings: &[&str], claims: &[&str]| -> (bool, String) {
+        let mut src = format!(
+            "import \"../dna/organism\" as o;\nimport \"{}\" as h;\nimport \"../dna/core\" as dna;\n\n\
+             fleet locus OrganismWithHost {{\n    params {{\n        organism: o::Organism;\n        host: h::Host;\n    }}\n",
+            repo().join("dna/host").display()
+        );
+        src.push_str("    bindings {\n");
+        for b in bindings {
+            src.push_str(&format!("        {b}\n"));
+        }
+        src.push_str("    }\n");
+        if !claims.is_empty() {
+            src.push_str("    claims {\n");
+            for c in claims {
+                src.push_str(&format!("        {c}\n"));
+            }
+            src.push_str("    }\n");
+        }
+        src.push_str("}\n");
+        std::fs::create_dir_all(dir.join("fleet")).unwrap();
+        std::fs::write(dir.join("fleet/fleet.hl"), src).unwrap();
+        let out = hale().args(["fleet", "check"]).arg(dir.join("fleet")).output().unwrap();
         (
             out.status.success(),
             format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
         )
     };
-    let routes = r#"[
-    {"id": "verdicts", "transport": "nats",
-     "publishers":  [{"instance": "host-0", "topic": "dna::ReviewVerdict"}],
-     "subscribers": [{"instance": "organism-0", "topic": "dna::ReviewVerdict"}]},
-    {"id": "intent", "transport": "nats",
-     "publishers":  [{"instance": "host-0", "topic": "dna::IntentOffered"}],
-     "subscribers": [{"instance": "organism-0", "topic": "dna::IntentOffered"}]}]"#;
-    let claims = r#"[
-    {"name": "verdicts_reach_the_organism", "require_subscribes": {"group": "organism", "subject": "dna.review.verdict"}},
-    {"name": "the_host_publishes_verdicts", "require_publishes": {"group": "host", "subject": "dna.review.verdict"}},
-    {"name": "intent_reaches_the_organism", "require_subscribes": {"group": "organism", "subject": "dna.intent.offered"}}]"#;
-    let (ok, out) = plan(routes, claims);
+    let (ok, out) = fleet(
+        &["dna::ReviewVerdict: nats::NatsAdapter { };", "dna::IntentOffered: nats::NatsAdapter { };"],
+        &[
+            "verdicts_reach_the_organism: require subscribes(some organism, topic dna::ReviewVerdict);",
+            "the_host_publishes_verdicts: require publishes(some host, topic dna::ReviewVerdict);",
+            "intent_reaches_the_organism: require subscribes(some organism, topic dna::IntentOffered);",
+        ],
+    );
     assert!(ok, "the nerves' routes and their laws hold:\n{out}");
-    // A route with a phantom producer — the host does not publish
-    // RecordResumed — is refused.
-    let phantom = r#"[
-    {"id": "resumes", "transport": "nats",
-     "publishers":  [{"instance": "host-0", "topic": "dna::RecordResumed"}],
-     "subscribers": [{"instance": "organism-0", "topic": "dna::RecordResumed"}]}]"#;
-    let (ok, out) = plan(phantom, "[]");
+    assert!(out.contains("route `dna::ReviewVerdict` (dna.review.verdict, adapter:nats::NatsAdapter): host-0"), "{out}");
+    // A binding with no producer — the host does not publish
+    // RecordResumed — wires nothing, and is refused.
+    let (ok, out) = fleet(&["dna::RecordResumed: nats::NatsAdapter { };"], &[]);
     assert!(!ok, "a phantom producer must be refused:\n{out}");
-    assert!(out.contains("RecordResumed") || out.contains("dna.record.resumed"), "the refusal names the phantom topic:\n{out}");
+    assert!(out.contains("dna::RecordResumed") && out.contains("wires nothing"), "the refusal names the phantom topic:\n{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
