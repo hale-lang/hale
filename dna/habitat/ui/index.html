@@ -18,6 +18,7 @@
       <nav>
         <a href="#habitat" id="nav-habitat" aria-current="page">habitat</a>
         <a href="#hardware" id="nav-hardware">hardware</a>
+        <a href="#infrastructure" id="nav-infrastructure">infrastructure</a>
       </nav>
       <span id="state" data-state="down">down</span>
     </header>
@@ -69,6 +70,24 @@
           <label>port <input id="add-port" type="number" min="1" max="65535" value="22"></label>
           <button type="submit">add</button>
         </form>
+      </section>
+    </div>
+    <div id="screen-infrastructure" hidden>
+      <section id="allocations">
+        <h2>allocations</h2>
+        <table>
+          <thead><tr><th>role</th><th>instance</th><th>provider</th><th>host</th><th>state</th></tr></thead>
+          <tbody id="allocation-rows"></tbody>
+        </table>
+        <p id="allocations-empty" class="dim" hidden>nothing is allocated</p>
+        <p id="allocation-outcome" class="outcome" hidden></p>
+      </section>
+      <section id="policy">
+        <h2>policy</h2>
+        <table>
+          <thead><tr><th>role</th><th>provider</th><th>profile</th></tr></thead>
+          <tbody id="policy-rows"></tbody>
+        </table>
       </section>
     </div>
   </main>

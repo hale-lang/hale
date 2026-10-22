@@ -10,6 +10,7 @@
 // the crossing, and the link starts the same sign-in again.
 import { commandsIndex } from "./head-client.js";
 import { refresh as refreshHardware } from "./hardware.js";
+import { refresh as refreshInfrastructure } from "./infrastructure.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -87,17 +88,22 @@ async function read() {
 read();
 setInterval(read, 5000);
 
-// One page, two screens: #habitat and #hardware.
+// One page, three screens: #habitat, #hardware and #infrastructure.
 function route() {
-  const screen = location.hash === "#hardware" ? "hardware" : "habitat";
-  for (const s of ["habitat", "hardware"]) {
+  const screen = location.hash === "#hardware" ? "hardware"
+    : location.hash === "#infrastructure" ? "infrastructure" : "habitat";
+  for (const s of ["habitat", "hardware", "infrastructure"]) {
     show("screen-" + s, s === screen);
     const link = $("nav-" + s);
     if (s === screen) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
   if (screen === "hardware") refreshHardware();
+  if (screen === "infrastructure") refreshInfrastructure();
 }
 window.addEventListener("hashchange", route);
 route();
-setInterval(() => { if (location.hash === "#hardware") refreshHardware(); }, 5000);
+setInterval(() => {
+  if (location.hash === "#hardware") refreshHardware();
+  if (location.hash === "#infrastructure") refreshInfrastructure();
+}, 5000);

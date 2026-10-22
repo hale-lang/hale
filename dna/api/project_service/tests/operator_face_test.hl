@@ -244,6 +244,17 @@ fn main() {
             && std::str::contains(shell.body, "id=\"add-form\""),
         "and the page carries both screens",
     );
+    let infra = get(face + "/app/infrastructure.js", jar);
+    std::test::assert(
+        infra.status == 200 && std::str::contains(infra.body, "commandsPolicy")
+            && std::str::contains(shell.body, "id=\"screen-infrastructure\""),
+        "and screen 3's module: " + to_string(infra.status),
+    );
+    let policy = row_call(face, jar, "policy", "fnv1a64:df9e37e3ed7ef23e", "{\"limit\": 200}");
+    std::test::assert(
+        policy.status == 200 && std::str::contains(policy.body, "\"ok\":true"),
+        "policy answers through the same rows: " + policy.body,
+    );
     let unsigned = row_call(face, "", "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
     let hosts = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");

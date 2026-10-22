@@ -318,6 +318,13 @@ revision filed and not ratified. It reads the record and nothing else; no
 vault is opened, so no secret value can reach it. `hale habitat brief`
 prints it.
 
+The third screen, infrastructure (`infrastructure.js`, `#infrastructure`),
+lists the allocations (`Commands::allocations`: role, instance, provider,
+host and the state the provider observes) and the policy
+(`Commands::policy`: the provider and profile each role is allocated by).
+It reads only; placing an allocation on another host is the placement
+rows' act and joins the screen with them.
+
 ## Backends
 
 Chosen at the habitat's birth and kept.
