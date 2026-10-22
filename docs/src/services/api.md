@@ -474,6 +474,8 @@ locus Svc {
   - Rows without `at "..."` remain reachable at `POST /call/<member>`.
   - Static segments take precedence over `{param}` segments (`GET /items/open` alongside `GET /items/{id}` is valid), whereas ambiguous overlapping patterns (`GET /p/{a}/x` vs `GET /p/y/{b}`) are rejected at compile time.
   - Routes are folded into both the surface and member contract digests.
+- **Cross-Origin Writes**: a row refuses a body that is not `Content-Type: application/json` with `415` (what a cross-site form posts, `text/plain` or form-encoded, with no preflight), and a write with no body (a `DELETE`) from an `Origin` that `cors:` does not list with `403`. Your own clients send the header and no `Origin`; a page of yours on another origin is listed in `cors:`. The fallback is not guarded: it guards itself.
+- **Body Cap (`max_request_bytes:`)**: a body is at most 1 MiB unless the transport says more; `max_request_bytes: 12582912` raises it, up to 1 GiB, as `std::http::Server`'s does. A request declaring more is `413` before its body is read. The cap is the listener's, so the fallback has it too.
 - **Unauthenticated Probes (`anonymous:`)**: Setting `anonymous: "public"` assigns principal `"public"` when a request omits the `Authorization` header (requests with an invalid token still receive `401`). Protected rows (`requires: [operator]`) still refuse `"public"` unless the role source grants `"public"` that role.
 
 #### Custom Non-RPC Endpoints (`fallback:`)

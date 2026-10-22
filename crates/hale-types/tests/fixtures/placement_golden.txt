@@ -675,7 +675,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#613691c9
+== crates/hale-stdlib/hl/api_rpc.hl#dd570c71
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -1498,7 +1498,7 @@ row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #f468a184
 shared	dynamic	sites in the seed #042a0a8b
 
-== crates/hale-codegen/tests/api_rest.rs#e24db5cf
+== crates/hale-codegen/tests/api_rest.rs#24802f4b
 root	Svc	the entry
 domain	pool:__api_http	async_io
 hole	Svc@literal1.__rpc_h_1.conns.handler.fallback	reuse `self.held`

@@ -2197,6 +2197,9 @@ locus __StdApiHttpPeer {
         published: Bool = false;
         answered: Bool = false;
         stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+        // the most a request's body may declare: 1 MiB, or an `http::Rest`
+        // transport's `max_request_bytes` (spec/api.md § The REST transport)
+        max_request: Int = 1048576;
         // an `http::Rest` fallback (spec/api.md § The REST transport, `fallback`): a request
         // whose path no row serves goes to `fallback` on this connection
         routes: String = "";
@@ -2256,13 +2259,14 @@ locus __StdApiHttpPeer {
         if self.open && head_end >= 0 {
             let head = std::http::parse_request(buf[0..(head_end + 4)]);
             let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
-            if want > 1048576 {
+            // the declared length, before a byte of the body is read
+            if want > self.max_request {
                 self.respond(
-                    400,
+                    413,
                     "{\"refusal\":"
                         + __api_refusal_object(
-                            "malformed",
-                            "a request body is at most 1048576 bytes",
+                            "too_large",
+                            "a request body is at most " + to_string(self.max_request) + " bytes",
                             "",
                         )
                         + "}",
@@ -2389,6 +2393,7 @@ locus __StdApiHttpPeer {
 locus __StdApiHttpConns {
     params {
         tid: Int = 0;
+        max_request: Int = 1048576;
         routes: String = "";
         has_fallback: Bool = false;
         fallback: __StdApiRestFallback = __StdApiRestFallback { };
@@ -2405,6 +2410,7 @@ locus __StdApiHttpConns {
             tid: self.tid,
             route: self.tid * 4294967296 + n,
             fd: c.fd,
+            max_request: self.max_request,
             routes: self.routes,
             has_fallback: self.has_fallback,
             fallback: self.fallback,
@@ -2466,6 +2472,10 @@ locus __StdApiHttpListener {
         ) -> Bool = __api_rest_no_fallback;
         // the handler as the connections hold it
         held: __StdApiRestFallback = __StdApiRestFallback { h: self.fallback };
+        // the body cap its connections hold: 1 MiB until the transport's
+        // answer to its asking names another (an `http::Rest`'s
+        // `max_request_bytes`)
+        max_request: Int = 1048576;
         fd: Int = -1;
         started: Bool = false;
         stopped: Bool = false;
@@ -2527,13 +2537,32 @@ locus __StdApiHttpListener {
             };
             std::time::sleep(2ms);
         }
+        // the cap the transport named reaches the connections before the
+        // first is accepted
+        if !self.stopped && !self.draining && self.max_request != 1048576 {
+            self.conns = __StdIoTcpConnections {
+                listener: self.listener,
+                handler: __StdApiHttpConns {
+                    tid: self.tid,
+                    max_request: self.max_request,
+                    routes: self.routes,
+                    has_fallback: self.has_fallback,
+                    fallback: self.held,
+                    serve_fallback: self.serve_fallback,
+                },
+            };
+        }
         if !self.stopped && !self.draining {
             self.relay.accept_all(self.fd, -1);
         }
         self.release_socket();
     }
     fn on_ctl(o: __StdApiHttpOut) {
-        if o.kind == 3 { self.started = true; }
+        if o.kind == 3 && !self.started {
+            // the transport's answer names the body cap its connections hold
+            if o.status > 0 { self.max_request = o.status; }
+            self.started = true;
+        }
         if o.kind == 1 {
             // the accept wakes and returns, and run() releases the socket
             self.stopped = true;
@@ -3018,8 +3047,9 @@ fn __api_rest_allow(allow: String, m: String) -> String {
 
 /// What the REST transport keeps of a request between `frame` and `reply`:
 /// corr, the connection (-1 for a free record); mode, 0 a call, 1 an
-/// `OPTIONS`, 2 no route for the path, 3 a route that takes no such method;
-/// status, the success status of the route; origin, the request's `Origin`
+/// `OPTIONS`, 2 no route for the path, 3 a route that takes no such method,
+/// 4 a body that is not `application/json`, 5 a write with no body from an
+/// origin `cors` does not list; status, the success status of the route; origin, the request's `Origin`
 /// when `cors` allows it, else ""; denied, an `Origin` that `cors` does not
 /// allow; head, a `HEAD`; allow, the methods the path takes.
 type __StdApiRestPending {
@@ -3090,6 +3120,22 @@ fn __api_rest_no_fallback(
     return false;
 }
 
+/// The body cap an `http::Rest` transport's `max_request_bytes` sets: as
+/// `std::http::Server`'s, 1 MiB when it is not positive and at most 1 GiB.
+fn __api_rest_cap(n: Int) -> Int {
+    if n <= 0 { return 1048576; }
+    return min(n, 1073741824);
+}
+
+/// Whether a request's `Content-Type` is the json codec's: the media type
+/// `application/json`, its case and its parameters (`; charset=utf-8`)
+/// aside.
+fn __api_rest_json_type(content_type: String) -> Bool {
+    let semi = std::str::index_of(content_type, ";");
+    let media = if semi >= 0 { content_type[0..semi] } else { content_type };
+    return std::str::lower(std::str::trim(media)) == "application/json";
+}
+
 /// The REST transport (`std::api::http::Rest`; `http::Rest` at a serve
 /// site). `tid` and `routes` are written by the compiler; the rest is
 /// `http::Rpc`'s.
@@ -3106,6 +3152,10 @@ locus __StdApiHttpRest {
         // `principals` as ever; the role source decides what the anonymous
         // caller holds, so a row that requires a role still refuses it.
         anonymous: String = "";
+        // The most a request's body may declare, as `std::http::Server`'s:
+        // a declared `Content-Length` over it is refused `413` before the
+        // body is read; a larger value acts as 1 GiB.
+        max_request_bytes: Int = 1048576;
         tid: Int = 0;
         closed: Int = 0;
         stops: Int = 0;
@@ -3131,7 +3181,13 @@ locus __StdApiHttpRest {
                     body: o.body,
                 };
             }
-            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
+            // the answer carries the body cap the listener's connections hold
+            __ApiHttpOutT <- __StdApiHttpOut {
+                key: self.tid,
+                kind: 3,
+                status: __api_rest_cap(self.max_request_bytes),
+                body: "",
+            };
         }
     }
     // One record per connection, the first free one taken (`reply` and
@@ -3249,6 +3305,39 @@ locus __StdApiHttpRest {
             };
         }
         if len(found) > 0 {
+            // the cross-origin write guard (spec/api.md § The REST transport):
+            // a body is the codec's media type, which a browser sends only
+            // after a preflight, and a write with no body is refused to an
+            // origin `cors` does not list
+            let has_body = len(req.body) > 0;
+            if has_body && !__api_rest_json_type(std::http::header(req, "Content-Type")) {
+                self.note(
+                    __StdApiRestPending { corr: correlation, mode: 4, origin: allowed, head: head },
+                );
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    peer: nobody,
+                    reason: "a request body is application/json",
+                };
+            }
+            if !has_body
+                && method != "GET"
+                && len(origin) > 0
+                && !__api_cors_allows(self.cors, origin)
+            {
+                self.note(
+                    __StdApiRestPending { corr: correlation, mode: 5, origin: allowed, head: head },
+                );
+                return std::api::Request {
+                    kind: 2,
+                    bytes: raw,
+                    correlation: correlation,
+                    peer: nobody,
+                    reason: "a write from an origin cors does not list",
+                };
+            }
             let status = std::str::parse_int(__api_rest_cell(found, 3)) or 200;
             self.note(
                 __StdApiRestPending {
@@ -3367,6 +3456,26 @@ locus __StdApiHttpRest {
             status = 404;
             body = "{\"refusal\":"
                 + __api_refusal_object("not_found", "no route serves this path", "") + "}";
+        }
+        if p.mode == 4 {
+            status = 415;
+            body = "{\"refusal\":"
+                + __api_refusal_object(
+                    "unsupported_media_type",
+                    "a request body is application/json",
+                    "",
+                )
+                + "}";
+        }
+        if p.mode == 5 {
+            status = 403;
+            body = "{\"refusal\":"
+                + __api_refusal_object(
+                    "unauthorized",
+                    "a write with no body from an origin this exposure does not answer CORS for",
+                    "",
+                )
+                + "}";
         }
         if p.mode == 3 {
             status = 405;

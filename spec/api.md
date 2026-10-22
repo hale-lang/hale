@@ -904,9 +904,11 @@ public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", c
   digest, when it sends one, in `Hale-Surface-Digest`, and the connection
   is the correlation. `GET /.description` asks for the caller's
   description. A request line, method or path that is neither, an empty
-  body on a call, a head over 65536 bytes or a body over 1 MiB is
-  `malformed` (400); a request read gets 5 seconds of silence and 10 in
-  all.
+  body on a call or a head over 65536 bytes is `malformed` (400); a body
+  whose declared `Content-Length` is over 1 MiB (an `http::Rest`'s
+  `max_request_bytes`, § The REST transport) is refused before a byte of
+  it is read, `413` with `{"refusal": {"kind": "too_large", …}}`; a
+  request read gets 5 seconds of silence and 10 in all.
 - **The reply is the contract's.** Status and body are § Outcomes' HTTP
   column and nothing else: 200 with the response, 422 with `E`, 400, 409,
   401, 403, 429 and 503 with `{"refusal": {"kind": …, "reason": …}}` (a
@@ -1017,6 +1019,8 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   - `405`, kind `method_not_allowed`, for a path that takes other
     methods, with `Allow` naming them (a `GET` allows `HEAD`;
     `OPTIONS` is always allowed);
+  - `413` `too_large`, `415` `unsupported_media_type` and `403`
+    `unauthorized` for a cross-origin write, below;
   - every other outcome is § Outcomes' (a handler error by its class,
     § Error classes; `400`, `401`, `403`, `409`, `429`, `503`, `500`).
   Routing is decided before the credential is read, so `404` and `405`
@@ -1029,6 +1033,31 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   transport's; an `Origin` that is not listed is `403`. `HEAD` of a path
   with a `GET` route is that route's reply with no body and the length of
   the body it would have had; the call is made.
+- **`max_request_bytes`** (2026-10-22). `max_request_bytes: Int` is the
+  most a request's body may declare, as `std::http::Server`'s: `1048576`
+  (1 MiB) unless set, a value that is not positive 1 MiB and a larger
+  one than 1 GiB 1 GiB. A declared `Content-Length` over it is refused
+  before the body is read, `413` with kind `too_large`, naming the cap.
+  It is the listener's, so the rows and the `fallback` share it: one
+  listener, one cap (a fallback that wants a smaller one checks the body
+  it is handed). The transport hands it to its listener in its answer to
+  the listener's first asking, before a connection is accepted.
+- **Cross-origin writes** (2026-10-22). A browser sends a cross-site
+  form's `POST` (`text/plain`, `application/x-www-form-urlencoded`,
+  `multipart/form-data`) with no preflight, and a request of another
+  type only after one, which `cors` answers. So a request a row serves
+  is refused, before the credential is read and nothing dispatched:
+  - `415`, kind `unsupported_media_type`, when it carries a body whose
+    `Content-Type` is not the codec's (`application/json`, its case and
+    parameters such as `; charset=utf-8` aside), or none;
+  - `403`, kind `unauthorized`, when it is a write with no body (any
+    method but `GET`, `HEAD` and `OPTIONS`: a `DELETE`, a `POST` of a
+    request with no fields) and carries an `Origin` that `cors` does not
+    list; with `cors` unset no origin is listed, so a page that writes
+    with no body to its own origin's exposure lists that origin.
+  A caller that is not a browser sends no `Origin` and is not refused.
+  The `fallback` is not guarded: it gets the request untouched and
+  guards itself.
 - **`anonymous`.** `anonymous: String` (`""`, the default, is none) names
   the caller of a request that sends no `Authorization` header at all: it
   is a bearer principal of that name with no credential, the role source
@@ -1047,7 +1076,8 @@ web: api::Exposure = api::serve(Gateway, http::Rest { bind: "0.0.0.0:8080", code
   `std::http::Handler``). A request whose path no row serves goes to it,
   on the same listener and the same connection, instead of `404`:
   - the connection reads the request as it reads any (the head within
-    64 KiB, the body within 1 MiB and its `Content-Length`, the 10 s to
+    64 KiB, the body within the transport's `max_request_bytes` and its
+    `Content-Length`, the 10 s to
     read it), then matches its path against the route table; a path no
     route serves by any method (and that is not `/.description`) is the
     fallback's, by every method, `OPTIONS` included;

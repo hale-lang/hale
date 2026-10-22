@@ -7,7 +7,10 @@
 //! surface, over `http::Rest`, and each status the transport owns is
 //! driven by a real connection: 200, 201, 204, the handler error's class
 //! (404, 409), 400 for a parameter that does not bind, 401, 403, 404 for a
-//! path no route serves, 405 with `Allow`, `OPTIONS`, `HEAD` and CORS.
+//! path no route serves, 405 with `Allow`, `OPTIONS`, `HEAD` and CORS; the
+//! body cap the transport sets (413), and the cross-origin write guard (415
+//! for a body that is not JSON, 403 for a bodiless write from an origin
+//! `cors` does not list).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -115,7 +118,7 @@ main locus Svc {
         chat: Chat = Chat { };
         items: Items = Items { };
         ops: Ops = Ops { };
-        web: api::Exposure = api::serve(Gateway, http::Rest { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.grants, anonymous: "public", cors: "https://app.example" }, as: "web", bound: 16, on_full: refuse);
+        web: api::Exposure = api::serve(Gateway, http::Rest { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.grants, anonymous: "public", cors: "https://app.example", max_request_bytes: 2097152 }, as: "web", bound: 16, on_full: refuse);
     }
     run() {
         let trigger = std::env::var("TRIGGER");
@@ -473,5 +476,73 @@ fn the_description_is_served_beside_the_routes() {
         "{}",
         d.body
     );
+    assert!(server.finish().status.success());
+}
+
+/// `max_request_bytes` on the transport is the listener's cap: a body under it
+/// past the 1 MiB default is served, and a declared length over it is refused
+/// `413` before a byte of the body is sent.
+#[test]
+fn the_transport_sets_the_body_cap() {
+    let server = Server::start(&program(), &[]);
+    server.ready();
+    let p = server.port;
+    let prompt = "x".repeat(1_536 * 1024);
+    let big = as_user(p, "POST", "/v1/chat/completions", Some(&format!("{{\"model\":\"m\",\"prompt\":\"{prompt}\"}}")));
+    assert_eq!(big.status, 200, "1.5 MiB is under a 2 MiB cap: {}", &big.body[..big.body.len().min(200)]);
+    assert!(big.body.ends_with("xxx\"}"), "the prompt came whole");
+
+    // the head alone, declaring 3 MiB: the refusal comes without the body
+    let over = send(p, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 3145728\r\n\r\n")
+        .response_within(10_000)
+        .expect("refused before the body is read");
+    assert_eq!(over.status, 413, "{}", over.body);
+    assert!(over.body.contains("\"kind\":\"too_large\""), "{}", over.body);
+    assert!(over.body.contains("at most 2097152 bytes"), "{}", over.body);
+    assert!(server.finish().status.success());
+}
+
+/// The cross-origin write guard: a cross-site form's POST (a `text/plain`
+/// or form-encoded body, which a browser sends with no preflight) is refused
+/// `415`; a write with no body from an origin `cors` does not list is `403`.
+#[test]
+fn a_cross_site_write_is_refused() {
+    let server = Server::start(&program(), &[]);
+    server.ready();
+    let p = server.port;
+    let body = "{\"model\":\"m1\",\"prompt\":\"hi\"}";
+    for ct in ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"] {
+        let form = request(
+            p,
+            "POST",
+            "/v1/chat/completions",
+            &[bearer("t-user"), h("Origin", "https://evil.example"), h("Content-Type", ct)],
+            Some(body),
+        );
+        assert_eq!(form.status, 415, "{ct}: {}", form.body);
+        assert!(form.body.contains("\"kind\":\"unsupported_media_type\""), "{}", form.body);
+    }
+    // a body with no type at all is refused the same way
+    let untyped = send(p, &format!("POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t-user\r\nContent-Length: {}\r\n\r\n{body}", body.len()))
+        .response_within(10_000)
+        .expect("a reply");
+    assert_eq!(untyped.status, 415, "{}", untyped.body);
+    // the codec's type, its case and parameters aside, is served
+    let typed = request(p, "POST", "/v1/chat/completions", &[bearer("t-user"), h("Content-Type", "Application/JSON; charset=utf-8")], Some(body));
+    assert_eq!(typed.status, 200, "{}", typed.body);
+
+    // a bodiless write: refused to an unlisted origin, served to a listed
+    // one and to a caller that sends none (not a browser)
+    let evil = request(p, "DELETE", "/v1/items/5", &[bearer("t-user"), h("Origin", "https://evil.example")], None);
+    assert_eq!(evil.status, 403, "{}", evil.body);
+    assert!(evil.body.contains("\"kind\":\"unauthorized\""), "{}", evil.body);
+    assert_eq!(evil.header("Access-Control-Allow-Origin"), None);
+    let listed = request(p, "DELETE", "/v1/items/5", &[bearer("t-user"), h("Origin", "https://app.example")], None);
+    assert_eq!(listed.status, 204, "{}", listed.body);
+    let none = request(p, "DELETE", "/v1/items/5", &[bearer("t-user")], None);
+    assert_eq!(none.status, 204, "{}", none.body);
+    // a read is never a write: a GET from any origin is served
+    let read = request(p, "GET", "/healthz", &[h("Origin", "https://evil.example")], None);
+    assert_eq!(read.status, 200, "{}", read.body);
     assert!(server.finish().status.success());
 }
