@@ -29,7 +29,7 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // operator face makes (hosts, placement, graft): the API child
 // decides each by the visitor's own credential, as for any proxied command.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
 
 // The row `path` calls through the head's surface, "" for anything else.
 fn surface_read(path: String) -> String {

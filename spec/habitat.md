@@ -333,9 +333,11 @@ organisms the index shows (name, purpose, state and pulse) with the
 allocations placed for each, then the saplings the habitat pins
 (`Commands::saplings`: name, purpose, revision, digest, nursery) and the
 nurseries it trusts (`Commands::nurseries`). A sapling has a host picker and
-a `graft` action (`Commands::graft`), which answers at once with the log the
-graft writes; the page follows the graft until its organism is in the index,
-then refreshes the lists.
+a `graft` action (`Commands::graft`), which answers at once with the graft's
+id; the page follows the graft's log through `Commands::graft_log` (`{graft,
+from}` answering `{text, next, done, exit}`, the Board's like the graft; it
+reads only the log of a graft this head started, by its id, and refuses any
+other name or path) until it is done, then refreshes the lists.
 
 ## Backends
 

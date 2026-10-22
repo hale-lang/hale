@@ -2,8 +2,8 @@
 // grafted (from the index) with the allocations placed for each, then the
 // saplings the habitat pins and the nurseries it trusts. A sapling is
 // grafted on a host the person picks (Commands::graft): the row answers at
-// once with where the graft writes, and the page follows the graft by what
-// ends it, the organism in the index. Every call is the generated client's
+// once with the graft's id, and the page follows the graft's log
+// (Commands::graft_log) until it ends, then refreshes. Every call is the generated client's
 // (head-client.js).
 import {
   commandsIndex,
@@ -12,6 +12,7 @@ import {
   commandsNurseries,
   commandsHosts,
   commandsGraft,
+  commandsGraftLog,
 } from "./head-client.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
@@ -42,30 +43,34 @@ function graftOutcome(text) {
 
 const grafting = new Set();
 
-// The organisms the index lists, by name.
-async function placedNames() {
-  const i = await commandsIndex({ endpoint }, { limit: 200 });
-  return i.kind === "result" ? parse(i.value.organisms).map((o) => o.name) : [];
-}
-
-// Follow a graft until its organism is in the index (the end of a graft is
-// the record's `habitat.grafted` row), then refresh the lists.
-async function follow(name, log) {
+// Follow a graft's log until it ends (Commands::graft_log), showing what it
+// says, then refresh the lists: the organism is in the index by then.
+async function follow(name) {
   grafting.add(name);
-  graftOutcome("grafting " + name + "; it writes " + log);
-  for (let tries = 0; tries < 360; tries++) {
-    await new Promise((r) => setTimeout(r, 5000));
-    let names = [];
-    try { names = await placedNames(); } catch { continue; }
-    if (names.includes(name)) {
+  let from = 0;
+  let text = "";
+  for (let tries = 0; tries < 2000; tries++) {
+    let out;
+    try { out = await commandsGraftLog({ endpoint }, { graft: name, from }); } catch { out = null; }
+    if (out && out.kind === "result" && out.value.ok) {
+      text += out.value.text;
+      from = out.value.next;
+      graftOutcome("grafting " + name + "\n" + text.split("\n").slice(-12).join("\n"));
+      if (out.value.done) {
+        grafting.delete(name);
+        graftOutcome((out.value.exit === 0 ? "grafted " : "the graft of " + name + " ended with exit " + out.value.exit + "\n")
+          + "\n" + text.split("\n").slice(-12).join("\n"));
+        await refresh();
+        return;
+      }
+    } else if (out && out.kind === "result") {
       grafting.delete(name);
-      graftOutcome("grafted " + name);
-      await refresh();
+      graftOutcome(out.value.code + ": " + out.value.why);
       return;
     }
+    await new Promise((r) => setTimeout(r, 2000));
   }
   grafting.delete(name);
-  graftOutcome("grafting " + name + " has not ended; it writes " + log);
 }
 
 async function graft(name, host) {
@@ -75,7 +80,7 @@ async function graft(name, host) {
     return;
   }
   if (!out.value.ok) { graftOutcome(out.value.code + ": " + out.value.why); return; }
-  follow(name, out.value.log);
+  follow(out.value.graft || name);
 }
 
 function grafter(name, hosts) {

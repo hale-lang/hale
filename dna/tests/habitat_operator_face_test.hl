@@ -62,6 +62,19 @@ fn index_call(face: String) -> String {
     ).stdout;
 }
 
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool("git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args);
+}
+
+// A row called as the client calls it, with its own digest.
+fn row_call(face: String, member: String, digest: String, body: String) -> String {
+    return dna::run_tool(
+        "curl\n-s\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nHale-Surface-Digest: " + digest
+            + "\n--data\n" + body + "\n" + face + "/api/hale/v1/head/surface/call/Commands::"
+            + member,
+    ).stdout;
+}
+
 fn main() {
     if dna::run_tool("docker\ncompose\nversion").code != 0 {
         eprintln("habitat_operator_face_test: not exercised (docker compose is not on PATH)");
@@ -156,6 +169,73 @@ fn main() {
     std::test::assert(
         std::str::contains(after, "alpha") && std::str::contains(after, "grafted"),
         "the read names the organism and its state: " + after,
+    );
+
+    // ---- a sapling of a local git repository, grafted through the row
+    // (`Commands::graft`) and followed through its log (`Commands::graft_log`)
+    let src = scratch + "/sprout-src";
+    std::io::fs::mkdir(src) or discard;
+    git(src, "init\n-q\n-b\nmain");
+    std::io::fs::write_file(src + "/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n")
+    or discard;
+    git(src, "add\n-A");
+    git(src, "commit\n-q\n-m\nsprout v1");
+    git(src, "tag\nv1");
+    let pinned = "sha256:" + dna::trim_nl(
+        dna::run_tool(
+            "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree v1 | sha256sum | cut -d' ' -f1\nsh\n"
+                + src,
+        ).stdout,
+    );
+    let nursery = scratch + "/nursery";
+    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        "[[sapling]]\nname = \"sprout\"\nsummary = \"a small organism\"\nrepo = \"" + src
+            + "\"\nrevision = \"v1\"\ndigest = \"" + pinned + "\"\n",
+    ) or discard;
+    let added = in_dir(scratch, toolchain() + "\nhabitat\nnursery\nadd\n" + nursery);
+    std::test::assert_eq_int(
+        added.code,
+        0,
+        "the nursery is trusted: " + added.stdout + added.stderr,
+    );
+    let started_graft = row_call(
+        face, "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}",
+    );
+    std::test::assert(
+        std::str::contains(started_graft, "\"graft\":\"sprout\""),
+        "graft answers at once with the graft's id: " + started_graft,
+    );
+    let mut from = 0;
+    let mut text = "";
+    let mut ended = false;
+    let mut exit = -1;
+    let until = std::time::now() + dna::wait_secs(600);
+    while !ended && std::time::now() <= until {
+        let page = row_call(
+            face, "graft_log", "fnv1a64:7a8e4a9a24e7a43e",
+            "{\"graft\": \"sprout\", \"from\": " + to_string(from) + "}",
+        );
+        from = std::json::find_int_field(page, "next");
+        text = text + std::json::find_string_field(page, "text");
+        ended = std::str::contains(page, "\"done\":true");
+        exit = std::json::find_int_field(page, "exit");
+        if !ended { std::time::sleep(2s); }
+    }
+    std::test::assert(ended && exit == 0, "the graft's log ends with exit 0: " + text);
+    let sprouted = index_call(face);
+    std::test::assert(
+        std::str::contains(sprouted, "sprout"),
+        "the index names the new organism: " + sprouted,
+    );
+    let escaped = row_call(
+        face, "graft_log", "fnv1a64:7a8e4a9a24e7a43e", "{\"graft\": \"../up\", \"from\": 0}",
+    );
+    std::test::assert(
+        std::str::contains(escaped, "invalid_graft") && !std::str::contains(escaped, "\"ok\":true"),
+        "a path outside the grafts is refused: " + escaped,
     );
 
     let down = in_dir(scratch, toolchain() + "\nhabitat\ndown");

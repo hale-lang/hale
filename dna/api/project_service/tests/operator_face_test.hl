@@ -415,7 +415,7 @@ fn main() {
     // graft through the row: it answers at once with its log, and the log
     // ends (`<log>.exit`) whatever the graft came to
     let grafted = row_call(
-        face, jar, "graft", "fnv1a64:2c77e8f2abaf9e18",
+        face, jar, "graft", "fnv1a64:428819c34f30bc3a",
         "{\"sapling\": \"no-such-sapling\", \"host\": \"\", \"library\": false}",
     );
     std::test::assert(
