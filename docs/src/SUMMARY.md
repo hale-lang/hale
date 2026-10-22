@@ -94,6 +94,7 @@
 
 - [The habitat](./parts/habitat.md)
 - [The habitat, as designed](./habitat.md)
+- [Ask it something](./ask-it-something.md)
 
 ---
 
