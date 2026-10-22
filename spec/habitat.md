@@ -225,8 +225,9 @@ refuses it (`403`). `hale mcp --app mcp://127.0.0.1:<port>` with the token
 in `HALE_API_TOKEN` is the stdio bridge an agent's host runs.
 
 Every habitat act is a row in the name of whoever asked: the rows
-`Commands::add_nursery` and `Commands::ratify_sapling` write are authored by
-the person the caller maps to, over any transport. `agents/operator.md` is
+`Commands::add_host`, `::probe_host`, `::remove_host`, `::add_nursery` and
+`::ratify_sapling` write are authored by the person the caller maps to, over
+any transport. `agents/operator.md` is
 the brief for the agent itself: the vocabulary, the rules, which rows are
 reads, acts and proposals, and how to connect.
 

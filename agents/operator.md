@@ -28,7 +28,7 @@ Your tools are the head's rows the person may call (`tools/list`); each is `Comm
 | kind | rows |
 |---|---|
 | reads (write nothing) | `brief`, `hosts`, `allocations`, `policy`, `nurseries`, `saplings`, `index`, `lookup`, `lookup_knowledge`, `preview_batch` |
-| acts (a row now, on the person's ask) | `add_nursery` (the Board's), `create_task`, `reassign_task` (the Board's), `file_friction` |
+| acts (a row now, on the person's ask) | `add_host`, `probe_host`, `remove_host`, `add_nursery` (the Board's), `create_task`, `reassign_task` (the Board's), `file_friction` |
 | proposals (a Review the Board ratifies) | `propose`, `propose_organization`, `open_position`, `fill`, `apply_batch`; the Knowledge rows `propose_knowledge`, `revise_knowledge`, `retire_knowledge`, `link_knowledge`, `unlink_knowledge`, `bind_knowledge`, `unbind_knowledge`, which the Knowledge policy sends to Review or admits |
 | the Board's decisions (the person's alone) | `verdict`, `ratify_sapling`, `retire_person` |
 | a leg's (not a pairing agent's) | `claim`, `outcome`, `renew`, `release_attempt`, `ask_allowance` |

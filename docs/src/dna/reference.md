@@ -29,6 +29,7 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
        hale habitat host remove <name>
+       hale habitat brief
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -43,7 +44,8 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
 | `nursery add \| refresh \| list \| ratify` | `add <dir\|git-url>` trusts a nursery (`Commands::add_nursery`). `refresh` re-reads all nurseries (pinning newly seen saplings and filing newer revisions of existing saplings for the Board without moving grafted organisms). `ratify <sapling>` pins a filed revision. `list` displays all trusted nurseries and saplings. |
 | `handover [organism]` | Prints `NAME=value` environment lines handed to the organism's application heart (referencing secrets by vault slot name only): `HALE_DNA_APPLICATION_ID`, `HALE_DNA_HEAD_URL`, `HALE_DNA_OIDC_ISSUER`, `HALE_DNA_OIDC_CLIENT`, `HALE_DNA_OIDC_CLIENT_VAULT`, and per-role `HALE_DNA_DATABASE_DSN` or `HALE_DNA_BROKER_URL`, `_USER`, `_VAULT`, `_SUBJECTS`, `_NODE_USER`, `_NODE_VAULT`. |
 | `host add \| probe \| remove <name>` | Board commands on the habitat head (`Commands::add_host`, `::probe_host`, `::remove_host`). `add` probes `<name>` over SSH (`--user`, `--port 22`), trusts the first-seen host key, and prints the habitat's public key line for `~/.ssh/authorized_keys` (marking the host `pending-key`). `probe` re-probes capabilities (`compose`, `systemd-user`, OS, arch) and marks authorized hosts `ready`. `remove` deletes a host with no active allocations. |
-| `status` | Prints the habitat's genome, body, face URL, and every allocation (organism, service status, memory/nerves schema versions vs. toolchain, and last heart migration result). |
+| `brief` | Prints the head's `Commands::brief` over its socket: the Board's charter, the rules a pairing agent works by, and the live state (hosts, allocations with their pulse, organisms, saplings, Reviews and sapling revisions waiting for the Board). It reads the record alone, never the vault. |
+| `status` | Prints the habitat's genome, body, face URL, the head's MCP endpoint (`mcp://127.0.0.1:<port>`) while the face runs, and every allocation (organism, service status, memory/nerves schema versions vs. toolchain, and last heart migration result). |
 | `down` | Stops the habitat body, face, and all Compose services while preserving persistent volumes. |
 | `migrate [organism]` | Starts the organism's allocations and migrates its Postgres memory schema and NATS JetStream stream to the current toolchain version, saving the head DSN in `.hale/dna/memory.env` (and recording versions in `allocation.json`). Uses `HALE_DNA_MEMORY_DSN_OWNER` / `HALE_DNA_NATS_URL_OWNER` when set. |
 | `sweep <root> \| --test-vaults [<root>]` | Tears down test habitat Compose projects (containers, networks, volumes) listed under `<root>/.dna-compose-projects` or stale test vaults under `<tmp>/hale-test-vaults-<uid>`, never touching the developer's `$HOME` habitat. |

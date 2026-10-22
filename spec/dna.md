@@ -6458,7 +6458,8 @@ host, public_key, authorize}`: the host as its row now states it, and for
 `~/.ssh/authorized_keys` takes. A refusal is `code` with `why`
 (`invalid_host`, `host_exists`, `unreachable`, `key_unavailable`,
 `not_found`, `host_key_changed`, `allocations_placed`, `not_removable`,
-`record_refused`). They are what `hale habitat host add|probe|remove`
+`record_refused`). Each row they write is in the name of the person the
+caller maps to. They are what `hale habitat host add|probe|remove`
 calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
 placement).
 Two more reads list the habitat's nurseries and saplings for the operator

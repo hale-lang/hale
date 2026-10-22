@@ -8,10 +8,14 @@
 // that is not it. The composed head (the habitat's API child) starts on it
 // and reports the MCP port it got. `hale mcp --app`, the bridge an agent's
 // host runs, connects under ada's ID token: the tools are the rows ada may
-// call, a read answers the habitat's hosts, and an act (`add_nursery`, the
-// Board's) lands as a row in ada's name. bob's act is refused at the row,
-// over MCP exactly as over the commands port the face's session reaches, and
-// nothing lands. The brief (`Commands::brief`, and `hale habitat brief` on
+// call, a read answers the habitat's hosts, and an act (`add_host`, the
+// Board's) lands as a row in ada's name. The host is a machine of the
+// fixture's own, an sshd in a container on the loopback, as
+// habitat_hosts_test's is: added, it answers with its host key and is
+// `pending-key` until the habitat's key is authorized there, which this
+// fixture does not need. bob's act is refused at the row, over MCP exactly
+// as over the commands port the face's session reaches, and nothing lands.
+// Without docker compose nothing here is exercised. The brief (`Commands::brief`, and `hale habitat brief` on
 // the head's socket) answers the live state: the host, the allocation with
 // its pulse, the organism, the sapling and the revision waiting for the
 // Board; a canary secret planted in the vault never appears in it.
@@ -119,6 +123,25 @@ fn written(repo: String, kind: String) -> String {
     return out;
 }
 
+// The machine: habitat_hosts_test's sshd, the same image.
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY entry.sh /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\"\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
 main locus App {
     params {
         issuer: String = "";
@@ -133,7 +156,49 @@ main locus App {
     // the waits below grow by a line per probe, until the deadline
     @bounded_by(deadline)
     run() {
+        if dna::run_tool("docker\ncompose\nversion").code != 0 {
+            eprintln("habitat_pairing_test: not exercised (docker compose is not on PATH)");
+            return;
+        }
+        let endpoint = dna::trim_nl(
+            dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+        );
+        if !std::str::starts_with(endpoint, "unix://") {
+            eprintln(
+                "habitat_pairing_test: not exercised (the docker daemon is not on a unix socket)",
+            );
+            return;
+        }
+        let docker_socket = endpoint[7..len(endpoint)];
         let scratch = dna::scratch_root("habitat-pairing");
+        dna::reap_on_exit(scratch);
+
+        // ---- the machine the Board's act adds: an sshd on the loopback
+        let ssh_port = dna::free_port(1);
+        let sshd = scratch + "/sshd";
+        let home = scratch + "/home";
+        std::io::fs::mkdir(sshd) or discard;
+        std::io::fs::mkdir(home) or discard;
+        sshd_files(sshd);
+        let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+        let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + docker_socket).stdout);
+        std::io::fs::write_file(
+            sshd + "/compose.yaml",
+            sshd_compose(ssh_port, home, docker_socket, uid, gid),
+        ) or discard;
+        let compose = "docker\ncompose\n-p\ndna-pairing-" + to_string(std::process::pid())
+            + "\n--project-directory\n" + sshd;
+        let sshd_up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+        std::test::assert_eq_int(sshd_up.code, 0, "the machine's sshd is up: " + sshd_up.stderr);
+        let mut answered = false;
+        let mut tries = 0;
+        while !answered && tries < 60 {
+            answered = len(dna::ssh_host_key("localhost", ssh_port)) > 0;
+            if !answered { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(answered, "the machine answers SSH on " + to_string(ssh_port));
+
         let made = dna::run_tool(
             "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec env HALE_DNA_HABITAT=\"$3\" \"$2\" habitat graft app\nsh\n"
                 + scratch + "\n" + toolchain() + "\n" + dna::test_habitat(),
@@ -270,20 +335,21 @@ main locus App {
         let commands = "http://127.0.0.1:" + to_string(commands_port) + "/";
         let ada = oidc::stub_id_token(self.issuer, "dna-local", "ada-sub", "", 600);
         let bob = oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600);
-        let nursery = scratch + "/nursery";
+        let add_host = "{\"name\":\"localhost\",\"user\":\"hale\",\"port\":" + to_string(ssh_port)
+            + "}";
 
         // ---- ada, over MCP: the tools are her rows; a read, then the Board's act
         let session = mcp(
             mcp_port,
             ada,
             OPEN_SESSION + call_line(3, "Commands__hosts", "{\"limit\":50}")
-                + call_line(4, "Commands__add_nursery", "{\"source\":\"" + nursery + "\"}"),
+                + call_line(4, "Commands__add_host", add_host),
             scratch,
         );
         std::test::assert(
             std::str::contains(session, "\"protocolVersion\"")
                 && std::str::contains(session, "\"name\":\"Commands__hosts\"")
-                && std::str::contains(session, "\"name\":\"Commands__add_nursery\"")
+                && std::str::contains(session, "\"name\":\"Commands__add_host\"")
                 && std::str::contains(session, "\"name\":\"Commands__brief\""),
             "ada's tools are the head's rows, the Board's among them: " + session + "\n"
                 + self.log(repo),
@@ -293,13 +359,16 @@ main locus App {
             "the read answers the habitat's hosts: " + session,
         );
         std::test::assert(
-            std::str::contains(session, "\\\"ok\\\":true")
-                || std::str::contains(session, "\"ok\":true"),
-            "the act is admitted: " + session,
+            (
+                std::str::contains(session, "\\\"ok\\\":true")
+                    || std::str::contains(session, "\"ok\":true")
+            )
+                && std::str::contains(session, "pending-key"),
+            "the act is admitted: the machine is a host, pending its key: " + session,
         );
         std::test::assert_eq_str(
-            written(repo, "habitat.nursery"),
-            nursery + " by ada\n",
+            written(repo, "habitat.host"),
+            "box-1 by habitat\nlocalhost by ada\n",
             "the act is a row in ada's name",
         );
 
@@ -307,12 +376,12 @@ main locus App {
         let bobs = mcp(
             mcp_port,
             bob,
-            OPEN_SESSION + call_line(3, "Commands__add_nursery", "{\"source\":\"/srv/other\"}"),
+            OPEN_SESSION + call_line(3, "Commands__add_host", add_host),
             scratch,
         );
         std::test::assert(
             std::str::contains(bobs, "\"name\":\"Commands__brief\"")
-                && !std::str::contains(bobs, "\"name\":\"Commands__add_nursery\""),
+                && !std::str::contains(bobs, "\"name\":\"Commands__add_host\""),
             "bob's tools are his rows: no Board act among them: " + bobs,
         );
         std::test::assert(
@@ -323,8 +392,8 @@ main locus App {
         );
         let faced = post(
             commands,
-            "Commands::add_nursery",
-            "{\"source\":\"/srv/other\"}",
+            "Commands::add_host",
+            add_host,
             bob,
             scratch,
         );
@@ -335,8 +404,8 @@ main locus App {
             "and so it is where the face's session reaches: " + faced.stdout,
         );
         std::test::assert_eq_str(
-            written(repo, "habitat.nursery"),
-            nursery + " by ada\n",
+            written(repo, "habitat.host"),
+            "box-1 by habitat\nlocalhost by ada\n",
             "nothing of bob's lands",
         );
 
@@ -379,6 +448,7 @@ main locus App {
 
         if self.head.pid > 0 { std::process::kill(self.head) or discard; }
         self.head.pid = -1;
+        dna::run_tool(compose + "\ndown\n-v");
         dna::scratch_done(scratch);
     }
 }
