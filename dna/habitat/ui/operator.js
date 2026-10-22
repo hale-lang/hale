@@ -11,6 +11,7 @@
 import { commandsIndex } from "./head-client.js";
 import { refresh as refreshHardware } from "./hardware.js";
 import { refresh as refreshInfrastructure } from "./infrastructure.js";
+import { refresh as refreshOrganisms } from "./organisms.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
 const $ = (id) => document.getElementById(id);
@@ -88,11 +89,12 @@ async function read() {
 read();
 setInterval(read, 5000);
 
-// One page, three screens: #habitat, #hardware and #infrastructure.
+// One page, four screens: #habitat, #hardware, #infrastructure and #organisms.
 function route() {
   const screen = location.hash === "#hardware" ? "hardware"
-    : location.hash === "#infrastructure" ? "infrastructure" : "habitat";
-  for (const s of ["habitat", "hardware", "infrastructure"]) {
+    : location.hash === "#infrastructure" ? "infrastructure"
+    : location.hash === "#organisms" ? "organisms" : "habitat";
+  for (const s of ["habitat", "hardware", "infrastructure", "organisms"]) {
     show("screen-" + s, s === screen);
     const link = $("nav-" + s);
     if (s === screen) link.setAttribute("aria-current", "page");
@@ -100,10 +102,12 @@ function route() {
   }
   if (screen === "hardware") refreshHardware();
   if (screen === "infrastructure") refreshInfrastructure();
+  if (screen === "organisms") refreshOrganisms();
 }
 window.addEventListener("hashchange", route);
 route();
 setInterval(() => {
   if (location.hash === "#hardware") refreshHardware();
   if (location.hash === "#infrastructure") refreshInfrastructure();
+  if (location.hash === "#organisms") refreshOrganisms();
 }, 5000);

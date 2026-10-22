@@ -255,6 +255,28 @@ fn main() {
         policy.status == 200 && std::str::contains(policy.body, "\"ok\":true"),
         "policy answers through the same rows: " + policy.body,
     );
+    let organisms = get(face + "/app/organisms.js", jar);
+    std::test::assert(
+        organisms.status == 200 && std::str::contains(organisms.body, "commandsSaplings")
+            && std::str::contains(shell.body, "id=\"screen-organisms\""),
+        "and screen 4's module: " + to_string(organisms.status),
+    );
+    let nurseries = row_call(
+        face,
+        jar,
+        "nurseries",
+        "fnv1a64:d751f5f850313908",
+        "{\"limit\": 200}",
+    );
+    std::test::assert(
+        nurseries.status == 200 && std::str::contains(nurseries.body, "toolchain"),
+        "nurseries answers, the toolchain's first: " + nurseries.body,
+    );
+    let saplings = row_call(face, jar, "saplings", "fnv1a64:6507f94ebe01a7e9", "{\"limit\": 200}");
+    std::test::assert(
+        saplings.status == 200 && std::str::contains(saplings.body, "\"ok\":true"),
+        "saplings answers: " + saplings.body,
+    );
     let unsigned = row_call(face, "", "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
     let hosts = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");

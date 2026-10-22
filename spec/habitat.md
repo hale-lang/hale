@@ -325,6 +325,13 @@ host and the state the provider observes) and the policy
 It reads only; placing an allocation on another host is the placement
 rows' act and joins the screen with them.
 
+The fourth screen, organisms (`organisms.js`, `#organisms`), lists the
+organisms the index shows (name and state; the row carries no purpose or
+pulse, which the page says) with the allocations placed for each, then the
+saplings the habitat pins (`Commands::saplings`: name, purpose, revision,
+digest, nursery) and the nurseries it trusts (`Commands::nurseries`). It
+reads only; a graft is `hale habitat graft`, and has no head row yet.
+
 ## Backends
 
 Chosen at the habitat's birth and kept.

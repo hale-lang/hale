@@ -19,6 +19,7 @@
         <a href="#habitat" id="nav-habitat" aria-current="page">habitat</a>
         <a href="#hardware" id="nav-hardware">hardware</a>
         <a href="#infrastructure" id="nav-infrastructure">infrastructure</a>
+        <a href="#organisms" id="nav-organisms">organisms</a>
       </nav>
       <span id="state" data-state="down">down</span>
     </header>
@@ -87,6 +88,33 @@
         <table>
           <thead><tr><th>role</th><th>provider</th><th>profile</th></tr></thead>
           <tbody id="policy-rows"></tbody>
+        </table>
+      </section>
+    </div>
+    <div id="screen-organisms" hidden>
+      <section id="placed">
+        <h2>placed organisms</h2>
+        <table>
+          <thead><tr><th>name</th><th>purpose</th><th>state</th><th>pulse</th><th>allocations</th></tr></thead>
+          <tbody id="placed-rows"></tbody>
+        </table>
+        <p id="placed-empty" class="dim" hidden>no organism is grafted</p>
+        <p id="organism-outcome" class="outcome" hidden></p>
+      </section>
+      <section id="saplings">
+        <h2>saplings</h2>
+        <table>
+          <thead><tr><th>name</th><th>purpose</th><th>revision</th><th>digest</th><th>nursery</th></tr></thead>
+          <tbody id="sapling-rows"></tbody>
+        </table>
+        <p id="saplings-empty" class="dim" hidden>no sapling is pinned</p>
+        <p class="dim">graft one: <code>hale habitat graft &lt;sapling&gt;</code> (no head row grafts yet)</p>
+      </section>
+      <section id="nurseries">
+        <h2>nurseries</h2>
+        <table>
+          <thead><tr><th>source</th><th>kind</th></tr></thead>
+          <tbody id="nursery-rows"></tbody>
         </table>
       </section>
     </div>
