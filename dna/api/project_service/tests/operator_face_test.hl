@@ -279,6 +279,22 @@ fn main() {
     );
     let unsigned = row_call(face, "", "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert_eq_int(unsigned.status, 401, "hosts is refused without a session");
+    // a write is refused with no session, whatever the member, and nothing is made
+    let no_add = row_call(
+        face, "", "add_host", "fnv1a64:9f59221a3e7c8a2f",
+        "{\"name\": \"never.invalid\", \"user\": \"ops\", \"port\": 22}",
+    );
+    std::test::assert_eq_int(no_add.status, 401, "add_host without a session: " + no_add.body);
+    let no_graft = row_call(
+        face, "", "graft", "fnv1a64:428819c34f30bc3a",
+        "{\"sapling\": \"sprout\", \"host\": \"\", \"library\": false}",
+    );
+    std::test::assert_eq_int(no_graft.status, 401, "graft without a session: " + no_graft.body);
+    let no_apply = row_call(
+        face, "", "apply_allocations", "fnv1a64:1925b45215c6bc4b",
+        "{\"host\": \"\", \"fresh\": false}",
+    );
+    std::test::assert_eq_int(no_apply.status, 401, "apply_allocations without a session");
     let hosts = row_call(face, jar, "hosts", "fnv1a64:4c6ddfdd932bc93f", "{\"limit\": 200}");
     std::test::assert(
         hosts.status == 200

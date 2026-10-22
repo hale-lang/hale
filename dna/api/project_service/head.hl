@@ -31,6 +31,19 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
 const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
 
+// The members of the surface that act or read a graft's log (the Board's):
+// not the reads. In a trusted-local session each carries the launch token as a
+// head's own command does, over either route.
+const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+
+// Whether `path` is the relay of one of those.
+fn surface_act(path: String) -> Bool {
+    let prefix = HEAD_PREFIX + "/read-call/";
+    if !std::str::starts_with(path, prefix) { return false; }
+    let member = path[len(prefix)..len(path)];
+    return std::str::contains(" " + HEAD_SURFACE_ACTS + " ", " " + member + " ");
+}
+
 // The row `path` calls through the head's surface, "" for anything else.
 fn surface_read(path: String) -> String {
     if !std::str::starts_with(path, HEAD_SURFACE_CALL) { return ""; }
@@ -1552,6 +1565,7 @@ locus Head {
                     path == HEAD_PREFIX + "/commands"
                         || path == APPLICATIONS_PREFIX
                         || std::str::starts_with(path, APPLICATIONS_PREFIX + "/")
+                        || surface_act(path)
                 )
             {
                 let sent = std::http::header(req, "X-Hale-Token");
