@@ -232,7 +232,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 37 targets below are the only ones the correction changes.
+/// The 38 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -289,7 +289,7 @@ const CALL_LINES_ONLY: [(&str, usize); 25] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 15] = [
+const VERDICT_TARGETS: [&str; 16] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
@@ -302,6 +302,7 @@ const VERDICT_TARGETS: [&str; 15] = [
     "tests/hale/api_enum_field_test.hl",
     "tests/hale/api_map_field_test.hl",
     "tests/hale/api_optional_field_test.hl",
+    "tests/hale/http_client_stream_test.hl",
     "tests/hale/http_request_cap_test.hl",
     "tests/hale/http_stream_test.hl",
     "tests/hale/router_middleware_test.hl",
@@ -1926,6 +1927,27 @@ fn verdict_changes() {
         &[
         ],
         &[
+        ],
+    );
+    // the streamed body read: the Server calls the handler per
+    // connection, and the relay's handler builds its upstream request
+    // through `request_to` each time
+    pinned(
+        "tests/hale/http_client_stream_test.hl",
+        23,
+        &[
+            "request_to",
+            "Streams::handle",
+            "Streams::wait_mark",
+            "Streams::wait_mark2",
+        ],
+        &[
+            ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 2),
+            ("once-per-invocation -> per-iteration-reclaim", 3),
+        ],
+        &[
+            "request_to BytesLit @6667..6670 InvokedUnboundedly",
+            "request_to StructLit(\"std::http::ClientRequest\") @6624..6672 InvokedUnboundedly",
         ],
     );
     pinned(

@@ -280,6 +280,7 @@ ns std::io::tls open_prefixes=[]
   recv_bytes syscall|block
   __recv_bytes_until syscall|block
   recv_into syscall|block
+  __recv_into_until syscall|block
   recv_stamped_into syscall|block
   send_bytes syscall
   __send_bytes_until syscall
@@ -700,6 +701,7 @@ std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | h
 std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
 std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
 std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
+std::http::BodyReader | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::BodyWriter | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Client | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientRequest | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -718,6 +720,7 @@ std::http::RouteParams | lookup=http@2 | locus=true | effects=- | sig=- | parks=
 std::http::Router | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Server | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::SseEvent | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::http::SseReader | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::SseWriter | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Url | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::build_context | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=build_context
@@ -873,6 +876,7 @@ std::io::tcp::set_rx_timestamps | lookup=io::tcp@3 | locus=false | effects=sysca
 std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int, Duration) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=set_send_timeout
 std::io::tcp::stop | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=stop
 std::io::tls::__recv_bytes_until | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=true | holds=true | unknown=- | suggest=__recv_bytes_until
+std::io::tls::__recv_into_until | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Named(__StdBytesBytesBuilder), Int, Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__recv_into_until
 std::io::tls::__send_bytes_until | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int, Bytes, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__send_bytes_until
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=connect

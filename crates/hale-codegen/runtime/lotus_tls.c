@@ -884,6 +884,31 @@ int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
     return (int64_t)n;
 }
 
+/* `lotus_tls_recv_into` bounded by the absolute CLOCK_MONOTONIC
+ * `until_ns` (0 = none), as `lotus_tls_recv_bytes_until` bounds
+ * `recv_bytes`: the read parks on the non-blocking socket, on or off a
+ * pool, until a whole record is in or the instant passes (-2), so a peer
+ * trickling a record cannot hold it past the deadline. The http client's
+ * streamed body reads through it: no allocation per read, where
+ * `recv_bytes` reserves `max_bytes` in the payload arena each call. */
+int64_t lotus_tls_recv_into_until(int handle, void *builder,
+                                  int64_t max_bytes, int64_t until_ns) {
+    if (max_bytes <= 0) return -1;
+    SSL *ssl = lotus_tls__handle_ssl(handle);
+    if (!ssl) return -1;
+    char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
+    if (!tail) return -1;
+    int fd = until_ns > 0 ? lotus_tls__handle_fd(handle) : -1;
+    int was_blocking = fd >= 0 ? lotus_io_nonblock_for_deadline(fd) : 0;
+    int n = lotus_tls__read_until(handle, ssl, tail, (int)max_bytes,
+                                  "lotus_tls_recv_into_until", until_ns);
+    lotus_io_restore_block(fd, was_blocking);
+    if (n > 0) {
+        lotus_bytes_builder_advance(builder, (int64_t)n);
+    }
+    return (int64_t)n;
+}
+
 int lotus_tls_close(int handle) {
     if (handle < 0 || (size_t)handle >= g_tls_count) {
         errno = EBADF;

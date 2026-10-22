@@ -3703,6 +3703,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_tls_recv_into", tls_recv_into_ty, None);
+        // declare i64 @lotus_tls_recv_into_until(i32 handle, ptr builder,
+        // i64 max_bytes, i64 until_ns): the http client's streamed body
+        self.module.add_function(
+            "lotus_tls_recv_into_until",
+            i64_t.fn_type(&[i32_t.into(), ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            None,
+        );
         // 2026-06-14 — TLS fast-path siblings (handle-addressed): nodelay,
         // SO_TIMESTAMPNS opt-in, recv_stamped + the stamp getters.
         self.module

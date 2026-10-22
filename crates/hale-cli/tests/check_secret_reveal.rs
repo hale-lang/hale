@@ -68,6 +68,21 @@ fn a_reveal_that_outlives_its_statement_is_refused() {
     assert!(!ok && out.contains("is stored in a `Holder { … }`"), "{out}");
 }
 
+/// A streamed body's reader takes its request as `std::http::request`
+/// does: the `headers` and `body` of a `ClientRequest` literal are the
+/// wire's, and nothing else of it, nor a request built elsewhere.
+#[test]
+fn a_readers_request_is_the_wire_only_in_its_headers_and_body() {
+    let cases = [
+        ("reader_url", "let s = std::http::SseReader { req: std::http::ClientRequest { url: std::http::Url { host: self.token.reveal_text() }, body: b\"\" } };", "is the request's `url`"),
+        ("reader_other_field", "let s = std::http::BodyReader { req: std::http::ClientRequest { url: u, body: b\"\" }, user_agent: self.token.reveal_text() };", "is stored in a `std::http::BodyReader { … }`"),
+    ];
+    for (tag, stmt, why) in cases {
+        let (ok, out) = one(&method(stmt, ""), &format!("refused_{tag}"));
+        assert!(!ok && out.contains(why), "{tag}: {out}");
+    }
+}
+
 #[test]
 fn a_reveal_in_a_free_fn_is_refused() {
     let src = "fn token() -> Int {\n    let n = len(std::secret::Credential { vault: \"t\" }.reveal_text());\n    return n;\n}\nfn main() { let n = token(); }\n";
@@ -89,6 +104,9 @@ fn a_reveal_consumed_in_its_statement_is_accepted() {
         ("matches", "if self.token.matches(std::bytes::from_string(other)) { self.last = \"same\"; }"),
         // straight onto a socket
         ("tcp", "std::io::tcp::send_fd(3, self.token.reveal()) or discard;"),
+        // a streamed body's reader sends its `req` at birth (GH #1698)
+        ("sse_reader", "let s = std::http::SseReader { req: std::http::ClientRequest { url: u, headers: \"Authorization: Bearer \" + self.token.reveal_text(), body: b\"\" }, timeout_ms: 0 };"),
+        ("body_reader", "let r = std::http::BodyReader { req: std::http::ClientRequest { method: \"POST\", url: u, body: std::bytes::from_string(\"key=\" + self.token.reveal_text()) } };"),
     ];
     let enc = "fn enc(s: String) -> String {\n    let mut out = \"\";\n    let mut i = 0;\n    while i < len(s) { out = out + s[i..(i + 1)]; i = i + 1; }\n    return out;\n}\n";
     for (tag, stmt) in cases {

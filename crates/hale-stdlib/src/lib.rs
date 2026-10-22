@@ -67,6 +67,14 @@ pub const TCP_SERVE_SOURCE: &str = include_str!("../hl/io_tcp_serve.hl");
 /// serving with `std::http::Server` carries no Listener.
 pub const TCP_LISTENER_SOURCE: &str = include_str!("../hl/io_tcp_listener.hl");
 
+/// A response body read as it arrives (`http_read.hl`, GH #1698):
+/// `std::http::BodyReader` and `std::http::SseReader`, on the client's
+/// helpers in `http_client.hl`. Every stdlib declaration is lowered into
+/// every program, so it is appended only to a program that names one of
+/// them (`hale_types::rpc_expand`), and a program that reads no stream
+/// carries none of it.
+pub const HTTP_READ_SOURCE: &str = include_str!("../hl/http_read.hl");
+
 /// The observe backends (`observe.hl`, GH #1592),
 /// `std::observe::Scrape` and `std::observe::Otlp`. Every stdlib declaration is lowered
 /// into every program, so it is appended only to a program whose main
@@ -408,6 +416,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "post"], "__http_client_post"),
     (&["std", "http", "request"], "__http_client_request"),
     (&["std", "http", "parse_url"], "__http_parse_url"),
+    // A response body read as it arrives (2026-10-21): the mirror of the
+    // Server's BodyWriter / SseWriter.
+    (&["std", "http", "BodyReader"], "__StdHttpBodyReader"),
+    (&["std", "http", "SseReader"], "__StdHttpSseReader"),
     (&["std", "io", "file", "File"], "__StdIoFileFile"),
     (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
     (&["std", "io", "file", "open"], "__std_io_file_open"),
