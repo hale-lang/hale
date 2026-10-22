@@ -2275,7 +2275,12 @@ wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
-refused by law 5.
+refused by law 5. The encoder writes a record's text through one
+builder, each piece appended once, so what writing a value costs, in
+time and in memory, is linear in its text, a list of any length
+included (2026-10-22; it appended each element to the text written so
+far, keeping every prefix alive until the record was written: about
+800 MB for a page of 1000 records).
 
 **A Float** crosses JSON as the same double: the encoder writes the
 shortest number that reads back as it (`0.30000000000000004`,

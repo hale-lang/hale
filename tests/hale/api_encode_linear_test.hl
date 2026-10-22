@@ -1,0 +1,36 @@
+// The json codec writes a list in time and memory linear in its text
+// (spec/api.md § Codecs). The encoder appended each element to the text
+// written so far, so every prefix stayed alive until the record was
+// written: a page of 10000 records, about 300 KB of JSON, held over a
+// gigabyte. One builder for the record's text holds it to its size.
+
+type Item { id: Int; name: String; }
+type Page { items: bounded[Item; 10000]; total: Int; }
+
+fn main() {
+    let mut p = Page { total: 10000 };
+    let mut i = 0;
+    while i < 10000 {
+        push(p.items, Item { id: i, name: "n" + to_string(i) }) or discard;
+        i = i + 1;
+    }
+    let before = std::process::rss_bytes();
+    let text = Page::api_encode(p);
+    let grew = std::process::rss_bytes() - before;
+    std::test::assert(len(text) > 250000, "the page is written: " + to_string(len(text)));
+    std::test::assert(
+        std::str::starts_with(text, "{\"items\":[{\"id\":0,\"name\":\"n0\"},{\"id\":1,"),
+        "in order",
+    );
+    std::test::assert(
+        std::str::ends_with(text, "{\"id\":9999,\"name\":\"n9999\"}],\"total\":10000}"),
+        "whole",
+    );
+    // the text is ~300 KB; a quadratic writer grew the process by ~1.4 GB
+    std::test::assert(
+        grew < 64 * 1048576,
+        "writing the page grew the process by " + to_string(grew / 1048576) + " MiB",
+    );
+    let back = Page::api_decode(text) or Page { total: 0 };
+    std::test::assert_eq_int(count(back.items), 10000, "and reads back");
+}

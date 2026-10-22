@@ -431,10 +431,8 @@ __api_decode_Stock  does={alloc}
 __api_decode_StockRequest  does={alloc}
 __api_encode_OrderRequest  does={alloc}
 __api_encode_OrderResponse  does={alloc}
-__api_encode_RestockRequest  does={alloc}
 __api_encode_RestockResponse  does={alloc}
 __api_encode_Shipment  does={alloc}
-__api_encode_Stock  does={alloc}
 __api_encode_StockRequest  does={alloc}
 main  does={alloc}
 ### 93-units
