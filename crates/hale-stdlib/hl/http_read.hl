@@ -126,6 +126,10 @@ locus __StdHttpBodyReader {
     }
     birth() {
         self.__open();
+        // The request is sent: its headers and body (where a revealed
+        // credential travels) are a consumed wire write, never kept.
+        self.req.headers = "";
+        self.req.body = b"";
     }
     dissolve() {
         __http_close_handle(self.handle, self.is_tls);
@@ -444,6 +448,11 @@ locus __StdHttpSseReader {
         };
         // the stream's text not yet parsed into an event
         rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 8192 };
+    }
+    birth() {
+        // handed to `body`, which sent it: not kept here either
+        self.req.headers = "";
+        self.req.body = b"";
     }
     /// The next event, as it arrives. Fails with kind `end` once the
     /// body has ended, else with what ended it.

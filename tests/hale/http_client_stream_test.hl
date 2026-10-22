@@ -130,6 +130,28 @@ locus Keyed {
         let e = s.event() or std::http::SseEvent { data: "!" };
         return e.data;
     }
+    // What a reader keeps of its request once born: the revealed headers
+    // and the body went on the wire and are not kept.
+    fn kept(u: std::http::Url) -> String {
+        let r = std::http::BodyReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"secret body",
+            },
+        };
+        return r.req.headers + to_string(len(r.req.body));
+    }
+    fn kept_sse(u: std::http::Url) -> String {
+        let s = std::http::SseReader {
+            req: std::http::ClientRequest {
+                url: u,
+                headers: "Authorization: Bearer " + self.key.reveal_text(),
+                body: b"secret body",
+            },
+        };
+        return s.req.headers + to_string(len(s.req.body));
+    }
 }
 
 fn request_to(u: String) -> std::http::ClientRequest {
@@ -273,6 +295,16 @@ main locus App {
             keyed.who(request_to(base + "/whoami").url),
             "Bearer sk-sealed",
             "the sealed key on the wire",
+        );
+        std::test::assert_eq_str(
+            keyed.kept(request_to(base + "/whoami").url),
+            "0",
+            "a reader keeps nothing of what it sent",
+        );
+        std::test::assert_eq_str(
+            keyed.kept_sse(request_to(base + "/whoami").url),
+            "0",
+            "nor an event reader",
         );
 
         // ---- a Content-Length body, as it arrives, then its end
