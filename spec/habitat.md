@@ -239,7 +239,13 @@ Review still open reappears as a pull request at the new forge; nothing
 migrates, and the old forge's pull request is left as it was.
 
 No practice, workflow or standard names a forge by kind: "open a review" is
-the verb, and the allocation answers it (a guard test reads every pack).
+the verb, and the allocation answers it (a guard test reads every pack). A
+leg's hands are the same: their forge is `AllocatedForge`
+(`dna/core/legs/hands.hl`), which reads the organism's allocation at each
+call, as forge sync does, and opens the leg's review at the allocated
+Forgejo (the codebase's repository there, by its url), through `gh` for
+GitHub, or refuses with `none`. The guard refuses a `Hands` whose forge
+names a kind.
 
 ## Nurseries and saplings
 

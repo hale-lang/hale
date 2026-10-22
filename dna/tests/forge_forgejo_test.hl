@@ -7,12 +7,14 @@
 // Forgejo user of its own, its token in a vault slot of its own, and a
 // repository for its codebase holding its code. The SDLC flow then runs
 // against that Forgejo through `hale dna forge sync`, as it does against
-// the memory forge and GitHub: a leg's review there merged comes back as
+// the memory forge and GitHub: a leg's hands open its review at the forge
+// the organism's allocation names, and that review merged comes back as
 // `task.delivered`, one closed unmerged as `task.refused`, and the words
 // people left on a review as receipts on the verdict row. The habitat is
 // this test file's own; without docker compose nothing here is exercised.
 
 import "../core" as dna;
+import "../core/legs" as legs;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -246,7 +248,7 @@ fn main() {
     let cloned = dna::run_tool("git\nclone\n-q\n" + url + "\n" + work);
     std::test::assert_eq_int(cloned.code, 0, "the codebase clones: " + cloned.stderr);
     let mut refs = "";
-    let mut legs = "";
+    let mut shas = "";
     let mut i = 1;
     while i <= 2 {
         let branch = "leg/t" + to_string(i);
@@ -260,14 +262,29 @@ fn main() {
         let sha = dna::trim_nl(git_as(work, "shop", slot, "rev-parse\nHEAD").stdout);
         let p = git_as(work, "shop", slot, "push\n-q\norigin\n" + branch);
         std::test::assert_eq_int(p.code, 0, "the leg's branch is pushed: " + p.stderr);
-        let opened = forge.open_review(
-            branch,
+        // a leg's hands, as `hale dna work` hands them: "open a review" is
+        // the verb, and the organism's forge allocation answers it
+        let hands = legs::Hands { forge: legs::AllocatedForge { root: app } };
+        let opened = hands.forge.open_review(
+            work,
             "the leg's change " + to_string(i),
             dna::with_leg_commit("answers the move", sha),
         );
-        std::test::assert(opened.present, "the review opens at Forgejo: " + opened.why);
-        refs = refs + opened.ref + "\n";
-        legs = legs + sha + "\n";
+        std::test::assert(
+            opened.ok
+                && std::str::starts_with(
+                    opened.output,
+                    dna::forgejo_address() + "/shop/shop/pulls/",
+                ),
+            "the leg's review opens at the allocated Forgejo: " + opened.output + opened.error,
+        );
+        std::test::assert_eq_str(
+            hands.forge.verdict(opened.output).output,
+            "pending",
+            "and its verdict is read there",
+        );
+        refs = refs + opened.output + "\n";
+        shas = shas + sha + "\n";
         i = i + 1;
     }
     let r1 = nth_line(refs, 0);
@@ -275,7 +292,7 @@ fn main() {
     std::test::assert(
         forge.comment(r1, "keep the memo short")
             && forge.review_state(r1) == "open"
-            && dna::leg_commit_in(forge.review_body(r1)) == nth_line(legs, 0),
+            && dna::leg_commit_in(forge.review_body(r1)) == nth_line(shas, 0),
         "a person's word on the first, which is open and names the leg's commit",
     );
     let merged = forge.call(
@@ -334,7 +351,7 @@ fn main() {
     }
     std::test::assert(
         std::json::find_string_field(delivered, "merge_commit") == merge_commit
-            && std::json::find_string_field(delivered, "leg_commit") == nth_line(legs, 0)
+            && std::json::find_string_field(delivered, "leg_commit") == nth_line(shas, 0)
             && std::json::find_string_field(delivered, "review") == r1,
         "merged, the task is delivered: " + delivered,
     );

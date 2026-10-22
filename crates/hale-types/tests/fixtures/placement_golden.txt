@@ -11637,12 +11637,22 @@ root	App	the entry
 row	App@literal1	App	main	default
 
 == dna/tests/forge_forgejo_test.hl
+template	__lib_dna__core__legs___hands__Hands@main4	unbounded (built in a loop)
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 row	__StdSecretCredential@main2	__StdSecretCredential	main	default
 row	__lib_dna__core___forgejo__ForgejoForge@main3	__lib_dna__core___forgejo__ForgejoForge	main	default
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main	in tests
-shared	__lib_dna__core___memory_record__MemoryReceipts@main5	__lib_dna__core___memory_record__MemoryReceipts #deee0984
-shared	__lib_dna__core___routing__RoutedJournal@main4	__lib_dna__core___routing__RoutedJournal #8fc95e4d
+shared	__lib_dna__core___memory_record__MemoryReceipts@main6	__lib_dna__core___memory_record__MemoryReceipts #deee0984
+shared	__lib_dna__core___routing__RoutedJournal@main5	__lib_dna__core___routing__RoutedJournal #8fc95e4d
+-- __lib_dna__core__legs___hands__Hands@main4	__lib_dna__core__legs___hands__Hands
+row	~	__lib_dna__core__legs___hands__Hands	main	default
+row	~.deploy	__lib_dna__core__legs___hands__NoDeploy	main	inherited
+row	~.forge	__lib_dna__core__legs___hands__AllocatedForge	main	inherited
+row	~.git	__lib_dna__core__legs___hands__ScratchGit	main	inherited
+row	~.go	__lib_dna__core__legs___hands__GoToolchain	main	inherited
+row	~.heart	__lib_dna__core__legs___hands__NoHeart	main	inherited
+row	~.lease	__lib_dna__core__legs___hands__HeadLease	main	inherited
+row	~.toolchain	__lib_dna__core__legs___hands__Toolchain	main	inherited
 -- dynamic	sites in core
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -11651,6 +11661,11 @@ dynamic	__lib_dna__core___exchange__ExchangeKey	on main
 dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
 dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+-- dynamic	sites in core/legs
+dynamic	__lib_dna__core___forgejo__ForgejoForge	on main
+dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
+dynamic	__lib_dna__core__legs___hands__ForgeBridge	on main
+dynamic	__lib_dna__core__legs___hands__GhForge	on main
 shared	dynamic	sites in core/pond/pq #39e83e0a
 shared	dynamic	sites in the stdlib #c3a51769
 

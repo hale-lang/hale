@@ -2663,7 +2663,9 @@ memory is named to it.
   `tape.hl`) stay in the core while the editor and leader call them
   in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
-  leg never merges), the toolchain; deploy and the heart's API refuse,
+  leg never merges; the organism's forge allocation answers "open a
+  review", `AllocatedForge`, and no hand names a forge by kind), the
+  toolchain; deploy and the heart's API refuse,
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
