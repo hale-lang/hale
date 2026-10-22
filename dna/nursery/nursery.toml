@@ -80,5 +80,5 @@ name = "hale"
 summary = "the organism that works on the Hale toolchain: its codebases are hale-lang/hale and hale-lang/voice"
 repo = "https://github.com/hale-lang/hale-organism"
 revision = "main"
-digest = "sha256:c4b20c40f58e06730cfeda00d896e7946f07afe45a6ff8e85200871d8f9b56dd"
+digest = "sha256:495126fbfb6bf33bcc8471f79867f2c7bb1801810510c9b217cc06c40a68d1c1"
 packs = ["hale-organism"]

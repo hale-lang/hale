@@ -2414,6 +2414,9 @@ mod tests {
         let names: Vec<&str> = listed.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["hale", "voice"]);
         assert!(listed.iter().all(|c| !c.repo.is_empty() && !c.build.is_empty() && !c.test.is_empty() && !c.toolchain.is_empty()), "{listed:?}");
+        // voice's seeds, built and tested as its CI does
+        assert_eq!(listed[1].build, "hale build api && hale build brain && hale build node");
+        assert_eq!(listed[1].test, "hale test api && hale test store && hale test brain && hale test node");
         assert!(manifest_codebases("[dna]\nneeds = [\"memory\", \"nerves\"]\n").unwrap().is_empty());
         assert!(manifest_codebases("[[dna.codebase]]\nname = \"x\"\n").is_err());
     }

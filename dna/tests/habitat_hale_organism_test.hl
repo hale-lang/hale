@@ -120,6 +120,14 @@ fn main() {
         "as codebase.attached rows: " + rows,
     );
     std::test::assert(
+        std::str::contains(rows, "hale build api && hale build brain && hale build node")
+            && std::str::contains(
+                rows,
+                "hale test api && hale test store && hale test brain && hale test node",
+            ),
+        "voice's row carries its seeds' build and test, as its CI runs them: " + rows,
+    );
+    std::test::assert(
         !std::io::fs::file_exists(organism + "/hale")
             && !std::io::fs::file_exists(organism + "/voice"),
         "nothing is cloned at the graft",
