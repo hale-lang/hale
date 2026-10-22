@@ -33,7 +33,9 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
-       hale habitat graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…
+       hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
+       hale habitat place <key>/<role> <host>
+       hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
@@ -109,6 +111,23 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      to them), and the sapling, revision and digest recorded
                      on the graft's row. A bare name only; ./<name> is a
                      directory.
+--no-head            (graft) the act itself: a sapling's graft is otherwise
+                     the head's Commands::graft while the head answers.
+--host <name>        (graft) place the new organism on that host: its
+                     memory, nerves and senses' store, and its own services
+                     (a compose.yaml at its root), are allocations of the
+                     host, brought up there by its provider, and its
+                     addresses are derived from there.
+place <alloc> <host> place an allocation (`<key>/<role>`: memory, nerves,
+                     senses, services) on a host (the head's
+                     Commands::place_allocation); nothing applies yet.
+apply [<host>]       apply the allocations (of one host, or all) where they
+                     are placed (Commands::apply_allocations): each one that
+                     moved is withdrawn where it ran and brought up where it
+                     is placed, by that host's provider, and the pulse after
+                     is printed. A moved memory starts empty on its new
+                     host: a memory that holds its organism's record moves
+                     only with --fresh, and the habitat's own never.
 nursery add <source> the Board trusts a nursery, a directory or a git
                      repository (the head's Commands::add_nursery), and what
                      it offers is read into the habitat's record. `refresh`
@@ -216,6 +235,8 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("nursery") => sapling::nursery_cmd(&args[1..]),
         Some("host") => host(&args[1..]),
         Some("brief") if args.len() == 1 => brief(),
+        Some("place") => sapling::place_cmd(&args[1..]),
+        Some("apply") => sapling::apply_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -471,7 +492,16 @@ fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, sl
         // provider's on the host `local`, as the `local` profile's policy
         // gives each role (`habitat.policy`), or the operator's own server,
         // adopted, on no host of the habitat's
-        let (provider, host) = if operator { ("operator", "") } else { ("compose", "local") };
+        // (phase 4: or the host the allocation was placed on, as its
+        // placement cache says, dna/core/placement.hl)
+        let placed = placed_cache(&id[..12], role);
+        let (provider, host, project) = if operator {
+            ("operator".to_string(), String::new(), project.to_string())
+        } else if let Some(p) = &placed {
+            (p["provider"].as_str().unwrap_or("ssh").to_string(), p["host"].as_str().unwrap_or("").to_string(), p["project"].as_str().unwrap_or(project).to_string())
+        } else {
+            ("compose".to_string(), "local".to_string(), project.to_string())
+        };
         pending.push(serde_json::json!({ "kind": "habitat.allocated", "entity": entity, "body": serde_json::json!({ "organism": id, "role": role, "service": service, "project": project, "provider": provider, "host": host, "vault": slots }).to_string() }));
     }
     if !heart && had != Some(version) {
@@ -486,6 +516,39 @@ fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, sl
         serde_json::json!({ "service": service, "schema_version": version, "vault": vault, "recorded": recorded || had.is_some() })
     };
     row["pending"] = serde_json::json!(pending);
+}
+
+/// Where the allocation `<key>/<role>` was placed off this machine, as its
+/// placement cache (`allocations/<key>/placed.<role>`, dna/core/placement.hl)
+/// keeps it; `None` on this machine. A heart's database is placed with the
+/// memory server, its broker with the nerves'.
+pub(super) fn placed_cache(key: &str, role: &str) -> Option<serde_json::Value> {
+    let role = match role {
+        "database" => "memory",
+        "broker" => "nerves",
+        r => r,
+    };
+    let text = std::fs::read_to_string(PathBuf::from(local_habitat_dir()).join("allocations").join(key).join(format!("placed.{role}"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Phase 4: the host a graft places the new organism on (`graft <sapling>
+/// --host <name>`), taken by its birth as soon as its identity is pinned.
+pub(super) static GRAFT_HOST: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// The organism keyed `key` placed on the host `GRAFT_HOST` names, before
+/// anything of it is brought up: its memory, nerves and senses' store are
+/// kept as placed there, so its birth brings them up there and derives their
+/// addresses from there. Nothing when the graft names no host.
+pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
+    let Some(h) = GRAFT_HOST.get() else { return Ok(None) };
+    let dir = PathBuf::from(local_habitat_dir()).join("allocations").join(key);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    for role in ["memory", "nerves", "senses"] {
+        let path = dir.join(format!("placed.{role}"));
+        std::fs::write(&path, format!("{h}\n")).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(Some(format!("{:<8}its memory, nerves and senses' store on {} ({})", "placed", h["host"].as_str().unwrap_or(""), h["provider"].as_str().unwrap_or(""))))
 }
 
 /// One run of a heart's declared migration, a `habitat.migrated
@@ -1347,6 +1410,22 @@ fn start_face(me: &str, genome: &Path, foreground: bool) -> Result<String, Strin
     Ok(format!("{:<8}up (systemd user unit {}, http://127.0.0.1:{base}/)", "face", face_unit_name()))
 }
 
+/// Phase 4: the habitat's face (and the head behind it) restarted, after
+/// its own memory or nerves moved: a unit by systemd, a child of `up
+/// --foreground` stopped and started again as one.
+fn restart_face() -> Result<String, String> {
+    let genome = genome_dir();
+    let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "hale".into());
+    let unit = Command::new("systemctl").args(["--user", "is-active", "--quiet"]).arg(face_unit_name()).status().is_ok_and(|s| s.success());
+    if unit {
+        let ok = Command::new("systemctl").args(["--user", "restart"]).arg(face_unit_name()).status().is_ok_and(|s| s.success());
+        return if ok { Ok(format!("{:<8}restarted (systemd user unit {})", "face", face_unit_name())) } else { Err(format!("systemctl --user restart {} failed", face_unit_name())) };
+    }
+    let mut said = Vec::new();
+    stop_face(&mut said);
+    start_face(&me, &genome, true)
+}
+
 /// The habitat's face stopped: its launcher, and the children the head kept
 /// in the habitat's face state (the API child), which a stopped head leaves.
 fn stop_face(said: &mut Vec<String>) {
@@ -1746,10 +1825,21 @@ fn graft(args: &[String]) -> ExitCode {
     let mut profile: Option<String> = None;
     let mut remote: Option<String> = None;
     let mut body: Option<String> = None;
+    let mut on_host: Option<String> = None;
+    let mut no_head = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         match a {
+            "--host" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `--host` takes a host's name\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                on_host = Some(v.clone());
+                i += 1;
+            }
+            "--no-head" => no_head = true,
             "--attach" => attach = true,
             "--no-library" => library = false,
             "--no-pack" => pack = false,
@@ -1796,7 +1886,35 @@ fn graft(args: &[String]) -> ExitCode {
     };
     // a bare name the habitat pins as a sapling: grafted from its nursery,
     // with no checkout (its --set values go to the packs it adopts)
+    // phase 4: a graft's placement: the host its organism's allocations are
+    // placed on (every allocation names its provider: the host's)
+    if let Some(name) = &on_host {
+        match sapling::graft_host(name) {
+            Ok(Some(h)) => {
+                let _ = GRAFT_HOST.set(h);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("hale habitat graft: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
     if !attach && with.is_none() && who.is_none() && profile.is_none() && remote.is_none() && body.is_none() && sapling::names_a_sapling(&dir) {
+        // a client of the head's `Commands::graft` while the head is up (the
+        // operator face's act too); the act itself with `--no-head`, or
+        // when no head answers
+        if !no_head && sets.is_empty() && pack {
+            if let Some(v) = sapling::head_graft(&dir.to_string_lossy(), on_host.as_deref().unwrap_or(""), library) {
+                if v["ok"] == serde_json::json!(true) {
+                    print!("{}", v["said"].as_str().unwrap_or(""));
+                    return ExitCode::SUCCESS;
+                }
+                eprint!("{}", v["said"].as_str().unwrap_or(""));
+                eprintln!("hale habitat graft: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+                return ExitCode::from(1);
+            }
+        }
         return match sapling::graft_sapling(&dir.to_string_lossy(), library, pack, &sets) {
             Ok(lines) => {
                 for l in lines {
@@ -1957,6 +2075,8 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         let base = head_block(&root, &taken)?;
         let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let mut body = serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends, "name": name, "face": format!("http://127.0.0.1:{base}"), "head": format!("http://127.0.0.1:{}", base + 1) });
+        // its declared purpose (dna/org/purpose.hl), for the habitat's index
+        body["purpose"] = serde_json::json!(declared_purpose(&root));
         // a sapling's graft says which sapling, revision and digest it is
         if let Some(l) = sapling {
             for k in ["sapling", "revision", "digest", "nursery"] {
@@ -1989,6 +2109,28 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
     let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
     out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("{:<8}the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", "note", root.display()) });
     Ok(out)
+}
+
+/// The purpose the organism at `root` declares (`PURPOSE` in its
+/// `dna/org/purpose.hl`), "" when it declares none.
+fn declared_purpose(root: &Path) -> String {
+    let text = std::fs::read_to_string(root.join("dna/org/purpose.hl")).unwrap_or_default();
+    let Some(at) = text.find("const PURPOSE: String = \"") else { return String::new() };
+    let rest = &text[at + "const PURPOSE: String = \"".len()..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// What memory says of the record the organism at `root` pins (GH #1653):

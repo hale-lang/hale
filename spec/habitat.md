@@ -93,6 +93,78 @@ as the compose provider does here. It allocates the roles that run as
 compose services (memory, the nerves, the senses' store, a heart's
 database and broker); the habitat's head and face stay on `local`.
 
+### Placing and applying
+
+**"Change a host"** is the Board's command `Commands::place_allocation`
+(`{allocation, host}`, `hale habitat place <key>/<role> <host>`): a
+`habitat.allocated` row naming the host, the host's provider and the
+compose project on it (the habitat's own on `local`,
+`<habitat project>-<host>` elsewhere). Nothing applies. The roles a
+placement moves are memory, the nerves, the senses' store and an
+organism's own services; a heart's database and broker move with the
+server that holds them, the habitat's head and face run with its body,
+and an allocation on the `operator`'s server is never placed.
+
+**Apply** is the Board's command `Commands::apply_allocations` (`{host,
+fresh}`, `hale habitat apply [<host>] [--fresh]`), over every allocation
+or those placed on or leaving one host:
+
+- the allocation rows are exported as the `--placement` file `hale deploy
+  render` takes (`<habitat>/placement.json`, `{instance, host, provider,
+  role}`);
+- each allocation that moved is withdrawn where it was last applied, by
+  that host's provider, and brought up where it is placed (`Provider.apply`:
+  compose here, ssh elsewhere), and where it was applied is kept beside its
+  files (`allocations/<key>/placed.<role>`, the local profile's cache of the
+  rows) for everything that derives an address from it;
+- what each provider observes after it is the pulse, printed per
+  allocation, and each apply is a `habitat.applied <key>/<role>` row
+  (`host`, `provider`, `ok`, `why`, `state`, `fresh`).
+
+**Derivation follows placement.** On `local` an allocation's address is the
+loopback port `docker compose port` gives. On any other host it is the
+host's name, resolved by the LAN's DNS, and the port the allocation's
+`ports.yaml` chose, published there on the host's interface
+(`ports.remote.yaml`, written beside it). No TLS: the LAN is plain. The
+owner's DSN, the head's (`.hale/dna/memory.env`) and the nerves' URL are
+derived that way, and a password reaches the server only through the
+secrets file compose mounts, copied beside the render to the host, never in
+a render or a row; the password adoption runs inside the container there.
+
+**A moved memory or nerves allocation starts empty on its new host**: there
+is no migration. A memory that was applied holds its organism's record, so
+its move is refused (`memory_holds_rows`) unless the apply is `--fresh`,
+which forgets what the new host held for it (its volume) and brings it up
+empty. The habitat's own memory holds the record that places everything,
+and is not moved. After a move, whatever reads the address picks it up on
+its next start: the apply restarts the habitat's own face and head when its
+nerves moved, and an organism whose memory or nerves moved derives the new
+address at `hale habitat migrate <organism>` (a memory started empty holds
+no record, and the organism is grafted again).
+
+**Graft takes a placement**: `hale habitat graft <sapling> --host <name>`
+places the new organism on that host before anything of it is brought up.
+Its memory, nerves and senses' store are brought up there by its birth,
+which derives their addresses from there, so its record is born in the
+memory there. Its own services (a `compose.yaml` at its root) are an
+allocation `<key>/services` of that host (its `render_dir` and
+`render_files`), applied there through the head. Every allocation names its
+provider: the host's. A sapling's graft is the head's Board command
+`Commands::graft` (`{sapling, host, library}`): it starts the act, which
+takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
+its exit status beside it in `<log>.exit`); the end of the graft is its
+`habitat.grafted` row. `hale habitat graft <sapling>` is a client of it while
+the head answers, following the log to the exit, and the act itself
+otherwise or with `--no-head` (what the head runs).
+
+The habitat's own infrastructure as a fleet seed, rendered by `hale deploy
+render --placement`, is not built. That renderer renders a fleet's Hale
+programs, while the habitat's memory and nerves are images whose passwords
+come from the vault and its head and face are a toolchain process. The
+exported `placement.json` is the seam a render takes, and until then each
+host is handed the render each allocation already has (its own compose
+files, or an organism's `compose.yaml`).
+
 `up` records the habitat's placement once its record is up
 (`habitat-place`): the host the compose provider produces, the `local`
 profile's policy for its backends, and the habitat's own head and face
@@ -171,11 +243,13 @@ they call the head's socket, so the habitat's body must be up.
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
 | `graft <dir> [--attach] [--no-library] [--no-pack] [--profile local\|remote-body [--remote <url>] [--body <user@host>]] [--with <pack> [--set <param>=<value>]… [--as <who>]]` | Births an organism as the habitat's child, the one way an organism other than the habitat is born. See below. |
-| `graft <sapling> [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name (above). |
-| `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
+| `place <key>/<role> <host>` | Places an allocation on a host (`Commands::place_allocation`, above); nothing applies. |
+| `apply [<host>] [--fresh]` | Applies the allocations where they are placed and prints the pulse (`Commands::apply_allocations`, above). |
 | `host add <name> [--user <user>] [--port <n>]` | Adds a machine of the LAN as an `ssh` host (above): prints the host key first seen there and its fingerprint, what it offers, and the habitat's public key with the line its `~/.ssh/authorized_keys` takes. A host already added is refused (`host_exists`), and one where no SSH server answers is not added (`unreachable`). |
 | `host probe <name>` | Probes the host again over SSH: a `pending-key` host whose key is now authorized is `ready`, with what it offers. A host that answers with another host key is refused (`host_key_changed`). |
 | `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
+| `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
+| `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -297,7 +371,8 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
 | `habitat.profile local` | at birth | `profile`, `backends`, `project` |
-| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
+| `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), `purpose` (its declared purpose), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
+| `habitat.applied <key>/<role>` | at each apply of an allocation | `host`, `provider`, `ok`, `why`, `state` (the pulse after), `fresh` |
 | `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |
 | `habitat.sapling <name>` | when a nursery's sapling is first read, and at its ratification | `name`, `purpose`, `repo`, `revision`, `digest`, `packs`, `set`, `nursery` |
 | `habitat.sapling.proposed <name>` | when a nursery offers another revision of a pinned sapling, once | the sapling's fields at the new revision, and `from` (the pinned revision) |

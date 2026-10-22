@@ -1097,6 +1097,19 @@ locus CommandAdmission {
         if self.personless(ctx) { return PolicyRows { why: "forbidden" }; }
         return habitat_policy(self.root, a.limit);
     }
+    // The habitat's placement (habitat_placement.hl): the Board's.
+    fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
+        if self.personless(ctx) { return PlaceReply { code: "forbidden" }; }
+        return habitat_place(self.root, a);
+    }
+    fn apply_allocations(a: ApplyAsk, ctx: std::api::Context) -> ApplyReply {
+        if self.personless(ctx) { return ApplyReply { code: "forbidden" }; }
+        return habitat_apply(self.root, a);
+    }
+    fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
+        if self.personless(ctx) { return GraftReply { code: "forbidden" }; }
+        return habitat_graft(self.root, a);
+    }
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's acts on them.
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
@@ -1215,6 +1228,15 @@ locus Commands {
     fn policy(a: HabitatAsk, ctx: std::api::Context) -> PolicyRows {
         return self.admission.policy(a, ctx);
     }
+    fn place_allocation(a: AllocationPlace, ctx: std::api::Context) -> PlaceReply {
+        return self.admission.place_allocation(a, ctx);
+    }
+    fn apply_allocations(a: ApplyAsk, ctx: std::api::Context) -> ApplyReply {
+        return self.admission.apply_allocations(a, ctx);
+    }
+    fn graft(a: GraftAsk, ctx: std::api::Context) -> GraftReply {
+        return self.admission.graft(a, ctx);
+    }
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
         return self.admission.nurseries(a, ctx);
     }
@@ -1326,6 +1348,13 @@ api HeadCommands {
     rpc Commands::hosts;
     rpc Commands::allocations;
     rpc Commands::policy;
+    // The habitat's placement (habitat_placement.hl): an allocation placed
+    // on a host ("change a host"), and the allocations applied where they
+    // are placed, with the pulse after. The Board's.
+    rpc Commands::place_allocation requires: [owner];
+    rpc Commands::apply_allocations requires: [owner];
+    // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
+    rpc Commands::graft requires: [owner];
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's: a nursery trusted, a sapling's newer revision ratified.
     rpc Commands::nurseries;

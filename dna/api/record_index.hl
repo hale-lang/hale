@@ -254,11 +254,14 @@ fn index_answers(url: String) -> Bool {
 
 // The organisms a record grafted, as the `habitat.grafted` rows give them:
 // the name, the state (`up` while its face answers, else `grafted`), the
-// face's address and the head's.
+// face's address and the head's, its declared purpose and its pulse (the
+// worst state its allocations' providers observe now: `up`, `degraded` or
+// `down`; "" when none is observed).
 @bounded_by(j)
-fn index_organisms(j: dna::Journal, cap: Int) -> String {
+fn index_organisms(root: String, j: dna::Journal, cap: Int) -> String {
     let out = std::json::Builder { };
     out.begin_array();
+    let allocated = habitat_latest(j, "habitat.allocated");
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() && n < cap {
@@ -274,6 +277,10 @@ fn index_organisms(j: dna::Journal, cap: Int) -> String {
             );
             out.string_field("face", face);
             out.string_field("head", std::json::find_string_field(e.body, "head"));
+            // phase 4: its declared purpose, taken at its graft, and its
+            // pulse, the worst its allocations' providers observe now
+            out.string_field("purpose", std::json::find_string_field(e.body, "purpose"));
+            out.string_field("pulse", organism_pulse(root, j, allocated, e.entity));
             out.end_object();
             n = n + 1;
         }
@@ -461,7 +468,7 @@ fn record_index(root: String, limit: Int) -> RecordIndex {
         watched: watched.result(),
         contracts: contracts.result(),
         links: links.result(),
-        organisms: index_organisms(j, cap),
+        organisms: index_organisms(root, j, cap),
         faces: index_faces(graph, cap),
     };
 }

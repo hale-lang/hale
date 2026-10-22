@@ -131,14 +131,84 @@ fn habitat_policy(root: String, limit: Int) -> PolicyRows {
     return PolicyRows { ok: true, revision: j.revision(), policy: out.result() };
 }
 
+// The allocation a `habitat.allocated` row states.
+fn allocation_of_row(entity: String, body: String) -> dna::Allocation {
+    let slash = std::str::index_of(entity, "/");
+    return dna::Allocation {
+        role: std::json::find_string_field(body, "role"),
+        instance: if slash < 0 { entity } else { entity[0..slash] },
+        provider: std::json::find_string_field(body, "provider"),
+        host: std::json::find_string_field(body, "host"),
+        project: std::json::find_string_field(body, "project"),
+        service: std::json::find_string_field(body, "service"),
+        address: std::json::find_string_field(body, "address"),
+        placed: true,
+    };
+}
+
+// The allocation `a` where it was last applied (dna/core/placement.hl):
+// `a` itself when nothing says it ran elsewhere.
+fn applied_at(a: dna::Allocation) -> dna::Allocation {
+    if a.role != "memory" && a.role != "nerves" && a.role != "senses" && a.role != "services" {
+        return a;
+    }
+    if !std::io::fs::file_exists(dna::placed_path(a.instance, a.role)) {
+        // never placed off this machine: it runs here, or (an organism's own
+        // services never applied) where its row says
+        if a.role == "services" || a.host == "local" || len(a.host) == 0 { return a; }
+        let mut here = a;
+        here.host = "local";
+        here.provider = "compose";
+        here.project = dna::local_habitat_project();
+        return here;
+    }
+    let p = dna::placed_on(a.instance, a.role);
+    let mut there = a;
+    there.host = p.host;
+    there.provider = p.provider;
+    there.project = p.project;
+    return there;
+}
+
+// What the allocation's provider observes of it now.
+fn observe_row(root: String, a: dna::Allocation) -> dna::AllocationState {
+    if a.provider == "compose" { return dna::ComposeProvider { }.observe(a); }
+    if a.provider == "ssh" { return dna::SshProvider { root: root }.observe(a); }
+    return dna::AllocationState {
+        state: "",
+        detail: "the " + (if len(a.provider) > 0 { a.provider } else { "unnamed" })
+            + " provider's: not observed by the habitat",
+    };
+}
+
+// The pulse of the organism keyed `key`: the worst state its providers
+// observe of its allocations (`down` over `degraded` over `up`), "" when
+// none is observed.
+@bounded_by(j)
+fn organism_pulse(root: String, j: dna::Journal, latest: LatestRows, key: String) -> String {
+    let mut worst = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" || !std::str::starts_with(e.entity, key + "/") {
+            continue;
+        }
+        if !habitat_holds(latest, e.entity, i - 1) { continue; }
+        let seen = observe_row(root, applied_at(allocation_of_row(e.entity, e.body))).state;
+        if seen == "down" { return "down"; }
+        if seen == "degraded" { worst = "degraded"; }
+        if seen == "up" && len(worst) == 0 { worst = "up"; }
+    }
+    return worst;
+}
+
 // Each allocation with what its provider observes of it. The `compose`
 // provider observes its own; an allocation on the `operator` backends is
 // the operator's server, adopted, which the habitat does not observe: its
 // state is "" and the detail says so.
 fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
     let j = habitat_journal(root);
-    let compose = dna::ComposeProvider { };
-    let ssh = dna::SshProvider { root: root };
     let out = std::json::Builder { };
     out.begin_array();
     let latest = habitat_latest(j, "habitat.allocated");
@@ -153,27 +223,11 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         let entity = e.entity;
         let body = e.body;
         let slash = std::str::index_of(entity, "/");
-        let a = dna::Allocation {
-            role: std::json::find_string_field(body, "role"),
-            instance: if slash < 0 { entity } else { entity[0..slash] },
-            provider: std::json::find_string_field(body, "provider"),
-            host: std::json::find_string_field(body, "host"),
-            project: std::json::find_string_field(body, "project"),
-            service: std::json::find_string_field(body, "service"),
-            address: std::json::find_string_field(body, "address"),
-            placed: true,
-        };
-        let seen = if a.provider == "compose" {
-            compose.observe(a)
-        } else if a.provider == "ssh" {
-            ssh.observe(a)
-        } else {
-            dna::AllocationState {
-                state: "",
-                detail: "the " + (if len(a.provider) > 0 { a.provider } else { "unnamed" })
-                    + " provider's: not observed by the habitat",
-            }
-        };
+        let a = allocation_of_row(entity, body);
+        // observed where it runs: where it was last applied, which is where
+        // its row places it once the placement is applied
+        let ran = applied_at(a);
+        let seen = observe_row(root, ran);
         out.begin_object();
         out.string_field("allocation", entity);
         out.string_field("role", a.role);
@@ -183,6 +237,7 @@ fn habitat_allocations(root: String, limit: Int) -> AllocationRows {
         out.string_field("host", a.host);
         out.string_field("service", a.service);
         out.string_field("address", a.address);
+        out.string_field("applied", ran.host);
         out.string_field("state", seen.state);
         out.string_field("detail", seen.detail);
         out.end_object();

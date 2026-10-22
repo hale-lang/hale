@@ -127,9 +127,6 @@ locus ReferenceInfrastructure {
         target: String = ""; // "" = this machine
         ssh: SshTransport = SshTransport { };
         local: LocalTransport = LocalTransport { };
-        // the habitat's allocations on this machine are the compose
-        // provider's to bring up (dna/core/infrastructure.hl)
-        provider: dna::ComposeProvider = dna::ComposeProvider { };
         last: String = "";
     }
     fn kind() -> String { return "compose+systemd+envfile"; }
@@ -176,6 +173,15 @@ locus ReferenceInfrastructure {
     // `service`'s published `inner` port, as `host:port`, "" when it is not up.
     fn published(service: String, inner: String) -> String {
         if !self.allocated() { return ""; }
+        // placed off this machine: the host's name and the port the
+        // allocation publishes there (dna/core/placement.hl)
+        let dash = std::str::index_of(service, "-");
+        let elsewhere = if dash > 0 {
+            dna::placed_address(dna::allocation_key(self.root), service[0..dash])
+        } else {
+            ""
+        };
+        if len(elsewhere) > 0 { return elsewhere; }
         let port = dna::run_tool(
             dna::allocation_compose(self.root) + "\nport\n" + service + "\n" + inner,
         );
@@ -205,7 +211,12 @@ locus ReferenceInfrastructure {
             };
         }
         let service = dna::allocation_service(self.root, "memory");
-        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        // its files written the first time, then brought up where it is
+        // placed, by that host's provider
+        if len(dna::allocation_compose(self.root)) == 0 {
+            return dna::Database { why: "the allocation's files could not be written" };
+        }
+        let up = dna::placed_apply(key, "memory");
         if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "5432");
         if len(hp) == 0 {
@@ -214,14 +225,13 @@ locus ReferenceInfrastructure {
         // a database made with another password adopts the vault's, from
         // the file compose mounts (read inside the container, never on a
         // command line)
-        let adopt = dna::allocation_compose(self.root) + "\nexec\n-T\n" + service
-            + "\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
+        let adopt = "printf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
         let mut tries = 0;
-        let mut adopted = dna::run_tool(adopt);
+        let mut adopted = dna::placed_exec(key, "memory", adopt);
         while adopted.code != 0 && tries < 20 {
             std::time::sleep(500ms);
             tries = tries + 1;
-            adopted = dna::run_tool(adopt);
+            adopted = dna::placed_exec(key, "memory", adopt);
         }
         if adopted.code != 0 {
             return dna::Database {
@@ -309,7 +319,12 @@ locus ReferenceInfrastructure {
             };
         }
         let service = dna::allocation_service(self.root, "nerves");
-        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        // its files written the first time, then brought up where it is
+        // placed, by that host's provider
+        if len(dna::allocation_compose(self.root)) == 0 {
+            return dna::Database { why: "the allocation's files could not be written" };
+        }
+        let up = dna::placed_apply(dna::allocation_key(self.root), "nerves");
         if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "4222");
         if len(hp) == 0 {
@@ -331,7 +346,12 @@ locus ReferenceInfrastructure {
         let not = self.allocation("senses' store");
         if len(not) > 0 { return dna::Database { why: not }; }
         let service = dna::allocation_service(self.root, "senses");
-        let up = self.provider.apply("local", dna::allocation_render(self.root, service));
+        // its files written the first time, then brought up where it is
+        // placed, by that host's provider
+        if len(dna::allocation_compose(self.root)) == 0 {
+            return dna::Database { why: "the allocation's files could not be written" };
+        }
+        let up = dna::placed_apply(dna::allocation_key(self.root), "senses");
         if !up.ok { return dna::Database { why: up.why }; }
         let hp = self.published(service, "9090");
         if len(hp) == 0 {

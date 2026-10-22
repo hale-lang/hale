@@ -234,7 +234,9 @@ fn host_of_row(body: String) -> Host {
 // with no provider when there is none.
 @bounded_by(root)
 fn recorded_host(root: String, name: String) -> Host {
-    let j = RecordJournal { repo: root, author: "habitat" };
+    // the habitat's own record, by the DSN its genome keeps: a verb run on
+    // a tenant carries the tenant's in its environment
+    let j = RecordJournal { repo: root, dsn: kept_dsn(root, HEAD_DSN_ENV), author: "habitat" };
     let moved = j.refresh();
     let mut body = "";
     let mut i = 0;
@@ -273,6 +275,10 @@ type Render {
     dir: String = "";
     files: String = "";
     services: String = "";
+    // files beside the compose files that a service mounts (a server's
+    // configuration, its secrets file), copied with them to a host
+    // elsewhere and never passed to compose
+    mounted: String = "";
 }
 
 type RenderApplied {
@@ -515,15 +521,23 @@ locus ComposeProvider {
         // the service that holds the role (the heart's database is the
         // memory server's), never a name the row spelled otherwise
         let service = compose_service(a.role, a.instance);
-        if len(service) == 0 { return observe_address(a.address); }
+        if len(service) == 0 && a.role != "services" { return observe_address(a.address); }
+        // an organism's own services: every container of its project
+        let by_service = if len(service) > 0 {
+            "\n--filter\nlabel=com.docker.compose.service=" + service
+        } else {
+            ""
+        };
         let ps = run_tool(
             "docker\nps\n-a\n--filter\nlabel=com.docker.compose.project="
                 + (if len(a.project) > 0 { a.project } else { local_habitat_project() })
-                + "\n--filter\nlabel=com.docker.compose.service=" + service
-                + "\n--format\n{{.State}} {{.Status}}",
+                + by_service + "\n--format\n{{.State}} {{.Status}}",
         );
         if ps.code != 0 { return AllocationState { detail: "docker: " + trim_nl(ps.stderr) }; }
-        return container_state(service, trim_nl(ps.stdout));
+        return containers_state(
+            if len(service) > 0 { service } else { a.project },
+            trim_nl(ps.stdout),
+        );
     }
 }
 
@@ -542,6 +556,32 @@ fn container_state(service: String, seen: String) -> AllocationState {
         return AllocationState { state: "degraded", detail: seen };
     }
     return AllocationState { detail: seen };
+}
+
+// What several `docker ps` lines say of what `what` names: up when every
+// container is up, degraded when some are not, down when none is.
+@bounded_by(seen)
+fn containers_state(what: String, seen: String) -> AllocationState {
+    if std::str::index_of(seen, "\n") < 0 { return container_state(what, seen); }
+    let mut up = 0;
+    let mut n = 0;
+    let mut rest = seen + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if len(line) == 0 { continue; }
+        n = n + 1;
+        if container_state(what, line).state == "up" { up = up + 1; }
+    }
+    if up == n { return AllocationState { state: "up", detail: to_string(n) + " running" }; }
+    if up > 0 {
+        return AllocationState {
+            state: "degraded",
+            detail: to_string(up) + " of " + to_string(n) + " running",
+        };
+    }
+    return AllocationState { detail: "none of " + to_string(n) + " running" };
 }
 
 // An allocation served at a loopback `address` (`http://127.0.0.1:<port>`):

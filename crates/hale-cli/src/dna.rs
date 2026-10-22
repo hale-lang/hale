@@ -1791,6 +1791,11 @@ fn init_under(app_dir: &Path, library: bool, lineage: Lineage) -> Result<Vec<Str
         let (body, id) = genesis_row(&root, lineage)?;
         pin_record_in_manifest(&manifest, &id)?;
         out.push(format!("pinned  {} ([dna] record = {}…, the identity of the record born here)", manifest.display(), short_id(&id)));
+        // phase 4: a graft that names a host places the organism there
+        // before anything of it is brought up
+        if let Some(line) = habitat::place_for_graft(&id[..12])? {
+            out.push(line);
+        }
         Some(body)
     } else {
         None
