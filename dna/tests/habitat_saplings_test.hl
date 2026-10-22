@@ -67,6 +67,16 @@ fn surface_read(face: String, member: String, field: String) -> String {
     return "";
 }
 
+// Whether the habitat's head answers its surface's reads (its API child up,
+// its socket bound) within `secs`, scaled.
+fn head_ready(face: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if len(surface_read(face, "Commands::nurseries", "nurseries")) > 0 { return true; }
+    }
+    return false;
+}
+
 fn element(array: String, key: String, value: String) -> String {
     let mut it = std::json::array_first(array);
     while !it.done {
@@ -132,6 +142,9 @@ fn main() {
         "up reads the toolchain's nursery: voice is pinned: " + text_of(log),
     );
     let face = face_of(in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout);
+    // the body runs before its head answers (the head's API child is built
+    // and started beside it): every verb below is a client of the head
+    std::test::assert(head_ready(face, 900), "the habitat's head answers at " + face);
 
     // ---- a sapling's repository, and a nursery offering it at v1
     let src = scratch + "/sprout-src";
