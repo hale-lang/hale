@@ -1344,6 +1344,16 @@ fn handle(req: std::http::Request) -> std::http::Response {
   seconds. A failed `chunk` or `event` means the client has gone: stop,
   and return `w.end()`. Encode each event's data with `T::api_encode`
   (2.11). **[convention]**
+- **Relay a stream through a reader and a writer.** To hand an
+  upstream's stream on as it arrives, read it with `std::http::SseReader`
+  (or `BodyReader`) and write each event to an `SseWriter` in one `while
+  true` loop, each side ending it with `or { break; }`: `let e =
+  up.event() or { break; }; w.event(e) or { break; };`. Check
+  `up.body.status` before building the writer, while an ordinary
+  `Response` can still answer, and give the reader a `timeout_ms` as
+  long as the stream may run (`0` for none). Do not speak HTTP/1.1 over
+  `std::io::tcp` to stream: the reader de-chunks, splits events, takes
+  https and keeps the deadline. **[convention]**
 
 ---
 

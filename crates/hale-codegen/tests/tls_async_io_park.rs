@@ -573,3 +573,152 @@ fn a_recv_timeout_armed_before_upgrade_ends_a_silent_handshake_on_and_off_a_pool
         assert!((180..1300).contains(&took), "{tag}: the handshake ends at the 200 ms recv timeout; took {took}: {out}");
     }
 }
+
+/// A TLS server that answers every request with a Server-Sent Events
+/// stream in chunked transfer encoding: one event, a 600 ms gap, then a
+/// second event and the last chunk, or, with `hold`, nothing more for
+/// 5 s (the connection open).
+fn start_streaming(
+    hold: bool,
+    key: &PKey<Private>,
+    cert: &X509,
+    cert_path: &std::path::Path,
+) -> Peer {
+    let mut acc = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    acc.set_private_key(key).unwrap();
+    acc.set_certificate(cert).unwrap();
+    let acceptor = Arc::new(acc.build());
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            if stopping.load(Ordering::SeqCst) {
+                break;
+            }
+            let Ok(tcp) = conn else { continue };
+            let acceptor = acceptor.clone();
+            thread::spawn(move || {
+                let Ok(mut s) = acceptor.accept(tcp) else { return };
+                let mut req = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => req.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let frame = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                );
+                let _ = s.write_all(frame("event: tick\ndata: first\n\n").as_bytes());
+                if hold {
+                    thread::sleep(Duration::from_secs(5));
+                    return;
+                }
+                thread::sleep(Duration::from_millis(600));
+                let _ = s.write_all(frame("data: second\n\n").as_bytes());
+                let _ = s.write_all(b"0\r\n\r\n");
+                let _ = s.shutdown();
+            });
+        }
+    });
+    Peer { port, cert: cert_path.to_path_buf(), stop }
+}
+
+/// GH #1698 over https: `std::http::SseReader` hands on the first event
+/// as it arrives, 600 ms before the server sends the second, and then the
+/// end; a stream the server holds open ends at the reader's `timeout_ms`
+/// with the whole-body read's outcome, its reads bounded by the deadline
+/// itself (`tls::__recv_into_until`), off any pool and on an async_io one.
+#[test]
+fn an_https_event_stream_is_read_as_it_arrives_and_its_deadline_holds() {
+    // one certificate for both servers, the one the child trusts
+    let (key, cert) = self_signed();
+    let cert_path = harness::unique_bin("tls_stream_cert").with_extension("pem");
+    std::fs::write(&cert_path, cert.to_pem().unwrap()).unwrap();
+    let peer = start_streaming(false, &key, &cert, &cert_path);
+    let held = start_streaming(true, &key, &cert, &cert_path);
+    let body = |port: String| {
+        format!(
+            r#"
+            let t0 = std::time::monotonic_ns();
+            let url = std::http::parse_url("https://localhost:" + {port} + "/") or std::http::Url {{ }};
+            let s = std::http::SseReader {{ req: std::http::ClientRequest {{ url: url, body: b"" }} }};
+            let a = s.event() or std::http::SseEvent {{ data: "!" }};
+            let ta = (std::time::monotonic_ns() - t0) / 1000000;
+            let b = s.event() or std::http::SseEvent {{ data: "!" }};
+            let tb = (std::time::monotonic_ns() - t0) / 1000000;
+            let mut kind = "";
+            s.event() or {{ kind = err.kind; std::http::SseEvent {{ data: "" }} }};
+            println("first status=", s.body.status, " event=", a.event, " data=", a.data, " ms=", ta);
+            println("second data=", b.data, " ms=", tb);
+            println("after kind=", kind);
+            let t1 = std::time::monotonic_ns();
+            let hurl = std::http::parse_url("https://localhost:" + std::env::arg(2) + "/") or std::http::Url {{ }};
+            let h = std::http::SseReader {{ req: std::http::ClientRequest {{ url: hurl, body: b"" }}, timeout_ms: 800 }};
+            let c = h.event() or std::http::SseEvent {{ data: "!" }};
+            let mut hkind = "";
+            let mut hdetail = "";
+            h.event() or {{ hkind = err.kind; hdetail = err.detail; std::http::SseEvent {{ data: "" }} }};
+            println("held data=", c.data, " kind=", hkind, " timeout=", std::str::contains(hdetail, "timeout: no complete response within 800 ms"), " ms=", (std::time::monotonic_ns() - t1) / 1000000);
+"#
+        )
+    };
+    let off_pool = format!("fn main() {{ {} }}", body("std::env::arg(1)".to_string()));
+    let on_pool = format!(
+        r#"
+        type Go {{ n: Int; }}
+        locus Job {{
+            params {{ n: Int = 0; }}
+            run() {{ {} }}
+        }}
+        locus Host {{
+            bus {{ subscribe "go" as on_go of type Go; }}
+            accept(c: Job) {{ }}
+            fn on_go(g: Go) {{ Job {{ n: g.n }}; }}
+        }}
+        main locus App {{
+            params {{ host: Host = Host {{ }}; }}
+            placement {{ host: cooperative(pool = io) where async_io; }}
+            bus {{ publish "go" of type Go; }}
+            run() {{
+                "go" <- Go {{ n: 1 }};
+                std::time::sleep(4s);
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+"#,
+        body("std::env::arg(1)".to_string())
+    );
+    for (tag, src) in [("off_pool", off_pool), ("async_io", on_pool)] {
+        let bin = harness::unique_bin(&format!("hale_tls_sse_{tag}"));
+        build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+        let out = Command::new("timeout")
+            .arg("60")
+            .arg(&bin)
+            .arg(peer.port.to_string())
+            .arg(held.port.to_string())
+            .env("SSL_CERT_FILE", &peer.cert)
+            .env("LOTUS_NO_CHUNK_POOL", "1")
+            .output()
+            .expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let out = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(field(&out, "first", "status"), "200", "{tag}: {out}");
+        assert_eq!(field(&out, "first", "event"), "tick", "{tag}: {out}");
+        assert_eq!(field(&out, "first", "data"), "first", "{tag}: {out}");
+        assert_eq!(field(&out, "second", "data"), "second", "{tag}: {out}");
+        assert_eq!(field(&out, "after", "kind"), "end", "{tag}: {out}");
+        let (ta, tb) = (ms(&out, "first"), ms(&out, "second"));
+        assert!(tb >= ta + 500, "{tag}: the first event is read 600 ms before the second is sent: {out}");
+        assert_eq!(field(&out, "held", "data"), "first", "{tag}: {out}");
+        assert_eq!(field(&out, "held", "kind"), "recv_failed", "{tag}: {out}");
+        assert_eq!(field(&out, "held", "timeout"), "true", "{tag}: {out}");
+        let took = ms(&out, "held");
+        assert!((700..1500).contains(&took), "{tag}: the held stream ends at its 800 ms deadline; took {took}: {out}");
+    }
+}

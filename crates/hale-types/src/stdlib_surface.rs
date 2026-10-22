@@ -339,6 +339,9 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "BodyWriter"],
     &["std", "http", "SseEvent"],
     &["std", "http", "SseWriter"],
+    // a response body read as it arrives (http_client.hl, 2026-10-21)
+    &["std", "http", "BodyReader"],
+    &["std", "http", "SseReader"],
     &["std", "io", "MirrorRing"],
     &["std", "io", "file", "File"],
     // R7: the HTTP/2 server's loci and its two messages (io_h2.hl)
@@ -1038,6 +1041,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
             row!("__recv_bytes_until", SYSCALL | BLOCK, [Int, Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytesUntilRaw)),
             row!("recv_into", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int] -> Int, Intrinsic(IoTlsRecvInto)),
+            // the http client's streamed body: `recv_into` bounded by an
+            // absolute CLOCK_MONOTONIC instant (i64 ns, 0 = none)
+            row!("__recv_into_until", SYSCALL | BLOCK, [Int, Named("__StdBytesBytesBuilder"), Int, Int] -> Int, Intrinsic(IoTlsRecvIntoUntilRaw)),
             // GH #829: `tls::recv_stamped_into` is dispatched by codegen
             // through the same `lower_recv_into_common` and is named by the
             // surface table, but had no signature row at all — so neither
@@ -1793,6 +1799,7 @@ pub enum IntrinsicId {
     IoTlsRecvBytes,
     IoTlsRecvBytesUntilRaw,
     IoTlsRecvInto,
+    IoTlsRecvIntoUntilRaw,
     IoTlsRecvStampedInto,
     IoTlsSendBytes,
     IoTlsSendBytesUntilRaw,
@@ -2261,7 +2268,7 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
 /// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
 /// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
-/// | `std::io::tls::recv_into`, `recv_stamped_into`, `recv_bytes` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
+/// | `std::io::tls::recv_into`, `__recv_into_until`, `recv_stamped_into`, `recv_bytes`, `__recv_bytes_until` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
 /// | `std::io::tls::connect`, `connect_within`, `upgrade` | the tcp dial, then `lotus_tls__handshake` (`SSL_connect` on the non-blocking socket, each `WANT_*` a park) |
 /// | `std::http::get`, `post`, `request` | Hale bodies (`http_client.hl`) whose every wait is one of the rows above or `tcp::__send_bytes` / `tls::send_bytes` (each a park on EPOLLOUT) |
 ///
@@ -2294,6 +2301,7 @@ pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tls", "recv_bytes"],
     &["std", "io", "tls", "__recv_bytes_until"],
     &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "__recv_into_until"],
     &["std", "io", "tls", "recv_stamped_into"],
     &["std", "io", "tls", "upgrade"],
     &["std", "io", "udp", "__recv"],

@@ -676,7 +676,7 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-stdlib/hl/http_client.hl#c45746aa
+== crates/hale-stdlib/hl/http_client.hl#ecc1f677
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -8323,6 +8323,23 @@ row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
 
+== tests/hale/http_client_stream_test.hl
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+shared	App@literal1.srv	__StdHttpServer #7ea4240c
+-- dynamic	sites in the seed
+dynamic	__StdBytesBytesBuilder	on pool:io
+dynamic	__StdHttpBodyReader	on main
+dynamic	__StdHttpBodyWriter	on pool:io
+dynamic	__StdHttpResponder	on pool:io
+dynamic	__StdHttpSseReader	on main|pool:io
+dynamic	__StdHttpSseWriter	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+
 == tests/hale/http_request_cap_test.hl
 root	App	the entry
 domain	pool:io	async_io
@@ -8347,14 +8364,7 @@ row	App@literal1	App	main	default
 -- App@literal1.held	Held
 row	~	Held	main	default
 row	~.s	__StdIoTcpStream	main	inherited
--- App@literal1.srv	__StdHttpServer
-row	~	__StdHttpServer	pool:io	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:io	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
-row	~.conns.handler	__StdHttpResponder	pool:io	inherited
-row	~.conns.handler.handler	Streams	pool:io	inherited
-row	~.handler	Streams	pool:io	inherited
-row	~.relay	__StdIoTcpRelay	pool:io	inherited
+shared	App@literal1.srv	__StdHttpServer #7ea4240c
 -- dynamic	sites in the seed
 dynamic	__StdBytesBytesBuilder	on pool:io
 dynamic	__StdHttpBodyWriter	on pool:io
@@ -17771,6 +17781,15 @@ row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
 row	~.conns.handler	__StdHttpResponder	pool:io	inherited
 row	~.conns.handler.handler	Echo	pool:io	inherited
 row	~.handler	Echo	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdHttpServer #7ea4240c
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	Streams	pool:io	inherited
+row	~.handler	Streams	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
 == shared __StdHttpServer #969ca977

@@ -28499,6 +28499,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTlsRecvInto => {
                 self.lower_std_io_tls_recv_into(args, scope)
             }
+            // The HTTP client's streamed body: (handle, builder, max, until_ns).
+            Id::IoTlsRecvIntoUntilRaw => self.lower_recv_into_common(
+                args, scope,
+                "lotus_tls_recv_into_until",
+                "std::io::tls::__recv_into_until",
+            ),
             Id::IoTlsRecvStampedInto => self.lower_recv_into_common(
                 args, scope,
                 "lotus_tls_recv_stamped_into",
@@ -29415,6 +29421,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTlsRecvBytes
             | Id::IoTlsRecvBytesUntilRaw
             | Id::IoTlsRecvInto
+            | Id::IoTlsRecvIntoUntilRaw
             | Id::IoTlsRecvStampedInto
             | Id::IoTlsSendBytes
             | Id::IoTlsSendBytesUntilRaw
@@ -30193,10 +30200,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         extern_name: &str,
         diag_name: &str,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 3 {
+        // A fourth argument, the `_until` reads' absolute deadline (i64
+        // ns), passes through as the C primitive's last parameter.
+        let until = extern_name.ends_with("_until");
+        let want = if until { 4 } else { 3 };
+        if args.len() != want {
             return Err(CodegenError::Unsupported(format!(
-                "{} takes 3 args (fd, buf, max_bytes), got {}",
+                "{} takes {} args (fd, buf, max_bytes{}), got {}",
                 diag_name,
+                want,
+                if until { ", until_ns" } else { "" },
                 args.len()
             )));
         }
@@ -30284,13 +30297,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function(extern_name)
             .unwrap_or_else(|| panic!("{} declared", extern_name));
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![fd_i32.into(), buf_handle.into(), max_val.into()];
+        if until {
+            let (until_val, until_ty) = self.lower_expr(&args[3], scope)?;
+            if until_ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "{}: until_ns must be Int, got {:?}",
+                    diag_name, until_ty
+                )));
+            }
+            call_args.push(until_val.into());
+        }
         let call = self
             .builder
-            .build_call(
-                f,
-                &[fd_i32.into(), buf_handle.into(), max_val.into()],
-                "recv_into.ret",
-            )
+            .build_call(f, &call_args, "recv_into.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call
             .try_as_basic_value()

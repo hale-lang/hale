@@ -626,6 +626,84 @@ of taking turns. The one thing that still runs on the worker is
 looking up a host *name*: if your resolver can be slow, dial an
 address or give the client its own pool.
 
+### Reading a response as it arrives
+
+`get` and the `Client` hand you a response once its body has ended.
+A body that arrives a piece at a time — a model's tokens, a build's
+log — can also be read as it comes. `std::http::BodyReader` and
+`std::http::SseReader` are the client's mirror of the server's
+`BodyWriter` and `SseWriter`:
+
+```hale,fragment
+let url = std::http::parse_url("https://feeds.local/events") or raise;
+let feed = std::http::SseReader { req: std::http::ClientRequest { url: url, body: b"" } };
+while true {
+    let e = feed.event() or { break; };
+    println(e.event, ": ", e.data);
+}
+```
+
+Building the reader sends the request and reads the response's head,
+so `feed.body.status` and `feed.body.headers` are there before the
+first event. Each `event()` returns the next event the moment it is
+complete: its `data`, and its `event`, `id` and `retry` if the server
+sent them. `BodyReader` is the same with `chunk()`, which returns the
+next piece of the body as `Bytes` (one chunk, when the server sends
+chunks).
+
+A read that has nothing more to give fails, and `err.kind` says why:
+`end` when the body finished as it should, `recv_failed` when the
+connection closed in the middle of it or the deadline passed (the
+`detail` says which), and the same kinds as `get` for everything
+else. So `or { break; }` ends the loop either way, and you look at
+`err.kind` inside the block if the difference matters. Nothing waits
+forever: the reader's `timeout_ms` (30 s unless you say otherwise)
+bounds the whole exchange, from the connect to the last byte, just as
+it does for the `Client`. A stream that may run longer than that sets
+`timeout_ms: 0`.
+
+The two halves meet in a relay: a handler that calls an upstream and
+hands each event on to its own client as it arrives. Check the
+upstream's status first, while you can still answer with an ordinary
+response:
+
+```hale
+locus Relay {
+    params {
+        upstream: String = "https://models.local/v1/chat/completions";
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let url = std::http::parse_url(self.upstream) or std::http::Url { };
+        let up = std::http::SseReader {
+            req: std::http::ClientRequest {
+                method: "POST",
+                url: url,
+                headers: "Content-Type: application/json",
+                body: std::bytes::from_string(req.body),
+            },
+            timeout_ms: 0,
+        };
+        if up.body.status != 200 {
+            return std::http::Response { status: 502, body: "upstream answered " + to_string(up.body.status) };
+        }
+        let w = std::http::SseWriter { conn_fd: req.conn_fd };
+        while true {
+            let e = up.event() or { break; };
+            w.event(e) or { break; };
+        }
+        return w.end();
+    }
+}
+```
+
+An event read is exactly the event a writer takes, so `w.event(e)`
+passes it on unchanged. The loop ends when the upstream finishes, when
+it fails, or when your client goes away; either way the handler
+returns `w.end()`, and the upstream connection closes as the reader
+goes out of scope. Serve it from a `where async_io` pool, as any
+streaming handler: every wait, on either connection, then parks only
+this request.
+
 The `bindings` that wire a server across processes, and the lifecycle that lets a server shut down cleanly
 on Ctrl-C are all next-level topics — but the handler you wrote
 above doesn't change when you get there. The server *code* is

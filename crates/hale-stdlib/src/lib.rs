@@ -408,6 +408,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "post"], "__http_client_post"),
     (&["std", "http", "request"], "__http_client_request"),
     (&["std", "http", "parse_url"], "__http_parse_url"),
+    // A response body read as it arrives (2026-10-21): the mirror of the
+    // Server's BodyWriter / SseWriter.
+    (&["std", "http", "BodyReader"], "__StdHttpBodyReader"),
+    (&["std", "http", "SseReader"], "__StdHttpSseReader"),
     (&["std", "io", "file", "File"], "__StdIoFileFile"),
     (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
     (&["std", "io", "file", "open"], "__std_io_file_open"),
