@@ -8,14 +8,34 @@
 // response is read to EOF; a deadline that cuts the body short is an
 // upstream timeout, never a truncated success. The stdlib client is
 // not used: its timeout is declared and applied nowhere.
+//
+// The read waits a slice at a time and asks between slices whether the
+// process is stopping. A head serves one connection at a time on a
+// blocking pool, so an exchange it is waiting on (a slow organization
+// read, a call the exposure holds) is what its drain waits for; the
+// drain's grace is shorter than the deadline, and an exchange that only
+// watched its deadline had the runtime end the process at the grace. A
+// drain ends the exchange (`draining`), the caller answers its client,
+// and the server's drain finishes.
 // A response larger than this is cut and reported as a timeout.
 const MAX_UPSTREAM_BYTES: Int = 16777216;
 // The proxy's read deadline; the API's slowest read is well under it.
 const UPSTREAM_TIMEOUT_NS: Int = 20000000000;
+// How long one read waits before the exchange asks again whether the
+// process is stopping.
+const UPSTREAM_SLICE_NS: Int = 100000000;
+
+// Whether the process's drain has begun (a signal began its stop). Only a
+// locus reads `draining`, so the exchange asks one that holds nothing.
+locus DrainWatch {
+    params { }
+    fn begun() -> Bool { return self.draining; }
+}
 
 // One exchange's result: `code` is "" when a whole response arrived,
 // else connect_failed (nothing listens), no_response (the connection
-// closed before a status line) or timeout (the deadline cut the body).
+// closed before a status line), timeout (the deadline cut the body) or
+// draining (the process began to stop before the answer was whole).
 type Upstream {
     ok: Bool = false;
     code: String = "";
@@ -46,27 +66,34 @@ fn exchange(
 ) -> Upstream {
     let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
     if fd < 0 { return Upstream { code: "connect_failed" }; }
-    let armed = std::io::tcp::__set_recv_timeout_ns(fd, timeout_ns);
+    let armed = std::io::tcp::__set_recv_timeout_ns(fd, min(timeout_ns, UPSTREAM_SLICE_NS));
     let s = std::io::tcp::Stream { conn_fd: fd };
     let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n"
         + headers + "Connection: close\r\n\r\n";
     s.send(head + body) or discard;
     let received = std::bytes::BytesBuilder { };
+    let watch = DrainWatch { };
     let mut total = 0;
     let mut reading = true;
-    // recv answers empty for EOF and for the deadline alike: the clock
-    // tells them apart when nothing at all arrived
+    let mut stopping = false;
+    // a slice that passes with nothing (-2) reads again until the deadline,
+    // unless the process is stopping; EOF (0) and an error (-1) end it
     let started = std::time::monotonic_ns();
     while reading {
-        let chunk = s.recv(65536) or "";
-        if len(chunk) == 0 {
-            reading = false;
-        } else {
-            received.append_str(chunk);
-            total = total + len(chunk);
+        let n = std::io::tcp::recv_into(fd, received, 65536);
+        if n > 0 {
+            total = total + n;
             if total > MAX_UPSTREAM_BYTES { reading = false; }
+        } else if n == -2 && std::time::monotonic_ns() - started < timeout_ns {
+            if watch.begun() {
+                stopping = true;
+                reading = false;
+            }
+        } else {
+            reading = false;
         }
     }
+    if stopping { return Upstream { code: "draining" }; }
     let raw = std::str::from_bytes(received.snapshot() or raise);
     if total == 0 {
         return Upstream {

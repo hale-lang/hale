@@ -195,6 +195,14 @@ fn relay_command(req: std::http::Request, port: Int, bearer: String) -> std::htt
     }
     let up = relay_upstream(req.body, port, bearer);
     if !up.ok {
+        if up.code == "draining" {
+            return http.error(
+                503,
+                "commands_unavailable",
+                "this head is stopping and did not wait for the call's answer",
+                true,
+            );
+        }
         if up.code == "timeout" {
             return http.error(
                 504,

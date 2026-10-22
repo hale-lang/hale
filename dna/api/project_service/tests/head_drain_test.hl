@@ -1,0 +1,93 @@
+// dna/api/project_service/tests/head_drain_test.hl — a SIGTERM while the
+// head waits on its API child.
+//
+// The head serves one connection at a time, and a proxied read holds it
+// until the child answers (a slow organization read, in the face's browser
+// fixtures). Its drain must not wait for that answer: the head answers the
+// waiting request 503 `head_api_unavailable`, retryable, and exits within
+// a second, instead of being ended at the runtime's grace. The child is
+// stopped (SIGSTOP) for the request, so its answer never comes.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import "./fixture" as fixture;
+import "../../../core" as dna;
+
+const APPLICATIONS: String = "/api/hale/v1/applications";
+
+fn main() {
+    let root = dna::scratch_root("head-drain");
+    let f = fixture::HeadFixture { root: root };
+    f.start();
+    let attached = f.submit(
+        fixture::command(
+            "drain-attach",
+            "dna.project.attach",
+            "",
+            "{\"root\":\"" + f.project + "\"}",
+        ),
+        200,
+    );
+    f.json.eq(attached, "state", "succeeded");
+    std::test::assert_eq_int(f.http("GET", APPLICATIONS, "", "").status, 200, "the child answers");
+
+    // the child stops answering; a read reaches the head and waits on it
+    let api = f.child_pid("api");
+    std::test::assert(api > 0, "the API child has a pid");
+    let stopped = dna::run_tool("kill\n-STOP\n" + to_string(api));
+    std::test::assert_eq_int(stopped.code, 0, "the API child is stopped");
+    let fd = std::io::tcp::connect("127.0.0.1", f.port) or - 1;
+    std::test::assert(fd >= 0, "connected to the head");
+    std::io::tcp::set_recv_timeout(fd, 250ms) or discard;
+    let st = std::io::tcp::Stream { conn_fd: fd };
+    st.send(
+        "GET " + APPLICATIONS + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    ) or discard;
+    std::time::sleep(500ms);
+
+    // SIGTERM: the drain ends the wait (reaped here: `kill -0` answers for
+    // a zombie child too)
+    let t0 = std::time::monotonic_ns();
+    let sent = dna::run_tool("kill\n-TERM\n" + to_string(f.head.pid));
+    let mut state = -2;
+    let deadline = std::time::now() + dna::wait_secs(15);
+    while state == -2 && std::time::now() <= deadline {
+        state = std::process::try_wait(f.head) or - 1;
+        if state == -2 { std::time::sleep(20ms); }
+    }
+    let took_ms = (std::time::monotonic_ns() - t0) / 1000000;
+    std::test::assert_eq_int(state, 0, "the drained head exits 0: " + f.log());
+    std::test::assert(
+        took_ms < 3000,
+        "the head drains at once with a proxied read waiting (" + to_string(took_ms) + " ms): "
+            + f.log(),
+    );
+    std::test::assert(
+        !std::str::contains(f.log(), "did not finish within"),
+        "the drain finished: " + f.log(),
+    );
+    f.head.pid = -1;
+
+    // the waiting read was answered, not cut
+    let mut answer = "";
+    let mut reading = true;
+    let until = std::time::now() + dna::wait_secs(5);
+    while reading && std::time::now() <= until {
+        let chunk = st.recv(4096) or "";
+        if len(chunk) == 0 && std::str::contains(answer, "}") { reading = false; }
+        answer = answer + chunk;
+    }
+    std::test::assert(
+        std::str::starts_with(answer, "HTTP/1.1 503"),
+        "the waiting read is answered 503: " + answer,
+    );
+    std::test::assert(
+        std::str::contains(answer, "\"code\": \"head_api_unavailable\"")
+            && std::str::contains(answer, "\"retryable\": true"),
+        "as the API unavailable, retryable: " + answer,
+    );
+
+    let resumed = dna::run_tool("kill\n-CONT\n" + to_string(api));
+    f.stop();
+    dna::scratch_done(root);
+}

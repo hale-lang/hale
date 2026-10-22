@@ -78,10 +78,20 @@ fn proxy_exchange(
 // The browser's answer for an exchange: the child's status, content
 // type and body with the two cache headers passed through; a connect
 // failure is 503 `head_api_unavailable`, a cut body 504
-// `upstream_timeout`, both retryable.
+// `upstream_timeout`, both retryable. A head that began to stop while it
+// waited answers 503 `head_api_unavailable` at once, retryable at the
+// next head, instead of holding its drain on the child.
 fn proxied_response(up: api::Upstream) -> std::http::Response {
     let http = api::Http { };
     if !up.ok {
+        if up.code == "draining" {
+            return http.error(
+                503,
+                "head_api_unavailable",
+                "the head is stopping and did not wait for the project's API to answer",
+                true,
+            );
+        }
         if up.code == "timeout" {
             return http.error(
                 504,
