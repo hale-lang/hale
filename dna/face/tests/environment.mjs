@@ -122,7 +122,11 @@ export function boundedNative(command, args, { build = false, lock = true } = {}
   // The service reads the organization's topology of the vendored DNA (3.7 MB
   // and growing with the DNA's loci); loading it takes about 300 MiB of arena
   // at peak, which the old 512 MiB bound left too little headroom for.
-  const memory = build ? 2_147_483_648 : 805_306_368;
+  // A build's bound is its address space, which runs above its resident
+  // peak: the composed head (dna/api/practice_review) peaks near 2 GiB
+  // resident since its surface is served over MCP as well, and LLVM's
+  // allocation failure under a 2 GiB cap aborts the compiler outright.
+  const memory = build ? 3_221_225_472 : 805_306_368;
   // A build compiles the toolchain's host or a whole API tree, about a
   // CPU-minute from a cold cache on a fast machine and several on a CI
   // runner; a service or a fixture process keeps the short budget.
