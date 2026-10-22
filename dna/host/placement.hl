@@ -156,7 +156,8 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
 
     // its forge and its identity, roles it allocates as it allocates its
     // memory: the forge the policy names until the Board allocates another
-    // (never overwritten here), the identity its own sign-in at its address
+    // (never overwritten here), the identity its own sign-in at its address;
+    // both recorded once, when absent, so a resumed `up` leaves them as born
     let forge_key = key + "/forge";
     if len(latest_body(j, "habitat.allocated", forge_key)) == 0 {
         let fp = dna::profile_provider("local", backends, "forge");
@@ -177,7 +178,7 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
         issuer,
         "",
     );
-    if latest_body(j, "habitat.allocated", key + "/identity") != ib {
+    if len(latest_body(j, "habitat.allocated", key + "/identity")) == 0 {
         rows = rows + row_line("habitat.allocated", key + "/identity", ib);
     }
     out = out + "roles   the habitat's forge (" + dna::forge_allocated(root).provider
