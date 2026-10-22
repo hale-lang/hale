@@ -202,8 +202,8 @@ fn api() {
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
+        534,
         536,
-        538,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
