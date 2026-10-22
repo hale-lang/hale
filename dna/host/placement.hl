@@ -75,20 +75,6 @@ fn allocation_body(organism: String, a: dna::Allocation) -> String {
     return b.result();
 }
 
-// The loopback address the habitat's `role` (`face`, `head`) answers on,
-// from the block its genome's `dna.head.url` names: the face is the
-// block's base, the head the next port. "" while no block is assigned.
-fn habitat_address(root: String, role: String) -> String {
-    let url = dna::trim_nl(
-        dna::run_tool("git\n-C\n" + root + "\nconfig\n--get\ndna.head.url").stdout,
-    );
-    let at = std::str::index_of(url, "127.0.0.1:");
-    if at < 0 { return ""; }
-    let base = std::str::parse_int(url[(at + 10)..len(url)]) or 0;
-    if base < 1 { return ""; }
-    return "http://127.0.0.1:" + to_string(if role == "head" { base + 1 } else { base });
-}
-
 // `habitat-place <backends>` on the habitat's genome: what was recorded, a
 // line each.
 fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> Answer {
