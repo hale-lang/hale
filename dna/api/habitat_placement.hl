@@ -165,6 +165,7 @@ fn services_render(body: String) -> dna::Render {
         project: std::json::find_string_field(body, "project"),
         dir: std::json::find_string_field(body, "render_dir"),
         files: std::json::find_string_field(body, "render_files"),
+        mounted: std::json::find_string_field(body, "render_mounted"),
     };
 }
 
@@ -504,4 +505,171 @@ fn habitat_graft(root: String, a: GraftAsk) -> GraftReply {
         return GraftReply { code: "not_started", why: dna::trim_nl(started.stderr) };
     }
     return GraftReply { ok: true, code: "started", graft: name, log: log };
+}
+
+// ---- a tenant's model map, as the Board's command --------------------------
+//
+// `Commands::set_model_map` points a grafted organism's model map at an
+// endpoint: the act `hale dna models category <mode>.<size> <model>
+// --endpoint <url> [--key-vault <slot>]` is, run by the head in the
+// organism's directory. A key travels only as its vault slot's name.
+// `Commands::probe_model` asks the model a category of the organism's map
+// names, where the map says it is asked, once: what answered, never a key.
+
+type ModelMapSet {
+    organism: String = "";
+    category: String = "";
+    model: String = "";
+    endpoint: String = "";
+    key_vault: String = "";
+    tools: Bool = false;
+}
+
+type ModelProbe {
+    organism: String = "";
+    category: String = "";
+}
+
+type ModelMapReply {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    model: String = "";
+    endpoint: String = "";
+    answer: String = "";
+}
+
+// The directory of the organism the habitat grafted as `name`: its
+// allocation's cache names it ("" when the habitat grafted none so named).
+@bounded_by(root)
+fn grafted_root(root: String, name: String) -> String {
+    let j = habitat_journal(root);
+    let mut key = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "habitat.grafted" && std::json::find_string_field(e.body, "name") == name {
+            key = e.entity;
+        }
+        i = i + 1;
+    }
+    if len(key) == 0 { return ""; }
+    let cache = std::io::fs::read_file(
+        dna::local_habitat_dir() + "/allocations/" + key + "/allocation.json",
+    )
+    or "";
+    return std::json::find_string_field(cache, "root");
+}
+
+fn word_only(s: String) -> Bool {
+    return len(s) > 0 && len(s) <= 512 && !std::str::contains(s, " ")
+        && !std::str::contains(s, "\n") && !std::str::starts_with(s, "-");
+}
+
+fn habitat_set_model_map(root: String, a: ModelMapSet) -> ModelMapReply {
+    if !word_only(a.organism) || !word_only(a.category) || !word_only(a.model)
+        || (len(a.endpoint) > 0 && !word_only(a.endpoint))
+        || (len(a.key_vault) > 0 && !std::secret::vault_name_is_safe(a.key_vault))
+    {
+        return ModelMapReply {
+            code: "invalid",
+            why: "an organism, a category, a model, an endpoint URL and a vault slot's name, one word each",
+        };
+    }
+    let dir = grafted_root(root, a.organism);
+    if len(dir) == 0 {
+        return ModelMapReply {
+            code: "not_found",
+            why: "the habitat grafted no organism `" + a.organism + "`",
+        };
+    }
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let mut args = "dna\nmodels\ncategory\n" + a.category + "\n" + a.model;
+    if a.tools { args = args + "\n--tools"; }
+    if len(a.endpoint) > 0 { args = args + "\n--endpoint\n" + a.endpoint; }
+    if len(a.key_vault) > 0 { args = args + "\n--key-vault\n" + a.key_vault; }
+    // the organism's own act, in its directory, as its operator would run
+    // it: none of the head's own memory, nerves or socket reaches it
+    let r = dna::run_tool_timeout(
+        300,
+        "sh\n-c\ncd \"$1\" && shift && for v in $(env | sed -n 's/^\\(HALE_DNA_MEMORY_DSN_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_NATS_[A-Z_]*\\)=.*/\\1/p; s/^\\(HALE_DNA_RPC_SOCKET\\)=.*/\\1/p'); do unset \"$v\"; done; exec \"$@\"\nsh\n"
+            + dir + "\n" + hale + "\n" + args,
+    );
+    if r.code != 0 { return ModelMapReply { code: "not_set", why: dna::trim_nl(r.stderr) }; }
+    return ModelMapReply {
+        ok: true,
+        model: a.model,
+        endpoint: a.endpoint,
+        why: dna::trim_nl(r.stdout),
+    };
+}
+
+fn habitat_probe_model(root: String, a: ModelProbe) -> ModelMapReply {
+    if !word_only(a.organism) || !word_only(a.category) {
+        return ModelMapReply { code: "invalid", why: "an organism and a category, one word each" };
+    }
+    let dir = grafted_root(root, a.organism);
+    if len(dir) == 0 {
+        return ModelMapReply {
+            code: "not_found",
+            why: "the habitat grafted no organism `" + a.organism + "`",
+        };
+    }
+    // the organism's own record, by the DSN its checkout keeps
+    let j = dna::RecordJournal {
+        repo: dir,
+        dsn: dna::kept_dsn(dir, dna::HEAD_DSN_ENV),
+        author: "api",
+    };
+    let moved = j.refresh();
+    let c = dna::model_category_of(j, a.category);
+    if len(c.model) == 0 {
+        return ModelMapReply {
+            code: "not_mapped",
+            why: "no model fills `" + a.category + "` in " + a.organism + "'s map",
+        };
+    }
+    if len(c.endpoint) == 0 {
+        return ModelMapReply {
+            code: "no_endpoint",
+            model: c.model,
+            why: "`" + a.category + "` names no endpoint: its performer's own is asked",
+        };
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("model", c.model);
+    b.begin_array_field("messages");
+    b.begin_object();
+    b.string_field("role", "user");
+    b.string_field("content", "probe");
+    b.end_object();
+    b.end_array();
+    b.end_object();
+    let body = b.result();
+    let resp = if len(c.key_vault) > 0 {
+        dna::HostedCredential {
+            vault_slot: c.key_vault,
+        }.post_json(c.endpoint, body, "") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        }
+    } else {
+        dna::post_json_keyless(c.endpoint, body, "") or std::http::ClientResponse {
+            status: -1,
+            headers: "",
+            body: b"",
+        }
+    };
+    let out = dna::parse_chat(resp.status, std::str::from_bytes(resp.body));
+    if !out.ok {
+        return ModelMapReply {
+            code: "not_answered",
+            model: c.model,
+            endpoint: c.endpoint,
+            why: out.refused,
+        };
+    }
+    return ModelMapReply { ok: true, model: c.model, endpoint: c.endpoint, answer: out.text };
 }

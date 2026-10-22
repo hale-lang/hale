@@ -1274,7 +1274,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
-    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]");
+    eprintln!("       hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N] [--endpoint <url>] [--key-vault <slot>]");
     eprintln!("                                    which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs");
     eprintln!("                                    (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it");
     eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief, login,");

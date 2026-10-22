@@ -571,6 +571,8 @@ fn main() {
             host::flag(a, "--price-in"),
             host::flag(a, "--price-out"),
             host::flag(a, "--as"),
+            host::flag(a, "--endpoint"),
+            host::flag(a, "--key-vault"),
             memory,
         );
     } else if verb == "models" {

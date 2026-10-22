@@ -34,6 +34,11 @@ type ModelRule {
 type ModelCategory {
     category: String = "";
     model: String = "";
+    // where the model is asked: an OpenAI-compatible chat URL (voice's, a
+    // host's), "" = the performer's own; and the vault slot of its key ("" =
+    // none), never the key
+    endpoint: String = "";
+    key_vault: String = "";
     tool_calls: Bool = false;
     input_micros_per_1k: Int = 0;
     output_micros_per_1k: Int = 0;
@@ -50,6 +55,8 @@ type ModelChoice {
     size: String = "";
     category: String = "";
     model: String = "";
+    endpoint: String = "";
+    key_vault: String = "";
     rule: String = "";
     tool_calls: Bool = false;
     why: String = "";
@@ -102,6 +109,8 @@ fn model_category_of(j: Journal, category: String) -> ModelCategory {
         if e.kind == "model.category" && e.entity == category {
             out = ModelCategory {
                 category: category, model: std::json::find_string_field(e.body, "model"),
+                endpoint: std::json::find_string_field(e.body, "endpoint"),
+                key_vault: std::json::find_string_field(e.body, "key_vault"),
                 tool_calls: std::str::trim(
                     std::json::find_field_raw(e.body, "tool_calls"),
                 ) == "true",
@@ -191,6 +200,8 @@ fn model_resolve(
         size: size,
         category: category,
         model: c.model,
+        endpoint: c.endpoint,
+        key_vault: c.key_vault,
         rule: rule,
         tool_calls: c.tool_calls,
     };
@@ -217,6 +228,8 @@ fn model_choice_json(c: ModelChoice) -> String {
     b.string_field("size", c.size);
     b.string_field("category", c.category);
     b.string_field("model", c.model);
+    if len(c.endpoint) > 0 { b.string_field("endpoint", c.endpoint); }
+    if len(c.key_vault) > 0 { b.string_field("key_vault", c.key_vault); }
     b.string_field("rule", c.rule);
     b.string_field("why", c.why);
     b.end_object();

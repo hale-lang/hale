@@ -88,15 +88,17 @@ pub(super) fn record(rows: &[serde_json::Value]) -> Result<(), String> {
 /// What each nursery the habitat holds offers, read into its record: a
 /// sapling first seen pinned (`habitat.sapling`), and a newer revision of
 /// one already pinned filed as a proposal (`habitat.sapling.proposed`),
-/// never taken. The first nursery to offer a name holds it: the toolchain's,
-/// then the trusted ones in the order of their sources. A nursery that
+/// never taken. The first nursery to offer a name holds it: the trusted
+/// ones in the order of their sources, then the toolchain's (the default). A nursery that
 /// cannot be read is said and skipped. What was done, a line each.
 pub(super) fn refresh() -> Result<Vec<String>, String> {
     let rows = rows_of(&genome_dir());
     let pins = latest(&rows, "habitat.sapling");
     let proposals = latest(&rows, "habitat.sapling.proposed");
-    let mut sources: Vec<Option<String>> = vec![None];
-    sources.extend(latest(&rows, "habitat.nursery").into_iter().filter(|(_, b)| b["state"] != "removed").map(|(k, _)| Some(k)));
+    // the nurseries the Board trusts first, then the toolchain's: the
+    // bundled one is the default a trusted one may offer over
+    let mut sources: Vec<Option<String>> = latest(&rows, "habitat.nursery").into_iter().filter(|(_, b)| b["state"] != "removed").map(|(k, _)| Some(k)).collect();
+    sources.push(None);
     let mut out = Vec::new();
     let mut new_rows = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -268,7 +270,12 @@ fn place_services(root: &Path) -> Result<Vec<String>, String> {
     // its own compose project on the host, named for it: its services are
     // its own, never the habitat's
     let project = format!("{}-{key}", h["project"].as_str().unwrap_or(""));
-    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "vault": [] });
+    // the files its services mount beside the compose file: the
+    // repository's own, at its root (what it tracks, never what the graft
+    // wrote)
+    let tracked = Command::new("git").arg("-C").arg(root).args(["ls-files"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let mounted: Vec<&str> = tracked.lines().filter(|f| !f.contains('/') && *f != "compose.yaml" && *f != "hale.toml").collect();
+    let body = serde_json::json!({ "organism": id, "role": "services", "service": "", "project": project, "provider": h["provider"], "host": host, "render_dir": root.display().to_string(), "render_files": "compose.yaml", "render_mounted": mounted.join("\n"), "vault": [] });
     record(&[serde_json::json!({ "kind": "habitat.allocated", "entity": format!("{key}/services"), "body": body.to_string() })])?;
     let mut out = vec![format!("{:<8}its services ({key}/services) on {host}", "placed")];
     out.extend(applied_lines(&head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": false }))?));
@@ -320,6 +327,87 @@ pub(super) fn head_graft(name: &str, host: &str, library: bool) -> Option<serde_
     })
 }
 
+/// A verb's arguments consumed by position: each of `values` takes the word
+/// right after it as its value, whatever that word is; each of `switches`
+/// stands alone; every other word is a positional, in its order. `None`: an
+/// option the verb does not take, or a value option at the end.
+pub(super) struct VerbArgs {
+    words: Vec<String>,
+    values: BTreeMap<String, String>,
+    switches: Vec<String>,
+}
+
+pub(super) fn verb_args(args: &[String], values: &[&str], switches: &[&str]) -> Option<VerbArgs> {
+    let mut out = VerbArgs { words: Vec::new(), values: BTreeMap::new(), switches: Vec::new() };
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if values.contains(&a.as_str()) {
+            out.values.insert(a.clone(), it.next()?.clone());
+        } else if switches.contains(&a.as_str()) {
+            out.switches.push(a.clone());
+        } else if a.starts_with("--") {
+            return None;
+        } else {
+            out.words.push(a.clone());
+        }
+    }
+    Some(out)
+}
+
+impl VerbArgs {
+    fn value(&self, name: &str) -> String {
+        self.values.get(name).cloned().unwrap_or_default()
+    }
+    fn has(&self, name: &str) -> bool {
+        self.switches.iter().any(|s| s == name)
+    }
+}
+
+/// `hale habitat model-map <organism> <category> <model> [--endpoint <url>]
+/// [--key-vault <slot>] [--tools]` and `hale habitat model-probe <organism>
+/// <category>`: clients of the head's `Commands::set_model_map` and
+/// `Commands::probe_model`.
+pub(super) fn model_map_cmd(args: &[String], probe: bool) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let usage = if probe { "usage: hale habitat model-probe <organism> <mode>.<size>" } else { "usage: hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]" };
+    let Some((member, payload)) = model_map_request(args, probe) else {
+        eprintln!("{usage}");
+        return ExitCode::from(2);
+    };
+    match head_call(member, payload) {
+        Ok(v) if v["ok"] == serde_json::json!(true) => {
+            if probe {
+                println!("{:<8}{} at {}: {}", "model", v["model"].as_str().unwrap_or(""), v["endpoint"].as_str().unwrap_or(""), v["answer"].as_str().unwrap_or(""));
+            } else {
+                println!("{}", v["why"].as_str().unwrap_or(""));
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(v) => {
+            eprintln!("hale habitat {}: {} ({})", if probe { "model-probe" } else { "model-map" }, v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("hale habitat {}: {e}", if probe { "model-probe" } else { "model-map" });
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// The head's member and its payload for `model-map` (or, with `probe`,
+/// `model-probe`), the options consumed by position; `None`: not the verb's
+/// shape.
+fn model_map_request(args: &[String], probe: bool) -> Option<(&'static str, serde_json::Value)> {
+    if probe {
+        let a = verb_args(args, &[], &[])?;
+        let [org, cat] = a.words.as_slice() else { return None };
+        return Some(("Commands::probe_model", serde_json::json!({ "organism": org, "category": cat })));
+    }
+    let a = verb_args(args, &["--endpoint", "--key-vault"], &["--tools"])?;
+    let [org, cat, model] = a.words.as_slice() else { return None };
+    Some(("Commands::set_model_map", serde_json::json!({ "organism": org, "category": cat, "model": model, "endpoint": a.value("--endpoint"), "key_vault": a.value("--key-vault"), "tools": a.has("--tools") })))
+}
+
 /// `hale habitat place <allocation> <host>`.
 pub(super) fn place_cmd(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
@@ -349,13 +437,13 @@ pub(super) fn place_cmd(args: &[String]) -> std::process::ExitCode {
 /// address.
 pub(super) fn apply_cmd(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
-    let fresh = args.iter().any(|a| a == "--fresh");
-    let hosts: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if hosts.len() > 1 || args.iter().any(|a| a.starts_with("--") && a != "--fresh") {
+    let parsed = verb_args(args, &[], &["--fresh"]).filter(|a| a.words.len() <= 1);
+    let Some(a) = parsed else {
         eprintln!("usage: hale habitat apply [<host>] [--fresh]");
         return ExitCode::from(2);
-    }
-    let host = hosts.first().map(|h| h.to_string()).unwrap_or_default();
+    };
+    let fresh = a.has("--fresh");
+    let host = a.words.first().cloned().unwrap_or_default();
     match head_call("Commands::apply_allocations", serde_json::json!({ "host": host, "fresh": fresh })) {
         Ok(v) => {
             for l in applied_lines(&v) {
@@ -427,7 +515,13 @@ pub(super) fn nursery_cmd(args: &[String]) -> std::process::ExitCode {
                 _ => source.clone(),
             };
             match head_call("Commands::add_nursery", serde_json::json!({ "source": source })) {
-                Ok(v) if v["ok"] == serde_json::json!(true) => println!("{:<8}{source}: the Board trusts it", "nursery"),
+                Ok(v) if v["ok"] == serde_json::json!(true) => {
+                    println!("{:<8}{source}: the Board trusts it", "nursery");
+                    // what the head read of it
+                    if let Some(said) = v["why"].as_str().filter(|w| !w.is_empty()) {
+                        println!("{said}");
+                    }
+                }
                 Ok(v) => {
                     eprintln!("hale habitat nursery add: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
                     return ExitCode::from(1);
@@ -499,6 +593,40 @@ fn refreshed() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split(' ').map(str::to_string).collect()
+    }
+
+    /// An option's value is the word right after it, never a word equal to
+    /// it elsewhere: a slot or an endpoint named like the organism, the
+    /// category or the model leaves all three positionals.
+    #[test]
+    fn model_map_options_are_consumed_by_position() {
+        let (member, p) = model_map_request(&words("voice think.quick local --endpoint http://localhost:8000/v1/chat/completions --key-vault voice --tools"), false).unwrap();
+        assert_eq!(member, "Commands::set_model_map");
+        assert_eq!((p["organism"].as_str(), p["category"].as_str(), p["model"].as_str()), (Some("voice"), Some("think.quick"), Some("local")));
+        assert_eq!((p["key_vault"].as_str(), p["tools"].as_bool()), (Some("voice"), Some(true)));
+        let (_, q) = model_map_request(&words("alpha think.quick local --key-vault local"), false).unwrap();
+        assert_eq!((q["model"].as_str(), q["key_vault"].as_str(), q["endpoint"].as_str()), (Some("local"), Some("local"), Some("")));
+        let (_, r) = model_map_request(&words("--endpoint think.quick alpha think.quick m"), false).unwrap();
+        assert_eq!((r["organism"].as_str(), r["category"].as_str(), r["endpoint"].as_str()), (Some("alpha"), Some("think.quick"), Some("think.quick")));
+        assert!(model_map_request(&words("alpha think.quick m --endpoint"), false).is_none(), "a value option at the end");
+        assert!(model_map_request(&words("alpha think.quick m --other x"), false).is_none());
+        assert!(model_map_request(&words("alpha think.quick"), true).is_some_and(|(m, _)| m == "Commands::probe_model"));
+        assert!(model_map_request(&words("alpha think.quick --tools"), true).is_none());
+    }
+
+    /// `apply`: one host at most, `--fresh` anywhere, nothing else.
+    #[test]
+    fn apply_takes_one_host_and_fresh() {
+        let a = verb_args(&words("--fresh --fresh-host"), &[], &["--fresh"]);
+        assert!(a.is_none(), "an option it does not take");
+        let b = verb_args(&words("rack-a --fresh"), &[], &["--fresh"]).unwrap();
+        assert_eq!((b.words.as_slice(), b.has("--fresh")), (&["rack-a".to_string()][..], true));
+        let c = verb_args(&words("--fresh rack-a"), &[], &["--fresh"]).unwrap();
+        assert_eq!(c.words, ["rack-a"]);
+    }
 
     /// The digest is the tree's, whatever the commit: the same files at two
     /// commits are one digest, and a changed file is another.

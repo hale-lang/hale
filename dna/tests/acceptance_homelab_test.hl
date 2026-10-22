@@ -1,0 +1,455 @@
+// dna/tests/acceptance_homelab_test.hl — phase 4's exit at fixture level:
+// the homelab case.
+//
+// An empty habitat on one box, and after `hale habitat up` nothing but the
+// head's surface: every step is a `Commands::` row, called on the head's
+// socket as the operator face calls its rows (add_host, probe_host,
+// add_nursery, ratify_sapling, graft, apply_allocations, and the reads).
+// A machine of the LAN is added over SSH and authorized; voice is grafted
+// by name from a nursery onto it, placed and applied there from its own
+// compose, reachable at the host's name; its seat relays to a local model
+// on the host's network; a streamed request through it answers as
+// server-sent events; and the habitat's reads list it placed and up.
+//
+// What stands in, and why (one CI runner, no network):
+// - the host is D2's sshd container on the loopback, its docker CLI on this
+//   machine's daemon through the socket; its name is `localhost` with the
+//   port the fixture drew (no /etc/hosts, no DNS of the fixture's own);
+// - voice is the sapling `dna/tests/onboarding/voice-sapling`, a checked-in
+//   minimal tree with voice's shape where the habitat touches it (a
+//   repository declaring its needs, its services in a root compose.yaml,
+//   an OpenAI-compatible streaming endpoint, a seat relaying to a local
+//   model over the host's network), in a local git nursery: the real
+//   hale-lang/voice at the bundled pin needs voice#44 and a network fetch;
+// - Ollama on the host is the cycle's canned OpenAI-compatible gateway
+//   (scripts/dna-cycle/canned-gateway.py) on this machine's loopback.
+// The organism's model map is pointed at voice's endpoint on the host
+// (`set_model_map`) and its model call goes through voice (`probe_model`).
+// What it does not prove is said where it stops (`SKIPPED`): voice's own
+// programs, store and broker; the Mac's launchd node.
+
+import "../core" as dna;
+import "../core/legs/head_commands" as hc;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") {
+        std::env::var("HALE_DNA_SOURCE")
+    } else {
+        "."
+    };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool_timeout(
+        900,
+        "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
+            + dir + "\n" + argv,
+    );
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+fn logged(log: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(text_of(log), text) { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+fn element(array: String, key: String, value: String) -> String {
+    let mut it = std::json::array_first(array);
+    while !it.done {
+        if std::json::find_string_field(it.element, key) == value { return it.element; }
+        it = std::json::array_next(it);
+    }
+    return "";
+}
+
+// The head's socket for the habitat's record, as the head names it
+// (dna/api/main.hl, `head_socket`).
+fn head_socket(genome: String) -> String {
+    let id = dna::record_scope(genome);
+    let name = id[0..12] + ".sock";
+    let runtime = std::env::var("XDG_RUNTIME_DIR");
+    let mut dir = if len(runtime) > 0 { runtime + "/hale/dna" } else { genome + "/.hale/dna" };
+    if len(dir) + 1 + len(name) > 103 {
+        dir = "/tmp/hale-" + dna::trim_nl(dna::run_tool("id\n-u").stdout);
+    }
+    return dir + "/" + name;
+}
+
+// One row of the head's surface, called on its socket as the face calls
+// its rows: the value it answered, or `refused: <why>`.
+fn call(sock: String, member: String, payload: String) -> String {
+    let r = hc::api_call(sock, "", member, "", payload);
+    if r.outcome == 0 { return r.body; }
+    return "refused: " + r.kind + " " + r.reason + " " + r.why + " " + r.body;
+}
+
+// A read of the surface: the JSON array `field` of `member`'s answer.
+fn read(sock: String, member: String, field: String) -> String {
+    return std::json::find_string_field(call(sock, member, "{\"limit\": 50}"), field);
+}
+
+// The allocation `entity`, once its state is `up` (within `secs`).
+fn up_allocation(sock: String, entity: String, secs: Int) -> String {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    let mut a = "";
+    while std::time::now() <= deadline {
+        a = element(read(sock, "Commands::allocations", "allocations"), "allocation", entity);
+        if std::json::find_string_field(a, "state") == "up" { return a; }
+        std::time::sleep(1s);
+    }
+    return a;
+}
+
+// The last non-empty line of `text`.
+fn last_line(text: String) -> String {
+    let t = dna::trim_nl(text);
+    let mut at = len(t);
+    while at > 0 && t[(at - 1)..at] != "\n" { at = at - 1; }
+    return t[at..len(t)];
+}
+
+// The machine: alpine's sshd and docker CLI. Its entrypoint makes the user
+// `hale` with this uid, its home the directory the fixture shares with it,
+// in the group of the docker socket it mounts, and runs sshd with keys only.
+fn sshd_files(dir: String) {
+    std::io::fs::write_file(
+        dir + "/Dockerfile",
+        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY entry.sh /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+    ) or discard;
+    std::io::fs::write_file(
+        dir + "/entry.sh",
+        "set -e\naddgroup -g \"$DOCKER_GID\" dockerhost 2>/dev/null || true\ngroup=$(getent group \"$DOCKER_GID\" | cut -d: -f1)\nadduser -D -H -h \"$HOST_HOME\" -u \"$HOST_UID\" -s /bin/sh hale\naddgroup hale \"$group\"\nsed -i 's/^hale:!/hale:*/' /etc/shadow\nexec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=no\n",
+    ) or discard;
+}
+
+fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: String) -> String {
+    return "services:\n  sshd:\n    build: .\n    image: hale-dna-test-sshd:1\n    environment:\n      HOST_UID: \""
+        + uid + "\"\n      HOST_HOME: \"" + home + "\"\n      DOCKER_GID: \"" + gid
+        + "\"\n    ports: [\"127.0.0.1:" + to_string(port) + ":22\"]\n    volumes:\n      - \""
+        + socket + ":/var/run/docker.sock\"\n      - \"" + home + ":" + home + "\"\n";
+}
+
+// `git` in `dir` as a fixture's author.
+fn git(dir: String, args: String) -> dna::RunResult {
+    return dna::run_tool(
+        "git\n-C\n" + dir + "\n-c\nuser.name=t\n-c\nuser.email=t@dna\n" + args,
+    );
+}
+
+// The digest a nursery pins a revision by: the sha256 of its tree's listing.
+fn digest_of(dir: String, rev: String) -> String {
+    let r = dna::run_tool(
+        "sh\n-c\ngit -C \"$1\" ls-tree -r --full-tree \"$2\" | sha256sum | cut -d' ' -f1\nsh\n"
+            + dir
+            + "\n" + rev,
+    );
+    return "sha256:" + dna::trim_nl(r.stdout);
+}
+
+// How many times `needle` occurs in `text`.
+fn occurrences(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    let mut at = std::str::index_of(rest, needle);
+    while at >= 0 {
+        n = n + 1;
+        rest = rest[(at + len(needle))..len(rest)];
+        at = std::str::index_of(rest, needle);
+    }
+    return n;
+}
+
+fn skipped(what: String, why: String) {
+    eprintln("acceptance_homelab_test: SKIPPED ", what, ": ", why);
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 {
+        eprintln("acceptance_homelab_test: not exercised (docker compose is not on PATH)");
+        return;
+    }
+    if dna::local_habitat_project() == dna::developer_habitat_project() {
+        eprintln(
+            "acceptance_homelab_test: not exercised (outside `hale test`, the habitat would be the developer's)",
+        );
+        return;
+    }
+    if dna::run_tool("python3\n--version").code != 0 {
+        eprintln(
+            "acceptance_homelab_test: not exercised (python3 is not on PATH: the model stands in with it)",
+        );
+        return;
+    }
+    let endpoint = dna::trim_nl(
+        dna::run_tool("docker\ncontext\ninspect\n--format\n{{.Endpoints.docker.Host}}").stdout,
+    );
+    if !std::str::starts_with(endpoint, "unix://") {
+        eprintln(
+            "acceptance_homelab_test: not exercised (the docker daemon is not on a unix socket)",
+        );
+        return;
+    }
+    let socket = endpoint[7..len(endpoint)];
+    let scratch = dna::scratch_root("acceptance-homelab");
+    dna::reap_on_exit(scratch);
+    let genome = dna::local_habitat_dir() + "/genome";
+
+    // ---- the box: an empty habitat, `hale habitat up` the one command
+    let log = scratch + "/up.log";
+    let started = in_dir(
+        scratch,
+        "sh\n-c\nnohup timeout --foreground 2400 \"$1\" habitat up --foreground >\"$2\" 2>&1 </dev/null & echo $!\nsh\n"
+            + toolchain() + "\n" + log,
+    );
+    std::test::assert(
+        len(dna::trim_nl(started.stdout)) > 0
+            && logged(log, "body    the habitat's body runs in this process", 900),
+        "the habitat is born and its body runs: " + text_of(log),
+    );
+    // from here on, only the head's surface
+    let sock = head_socket(genome);
+    let mut ready = false;
+    let mut tries = 0;
+    while !ready && tries < 600 {
+        ready = std::str::contains(read(sock, "Commands::hosts", "hosts"), "\"local\"");
+        if !ready { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(ready, "the head's surface answers on " + sock);
+    std::test::assert(
+        !std::str::contains(read(sock, "Commands::index", "organisms"), "\"name\""),
+        "the habitat is empty: no organism",
+    );
+
+    // ---- the host: a machine of the LAN over SSH (the fixture's own sshd)
+    let port = dna::free_port(0);
+    let sshd = scratch + "/sshd";
+    let home = scratch + "/home";
+    std::io::fs::mkdir(sshd) or discard;
+    std::io::fs::mkdir(home) or discard;
+    sshd_files(sshd);
+    let uid = dna::trim_nl(dna::run_tool("id\n-u").stdout);
+    let gid = dna::trim_nl(dna::run_tool("stat\n-c\n%g\n" + socket).stdout);
+    std::io::fs::write_file(sshd + "/compose.yaml", sshd_compose(port, home, socket, uid, gid))
+    or discard;
+    let project = "dna-homelab-" + to_string(std::process::pid());
+    let compose = "docker\ncompose\n-p\n" + project + "\n--project-directory\n" + sshd;
+    let sshd_up = dna::run_tool_timeout(600, compose + "\nup\n-d\n--build");
+    std::test::assert_eq_int(sshd_up.code, 0, "the host's sshd is up: " + sshd_up.stderr);
+    let mut answered = false;
+    tries = 0;
+    while !answered && tries < 60 {
+        answered = len(dna::ssh_host_key("localhost", port)) > 0;
+        if !answered { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(answered, "the host answers SSH on " + to_string(port));
+    let container = dna::trim_nl(dna::run_tool(compose + "\nps\n-q\nsshd").stdout);
+    let added = call(
+        sock,
+        "Commands::add_host",
+        "{\"name\": \"localhost\", \"user\": \"hale\", \"port\": " + to_string(port) + "}",
+    );
+    let pending = std::json::find_string_field(added, "host");
+    std::test::assert(
+        std::json::find_string_field(pending, "state") == "pending-key"
+            && std::str::starts_with(
+                std::json::find_string_field(added, "authorize"),
+                "ssh-ed25519 ",
+            ),
+        "added over SSH, pending the habitat's key: " + added,
+    );
+    // the one step on the host itself: its owner appends the line
+    let auth = dna::run_tool(
+        "docker\nexec\n-u\nhale\n" + container
+            + "\nsh\n-c\nmkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && printf '%s\\n' \"$1\" >> \"$HOME/.ssh/authorized_keys\" && chmod 600 \"$HOME/.ssh/authorized_keys\"\nsh\n"
+            + std::json::find_string_field(added, "authorize"),
+    );
+    std::test::assert_eq_int(auth.code, 0, "the host's owner authorizes the key: " + auth.stderr);
+    let probed = std::json::find_string_field(
+        call(sock, "Commands::probe_host", "{\"name\": \"localhost\"}"),
+        "host",
+    );
+    std::test::assert(
+        std::json::find_string_field(probed, "state") == "ready"
+            && dna::has_word(std::json::find_string_field(probed, "offers"), "compose"),
+        "the host is ready, offering compose: " + probed,
+    );
+
+    // ---- the host's model: a local OpenAI-compatible endpoint on its
+    // network (Ollama, on the real box)
+    let model_port = dna::free_port(1);
+    let model = dna::run_tool(
+        "sh\n-c\nnohup python3 \"$1\" \"$2\" \"$3\" >/dev/null 2>&1 </dev/null & echo $!\nsh\n"
+            + source() + "/scripts/dna-cycle/canned-gateway.py\n" + to_string(model_port) + "\n"
+            + scratch + "/model.log",
+    );
+    std::test::assert(len(dna::trim_nl(model.stdout)) > 0, "the host's model runs");
+
+    // ---- voice in a nursery: the sapling's tree, its ports written, pinned
+    let voice_port = dna::free_port(2);
+    let vsrc = scratch + "/voice-src";
+    let copied = dna::run_tool(
+        "sh\n-c\ncp -r \"$1/dna/tests/onboarding/voice-sapling\" \"$2\" && cd \"$2\" && sed -e \"s/@VOICE_PORT@/$3/\" -e \"s/@MODEL_PORT@/$4/\" compose.yaml.in > compose.yaml && rm compose.yaml.in\nsh\n"
+            + source() + "\n" + vsrc + "\n" + to_string(voice_port) + "\n" + to_string(model_port),
+    );
+    std::test::assert_eq_int(copied.code, 0, "voice's tree: " + copied.stderr);
+    git(vsrc, "init\n-q\n-b\nmain");
+    git(vsrc, "add\n-A");
+    git(vsrc, "commit\n-q\n-m\nvoice");
+    git(vsrc, "tag\nv1");
+    let nursery = scratch + "/nursery";
+    std::io::fs::mkdir(nursery) or discard;
+    std::io::fs::write_file(
+        nursery + "/nursery.toml",
+        "[[sapling]]\nname = \"voice\"\nsummary = \"distributed inference: one endpoint over local hosts\"\nrepo = \""
+            + vsrc + "\"\nrevision = \"v1\"\ndigest = \"" + digest_of(vsrc, "v1") + "\"\n",
+    ) or discard;
+    let trusted = call(sock, "Commands::add_nursery", "{\"source\": \"" + nursery + "\"}");
+    std::test::assert(
+        std::json::find_bool_field(trusted, "ok")
+            && std::str::contains(std::json::find_string_field(trusted, "why"), "upgrade voice"),
+        "the Board trusts the nursery; its voice is filed over the bundled one's pin: " + trusted,
+    );
+    let ratified = call(sock, "Commands::ratify_sapling", "{\"name\": \"voice\"}");
+    std::test::assert(std::json::find_bool_field(ratified, "ok"), "and ratified: " + ratified);
+    let sapling = element(read(sock, "Commands::saplings", "saplings"), "name", "voice");
+    std::test::assert(
+        std::json::find_string_field(sapling, "repo") == vsrc
+            && std::json::find_string_field(sapling, "nursery") == nursery,
+        "the habitat pins voice from the nursery: " + sapling,
+    );
+
+    // ---- grafted by name onto the host, and applied there
+    let graft = call(
+        sock,
+        "Commands::graft",
+        "{\"sapling\": \"voice\", \"host\": \"localhost\", \"library\": false}",
+    );
+    let glog = std::json::find_string_field(graft, "log");
+    std::test::assert(len(glog) > 0, "the graft starts: " + graft);
+    let mut done = false;
+    tries = 0;
+    while !done && tries < dna::wait_secs(1200) * 2 {
+        done = std::io::fs::file_exists(glog + ".exit");
+        if !done { std::time::sleep(500ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(
+        done && dna::trim_nl(text_of(glog + ".exit")) == "0",
+        "voice is grafted onto the host: " + text_of(glog),
+    );
+    let applied = call(sock, "Commands::apply_allocations", "{\"host\": \"localhost\"}");
+    std::test::assert(
+        std::json::find_bool_field(applied, "ok"),
+        "its allocations are applied on the host: " + applied,
+    );
+    let store = dna::local_habitat_dir() + "/saplings/voice";
+    let key = dna::allocation_key(store);
+    let services = up_allocation(sock, key + "/services", 300);
+    std::test::assert(
+        std::json::find_string_field(services, "host") == "localhost"
+            && std::json::find_string_field(services, "provider") == "ssh"
+            && std::json::find_string_field(services, "state") == "up",
+        "voice's services run on the host, observed over SSH: " + services,
+    );
+    let memory = element(
+        read(sock, "Commands::allocations", "allocations"),
+        "allocation",
+        key + "/memory",
+    );
+    std::test::assert(
+        std::json::find_string_field(memory, "host") == "localhost"
+            && std::json::find_string_field(memory, "state") == "up",
+        "and its memory: " + memory,
+    );
+
+    // ---- reachable at the host's name: a streamed request through voice,
+    // answered by the host's model as server-sent events
+    let streamed = dna::run_tool(
+        "curl\n-s\n-N\n-m\n60\n-H\ncontent-type: application/json\n-d\n{\"model\": \"local\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}], \"stream\": true}\nhttp://localhost:"
+            + to_string(voice_port) + "/v1/chat/completions",
+    );
+    std::test::assert(
+        streamed.code == 0
+            && std::str::contains(streamed.stdout, "data: {")
+            && std::str::contains(streamed.stdout, "chat.completion.chunk")
+            && std::str::contains(streamed.stdout, "assessment:")
+            && std::str::contains(streamed.stdout, "data: [DONE]"),
+        "voice answers a streamed request at the host's name, from the host's model: "
+            + streamed.stdout + streamed.stderr,
+    );
+    std::test::assert(
+        std::str::contains(text_of(scratch + "/model.log"), "\"model\": \"local\""),
+        "the request reached the host's model through voice's seat",
+    );
+
+    // ---- the organism's model map points at voice on the host, and its
+    // model call goes through voice to the host's model
+    let voice_url = "http://localhost:" + to_string(voice_port) + "/v1/chat/completions";
+    let mapped = call(
+        sock,
+        "Commands::set_model_map",
+        "{\"organism\": \"voice\", \"category\": \"think.standard\", \"model\": \"local\", \"endpoint\": \""
+            + voice_url + "\"}",
+    );
+    std::test::assert(
+        std::json::find_bool_field(mapped, "ok")
+            && std::str::contains(std::json::find_string_field(mapped, "why"), "at " + voice_url),
+        "the organism's model map points at voice's endpoint on the host: " + mapped,
+    );
+    let calls_before = occurrences(text_of(scratch + "/model.log"), "\"model\": \"local\"");
+    let probed_model = call(
+        sock,
+        "Commands::probe_model",
+        "{\"organism\": \"voice\", \"category\": \"think.standard\"}",
+    );
+    std::test::assert(
+        std::json::find_bool_field(probed_model, "ok")
+            && std::json::find_string_field(probed_model, "endpoint") == voice_url
+            && std::str::contains(
+                std::json::find_string_field(probed_model, "answer"),
+                "assessment:",
+            )
+            && occurrences(text_of(scratch + "/model.log"), "\"model\": \"local\"")
+            == calls_before + 1,
+        "the organism's model call goes through voice to the host's model: " + probed_model,
+    );
+
+    // ---- the face lists it: the habitat's reads
+    let listed = element(read(sock, "Commands::index", "organisms"), "name", "voice");
+    std::test::assert(
+        len(std::json::find_string_field(listed, "purpose")) > 0
+            && std::json::find_string_field(listed, "pulse") == "up",
+        "the index lists voice, with its purpose and pulse: " + listed,
+    );
+    std::test::assert(
+        std::json::find_string_field(
+            element(read(sock, "Commands::hosts", "hosts"), "name", "localhost"),
+            "state",
+        ) == "ready",
+        "the hosts list the machine",
+    );
+
+    // ---- what this fixture does not prove
+    skipped(
+        "voice's own programs",
+        "the sapling stands in for voice's api, brain and node (built by the toolchain into its image), its store and its broker; the real hale-lang/voice at the bundled pin needs voice#44 and a network fetch",
+    );
+    skipped("the Mac's launchd node", "no second machine on a CI runner: the real run's");
+
+    in_dir(scratch, toolchain() + "\nhabitat\ndown");
+    dna::run_tool(compose + "\ndown\n-v");
+    dna::scratch_done(scratch);
+}

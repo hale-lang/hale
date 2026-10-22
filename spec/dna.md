@@ -4158,9 +4158,17 @@ The organization's models are a catalog in source (GH #583 M1):
   selector is `default`, `position:<name>`, `contract:<Name>` or
   `task:<id>`, a size `quick`, `standard` or `deep`, and `--permit`
   the sizes a more specific selector may move it to. **`models category
-  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]`**
-  appends `model.category` (prices in micro-dollars per 1k tokens); a
-  `tools` or `do` category without `--tools` is refused. **`models
+  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+  [--endpoint <url>] [--key-vault <slot>]`** appends `model.category`
+  (prices in micro-dollars per 1k tokens); a `tools` or `do` category
+  without `--tools` is refused. `--endpoint` names where the model is
+  asked, an OpenAI-compatible chat URL (voice's on a host, say), and
+  `--key-vault` the vault slot of that endpoint's key, a slot's name and
+  never a key: a Work the category resolves for is asked there by its
+  `openai-chat` performer, with that slot's key or, with none, no key at all
+  (the performer's own key never goes to another endpoint). The habitat's
+  head sets it for a tenant as `Commands::set_model_map`
+  (`spec/habitat.md`). **`models
   map`** lists the latest row per selector and per category. A graft
   (`hale habitat graft`) seeds a starting mapping when a hosted model's key is in the
   vault: `model.rule default` at `standard` (permitting every size), and

@@ -1,0 +1,5 @@
+# voice, as a sapling stands in for it (see README.md): the roles its graft
+# allocates. The real voice needs a database and a broker too.
+
+[dna]
+needs = ["memory", "nerves"]

@@ -1029,6 +1029,7 @@ fn dna_fixture_set_is_complete() {
         names,
         vec![
             "acceptance_binding_test.hl",
+            "acceptance_homelab_test.hl",
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",
@@ -1121,6 +1122,7 @@ fn dna_fixture_set_is_complete() {
             "library_family_batch_test.hl",
             "library_family_test.hl",
             "model_map_cli_test.hl",
+            "model_map_route_test.hl",
             "model_map_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",

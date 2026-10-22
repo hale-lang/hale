@@ -25,6 +25,8 @@ usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends 
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
        hale habitat place <key>/<role> <host>
+       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat model-probe <organism> <mode>.<size>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
        hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
@@ -210,7 +212,7 @@ hale dna work <verb> …       a leg's verbs against the head's API (--api, --as
                              renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);
                              loop --parallel N is a worker: N children, each its own holder; loop --drain ends one
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each
-hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N] [--endpoint <url>] [--key-vault <slot>]
                              which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs
                              (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it
 ```

@@ -1116,6 +1116,14 @@ locus CommandAdmission {
         if self.personless(ctx) { return GraftLogReply { code: "forbidden" }; }
         return habitat_graft_log(a);
     }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_set_model_map(self.root, a);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_probe_model(self.root, a);
+    }
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's acts on them.
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
@@ -1274,6 +1282,12 @@ locus Commands {
     fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
         return self.admission.graft_log(a, ctx);
     }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.set_model_map(a, ctx);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.probe_model(a, ctx);
+    }
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
         return self.admission.nurseries(a, ctx);
     }
@@ -1406,6 +1420,10 @@ api HeadCommands {
     // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
     rpc Commands::graft requires: [owner];
     rpc Commands::graft_log requires: [owner];
+    // A tenant's model map pointed at an endpoint, and a call on it
+    // (habitat_placement.hl). The Board's.
+    rpc Commands::set_model_map requires: [owner];
+    rpc Commands::probe_model requires: [owner];
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's: a nursery trusted, a sapling's newer revision ratified.
     rpc Commands::nurseries;
