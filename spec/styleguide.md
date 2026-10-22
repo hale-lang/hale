@@ -1421,9 +1421,12 @@ fn handle(req: std::http::Request) -> std::http::Response {
   other failure ends the loop as before. The stream stays open across
   each `idle` and nothing read is lost, so the deadline stays the
   stream's whole length and is never shrunk to make room for the
-  control channel:
+  control channel. Build the reader `deferred: true` so the wait for
+  the upstream's head is bounded the same way: the loop's first
+  `event_within` calls open it, `idle` while the head has not come:
 
   ```hale,fragment
+  let up = std::http::SseReader { req: ask, timeout_ms: 0, deferred: true };
   while !self.cancelled {
       let mut idle = false;
       let e = up.event_within(250) or {

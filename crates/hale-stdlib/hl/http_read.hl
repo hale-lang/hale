@@ -19,7 +19,10 @@
 // `chunk()` then hands back the next piece of the body as it arrives and
 // `SseReader.event()` the next event. One `Connection: close` exchange,
 // never retried (a stream cannot be replayed once a piece of it was
-// handed on), the connection closed at dissolve.
+// handed on), the connection closed at dissolve. A `deferred` reader's
+// birth leaves the wire alone: `open_within(ms)` advances the opening a
+// bounded time at a time, and a read opens it first (`*_within` within its
+// own window, failing `idle` while the head has not come).
 //
 // Every read ends in one stated outcome, never a hang: a piece of the
 // body; the end (`HttpError { kind: "end" }`: the last chunk, the
@@ -112,15 +115,25 @@ fn __http_chunk_peel(raw: Bytes) -> __StdHttpChunkPeel {
 /// the head and any one chunk. Never retried; dissolve closes the
 /// connection. `chunk_within(ms)` waits at most `ms` for the next piece
 /// and fails with kind `idle` when none arrived, the stream left open.
+/// `deferred: true` leaves the wire alone at birth: `open_within(ms)`
+/// advances the opening a bounded time at a time, and the first read
+/// opens it (within its own window, for `chunk_within`).
 locus __StdHttpBodyReader {
     params {
         req: std::http::ClientRequest;
         timeout_ms: Int = 30000;
         user_agent: String = "hale-std-http/0.11";
         max_chunk: Int = 16777216;
-        // the response's head, read at birth: 0 and "" when there is none
+        // birth does nothing on the wire: `open_within` (or the first
+        // read) opens the exchange
+        deferred: Bool = false;
+        // the response's head, read at birth (or by the opening of a
+        // deferred reader): 0 and "" when there is none
         status: Int = 0;
         headers: String = "";
+        // how far the opening is: 0 not begun, 1 the request sent and the
+        // head awaited, 2 the head read
+        phase: Int = 0;
         // the connection, and what is left of the one deadline
         handle: Int = -1;
         is_tls: Bool = false;
@@ -143,11 +156,14 @@ locus __StdHttpBodyReader {
         short_armed: Bool = false;
     }
     birth() {
-        self.__open();
-        // The request is sent: its headers and body (where a revealed
-        // credential travels) are a consumed wire write, never kept.
-        self.req.headers = "";
-        self.req.body = b"";
+        // the one deadline runs from the reader's birth, deferred or not
+        self.deadline = __http_deadline(self.timeout_ms);
+        if !self.deferred {
+            self.__start();
+            if self.outcome == "" {
+                self.__head(0);
+            }
+        }
     }
     dissolve() {
         __http_close_handle(self.handle, self.is_tls);
@@ -170,7 +186,49 @@ locus __StdHttpBodyReader {
         return self.__next() or raise;
     }
 
+    /// Advance a deferred reader's opening (the dial, the request, the
+    /// response's head) for at most `ms`: `true` once the head is read
+    /// (`status` and `headers` set), `false` when the time ran out first,
+    /// the exchange still opening. The dial and, for https, the handshake
+    /// are one step bounded by the exchange's deadline, not by `ms`; the
+    /// wait for the head is bounded by `ms`. Fails as a reader's birth
+    /// would: `connect_failed`, `send_failed`, `recv_failed` (the deadline),
+    /// `bad_response`. On a reader already open, `true` at once.
+    fn open_within(ms: Int) -> Bool fallible(std::http::HttpError) {
+        if self.phase == 2 {
+            return true;
+        }
+        if self.outcome == "" {
+            self.__opening(__http_within(self.deadline, ms));
+        }
+        if self.phase < 2 && self.outcome != "" {
+            fail std::http::HttpError {
+                kind: self.outcome,
+                status: self.status,
+                detail: self.detail,
+            };
+        }
+        return self.phase == 2;
+    }
+
+    // The opening, as far as `until` allows (0: to its end or the deadline).
+    fn __opening(until: Int) {
+        if self.phase == 0 {
+            self.__start();
+        }
+        if self.outcome == "" && self.phase == 1 {
+            self.__head(until);
+        }
+    }
+
     fn __next() -> Bytes fallible(std::http::HttpError) {
+        if self.phase < 2 && self.outcome == "" {
+            // a deferred reader opens on its first read, within its window
+            self.__opening(self.until);
+            if self.phase < 2 && self.outcome == "" {
+                fail std::http::HttpError { kind: "idle", status: 0, detail: "" };
+            }
+        }
         while self.outcome == "" {
             if self.framing == 2 {
                 let raw = __http_stream_held(self.rx);
@@ -285,15 +343,16 @@ locus __StdHttpBodyReader {
         self.handle = -1;
     }
 
-    // Dial, send the request, read the head.
-    fn __open() {
+    // Dial and send the request; the dial (and, for https, the handshake)
+    // is bounded by the exchange's deadline.
+    fn __start() {
+        self.phase = 1;
         let scheme = self.req.url.scheme;
         if scheme != "http" && scheme != "https" {
             self.__stop("unsupported_scheme", scheme + " — only http / https supported");
             return;
         }
         self.is_tls = scheme == "https";
-        self.deadline = __http_deadline(self.timeout_ms);
         let mut failure = "";
         let h = __http_dial_nd(
             self.req.url.host,
@@ -319,20 +378,41 @@ locus __StdHttpBodyReader {
         if sent >= 0 && len(self.req.body) > 0 {
             sent = __http_send_within(h, self.is_tls, self.req.body, self.deadline);
         }
+        // The request is sent: its headers and body (where a revealed
+        // credential travels) are a consumed wire write, never kept.
+        self.req.headers = "";
+        self.req.body = b"";
         if sent < 0 {
             if __http_expired(self.deadline) {
                 self.__timed_out();
             } else {
                 self.__stop("send_failed", self.__at() + " the request could not be sent");
             }
-            return;
         }
-        let mut hdr_end = -1;
-        let mut raw = b"";
+    }
+
+    // Read the response's head, waiting until `until` at most (0: the
+    // deadline); a bounded wait that passes first leaves the reader
+    // opening, what arrived of the head kept.
+    fn __head(until: Int) {
+        let bounded = until != 0 && (self.deadline == 0 || until < self.deadline);
+        let wait = if bounded { until } else { self.deadline };
+        if !bounded && self.deadline == 0 && self.short_armed {
+            __http_disarm(self.handle, self.is_tls, 1);
+            self.short_armed = false;
+        }
+        if bounded && self.deadline == 0 {
+            self.short_armed = true;
+        }
+        let mut raw = __http_stream_held(self.rx);
+        let mut hdr_end = if len(raw) > 0 { __http_find_hdr_end(raw) } else { -1 };
         while hdr_end < 0 {
-            let n = __http_stream_fill(self.handle, self.is_tls, self.rx, self.deadline);
+            let n = __http_stream_fill(self.handle, self.is_tls, self.rx, wait);
             if n <= 0 {
-                if n == 0 - 2 || __http_expired(self.deadline) {
+                if n == 0 - 2 || __http_expired(wait) {
+                    if bounded && !__http_expired(self.deadline) {
+                        return;
+                    }
                     self.__timed_out();
                 } else {
                     self.__stop("bad_response", "unparseable response");
@@ -358,6 +438,7 @@ locus __StdHttpBodyReader {
             return;
         }
         self.status = status;
+        self.phase = 2;
         if line_end >= 0 {
             self.headers = text[(line_end + 2)..len(text)];
         }
@@ -497,13 +578,18 @@ fn __http_sse_take(raw: Bytes) -> __StdHttpSseTake {
 /// (an unfinished last event is dropped), else as `chunk()` fails.
 /// `event_within(ms)` waits at most `ms` for the next event and fails with
 /// kind `idle` when none completed, the stream and a partial event kept.
+/// `deferred: true` and `open_within(ms)` as `BodyReader`'s.
 locus __StdHttpSseReader {
     params {
         req: std::http::ClientRequest;
         timeout_ms: Int = 30000;
+        // as `BodyReader`'s: the opening waits for `open_within` or the
+        // first read
+        deferred: Bool = false;
         body: std::http::BodyReader = std::http::BodyReader {
             req: __http_sse_request(self.req),
-            timeout_ms: self.timeout_ms
+            timeout_ms: self.timeout_ms,
+            deferred: self.deferred
         };
         // the stream's text not yet parsed into an event
         rx: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 8192 };
@@ -513,6 +599,13 @@ locus __StdHttpSseReader {
         self.req.headers = "";
         self.req.body = b"";
     }
+    /// Advance a deferred reader's opening for at most `ms`, as
+    /// `BodyReader.open_within`: `true` once the head is read
+    /// (`body.status`, `body.headers`).
+    fn open_within(ms: Int) -> Bool fallible(std::http::HttpError) {
+        return self.body.open_within(ms) or raise;
+    }
+
     /// The next event, as it arrives. Fails with kind `end` once the
     /// body has ended, else with what ended it.
     fn event() -> std::http::SseEvent fallible(std::http::HttpError) {
