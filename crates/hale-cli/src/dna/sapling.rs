@@ -47,6 +47,54 @@ pub(super) fn digest_at(repo: &Path, revision: &str) -> Result<(String, String),
     Ok((commit, format!("sha256:{hex}")))
 }
 
+/// The repository a sapling the toolchain carries names: `toolchain:<path>`,
+/// a tree under the toolchain's embedded nursery (`dna/nursery/<path>`),
+/// with no remote at all.
+pub(super) const EMBEDDED: &str = "toolchain:";
+
+/// The files of the embedded tree at `path` (`saplings/hale`), each with
+/// its path inside the tree.
+pub(super) fn embedded_files(path: &str) -> Vec<(String, String)> {
+    let prefix = format!("dna/nursery/{}/", path.trim_matches('/'));
+    hale_dna::NURSERY_FILES.iter().filter_map(|f| f.path.strip_prefix(prefix.as_str()).map(|rel| (rel.to_string(), f.content.to_string()))).collect()
+}
+
+/// A sapling the toolchain carries, made the organism's own repository at
+/// `store`: its files written, one commit, and the commit's tree checked
+/// against `digest` (the same digest a fetched sapling is pinned by). A
+/// tree that is not the pinned one is refused, the store removed, and
+/// nothing grafted. The commit.
+pub(super) fn embedded_genome(files: &[(String, String)], store: &Path, digest: &str, name: &str) -> Result<String, String> {
+    if files.is_empty() {
+        return Err(format!("the toolchain carries no tree for the sapling `{name}`"));
+    }
+    let _ = std::fs::remove_dir_all(store);
+    for (rel, text) in files {
+        let at = store.join(rel);
+        if let Some(dir) = at.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        std::fs::write(&at, text).map_err(|e| format!("write {}: {e}", at.display()))?;
+    }
+    let git = |args: &[&str]| -> Result<(), String> {
+        let o = Command::new("git").arg("-C").arg(store).args(["-c", "user.name=habitat", "-c", "user.email=habitat@hale-dna", "-c", "commit.gpgsign=false"]).args(args).output().map_err(|e| format!("git: {e}"))?;
+        if o.status.success() {
+            Ok(())
+        } else {
+            Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
+        }
+    };
+    git(&["init", "-q", "-b", "main"])?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-q", "-m", &format!("the {name} organism's genome, from the toolchain's nursery")])?;
+    let (commit, found) = digest_at(store, "HEAD")?;
+    if found != digest {
+        let _ = std::fs::remove_dir_all(store);
+        return Err(format!("the sapling `{name}` the toolchain carries is {found}, not the {digest} its nursery pinned: refused, nothing grafted"));
+    }
+    Ok(commit)
+}
+
 /// The latest body of each `kind` row of the habitat's record, by entity.
 fn latest(rows: &[serde_json::Value], kind: &str) -> BTreeMap<String, serde_json::Value> {
     let mut out = BTreeMap::new();
@@ -191,26 +239,44 @@ pub(super) fn graft_sapling(name: &str, library: bool, pack: bool, sets: &[Strin
         }
     };
     let mut out = Vec::new();
-    if !store.join(".git").is_dir() {
+    // a sapling the toolchain carries: its tree made the organism's own
+    // repository here, with no remote, and its digest checked
+    if let Some(path) = repo.strip_prefix(EMBEDDED) {
+        if nursery != "toolchain" {
+            return Err(format!("the sapling `{name}` names the toolchain's tree but comes from {nursery}: only the toolchain's nursery offers what the toolchain carries"));
+        }
+        if !begun {
+            let commit = embedded_genome(&embedded_files(path), &store, &digest, name)?;
+            let mut kept = pin.clone();
+            kept["commit"] = serde_json::json!(commit);
+            std::fs::write(&checked, format!("{kept}\n")).map_err(|e| format!("write {}: {e}", checked.display()))?;
+            out.push(format!("{:<8}{name} from the toolchain's nursery ({}…), its digest {digest} checked", "made", &commit[..12]));
+        } else {
+            out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the tree its graft checked", "kept"));
+        }
+    } else if !store.join(".git").is_dir() {
         std::fs::create_dir_all(store.parent().unwrap_or(&store)).map_err(|e| format!("create {}: {e}", store.display()))?;
         git(&["clone", "-q", "--no-checkout", &repo, &store.to_string_lossy()], None).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
     } else if !begun {
         git(&["fetch", "-q", "--tags", "--force", "origin"], Some(&store)).map_err(|e| format!("the sapling `{name}` could not be fetched from {repo}: {e}"))?;
     }
     // the digest is checked at every graft that has not begun; one that
-    // began goes on at the revision it was checked at
-    if !begun {
-        let (commit, found) = digest_at(&store, &revision)?;
-        if found != digest {
-            return Err(format!("the sapling `{name}` at {revision} is {found}, not the {digest} its nursery pinned: refused, nothing grafted"));
+    // began goes on at the revision it was checked at (a tree the toolchain
+    // carries was checked as it was made, above)
+    if !repo.starts_with(EMBEDDED) {
+        if !begun {
+            let (commit, found) = digest_at(&store, &revision)?;
+            if found != digest {
+                return Err(format!("the sapling `{name}` at {revision} is {found}, not the {digest} its nursery pinned: refused, nothing grafted"));
+            }
+            git(&["checkout", "-q", "--detach", &commit], Some(&store))?;
+            let mut kept = pin.clone();
+            kept["commit"] = serde_json::json!(commit);
+            std::fs::write(&checked, format!("{kept}\n")).map_err(|e| format!("write {}: {e}", checked.display()))?;
+            out.push(format!("{:<8}{name} at {revision} ({}…), its digest {digest} checked", "fetched", &commit[..12]));
+        } else {
+            out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the revision its graft checked", "kept"));
         }
-        git(&["checkout", "-q", "--detach", &commit], Some(&store))?;
-        let mut kept = pin.clone();
-        kept["commit"] = serde_json::json!(commit);
-        std::fs::write(&checked, format!("{kept}\n")).map_err(|e| format!("write {}: {e}", checked.display()))?;
-        out.push(format!("{:<8}{name} at {revision} ({}…), its digest {digest} checked", "fetched", &commit[..12]));
-    } else {
-        out.push(format!("{:<8}{name} goes on at {revision} ({digest}), the revision its graft checked", "kept"));
     }
     let lineage = serde_json::json!({ "sapling": name, "revision": revision, "digest": digest, "nursery": nursery });
     out.extend(graft_lines(&store, true, library, pack, &Shape { profile: None, remote: None, body: None }, Some(&lineage))?);
@@ -657,29 +723,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// D8: the bundled nursery's `hale` sapling pins the digest of the tree
-    /// checked in at dna/nursery/saplings/hale, so the tree a repository
-    /// is made from is the one the nursery pins (and an edit to the tree
-    /// moves the pin with it).
+    /// The bundled nursery's `hale` sapling is the tree the toolchain
+    /// carries (dna/nursery/saplings/hale, embedded as the packs are), with
+    /// no remote: its pin is the digest of that tree made a repository, so
+    /// the graft's check passes on the tree as shipped (and an edit to the
+    /// tree moves the pin with it).
     #[test]
-    fn the_hale_sapling_pins_its_checked_in_tree() {
-        let dna = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/nursery");
-        let index: toml::Table = std::fs::read_to_string(dna.join("nursery.toml")).unwrap().parse().unwrap();
-        let hale = index["sapling"].as_array().unwrap().iter().find(|s| s["name"].as_str() == Some("hale")).expect("the bundled nursery offers `hale`");
+    fn the_hale_sapling_is_the_embedded_tree() {
+        let n = crate::dna::pack::nursery(None).unwrap();
+        let hale = n.saplings.iter().find(|s| s.name == "hale").expect("the bundled nursery offers `hale`");
+        let path = hale.repo.strip_prefix(EMBEDDED).expect("the `hale` sapling names the toolchain's tree, no remote");
+        let files = embedded_files(path);
+        assert!(files.iter().any(|(rel, _)| rel == "hale.toml") && files.iter().any(|(rel, _)| rel == "main.hl"), "the toolchain carries the tree: {:?}", files.iter().map(|f| &f.0).collect::<Vec<_>>());
         let d = std::env::temp_dir().join(format!("hale-sapling-hale-tree-{}", std::process::id()));
+        let made = embedded_genome(&files, &d, &hale.digest, "hale");
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        for e in std::fs::read_dir(dna.join("saplings/hale")).unwrap().flatten() {
-            std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
-        }
-        let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&d).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success(), "{args:?}");
-        git(&["init", "-q", "-b", "main"]);
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "the hale organism"]);
-        let (_, digest) = digest_at(&d, hale["revision"].as_str().unwrap()).unwrap();
-        let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(Some(digest.as_str()), hale["digest"].as_str(), "the nursery's `hale` digest is the checked-in tree's: update dna/nursery/nursery.toml");
-        assert_eq!(hale["packs"].as_array().unwrap()[0].as_str(), Some("hale-organism"));
+        assert!(made.is_ok(), "the nursery's `hale` digest is the embedded tree's: update dna/nursery/nursery.toml: {made:?}");
+        assert_eq!(hale.packs, vec!["hale-organism".to_string()]);
+    }
+
+    /// A tree the toolchain carries that is not the one pinned (tampered,
+    /// or a pin left behind an edit) is refused, and nothing is left.
+    #[test]
+    fn a_tampered_embedded_tree_is_refused() {
+        let n = crate::dna::pack::nursery(None).unwrap();
+        let hale = n.saplings.iter().find(|s| s.name == "hale").unwrap();
+        let mut files = embedded_files(hale.repo.strip_prefix(EMBEDDED).unwrap());
+        files[0].1.push_str("\n// a line the pin never saw\n");
+        let d = std::env::temp_dir().join(format!("hale-sapling-tampered-{}", std::process::id()));
+        let refused = embedded_genome(&files, &d, &hale.digest, "hale").unwrap_err();
+        assert!(refused.contains("not the") && refused.contains("refused, nothing grafted"), "{refused}");
+        assert!(!d.exists(), "nothing is left of a refused tree");
     }
 }
 

@@ -301,7 +301,18 @@ own store, `<habitat>/saplings/<name>` (cloned once, its tags fetched
 again for a graft that has not begun), its digest is computed from the
 revision's tree and checked against the pin (a mismatch refuses and
 nothing is grafted), and the repository there is grafted as the habitat's
-child (`--attach`'s path). Its packs are proposed to the child's Board on
+child (`--attach`'s path). **A sapling the toolchain carries** names no
+remote: its repository is `toolchain:<path>`, a tree of the toolchain's own
+embedded nursery (`dna/nursery/<path>`, shipped as its packs are), which
+only the toolchain's nursery may offer. Its graft writes that tree into the
+store, makes it the organism's own repository there (one commit, no
+remote), and checks the commit's tree against the same digest a fetched
+sapling is pinned by; a tree that is not the pinned one is refused, the
+store removed, and nothing grafted. Its revision is `embedded`. Like every
+graft, it mirrors the organism's repository to the forge the habitat
+allocates it (the habitat's Forgejo on its own backends, `spec/dna.md`):
+nothing of an organism's own is on GitHub unless its Board allocates
+GitHub later. Its packs are proposed to the child's Board on
 the holes its birth proposed, with the sapling's `set` and the graft's
 `--set` values, each to the packs that take it. The graft's
 `habitat.grafted` row names the `sapling`, `revision`, `digest` and
@@ -310,22 +321,21 @@ checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
 The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit) and **the hale organism** (`hale`). A sapling needs nothing beyond what an attached repository
+commit and fetched from its public repository) and **the hale organism**
+(`hale`, a tree the toolchain carries). A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
 
 **The hale organism** is the organism that works on the Hale toolchain.
-Its genome is its own small repository: the tree checked in at
-`dna/nursery/saplings/hale` (its `hale.toml` with `[dna]`, its main, a
-README). The code it works on is its codebases, other repositories its
-manifest lists, `hale-lang/hale` and `hale-lang/voice`; its positions and
-their mandates are the nursery's `hale-organism` pack, which the sapling
-adopts at graft. It is neither the compiler's repository as a sapling nor
-the habitat's own organism. Its repository is not created yet: the
-nursery's entry names a placeholder url, pinned at `main` by the
-checked-in tree's digest (a test holds the two equal); once the
-repository exists, the tree is pushed there and the entry pinned to the
-commit.
+Its genome is the tree the toolchain carries at `dna/nursery/saplings/hale`
+(its `hale.toml` with `[dna]`, its main, a README), pinned by that tree's
+digest, with no repository of its own anywhere else: `hale habitat graft
+hale` makes it the organism's repository in the habitat and mirrors it to
+the habitat's Forgejo. The code it works on is its codebases, other
+repositories its manifest lists, `hale-lang/hale` and `hale-lang/voice`; its
+positions and their mandates are the nursery's `hale-organism` pack, which
+the sapling adopts at graft. It is neither the compiler's repository as a
+sapling nor the habitat's own organism.
 
 **A genome's codebases attach at its graft.** `[[dna.codebase]]` in its
 `hale.toml` lists them with phase 3's attach fields (`name`, `repo`,

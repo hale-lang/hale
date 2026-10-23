@@ -199,8 +199,10 @@ macro_rules! at {
     };
 }
 
-/// The toolchain's nursery (`dna/nursery`): its index and the packs it
-/// lists, which `hale dna pack` offers when no `--from` names another. Not
+/// The toolchain's nursery (`dna/nursery`): its index, the packs it lists,
+/// which `hale dna pack` offers when no `--from` names another, and the
+/// trees of the saplings it carries itself (`saplings/<name>`, a sapling
+/// whose repository is `toolchain:saplings/<name>`, with no remote). Not
 /// part of the embedded DNA source set (`EMBEDDED_DIRS`): a pack is pinned
 /// by its own digest when it is applied.
 pub const NURSERY_FILES: &[EmbeddedFile] = at![
@@ -212,6 +214,9 @@ pub const NURSERY_FILES: &[EmbeddedFile] = at![
     "dna/nursery/packs/habitat.pack",
     "dna/nursery/packs/small-startup.pack",
     "dna/nursery/packs/standard.pack",
+    "dna/nursery/saplings/hale/README.md",
+    "dna/nursery/saplings/hale/hale.toml",
+    "dna/nursery/saplings/hale/main.hl",
 ];
 
 /// GH #1653: the habitat's genome, which ships with the toolchain as the

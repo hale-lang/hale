@@ -2,13 +2,13 @@
 // sapling (D8).
 //
 // The hale organism is the organism that works on the Hale toolchain: its
-// genome is a small repository of its own (the tree checked in at
-// dna/nursery/saplings/hale), and the code it works on is its codebases,
-// other repositories its manifest lists. The toolchain's nursery offers it
-// as the `hale` sapling, pinned by the tree's digest; until its repository
-// exists the nursery names a placeholder url, which this fixture maps onto a
-// local repository built from that tree. Grafted, the organism is the
-// habitat's child, its manifest's codebases are `codebase.attached` rows of
+// genome is the tree the toolchain carries (dna/nursery/saplings/hale,
+// embedded as the packs are, with no remote), and the code it works on is
+// its codebases, other repositories its manifest lists. The toolchain's
+// nursery offers it as the `hale` sapling, pinned by the tree's digest. The
+// graft makes the genome the organism's own repository in the habitat,
+// checks its digest, and mirrors it to the habitat's Forgejo, the forge the
+// habitat allocates. Grafted, the organism is the habitat's child, its manifest's codebases are `codebase.attached` rows of
 // its record (nothing cloned), each once however many times the graft goes
 // on, and its positions are proposed to its Board. A habitat born with no
 // `--name` is named `local`. The habitat is this test file's own; without
@@ -30,9 +30,6 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     );
 }
 
-// The placeholder url the toolchain's nursery names for the hale organism.
-const PLACEHOLDER: String = "https://github.com/hale-lang/hale-organism";
-
 fn main() {
     if dna::run_tool("docker\ncompose\nversion").code != 0 {
         eprintln("habitat_hale_organism_test: not exercised (docker compose is not on PATH)");
@@ -44,14 +41,6 @@ fn main() {
         );
         return;
     }
-    let source = (
-        if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." }
-    )
-        + "/dna/nursery/saplings/hale";
-    std::test::assert(
-        std::io::fs::file_exists(source + "/hale.toml"),
-        "the hale organism's tree is at " + source + " (HALE_DNA_SOURCE is the checkout)",
-    );
     let scratch = dna::scratch_root("hale-organism");
     dna::reap_on_exit(scratch);
 
@@ -65,28 +54,21 @@ fn main() {
         "a habitat named at no birth is `local`: " + status,
     );
     std::test::assert(
-        std::str::contains(born.stdout, "sapling hale at main (sha256:")
+        std::str::contains(born.stdout, "sapling hale at embedded (sha256:")
             && std::str::contains(born.stdout, "from toolchain"),
         "the toolchain's nursery offers the hale organism, pinned: " + born.stdout,
     );
 
-    // ---- its genome, a repository built from the checked-in tree, where
-    // the placeholder url leads
-    let repo = scratch + "/hale-organism";
-    let made = dna::run_tool(
-        "sh\n-c\nmkdir -p \"$2\" && cp -R \"$1\"/. \"$2\"/ && cd \"$2\" && git init -q -b main && git add -A && git -c user.name=board -c user.email=board@hale-dna commit -q -m 'the hale organism'\nsh\n"
-            + source + "\n" + repo,
-    );
-    std::test::assert_eq_int(made.code, 0, "its repository is built: " + made.stderr);
-    let graft = "env\nGIT_CONFIG_COUNT=1\nGIT_CONFIG_KEY_0=url." + repo
-        + ".insteadOf\nGIT_CONFIG_VALUE_0="
-        + PLACEHOLDER + "\n" + toolchain() + "\nhabitat\ngraft\nhale\n--no-library";
+    // ---- its genome, from the tree the toolchain carries: no checkout, no
+    // remote
+    let graft = toolchain() + "\nhabitat\ngraft\nhale\n--no-library";
     let g = in_dir(scratch, graft);
     std::test::assert(
         g.code == 0
-            && std::str::contains(g.stdout, "fetched hale at main")
+            && std::str::contains(g.stdout, "made    hale from the toolchain's nursery")
             && std::str::contains(g.stdout, "its digest sha256:"),
-        "the hale organism is grafted from its pinned tree: " + g.stdout + g.stderr,
+        "the hale organism is grafted from the tree the toolchain carries: " + g.stdout
+            + g.stderr,
     );
     std::test::assert(
         std::str::contains(
@@ -104,8 +86,42 @@ fn main() {
         "its positions are proposed to its Board: " + g.stdout,
     );
 
-    // ---- its record holds them, and nothing was cloned
+    // ---- its genome is its own repository, with no remote, mirrored to the
+    // habitat's Forgejo
     let organism = dna::local_habitat_dir() + "/saplings/hale";
+    std::test::assert_eq_str(
+        dna::trim_nl(dna::run_tool("git\n-C\n" + organism + "\nremote").stdout),
+        "",
+        "the genome is a repository of the habitat's, with no remote",
+    );
+    let key = dna::allocation_key(organism);
+    let slug = dna::forgejo_user_for("hale", key) + "/hale";
+    let forge = dna::ForgejoForge {
+        address: dna::forgejo_address(),
+        repo: slug,
+        base: "main",
+        token_slot: dna::forgejo_vault(key),
+    };
+    let mut branch = forge.call("GET", "/repos/" + slug + "/branches/main", "");
+    let mut waited = 0;
+    while !branch.ok && waited < 60 {
+        std::time::sleep(500ms);
+        branch = forge.call("GET", "/repos/" + slug + "/branches/main", "");
+        waited = waited + 1;
+    }
+    let mirrored = std::json::find_string_field(
+        std::json::find_field_raw(branch.body, "commit"),
+        "id",
+    );
+    std::test::assert(
+        branch.ok && len(mirrored) > 0
+            && dna::run_tool(
+                "git\n-C\n" + organism + "\nmerge-base\n--is-ancestor\n" + mirrored + "\nHEAD",
+            ).code == 0,
+        "its Forgejo repository mirrors the genome: " + slug + " " + branch.body + branch.why,
+    );
+
+    // ---- its record holds them, and nothing was cloned
     let codebases = in_dir(organism, toolchain() + "\ndna\ncodebase\nlist");
     std::test::assert(
         std::str::contains(codebases.stdout, "codebases: 2")
