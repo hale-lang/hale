@@ -114,11 +114,19 @@
       <section id="placed">
         <h2>placed organisms</h2>
         <table>
-          <thead><tr><th>name</th><th>purpose</th><th>state</th><th>pulse</th><th>allocations</th></tr></thead>
+          <thead><tr><th>name</th><th>purpose</th><th>state</th><th>pulse</th><th>allocations</th><th></th></tr></thead>
           <tbody id="placed-rows"></tbody>
         </table>
         <p id="placed-empty" class="dim" hidden>no organism is grafted</p>
         <p id="organism-outcome" class="outcome" hidden></p>
+        <div id="organism-confirm" class="crossing" hidden>
+          <div class="edge">crossing: remove the organism <span id="organism-name"></span> and everything the habitat holds for it</div>
+          <ul id="organism-plan"></ul>
+          <form id="organism-form" autocomplete="off">
+            <label>type the organism's name to confirm <input id="organism-typed" required></label>
+            <button type="submit">remove</button> <button type="button" id="organism-cancel">cancel</button>
+          </form>
+        </div>
       </section>
       <section id="saplings">
         <h2>saplings</h2>

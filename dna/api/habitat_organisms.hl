@@ -1,0 +1,115 @@
+// dna/api/habitat_organisms.hl — an organism the habitat grafted, removed
+// plan-then-confirm (phase 4 ruling).
+//
+// Two rows of `HeadCommands`, the Board's (`owner`).
+// `Commands::plan_remove_organism`, a read, answers what removing the
+// organism would remove, item by item (one auditor, dna/core/teardown.hl):
+// its record and memory, its genome repository, its Forgejo repository and
+// account, its allocations by host (this machine's and another host's,
+// where what does not answer is named and left), its compose services and
+// projects, its vault slots, its files here, and its rows in the habitat's
+// record, marked removed. `Commands::remove_organism` executes that plan
+// item by item only when its `confirm` is the organism's name typed back
+// and its `digest` the digest of the plan the person saw, refusing without
+// them, on a mismatch, or when the plan changed since (`plan_changed`), and
+// answers each item's outcome. The
+// habitat itself is no organism these remove: `hale habitat down --forget`
+// is its removal. `hale habitat organism remove` is a client of these.
+import "../core" as dna;
+
+type OrganismNamed { name: String = ""; }
+
+type OrganismRemove {
+    name: String = "";
+    confirm: String = "";
+    // the digest of the plan the person saw (`OrganismPlan.digest`): the
+    // removal refuses (`plan_changed`) when the plan is another now
+    digest: String = "";
+}
+
+// What removing an organism would do: the plan (a JSON array of items, as
+// `HostPlan`'s) and the name to type back to confirm it.
+type OrganismPlan {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    plan: String = "[]";
+    confirm: String = "";
+    // what the removal binds the plan by (dna::teardown_digest)
+    digest: String = "";
+}
+
+// An organism's removal as executed: the plan and the report (each item's
+// `what`, `action`, `state`: `done`, `failed` or `left`, and `why`).
+type OrganismRemoval {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    plan: String = "[]";
+    report: String = "[]";
+}
+
+// The organism `name` names, or why it is none the habitat removes this way.
+fn organism_to_remove(root: String, name: String) -> dna::GraftedOrganism {
+    if len(name) == 0 {
+        return dna::GraftedOrganism { code: "invalid_organism", why: "name the organism" };
+    }
+    let own = dna::allocation_key(root);
+    if name == own || name == "habitat" {
+        return dna::GraftedOrganism {
+            code: "not_removable",
+            why: "the habitat itself is removed by `hale habitat down --forget`",
+        };
+    }
+    return dna::grafted_organism(root, name);
+}
+
+fn habitat_organism_plan_remove(root: String, name: String) -> OrganismPlan {
+    let o = organism_to_remove(root, name);
+    if len(o.key) == 0 { return OrganismPlan { code: o.code, why: o.why }; }
+    let plan = "[" + dna::organism_teardown_items(root, o.key, o.body) + "]";
+    return OrganismPlan {
+        ok: true,
+        plan: plan,
+        confirm: std::json::find_string_field(o.body, "name"),
+        digest: dna::teardown_digest(plan),
+    };
+}
+
+fn habitat_organism_remove(root: String, r: OrganismRemove, by: String) -> OrganismRemoval {
+    let o = organism_to_remove(root, r.name);
+    if len(o.key) == 0 { return OrganismRemoval { code: o.code, why: o.why }; }
+    let named = std::json::find_string_field(o.body, "name");
+    let plan = "[" + dna::organism_teardown_items(root, o.key, o.body) + "]";
+    if r.confirm != named {
+        return OrganismRemoval {
+            code: if len(r.confirm) == 0 { "confirm_required" } else { "confirm_mismatch" },
+            why: if len(r.confirm) == 0 {
+                "removing " + named
+                    + " deletes its record and everything the habitat holds for it: its plan is `Commands::plan_remove_organism`, and it is confirmed by typing the organism's name"
+            } else {
+                "`" + r.confirm + "` is not the organism's name, and nothing was removed"
+            },
+            plan: plan,
+        };
+    }
+    // the plan executed is the plan the person saw, or nothing is
+    if r.digest != dna::teardown_digest(plan) {
+        return OrganismRemoval {
+            code: "plan_changed",
+            why: "what removing " + named
+                + " would do changed since its plan was made; nothing was removed: plan it again (`Commands::plan_remove_organism`)",
+            plan: plan,
+        };
+    }
+    let report = dna::teardown_run(root, dna::teardown_in_steps(plan), by);
+    if !dna::teardown_all_done(report) {
+        return OrganismRemoval {
+            code: "partly_removed",
+            why: "the removal stopped at an item that failed; the items after it were left, and removing the organism again plans from what remains",
+            plan: plan,
+            report: report,
+        };
+    }
+    return OrganismRemoval { ok: true, plan: plan, report: report };
+}

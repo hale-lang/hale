@@ -549,7 +549,11 @@ fn grafted_root(root: String, name: String) -> String {
     while i < j.revision() {
         let e = j.read(i);
         if e.kind == "habitat.grafted" && std::json::find_string_field(e.body, "name") == name {
-            key = e.entity;
+            key = if std::json::find_string_field(e.body, "state") == "removed" {
+                ""
+            } else {
+                e.entity
+            };
         }
         i = i + 1;
     }

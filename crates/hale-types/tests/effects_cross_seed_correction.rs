@@ -202,16 +202,16 @@ fn api() {
     // scalars did nothing else, and leave the manifest on both sides.
     pinned(
         "api",
-        644,
-        646,
+        665,
+        667,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         KnowledgeWire::texts  does={alloc}
@@ -223,9 +223,12 @@ fn api() {
         habitat_host_add  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         habitat_host_probe  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_organism_plan_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        habitat_organism_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         host_removal_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         launch_token  does={syscall,block,alloc,stdio}
         observe_row  does={syscall,block,alloc}
+        organism_to_remove  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placed_body  does={env,alloc}
         ",
     );
@@ -248,8 +251,8 @@ fn host() {
     // core's `run_tool` and `ComposeProvider`), so the correction changes them.
     pinned(
         "host",
-        567,
-        574,
+        568,
+        575,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Host::ack_reading  does={publish,alloc}

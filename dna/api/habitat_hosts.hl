@@ -14,8 +14,9 @@
 // shown and confirmed: `Commands::plan_remove_host`, a read, answers what
 // the removal would stop and delete there, allocation by allocation (one
 // auditor, dna/core/teardown.hl), and `Commands::remove_host` executes that
-// plan item by item only when its `confirm` is the host's name typed back,
-// refusing on a mismatch; a removal that fails part way says which items
+// plan item by item only when its `confirm` is the host's name typed back
+// and its `digest` the digest of the plan the person saw, refusing on a
+// mismatch or when the plan changed since (`plan_changed`); a removal that fails part way says which items
 // were done and leaves the rest. Each act is a `habitat.host <name>` row of
 // the habitat's record, written when what it says changed. `hale habitat
 // host add|probe|remove` is a client of these.
@@ -34,6 +35,9 @@ type HostNamed { name: String = ""; }
 type HostRemove {
     name: String = "";
     confirm: String = "";
+    // the digest of the plan the person saw (`HostPlan.digest`): the
+    // removal refuses (`plan_changed`) when the plan is another now
+    digest: String = "";
 }
 
 // What removing a host would do: the plan (a JSON array of items, each
@@ -46,6 +50,8 @@ type HostPlan {
     why: String = "";
     plan: String = "[]";
     confirm: String = "";
+    // what the removal binds the plan by (dna::teardown_digest)
+    digest: String = "";
 }
 
 // A host's removal as executed: the host as its row now states it, the
@@ -231,19 +237,32 @@ fn host_removal_refusal(root: String, name: String) -> HostPlan {
 fn habitat_host_plan_remove(root: String, name: String) -> HostPlan {
     let refused = host_removal_refusal(root, name);
     if !refused.ok { return refused; }
-    let plan = "[" + dna::host_teardown_items(root, name, true) + "]";
+    let plan = "[" + dna::host_teardown_items(root, name, true, "") + "]";
     return HostPlan {
         ok: true,
         plan: plan,
         confirm: if dna::teardown_destroys(plan) { name } else { "" },
+        digest: dna::teardown_digest(plan),
     };
 }
 
 fn habitat_host_remove(root: String, r: HostRemove, by: String) -> HostRemoval {
     let refused = host_removal_refusal(root, r.name);
     if !refused.ok { return HostRemoval { code: refused.code, why: refused.why }; }
-    let plan = "[" + dna::host_teardown_items(root, r.name, true) + "]";
-    if dna::teardown_destroys(plan) && r.confirm != r.name {
+    let plan = "[" + dna::host_teardown_items(root, r.name, true, "") + "]";
+    let destroys = dna::teardown_destroys(plan);
+    // the plan executed is the plan the person saw, or nothing is
+    if (destroys || len(r.digest) > 0) && r.confirm == r.name
+        && r.digest != dna::teardown_digest(plan)
+    {
+        return HostRemoval {
+            code: "plan_changed",
+            why: "what removing " + r.name
+                + " would do changed since its plan was made; nothing was removed: plan it again (`Commands::plan_remove_host`)",
+            plan: plan,
+        };
+    }
+    if destroys && r.confirm != r.name {
         let placed = host_allocations(root, r.name);
         return HostRemoval {
             code: if len(r.confirm) == 0 { "confirm_required" } else { "confirm_mismatch" },

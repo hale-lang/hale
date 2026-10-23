@@ -86,8 +86,8 @@ function reportText(r) {
   return (r.ok ? "" : r.code + ": " + r.why + "\n") + lines.join("\n");
 }
 
-async function removeHost(host, confirm) {
-  const out = await commandsRemoveHost({ endpoint }, { name: host, confirm });
+async function removeHost(host, confirm, digest) {
+  const out = await commandsRemoveHost({ endpoint }, { name: host, confirm, digest });
   if (out.kind !== "result") { outcome(refusedText(out)); return; }
   $("remove-confirm").hidden = true;
   outcome(reportText(out.value));
@@ -101,7 +101,7 @@ async function planRemove(host) {
   if (out.kind !== "result") { outcome(refusedText(out)); return; }
   const p = out.value;
   if (!p.ok) { outcome(p.code + ": " + p.why); return; }
-  if (!p.confirm) { await removeHost(host.name, ""); return; }
+  if (!p.confirm) { await removeHost(host.name, "", p.digest); return; }
   const list = $("remove-plan");
   list.replaceChildren();
   for (const i of parse(p.plan)) {
@@ -112,6 +112,8 @@ async function planRemove(host) {
   $("remove-host").textContent = host.name;
   $("remove-typed").value = "";
   $("remove-confirm").dataset.host = host.name;
+  // the plan shown: the row refuses when what it would do changed since
+  $("remove-confirm").dataset.digest = p.digest;
   $("remove-confirm").hidden = false;
   outcome("");
 }
@@ -192,7 +194,11 @@ $("key-copy").addEventListener("click", async () => {
 $("remove-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   // the row checks the name typed back, and refuses a mismatch
-  await removeHost($("remove-confirm").dataset.host, $("remove-typed").value.trim());
+  await removeHost(
+    $("remove-confirm").dataset.host,
+    $("remove-typed").value.trim(),
+    $("remove-confirm").dataset.digest,
+  );
 });
 
 $("remove-cancel").addEventListener("click", () => { $("remove-confirm").hidden = true; });

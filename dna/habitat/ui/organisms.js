@@ -3,8 +3,10 @@
 // saplings the habitat pins and the nurseries it trusts. A sapling is
 // grafted on a host the person picks (Commands::graft): the row answers at
 // once with the graft's id, and the page follows the graft's log
-// (Commands::graft_log) until it ends, then refreshes. Every call is the generated client's
-// (head-client.js).
+// (Commands::graft_log) until it ends, then refreshes. An organism is
+// removed plan-then-confirm: its plan (Commands::plan_remove_organism) is
+// shown with a field for its name, which Commands::remove_organism checks.
+// Every call is the generated client's (head-client.js).
 import {
   commandsIndex,
   commandsAllocations,
@@ -13,6 +15,8 @@ import {
   commandsHosts,
   commandsGraft,
   commandsGraftLog,
+  commandsPlanRemoveOrganism,
+  commandsRemoveOrganism,
 } from "./head-client.js";
 
 const endpoint = location.origin + "/api/hale/v1/head/surface";
@@ -101,6 +105,45 @@ function grafter(name, hosts) {
   return td;
 }
 
+function itemLine(i) {
+  const measure = i.measure && i.measure !== "-" ? i.measure : "";
+  const rec = i.recoverable && i.recoverable !== "-" ? "recoverable: " + i.recoverable : "";
+  const tail = [measure, rec].filter(Boolean).join("; ");
+  return i.what + (tail ? " (" + tail + ")" : "");
+}
+
+// An organism's removal planned, shown, and waiting for its name.
+async function planRemove(name) {
+  const out = await commandsPlanRemoveOrganism({ endpoint }, { name });
+  if (out.kind !== "result") { outcome(out.refusal ? out.refusal.kind + ": " + out.refusal.reason : ""); return; }
+  const p = out.value;
+  if (!p.ok) { outcome(p.code + ": " + p.why); return; }
+  const list = $("organism-plan");
+  list.replaceChildren();
+  for (const i of parse(p.plan)) {
+    const li = document.createElement("li");
+    li.textContent = itemLine(i);
+    list.append(li);
+  }
+  $("organism-name").textContent = p.confirm;
+  $("organism-typed").value = "";
+  $("organism-confirm").dataset.name = name;
+  // the plan shown: the row refuses when what it would do changed since
+  $("organism-confirm").dataset.digest = p.digest;
+  $("organism-confirm").hidden = false;
+  outcome("");
+}
+
+function remover(name) {
+  const td = document.createElement("td");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = "remove";
+  b.addEventListener("click", () => planRemove(name));
+  td.append(b);
+  return td;
+}
+
 function fill(id, rows) {
   const body = $(id);
   body.replaceChildren();
@@ -140,6 +183,7 @@ export async function refresh() {
     cell(o.state, o.state === "up" ? "up" : ""),
     cell(o.pulse || ""),
     cell(allocs.filter((x) => x.organism === o.name).map((x) => x.allocation).join(" ") || "none"),
+    remover(o.name),
   ]));
   $("placed-empty").hidden = organisms.length > 0;
   fill("sapling-rows", saplings.map((x) => [
@@ -153,3 +197,24 @@ export async function refresh() {
   $("saplings-empty").hidden = saplings.length > 0;
   fill("nursery-rows", nurseries.map((x) => [cell(x.source), cell(x.kind)]));
 }
+
+$("organism-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  // the row checks the name typed back, and refuses a mismatch
+  const out = await commandsRemoveOrganism(
+    { endpoint },
+    {
+      name: $("organism-confirm").dataset.name,
+      confirm: $("organism-typed").value.trim(),
+      digest: $("organism-confirm").dataset.digest,
+    },
+  );
+  if (out.kind !== "result") { outcome(out.refusal ? out.refusal.kind + ": " + out.refusal.reason : ""); return; }
+  const r = out.value;
+  $("organism-confirm").hidden = true;
+  const lines = parse(r.report).map((x) => x.state + ": " + x.what + (x.why ? " (" + x.why + ")" : ""));
+  outcome((r.ok ? "" : r.code + ": " + r.why + "\n") + lines.join("\n"));
+  await refresh();
+});
+
+$("organism-cancel").addEventListener("click", () => { $("organism-confirm").hidden = true; });

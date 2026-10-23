@@ -636,7 +636,7 @@ fn execute_local(i: &Value, name: &str) -> Result<(), String> {
                 .output();
             Ok(())
         }
-        "note-keep" => {
+        "note-keep" | "unreachable" => {
             let path = notes_path();
             std::fs::create_dir_all(PathBuf::from(local_habitat_dir()))
                 .map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
@@ -770,6 +770,20 @@ fn execute(items: &[Value], name: &str) -> bool {
     !failed
 }
 
+/// What a confirmation binds a plan by: each item's group, subject,
+/// action, host, arguments and recoverability, in order (its sizes, counts
+/// and wording left out: a volume grows while the person reads), as the
+/// rows' `dna::teardown_digest` binds theirs.
+fn bound(items: &[Value]) -> Vec<[String; 6]> {
+    items
+        .iter()
+        .map(|i| {
+            ["group", "subject", "action", "host", "args", "recoverable"]
+                .map(|k| s(i, k).to_string())
+        })
+        .collect()
+}
+
 /// The memories started only to read the records, stopped again.
 fn settle(started: &[String]) {
     for id in started {
@@ -814,6 +828,21 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
             typed.trim()
         );
         return ExitCode::from(1);
+    }
+    // the plan executed is the plan the person saw: audited again, and
+    // refused when what it would remove changed while they read it
+    match audit() {
+        Ok(now) if bound(&now.items) == bound(&plan.items) => {}
+        Ok(_) => {
+            settle(&plan.started);
+            eprintln!("hale habitat down --forget: what forgetting the habitat would remove changed since its plan was printed (plan_changed); nothing was removed: run it again to plan from what is there now");
+            return ExitCode::from(1);
+        }
+        Err(why) => {
+            settle(&plan.started);
+            eprintln!("hale habitat down --forget: {why}; nothing was removed");
+            return ExitCode::from(1);
+        }
     }
     println!();
     if execute(&plan.items, &name) {

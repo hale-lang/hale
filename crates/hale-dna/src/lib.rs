@@ -354,6 +354,7 @@ pub const HEAD_FILES: &[EmbeddedFile] = at![
     "dna/api/definition_drafts.hl",
     "dna/api/habitat_brief.hl",
     "dna/api/habitat_hosts.hl",
+    "dna/api/habitat_organisms.hl",
     "dna/api/habitat_placement.hl",
     "dna/api/habitat_rows.hl",
     "dna/api/http.hl",

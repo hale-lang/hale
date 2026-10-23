@@ -10,7 +10,9 @@
 //
 // `hale habitat down --forget --plan` lists every group, each line with its
 // size or count and whether it is recoverable, and changes nothing (the
-// state digest before and after is the same); `--forget` with stdin not a
+// state digest before and after is the same); an organism is removed
+// the same way (`hale habitat organism remove`), what it had on a host that
+// does not answer named and left; `--forget` with stdin not a
 // terminal is refused; a wrong name typed back is refused and changes
 // nothing; a plain `down` stops and removes nothing; the right name removes
 // exactly the plan, on this machine and on the host; and a second `--plan`
@@ -40,6 +42,23 @@ fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
     return in_dir(
         dir,
         "sh\n-c\nprintf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null\nsh\n" + typed + "\n" + line,
+    );
+}
+
+// The shell command line `line` run in `dir` at a terminal: once it prints
+// `prompt`, the shell line `change` runs, and then `typed` is typed at it
+// (what changes while a person reads a plan).
+fn at_terminal_after(
+    dir: String,
+    typed: String,
+    line: String,
+    prompt: String,
+    change: String
+) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\no=$(mktemp) && n=0 && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s\nsh\n"
+            + typed + "\n" + line + "\n" + prompt + "\n" + change,
     );
 }
 
@@ -169,6 +188,26 @@ fn main() {
         "an organism is grafted: " + grafted.stdout + grafted.stderr,
     );
     let tkey = dna::allocation_key(scratch + "/tenant");
+    let doomed = in_dir(scratch, toolchain() + "\nhabitat\ngraft\ndoomed\n--no-library\n--no-pack");
+    std::test::assert(
+        doomed.code == 0,
+        "a second organism is grafted: " + doomed.stdout + doomed.stderr,
+    );
+    let dkey = dna::allocation_key(scratch + "/doomed");
+    // a third whose forge is GitHub, its token a slot a person supplied
+    let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--no-library\n--no-pack");
+    std::test::assert(
+        keeper.code == 0,
+        "a third organism is grafted: " + keeper.stdout + keeper.stderr,
+    );
+    let github = in_dir(
+        scratch,
+        toolchain()
+            + "\nhabitat\nforge\nkeeper\ngithub\n--repo\nexample/keeper\n--key-vault\ngh-keeper-token\n--no-head",
+    );
+    std::test::assert(github.code == 0, "its forge is GitHub's: " + github.stdout + github.stderr);
+    let vault_dir = std::secret::vault_local_dir();
+    std::io::fs::write_file(vault_dir + "/gh-keeper-token", "supplied-by-a-person\n") or discard;
 
     // ---- a host: the fixture's sshd, the habitat's key authorized there,
     // and an allocation applied over SSH
@@ -236,6 +275,119 @@ fn main() {
         placed.ok,
         "the allocation is a row of the habitat's record: " + placed.error,
     );
+    // a host that does not answer (ready once, nothing listens there now),
+    // with an allocation of the habitat's and one of the second organism's
+    // placed on it
+    let gone_port = dna::free_port(5);
+    let rack = dna::Host {
+        name: "rack-c.lan",
+        provider: "ssh",
+        state: "ready",
+        offers: "compose",
+        address: "127.0.0.1",
+        port: gone_port,
+        user: "ops",
+        host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIInventedInventedInventedInventedInventedInv",
+        fingerprint: "SHA256:invented",
+    };
+    std::test::assert(
+        j.append(j.revision(), "habitat.host", rack.name, dna::host_row_body(rack)).ok,
+        "the unanswering host's row landed",
+    );
+    std::test::assert(
+        j.append(
+            j.revision(),
+            "habitat.allocated",
+            key + "/probe2",
+            "{\"organism\":\"" + key
+                + "\",\"role\":\"probe2\",\"service\":\"probe2\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+        ).ok
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                dkey + "/probe",
+                "{\"organism\":\"" + dkey
+                    + "\",\"role\":\"probe\",\"service\":\"probe\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+            ).ok,
+        "the allocations placed there landed",
+    );
+
+    // ---- an organism removed, plan-then-confirm: its record and memory,
+    // genome, Forgejo account, allocations by host (the unanswering host's
+    // named and left), compose services, vault slots and rows
+    let oplan = in_dir(scratch, toolchain() + "\nhabitat\norganism\nremove\ndoomed\n--plan");
+    let op = oplan.stdout;
+    std::test::assert(
+        oplan.code == 0
+            && std::str::contains(op, "the plan to remove the organism doomed")
+            && std::str::contains(op, "its record and memory\n")
+            && std::str::contains(
+                op,
+                "its record, in its memory (memory-" + dkey + "), its volume ",
+            )
+            && std::str::contains(
+                op,
+                "its genome repository\n  - its genome repository " + scratch + "/doomed",
+            )
+            && std::str::contains(op, "its Forgejo account doomed-" + dkey)
+            && std::str::contains(
+                op,
+                dkey + "/nerves: nerves (nerves-" + dkey + ") on this machine",
+            )
+            && std::str::contains(op, "its compose services and projects\n")
+            && std::str::contains(op, "its vault slots (names only)\n  - its slots: ")
+            && std::str::contains(
+                op,
+                "unreachable: left on rack-c.lan, cannot be removed from here (not recoverable from the habitat): "
+                    + dkey + "/probe (probe)",
+            )
+            && std::str::contains(op, "marked removed in the habitat's record")
+            && !std::str::contains(op, "memory-" + tkey),
+        "the organism's plan lists what is its alone: " + op + oplan.stderr,
+    );
+    let held_before = state(home, true);
+    let opiped = in_dir(
+        scratch,
+        "sh\n-c\nexec \"$1\" habitat organism remove doomed </dev/null\nsh\n" + toolchain(),
+    );
+    std::test::assert(
+        opiped.code == 2 && std::str::contains(opiped.stderr, "stdin is not a terminal"),
+        "an organism's removal off a terminal is refused: " + opiped.stdout + opiped.stderr,
+    );
+    let owrong = at_terminal(scratch, "tenant", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        owrong.code != 0 && std::str::contains(owrong.stdout, "(confirm_mismatch)"),
+        "a name that is not the organism's is refused: " + owrong.stdout + owrong.stderr,
+    );
+    std::test::assert_eq_str(state(home, true), held_before, "and changes nothing");
+    // what the plan would remove changes while the person reads it (a slot
+    // of the organism's appears): the name typed back is refused
+    let ochanged = at_terminal_after(
+        scratch,
+        "doomed",
+        toolchain() + " habitat organism remove doomed",
+        "type the organism",
+        "touch '" + vault_dir + "/extra-" + dkey + "'",
+    );
+    std::test::assert(
+        ochanged.code != 0 && std::str::contains(ochanged.stdout, "(plan_changed)")
+            && std::str::contains(state(home, false), "memory-" + dkey),
+        "a plan that changed before its confirmation is refused, nothing removed: "
+            + ochanged.stdout + ochanged.stderr,
+    );
+    let removed = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        removed.code == 0 && std::str::contains(removed.stdout, "the organism doomed is removed")
+            && std::str::contains(removed.stdout, "done      unreachable: left on rack-c.lan")
+            && !std::str::contains(removed.stdout, "FAILED"),
+        "the organism's name removes it, naming what is left on the host that does not answer: "
+            + removed.stdout + removed.stderr,
+    );
+    let held_after = state(home, false);
+    std::test::assert(
+        !std::str::contains(held_after, dkey) && std::str::contains(held_after, "memory-" + tkey),
+        "its volumes, containers and slots are gone, the other organism's kept: " + held_after,
+    );
 
     // ---- the plan: every group, each line with its size or count and
     // whether it is recoverable, and nothing changed
@@ -247,7 +399,18 @@ fn main() {
             && std::str::contains(p, "the plan to forget the habitat `" + name + "`")
             && std::str::contains(p, "the habitat's record and memory\n")
             && std::str::contains(p, "the habitat's record " + key + "…: ")
-            && std::str::contains(p, "1 organism grafted")
+            && std::str::contains(p, "2 organisms grafted")
+            && std::str::contains(p, "gh-keeper-token")
+            && std::str::contains(
+                p,
+                "(credentials a person supplied, which the habitat did not mint)",
+            )
+            && !std::str::contains(p, "doomed")
+            && std::str::contains(
+                p,
+                "unreachable: left on rack-c.lan, cannot be removed from here (not recoverable from the habitat): "
+                    + key + "/probe2",
+            )
             && std::str::contains(p, "the newest row at ")
             && std::str::contains(p, "the grafted organisms\n  tenant (" + tkey + "…)")
             && std::str::contains(p, "its record, in its memory (memory-" + tkey + ")")
@@ -303,6 +466,28 @@ fn main() {
     );
     std::test::assert_eq_str(state(home, false), kept, "a plain down removes nothing");
 
+    // ---- what forgetting would remove changes while the person reads the
+    // plan (a volume of the habitat's project appears): refused
+    let project = dna::local_habitat_project();
+    let fchanged = at_terminal_after(
+        scratch,
+        name,
+        toolchain() + " habitat down --forget",
+        "type the habitat",
+        "docker volume create --label com.docker.compose.project=" + project + " " + project
+            + "_extra >/dev/null",
+    );
+    std::test::assert(
+        fchanged.code != 0 && std::str::contains(fchanged.stdout, "(plan_changed)")
+            && std::str::contains(fchanged.stdout, "nothing was removed"),
+        "a forget whose plan changed before its confirmation is refused: " + fchanged.stdout
+            + fchanged.stderr,
+    );
+    std::test::assert(
+        std::str::contains(state(home, false), "memory-" + key),
+        "and nothing was removed",
+    );
+
     // ---- the right name: exactly the plan, here and on the host
     let forgot = at_terminal(scratch, name, toolchain() + " habitat down --forget");
     std::test::assert(
@@ -316,6 +501,7 @@ fn main() {
         std::str::contains(after, "volumes:\ncontainers:\n")
             && !std::str::contains(after, "forgejo-admin")
             && !std::str::contains(after, "ssh-habitat-")
+            && std::str::contains(after, "gh-keeper-token")
             && !std::str::contains(after, "genome")
             && std::str::contains(after, "forgotten-notes.jsonl")
             && std::str::contains(after, "remote:\nrows: "),
@@ -329,10 +515,13 @@ fn main() {
     // ---- a second plan: nothing but the line the habitat cannot remove
     let again = in_dir(scratch, toolchain() + "\nhabitat\ndown\n--forget\n--plan");
     std::test::assert(
-        again.code == 0 && std::str::contains(again.stdout, "1 item(s)")
+        again.code == 0 && std::str::contains(again.stdout, "4 item(s)")
             && std::str::contains(again.stdout, "noted when the habitat was forgotten")
-            && std::str::contains(again.stdout, "authorized_keys"),
-        "a second plan holds the authorized key line alone: " + again.stdout + again.stderr,
+            && std::str::contains(again.stdout, "hale@localhost:~/.ssh/authorized_keys")
+            && std::str::contains(again.stdout, "ops@rack-c.lan:~/.ssh/authorized_keys")
+            && std::str::contains(again.stdout, "unreachable: left on rack-c.lan"),
+        "a second plan holds only what the habitat could not remove: the authorized key lines and what is left on the host that did not answer: "
+            + again.stdout + again.stderr,
     );
 
     dna::run_tool(compose + "\ndown\n-v");

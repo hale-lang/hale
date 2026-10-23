@@ -47,6 +47,7 @@ pub(crate) fn usage_text() -> &'static str {
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
        hale habitat host remove <name> [--plan]
+       hale habitat organism remove <name> [--plan]
        hale habitat brief
        hale habitat status
        hale habitat down [--forget [--plan]]
@@ -201,6 +202,19 @@ host remove <name>   remove it, planned first: the plan lists each allocation
                      habitat's head (Commands::add_host, ::probe_host,
                      ::plan_remove_host, ::remove_host): its body must be
                      up.
+organism remove <name>
+                     remove an organism the habitat grafted, planned first:
+                     its record and memory, its genome repository (the
+                     habitat's clone of a sapling; a checkout of the
+                     person's is kept), its Forgejo repository and account,
+                     its allocations by host, its compose services and
+                     projects, its vault slots (by name) and its files
+                     here, and its rows in the habitat's record marked
+                     removed. Nothing is touched until its name is typed
+                     back at a terminal; --plan prints the plan and exits.
+                     The head's Commands::plan_remove_organism and
+                     ::remove_organism. The habitat itself is removed by
+                     `down --forget`.
 brief                the Board's hat as a prompt, with the habitat's live
                      state: its hosts, its allocations and their pulse, its
                      organisms, its saplings, and what waits for the Board.
@@ -288,6 +302,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
         Some("nursery") => sapling::nursery_cmd(&args[1..]),
         Some("host") => host(&args[1..]),
+        Some("organism") => organism(&args[1..]),
         Some("brief") if args.len() == 1 => brief(),
         Some("place") => sapling::place_cmd(&args[1..]),
         Some("model-map") => sapling::model_map_cmd(&args[1..], false),
@@ -411,6 +426,94 @@ fn host(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `hale habitat organism remove <name> [--plan]`: the organism's removal,
+/// planned (`Commands::plan_remove_organism`), printed, and confirmed by its
+/// name typed back at a terminal, which `Commands::remove_organism` checks
+/// before it executes the plan item by item. `--plan` prints it and exits.
+fn organism(args: &[String]) -> ExitCode {
+    use std::io::{BufRead, IsTerminal, Write};
+    let usage = "usage: hale habitat organism remove <name> [--plan]";
+    let (name, plan_only) = match (args.first().map(String::as_str), args.get(1), args.get(2).map(String::as_str), args.len()) {
+        (Some("remove"), Some(n), None, 2) if !n.starts_with('-') => (n.clone(), false),
+        (Some("remove"), Some(n), Some("--plan"), 3) if !n.starts_with('-') => (n.clone(), true),
+        _ => {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    if !plan_only && !std::io::stdin().is_terminal() {
+        eprintln!("hale habitat organism remove {name}: stdin is not a terminal; removing an organism deletes its record and everything the habitat holds for it, and is confirmed only by typing its name at a terminal (`--plan` prints the plan)");
+        return ExitCode::from(2);
+    }
+    let planned = match host_call("Commands::plan_remove_organism", serde_json::json!({ "name": name })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if planned["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat organism remove {name}: {} ({})", planned["why"].as_str().unwrap_or(""), planned["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    let confirm = planned["confirm"].as_str().unwrap_or("").to_string();
+    println!("the plan to remove the organism {confirm} (nothing is touched until its name is typed back):");
+    for (group, heading) in [("record", "its record and memory"), ("genome", "its genome repository"), ("forge", "its Forgejo repository and account"), ("allocations", "its allocations"), ("compose", "its compose services and projects"), ("vault", "its vault slots (names only)"), ("remote", "on the hosts, over SSH")] {
+        let of: Vec<&serde_json::Value> = items.iter().filter(|i| i["group"] == group).collect();
+        if of.is_empty() {
+            continue;
+        }
+        println!();
+        println!("{heading}");
+        for i in of {
+            println!("  - {}", plan_line(i));
+        }
+    }
+    if plan_only {
+        return ExitCode::SUCCESS;
+    }
+    print!("\ntype the organism's name ({confirm}) to remove it and all of the above: ");
+    let _ = std::io::stdout().flush();
+    let mut typed = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut typed);
+    let v = match host_call("Commands::remove_organism", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    print_report(&v);
+    if v["ok"] != serde_json::json!(true) {
+        eprintln!("hale habitat organism remove {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
+        return ExitCode::from(1);
+    }
+    println!("the organism {confirm} is removed");
+    ExitCode::SUCCESS
+}
+
+/// A plan's item as a line: what it is, its size or count, and whether it
+/// is recoverable.
+fn plan_line(i: &serde_json::Value) -> String {
+    let field = |k: &str| i[k].as_str().unwrap_or("").to_string();
+    let tail = match (field("measure").as_str(), field("recoverable").as_str()) {
+        ("" | "-", "" | "-") => String::new(),
+        ("" | "-", r) => format!(" (recoverable: {r})"),
+        (m, "" | "-") => format!(" ({m})"),
+        (m, r) => format!(" ({m}; recoverable: {r})"),
+    };
+    format!("{}{tail}", field("what"))
+}
+
+/// A removal's report, an item a line: done, failed (and why) or not done.
+fn print_report(v: &serde_json::Value) {
+    let report: Vec<serde_json::Value> = v["report"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
+    for r in &report {
+        let shown = match r["state"].as_str().unwrap_or("") {
+            "done" => "done",
+            "failed" => "FAILED",
+            _ => "not done",
+        };
+        let why = r["why"].as_str().filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default();
+        println!("{shown:<10}{}{why}", r["what"].as_str().unwrap_or(""));
+    }
+}
+
 /// `member` of the habitat head's commands called over its socket with
 /// `payload`: the value it answered, or the exit status after saying why
 /// there is none.
@@ -454,14 +557,7 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
     let items: Vec<serde_json::Value> = planned["plan"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
     println!("the plan to remove the host {name}:");
     for i in &items {
-        let field = |k: &str| i[k].as_str().unwrap_or("").to_string();
-        let tail = match (field("measure").as_str(), field("recoverable").as_str()) {
-            ("" | "-", "" | "-") => String::new(),
-            ("" | "-", r) => format!(" (recoverable: {r})"),
-            (m, "" | "-") => format!(" ({m})"),
-            (m, r) => format!(" ({m}; recoverable: {r})"),
-        };
-        println!("  - {}{tail}", field("what"));
+        println!("  - {}", plan_line(i));
     }
     if plan_only {
         return ExitCode::SUCCESS;
@@ -477,21 +573,11 @@ fn host_remove(name: &str, plan_only: bool) -> ExitCode {
         let _ = std::io::stdout().flush();
         let _ = std::io::stdin().lock().read_line(&mut typed);
     }
-    let v = match host_call("Commands::remove_host", serde_json::json!({ "name": name, "confirm": typed.trim() })) {
+    let v = match host_call("Commands::remove_host", serde_json::json!({ "name": name, "confirm": typed.trim(), "digest": planned["digest"] })) {
         Ok(v) => v,
         Err(code) => return code,
     };
-    let report: Vec<serde_json::Value> = v["report"].as_str().and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
-    for r in &report {
-        let state = r["state"].as_str().unwrap_or("");
-        let shown = match state {
-            "done" => "done",
-            "failed" => "FAILED",
-            _ => "not done",
-        };
-        let why = r["why"].as_str().filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default();
-        println!("{shown:<10}{}{why}", r["what"].as_str().unwrap_or(""));
-    }
+    print_report(&v);
     if v["ok"] != serde_json::json!(true) {
         eprintln!("hale habitat host remove {name}: {} ({})", v["why"].as_str().unwrap_or(""), v["code"].as_str().unwrap_or(""));
         return ExitCode::from(1);
@@ -785,6 +871,18 @@ fn recorded_allocations() -> Option<Vec<(String, serde_json::Value)>> {
         }
         let Some((key, role)) = r["entity"].as_str().and_then(|e| e.split_once('/')) else { continue };
         let body: serde_json::Value = r["body"].as_str().and_then(|b| serde_json::from_str(b).ok()).unwrap_or_else(|| r["body"].clone());
+        // an organism removed: its allocations are the record's history alone
+        if kind == "habitat.allocated" && body["state"] == "removed" {
+            if let Some(row) = by.get_mut(key) {
+                if let Some(roles) = row["roles"].as_object_mut() {
+                    roles.remove(role);
+                }
+                if row["roles"].as_object().is_some_and(|r| r.is_empty()) {
+                    by.remove(key);
+                }
+            }
+            continue;
+        }
         let row = by.entry(key.to_string()).or_insert_with(|| serde_json::json!({ "roles": {} }));
         if kind == "habitat.allocated" {
             row["organism"] = body["organism"].clone();

@@ -78,6 +78,10 @@ fn forget_organism_slots(root: String, taken: String) -> ForgetSlots {
 // The slots an allocation row names (its `vault` array), added to `list`.
 @bounded_by(body)
 fn forget_row_slots(list: String, body: String, taken: String) -> String {
+    // a forge the Board allocated with a credential a person supplied (a
+    // GitHub token's slot, a `--key-vault` slot) names a slot the habitat
+    // never minted: it is kept (`forget_supplied`)
+    if forget_supplies(body) { return list; }
     let mut out = list;
     let mut it = std::json::array_first(std::json::find_field_raw(body, "vault"));
     while !it.done {
@@ -87,6 +91,29 @@ fn forget_row_slots(list: String, body: String, taken: String) -> String {
     }
     let kv = std::json::find_string_field(body, "key_vault");
     return forget_slot(out, kv, taken);
+}
+
+// Whether the allocation row `body` names a credential a person supplied:
+// a forge row of any provider but the habitat's own Forgejo, whose token
+// the habitat mints.
+fn forget_supplies(body: String) -> Bool {
+    return std::json::find_string_field(body, "role") == "forge"
+        && std::json::find_string_field(body, "provider") != "forgejo";
+}
+
+// The slots a row names that a person supplied, a line each ("" for none).
+@bounded_by(body)
+fn forget_supplied(body: String) -> String {
+    if !forget_supplies(body) { return ""; }
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "vault"));
+    while !it.done {
+        let s = std::json::find_string_field("{\"s\":" + it.element + "}", "s");
+        if len(s) > 0 { out = out + s + "\n"; }
+        it = std::json::array_next(it);
+    }
+    let kv = std::json::find_string_field(body, "key_vault");
+    return out + (if len(kv) > 0 { kv + "\n" } else { "" });
 }
 
 fn forget_lines_joined(lines: String) -> String {
@@ -217,22 +244,18 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
     let mut items = "";
 
     // ---- the habitat's record and memory
-    let mut grafted = "";
-    let mut organisms = 0;
+    // the organisms it grafted and has not removed, a line each
+    let mut grafted = "\n" + dna::teardown_latest(root, "habitat.grafted");
+    let organisms = dna::teardown_count(grafted, "\t");
     let mut hosts = "";
     let mut i = 0;
     while i < n {
         let e = j.read(i);
         i = i + 1;
-        if e.kind == "habitat.grafted" && !std::str::contains(grafted, "\n" + e.entity + "\t") {
-            organisms = organisms + 1;
-            grafted = grafted + "\n" + e.entity + "\t" + e.body;
-        }
         if e.kind == "habitat.host" && !std::str::contains(" " + hosts, " " + e.entity + " ") {
             hosts = hosts + e.entity + " ";
         }
     }
-    grafted = grafted + "\n";
     let newest = if operator { "" } else { forget_newest_row(key, id) };
     let summary = "the habitat's record " + key + "…: " + dna::teardown_plural(n, "row", "rows")
         + ", " + dna::teardown_plural(organisms, "organism", "organisms") + " grafted"
@@ -379,11 +402,9 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 let aline = arest[0..anl];
                 arest = arest[(anl + 1)..len(arest)];
                 if std::str::starts_with(aline, child + "/") {
-                    mine = forget_row_slots(
-                        mine,
-                        aline[(std::str::index_of(aline, "\t") + 1)..len(aline)],
-                        taken,
-                    );
+                    let abody = aline[(std::str::index_of(aline, "\t") + 1)..len(aline)];
+                    mine = forget_row_slots(mine, abody, taken);
+                    kept_slots = kept_slots + forget_supplied(abody);
                 }
             }
             mine = forget_slot(mine, dna::forgejo_vault(child), taken);
@@ -406,11 +427,9 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
             let aline = arest[0..anl];
             arest = arest[(anl + 1)..len(arest)];
             if std::str::starts_with(aline, key + "/") {
-                mine = forget_row_slots(
-                    mine,
-                    aline[(std::str::index_of(aline, "\t") + 1)..len(aline)],
-                    taken,
-                );
+                let abody = aline[(std::str::index_of(aline, "\t") + 1)..len(aline)];
+                mine = forget_row_slots(mine, abody, taken);
+                kept_slots = kept_slots + forget_supplied(abody);
             }
         }
         mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, taken);
@@ -437,7 +456,8 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                 items,
                 dna::teardown_item(
                     "vault", "",
-                    "kept: " + forget_lines_joined(kept) + " (values a person supplies)",
+                    "kept: " + forget_lines_joined(kept)
+                        + " (credentials a person supplied, which the habitat did not mint)",
                     dna::teardown_plural(forget_line_count(kept), "slot", "slots"), "-", "note",
                     "", "", FORGET_STEP_COVERED,
                 ),
@@ -508,11 +528,11 @@ fn habitat_forget_plan_verb(root: String) -> Answer {
                     + h.state + ", " + h.fingerprint
                     + "): its entry and the host key kept for it, removed with the record",
                 "1 row", "yes: `hale habitat host add " + name + "` adds it again", "covered",
-                "", "", FORGET_STEP_COVERED,
+                name, dna::teardown_host_said(h), FORGET_STEP_COVERED,
             ),
         );
         items = dna::teardown_more(items, dna::host_key_note(root, h, "note-keep"));
-        remote = dna::teardown_more(remote, dna::host_teardown_items(root, name, false));
+        remote = dna::teardown_more(remote, dna::host_teardown_items(root, name, false, ""));
     }
     items = dna::teardown_more(items, remote);
     return answer("[" + items + "]\n");
