@@ -405,6 +405,24 @@ fn main() {
         "a plan that changed before its confirmation is refused, nothing removed: "
             + ochanged.stdout + ochanged.stderr,
     );
+    // a repository added to its Forgejo account while the person reads the
+    // plan: refused, the account and its repositories bound by id
+    let forge_port = dna::trim_nl(text_of(dna::local_habitat_dir() + "/forge/port"));
+    let rchanged = at_terminal_after(
+        scratch,
+        "doomed",
+        toolchain() + " habitat organism remove doomed",
+        "type the organism",
+        "curl -s -o /dev/null -X POST -H \"Authorization: token $(cat '" + vault_dir + "/forgejo-"
+            + dkey
+            + "')\" -H 'Content-Type: application/json' -d '{\"name\": \"late\"}' http://127.0.0.1:"
+            + forge_port + "/api/v1/user/repos",
+    );
+    std::test::assert(
+        rchanged.code != 0 && std::str::contains(rchanged.stdout, "(plan_changed)"),
+        "a repository added before the confirmation is refused: " + rchanged.stdout
+            + rchanged.stderr,
+    );
     let removed = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
     std::test::assert(
         removed.code == 0 && std::str::contains(removed.stdout, "the organism doomed is removed")
@@ -413,6 +431,15 @@ fn main() {
         "the organism's name removes it, naming what is left on the host that does not answer: "
             + removed.stdout + removed.stderr,
     );
+    std::test::assert(
+        std::str::contains(removed.stdout, "doomed-" + dkey + "/late (id "),
+        "planned again, the plan names the repository by its id: " + removed.stdout,
+    );
+    let account = dna::run_tool(
+        "curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\nhttp://127.0.0.1:" + forge_port
+            + "/api/v1/users/doomed-" + dkey,
+    ).stdout;
+    std::test::assert_eq_str(account, "404", "its Forgejo account is gone");
     let held_after = state(home, false);
     std::test::assert(
         !std::str::contains(held_after, dkey) && std::str::contains(held_after, "memory-" + tkey),

@@ -741,14 +741,46 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         return teardown_sh("rm -rf -- '" + first + "'");
     }
     if action == "forgejo-user-rm" {
+        // exactly the audited repositories, by id, then the account by id
         if !teardown_word(first) { return "`" + first + "` is no account's name"; }
+        let fkey = teardown_arg(args, 1);
+        let audited = teardown_after(args, 2);
+        let uid = std::str::replace(teardown_arg(args, 2), "id:", "");
+        let now = forgejo_held(fkey);
+        if !now.ok { return "the habitat's Forgejo did not answer for " + first + ": " + now.why; }
+        if "id:" + now.id + "\n" + now.repos != audited
+            + (if std::str::ends_with(audited, "\n") { "" } else { "\n" })
+        {
+            return "plan_changed: the account " + first
+                + " or its repositories changed since the plan; nothing of it was deleted";
+        }
+        let api = ForgejoApi { address: forgejo_address(), token_slot: forgejo_vault(fkey) };
+        let mut rest = now.repos;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            // `r:<id>:<owner/name>`, checked by id before it is deleted
+            let tail = line[2..len(line)];
+            let colon = std::str::index_of(tail, ":");
+            let rid = tail[0..colon];
+            let full = tail[(colon + 1)..len(tail)];
+            let seen = api.call("GET", "/repositories/" + rid, "");
+            if seen.status == 404 { continue; }
+            if std::json::find_string_field(seen.body, "full_name") != full {
+                return "plan_changed: the repository " + rid + " is not " + full + " now";
+            }
+            let gone = api.call("DELETE", "/repos/" + full, "");
+            if !gone.ok && gone.status != 404 { return "the repository " + full + ": " + gone.why; }
+        }
+        if !teardown_word(uid) { return "`" + uid + "` is no account's id"; }
         let r = run_tool(
             forgejo_compose()
-                + "\nexec\n-T\nforge\nsh\n-c\nsu-exec git forgejo admin user delete --purge --username '"
-                + first + "'",
+                + "\nexec\n-T\nforge\nsh\n-c\nsu-exec git forgejo admin user delete --id '" + uid
+                + "'",
         );
         if r.code == 0 || std::str::contains(r.stderr + r.stdout, "does not exist") { return ""; }
-        return "the habitat's Forgejo did not delete " + first + ": "
+        return "the habitat's Forgejo did not delete " + first + " (id " + uid + "): "
             + trim_nl(r.stderr + r.stdout);
     }
     if action == "organism-removed" { return organism_removed_rows(root, first, by); }
@@ -1042,16 +1074,34 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
     if fp == "forgejo" && len(repo) > 0 {
         let slash = std::str::index_of(repo, "/");
         let user = if slash > 0 { repo[0..slash] } else { repo };
-        items = teardown_more(
-            items,
-            teardown_item(
-                "forge", subject,
-                "its Forgejo account " + user + " and its repository " + repo
-                    + ", with every pull request there",
-                "1 account, 1 repository", "no: they are deleted",
-                "forgejo-user-rm", "", user, 55,
-            ),
-        );
+        // the account and its repositories as Forgejo answers them, by id:
+        // what is deleted, and nothing added since
+        let held = forgejo_held(key);
+        if held.ok {
+            let n = teardown_count("\n" + held.repos, "\nr:");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its Forgejo account " + user + " (id " + held.id + ") and its repositories "
+                        + forgejo_repo_names(held.repos) + ", with every pull request there",
+                    "1 account, " + teardown_plural(n, "repository", "repositories"),
+                    "no: they are deleted",
+                    "forgejo-user-rm", "",
+                    user + "\n" + key + "\nid:" + held.id + "\n" + trim_nl(held.repos), 55,
+                ),
+            );
+        } else {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its Forgejo account " + user + " could not be read (" + held.why
+                        + "): it is left in the habitat's Forgejo, which forgetting the habitat removes",
+                    "unknown", "-", "note", "", "", 85,
+                ),
+            );
+        }
     } else if len(repo) > 0 {
         items = teardown_more(
             items,
@@ -1271,4 +1321,75 @@ fn local_project_lines(project: String) -> String {
             + label,
     );
     return if r.code == 0 { r.stdout } else { "" };
+}
+
+// The organism keyed `key`'s Forgejo account as Forgejo answers it, asked
+// with its own token: its id and its repositories, `r:<id>:<owner/name>` a
+// line, sorted.
+type ForgejoHeld {
+    ok: Bool = false;
+    id: String = "";
+    repos: String = "";
+    why: String = "";
+}
+
+@bounded_by(key)
+fn forgejo_held(key: String) -> ForgejoHeld {
+    let api = ForgejoApi { address: forgejo_address(), token_slot: forgejo_vault(key) };
+    let me = api.call("GET", "/user", "");
+    if !me.ok { return ForgejoHeld { why: me.why }; }
+    let listed = api.call("GET", "/user/repos?limit=50", "");
+    if !listed.ok { return ForgejoHeld { why: listed.why }; }
+    let mut lines = "";
+    let mut it = std::json::array_first(listed.body);
+    while !it.done {
+        lines = lines + "r:" + to_string(std::json::find_int_field(it.element, "id")) + ":"
+            + std::json::find_string_field(it.element, "full_name") + "\n";
+        it = std::json::array_next(it);
+    }
+    return ForgejoHeld {
+        ok: true,
+        id: to_string(std::json::find_int_field(me.body, "id")),
+        repos: teardown_sorted(lines),
+    };
+}
+
+// The owner/name of each `r:<id>:<owner/name>` line, comma-separated.
+@bounded_by(repos)
+fn forgejo_repo_names(repos: String) -> String {
+    let mut out = "";
+    let mut rest = repos;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tail = line[2..len(line)];
+        let colon = std::str::index_of(tail, ":");
+        out = out + (if len(out) > 0 { ", " } else { "" }) + tail[(colon + 1)..len(tail)] + " (id "
+            + tail[0..colon] + ")";
+    }
+    return if len(out) > 0 { out } else { "(none)" };
+}
+
+// The newline-terminated `lines`, sorted.
+@bounded_by(lines)
+fn teardown_sorted(lines: String) -> String {
+    let mut rest = lines;
+    let mut out = "";
+    while len(rest) > 0 {
+        // the least line left, taken out once
+        let mut least = "";
+        let mut found = false;
+        let mut scan = rest;
+        while len(scan) > 0 {
+            let nl = std::str::index_of(scan, "\n");
+            let l = scan[0..nl];
+            scan = scan[(nl + 1)..len(scan)];
+            if !found || l < least { least = l; found = true; }
+        }
+        out = out + least + "\n";
+        let at = std::str::index_of("\n" + rest, "\n" + least + "\n");
+        rest = rest[0..at] + rest[(at + len(least) + 1)..len(rest)];
+    }
+    return out;
 }
