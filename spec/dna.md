@@ -3216,7 +3216,9 @@ hosted backends keyless and its local server, which `LocalModel` probes on
 this host, not running; a canned or recorded backend is a model), a Work the
 routing would hand to a leg (an agent's: a judgment, a Work routed to a
 position) or to the editor is a human leaf instead, a case for a person, and
-the case is handed unassigned with no word asked of the leader. Nothing
+the case is handed unassigned with no word asked of the leader. The
+organism's own steps (an `organism` Work: applying a ratified change,
+raising a concern) need no model and stay the organism's. Nothing
 waits on a model and nothing times out into a leg; mapping a category or
 giving the catalog a model gives the next execution its legs back. A
 substrate a program wires itself (`solo_without_model` false, the default)

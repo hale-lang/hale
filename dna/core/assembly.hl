@@ -3479,8 +3479,9 @@ locus Dna {
                     "human"
                 }
                 else { self.work.selection.select(req, 0, "") };
-                // a leg's or the editor's Work with no model is a person's case
-                if !mapped && (kind == "agent" || kind == "edit" || kind == "organism") {
+                // a leg's or the editor's Work with no model is a person's
+                // case; the organism's own steps need no model and stay its
+                if !mapped && (kind == "agent" || kind == "edit") {
                     kind = "human";
                 }
                 out = out + (if len(out) > 0 { " " } else { "" }) + n.id + "=" + kind;
