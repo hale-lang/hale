@@ -236,6 +236,14 @@ fn main() {
         // phase 4: the habitat's host, policy and own allocations, placed by
         // the compose provider and recorded (`hale habitat up`)
         ans = host::habitat_place_verb(root, host::word(a, 0), memory);
+    } else if verb == "habitat-forget-plan" {
+        // phase 4 ruling: what `hale habitat down --forget` would remove,
+        // as the habitat's record knows it (dna/host/forget.hl)
+        ans = host::habitat_forget_plan_verb(root);
+    } else if verb == "habitat-teardown-run" {
+        // phase 4 ruling: a plan's items that run on a host or write the
+        // habitat's record, executed in order (dna/core/teardown.hl)
+        ans = host::habitat_teardown_run_verb(root, host::word(a, 0), host::flag(a, "--as"));
     } else if verb == "habitat-forge-provision" {
         // phase 4 ruling: a grafted organism's user, token and repository
         // at the habitat's Forgejo (`hale habitat graft`)

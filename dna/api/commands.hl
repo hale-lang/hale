@@ -1188,9 +1188,22 @@ locus CommandAdmission {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
         return habitat_host_probe(self.root, n.name, self.author(ctx));
     }
-    fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
-        if self.personless(ctx) { return HostReply { code: "forbidden" }; }
-        return habitat_host_remove(self.root, n.name, self.author(ctx));
+    fn plan_remove_host(n: HostNamed, ctx: std::api::Context) -> HostPlan {
+        if self.personless(ctx) { return HostPlan { code: "forbidden" }; }
+        return habitat_host_plan_remove(self.root, n.name);
+    }
+    fn remove_host(r: HostRemove, ctx: std::api::Context) -> HostRemoval {
+        if self.personless(ctx) { return HostRemoval { code: "forbidden" }; }
+        return habitat_host_remove(self.root, r, self.author(ctx));
+    }
+    // The habitat's organisms (habitat_organisms.hl): removed, the Board's.
+    fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
+        if self.personless(ctx) { return OrganismPlan { code: "forbidden" }; }
+        return habitat_organism_plan_remove(self.root, n.name);
+    }
+    fn remove_organism(r: OrganismRemove, ctx: std::api::Context) -> OrganismRemoval {
+        if self.personless(ctx) { return OrganismRemoval { code: "forbidden" }; }
+        return habitat_organism_remove(self.root, r, self.author(ctx));
     }
     fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
@@ -1312,8 +1325,17 @@ locus Commands {
     fn probe_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
         return self.admission.probe_host(n, ctx);
     }
-    fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
-        return self.admission.remove_host(n, ctx);
+    fn plan_remove_host(n: HostNamed, ctx: std::api::Context) -> HostPlan {
+        return self.admission.plan_remove_host(n, ctx);
+    }
+    fn remove_host(r: HostRemove, ctx: std::api::Context) -> HostRemoval {
+        return self.admission.remove_host(r, ctx);
+    }
+    fn plan_remove_organism(n: OrganismNamed, ctx: std::api::Context) -> OrganismPlan {
+        return self.admission.plan_remove_organism(n, ctx);
+    }
+    fn remove_organism(r: OrganismRemove, ctx: std::api::Context) -> OrganismRemoval {
+        return self.admission.remove_organism(r, ctx);
     }
     fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
         return self.admission.brief(a, ctx);
@@ -1431,10 +1453,19 @@ api HeadCommands {
     rpc Commands::add_nursery requires: [owner];
     rpc Commands::ratify_sapling requires: [owner];
     // The habitat's hosts (habitat_hosts.hl): a machine added over SSH,
-    // probed again, removed. The Board's.
+    // probed again, removed. The Board's. A removal is planned first
+    // (`plan_remove_host`, a read of the Board's: nothing is touched) and,
+    // when it stops or deletes anything on the host, executed only with the
+    // host's name typed back as `confirm`.
     rpc Commands::add_host requires: [owner];
     rpc Commands::probe_host requires: [owner];
+    rpc Commands::plan_remove_host requires: [owner];
     rpc Commands::remove_host requires: [owner];
+    // The habitat's organisms (habitat_organisms.hl): one removed, planned
+    // first (`plan_remove_organism`, a read of the Board's) and executed
+    // only with the organism's name typed back as `confirm`.
+    rpc Commands::plan_remove_organism requires: [owner];
+    rpc Commands::remove_organism requires: [owner];
     // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
     // with the live state, for an agent pairing with a person. A read.
     rpc Commands::brief;

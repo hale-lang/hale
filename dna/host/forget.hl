@@ -1,0 +1,545 @@
+// `hale habitat down --forget`: the habitat's record side of its plan
+// (phase 4 ruling: destroy is plan-then-confirm).
+//
+// `habitat-forget-plan`, run on the habitat's genome, audits what the
+// habitat's record knows of: its record and memory (the row count, the
+// organisms it grafted, the newest row's time), each grafted organism (its
+// record, its genome repository, its forge repository, its allocations by
+// host), the vault slots it and they hold (by name, never a value), its
+// Forgejo and the accounts there, its hosts (with the authorized key line it
+// cannot remove), and what it runs on each `ssh` host (dna/core/teardown.hl).
+// It answers the items as a JSON array; the toolchain adds what lives on
+// this machine outside the record (the compose projects, the habitat's
+// directory, its units), prints the plan, and executes it item by item once
+// the person types the habitat's name back. `habitat-teardown-run <file>`
+// executes the items of a plan that run on a host or write the record.
+import "../core" as dna;
+
+// The order the items are executed in: what runs on the hosts, then this
+// machine's compose projects, volumes, vault slots and files, then the notes.
+const FORGET_STEP_VOLUMES: Int = 50;
+const FORGET_STEP_VAULT: Int = 60;
+const FORGET_STEP_FILES: Int = 65;
+const FORGET_STEP_COVERED: Int = 85;
+
+// `name`'s volume in the habitat's project: `<project>_<service>`.
+fn forget_volume(service: String) -> String {
+    return dna::local_habitat_project() + "_" + service;
+}
+
+// The newest row's time in the record `id` keeps in the habitat's memory,
+// asked of the server in its container; "" when it cannot say.
+fn forget_newest_row(key: String, id: String) -> String {
+    let r = dna::placed_exec(
+        key,
+        "memory",
+        "psql -q -U dna -d dna -tAc \"SELECT coalesce(to_char(max(at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', '') FROM "
+            + dna::schema_for(id) + ".record_rows\"",
+    );
+    return if r.code == 0 { dna::trim_nl(r.stdout) } else { "" };
+}
+
+// `slot` added to the newline-delimited `list` once, when the vault holds it.
+fn forget_slot(list: String, slot: String, taken: String) -> String {
+    if len(slot) == 0 || std::str::contains(taken, "\n" + slot + "\n") { return list; }
+    if std::str::contains("\n" + list, "\n" + slot + "\n") { return list; }
+    if !std::io::fs::file_exists(std::secret::vault_local_dir() + "/" + slot) { return list; }
+    return list + slot + "\n";
+}
+
+// The slots the vault holds of the organism at `root` (its drawn ones; the
+// ones a person supplies are `kept`), a line each.
+type ForgetSlots {
+    drawn: String = "";
+    kept: String = "";
+}
+
+@bounded_by(root)
+fn forget_organism_slots(root: String, taken: String) -> ForgetSlots {
+    let mut out = ForgetSlots { };
+    if len(root) == 0 || !std::io::fs::file_exists(root + "/hale.toml") { return out; }
+    let mut rest = organism_secrets(root);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let t = std::str::index_of(line, "\t");
+        if t < 0 { continue; }
+        let slot = line[0..t];
+        if std::str::contains(line, "\tdrawn\t") {
+            out.drawn = forget_slot(out.drawn, slot, taken);
+        } else {
+            out.kept = forget_slot(out.kept, slot, taken);
+        }
+    }
+    return out;
+}
+
+// The slots an allocation row names (its `vault` array), added to `list`.
+@bounded_by(body)
+fn forget_row_slots(list: String, body: String, taken: String) -> String {
+    // a forge the Board allocated with a credential a person supplied (a
+    // GitHub token's slot, a `--key-vault` slot) names a slot the habitat
+    // never minted: it is kept (`forget_supplied`)
+    if forget_supplies(body) { return list; }
+    let mut out = list;
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "vault"));
+    while !it.done {
+        let s = std::json::find_string_field("{\"s\":" + it.element + "}", "s");
+        out = forget_slot(out, s, taken);
+        it = std::json::array_next(it);
+    }
+    let kv = std::json::find_string_field(body, "key_vault");
+    return forget_slot(out, kv, taken);
+}
+
+// Whether the allocation row `body` names a credential a person supplied:
+// a forge row of any provider but the habitat's own Forgejo, whose token
+// the habitat mints.
+fn forget_supplies(body: String) -> Bool {
+    return std::json::find_string_field(body, "role") == "forge"
+        && std::json::find_string_field(body, "provider") != "forgejo";
+}
+
+// The slots a row names that a person supplied, a line each ("" for none).
+@bounded_by(body)
+fn forget_supplied(body: String) -> String {
+    if !forget_supplies(body) { return ""; }
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(body, "vault"));
+    while !it.done {
+        let s = std::json::find_string_field("{\"s\":" + it.element + "}", "s");
+        if len(s) > 0 { out = out + s + "\n"; }
+        it = std::json::array_next(it);
+    }
+    let kv = std::json::find_string_field(body, "key_vault");
+    return out + (if len(kv) > 0 { kv + "\n" } else { "" });
+}
+
+fn forget_lines_joined(lines: String) -> String {
+    return std::str::replace(dna::trim_nl(lines), "\n", ", ");
+}
+
+fn forget_line_count(lines: String) -> Int {
+    let t = dna::trim_nl(lines);
+    if len(t) == 0 { return 0; }
+    return 1 + len(t) - len(std::str::replace(t, "\n", ""));
+}
+
+// An item removing `slots` from the vault.
+fn forget_vault_item(subject: String, slots: String, whose: String) -> String {
+    if len(dna::trim_nl(slots)) == 0 { return ""; }
+    let n = forget_line_count(slots);
+    return dna::teardown_item(
+        "vault",
+        subject,
+        whose + ": " + forget_lines_joined(slots),
+        dna::teardown_plural(n, "slot", "slots"),
+        "no: their values are deleted",
+        "vault-rm",
+        "",
+        dna::trim_nl(slots),
+        FORGET_STEP_VAULT,
+    );
+}
+
+// The allocations of the organism keyed `key`, by host, as items of
+// `subject`: on this machine their volumes or projects removed; on another
+// host the host's items below; on the operator's server, kept. Its memory
+// is its record's item.
+@bounded_by(allocations)
+fn forget_allocation_items(
+    allocations: String,
+    key: String,
+    subject: String,
+    group: String
+) -> String {
+    let mut items = "";
+    let mut rest = allocations;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::starts_with(line, key + "/") { continue; }
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        let entity = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let role = std::json::find_string_field(body, "role");
+        let provider = std::json::find_string_field(body, "provider");
+        if role == "head" || role == "face" || role == "forge" || role == "identity" { continue; }
+        // where it is applied, as recorded (this machine when nothing says
+        // otherwise), is where its resources are; a placement elsewhere not
+        // applied yet is audited with that host's items
+        let applied = dna::placed_on(key, role);
+        let host = if len(applied.host) > 0 { applied.host } else { "local" };
+        let mut item = "";
+        if provider == "operator" {
+            item = dna::teardown_item(
+                group, subject,
+                entity + ": on the operator's server, adopted, never the habitat's: kept",
+                "-", "-", "note", "", "", FORGET_STEP_COVERED,
+            );
+        } else if role == "database" || role == "broker" {
+            item = dna::teardown_item(
+                group, subject,
+                entity + ": a tenant of its "
+                    + (if role == "database" { "memory" } else { "nerves" })
+                    + " server, removed with it",
+                "-", "no", "covered", "", "", FORGET_STEP_COVERED,
+            );
+        } else if host != "local" {
+            item = dna::teardown_item(
+                group, subject,
+                entity + ": on " + host + ", removed with that host's items below",
+                "-", "no", "covered", "", "", FORGET_STEP_COVERED,
+            );
+        } else if role == "services" {
+            let project = dna::local_habitat_project() + "-" + key;
+            item = dna::teardown_item(
+                group, subject,
+                entity + ": its services, compose project " + project
+                    + ": containers removed, volumes deleted",
+                "1 project", "no: their data is deleted", "project-rm", "",
+                project + "\n" + dna::trim_nl(dna::local_project_lines(project)),
+                FORGET_STEP_VOLUMES - 10,
+            );
+        } else if role != "memory" {
+            let service = dna::compose_service(role, key);
+            item = dna::teardown_item(
+                group, subject,
+                entity + ": " + role + " (" + service + "), its volume deleted",
+                "1 volume", "no: its data is deleted", "volume-rm", "", forget_volume(service),
+                FORGET_STEP_VOLUMES,
+            );
+        }
+        items = dna::teardown_more(items, item);
+    }
+    return items;
+}
+
+// `habitat-forget-plan`: the record side of the habitat's forget plan, a
+// JSON array of items.
+@bounded_by(root)
+fn habitat_forget_plan_verb(root: String) -> Answer {
+    let key = dna::allocation_key(root);
+    let id = dna::record_scope(root);
+    if len(key) == 0 { return fail("habitat-forget-plan: the habitat has no record identity"); }
+    let j = dna::RecordJournal { repo: root, author: "habitat" };
+    let moved = j.refresh();
+    let n = j.revision();
+    if n == 0 {
+        return fail(
+            "habitat-forget-plan: the habitat's record could not be read: " + j.last_error(),
+        );
+    }
+    let operator = dna::trim_nl(
+        std::io::fs::read_file(dna::local_habitat_dir() + "/backends") or "",
+    )
+        == "operator";
+    let allocations = dna::teardown_allocations(root);
+    let local_vault = len(std::env::var("HALE_VAULT_ADDR")) == 0;
+    let mut items = "";
+
+    // ---- the habitat's record and memory
+    // the organisms it grafted and has not removed, a line each
+    let mut grafted = "\n" + dna::teardown_latest(root, "habitat.grafted");
+    let organisms = dna::teardown_count(grafted, "\t");
+    let mut hosts = "";
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind == "habitat.host" && !std::str::contains(" " + hosts, " " + e.entity + " ") {
+            hosts = hosts + e.entity + " ";
+        }
+    }
+    let newest = if operator { "" } else { forget_newest_row(key, id) };
+    let summary = "the habitat's record " + key + "…: " + dna::teardown_plural(n, "row", "rows")
+        + ", " + dna::teardown_plural(organisms, "organism", "organisms") + " grafted"
+        + (if len(newest) > 0 { ", the newest row at " + newest } else { "" });
+    if operator {
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "habitat", "",
+                summary + "; it is in the operator's Postgres (schema " + dna::schema_for(id)
+                    + "), which the habitat adopted and does not remove: kept",
+                dna::teardown_plural(n, "row", "rows"), "-", "note", "", "", FORGET_STEP_COVERED,
+            ),
+        );
+    } else {
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "habitat", "",
+                summary + "; its memory (" + dna::compose_service("memory", key)
+                    + "), its volume deleted",
+                dna::teardown_plural(n, "row", "rows"),
+                "no: the record and every row of it are deleted",
+                "volume-rm", "", forget_volume(dna::compose_service("memory", key)),
+                FORGET_STEP_VOLUMES,
+            ),
+        );
+    }
+    items = dna::teardown_more(items, forget_allocation_items(allocations, key, "", "habitat"));
+
+    // ---- each grafted organism
+    let mut taken = "\n";
+    let mut forgejo_users = "";
+    let mut accounts = 1;
+    let mut forgejo_repos = "";
+    let mut organism_slots = "";
+    let mut kept_slots = "";
+    let mut rest = grafted[1..len(grafted)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        let child = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let name = std::json::find_string_field(body, "name");
+        let subject = name + " (" + child + "…)";
+        let cache = std::io::fs::read_file(
+            dna::local_habitat_dir() + "/allocations/" + child + "/allocation.json",
+        ) or "";
+        let groot = std::json::find_string_field(cache, "root");
+        let memory = dna::placed_on(child, "memory");
+        // its record, in its memory
+        let mut record = "";
+        if std::str::contains(allocations, child + "/memory\t") && memory.host != "local" {
+            record = dna::teardown_item(
+                "organism", subject,
+                "its record, in its memory on " + memory.host
+                    + ", removed with that host's items below",
+                "-", "no", "covered", "", "", FORGET_STEP_COVERED,
+            );
+        } else if operator {
+            record = dna::teardown_item(
+                "organism", subject,
+                "its record, in the operator's Postgres: kept", "-", "-", "note", "", "",
+                FORGET_STEP_COVERED,
+            );
+        } else {
+            record = dna::teardown_item(
+                "organism", subject,
+                "its record, in its memory (" + dna::compose_service("memory", child)
+                    + "), its volume deleted",
+                "1 volume", "no: the record and every row of it are deleted", "volume-rm", "",
+                forget_volume(dna::compose_service("memory", child)), FORGET_STEP_VOLUMES,
+            );
+        }
+        items = dna::teardown_more(items, record);
+        // its genome repository
+        let store = dna::local_habitat_dir() + "/saplings/";
+        let genome = if len(groot) == 0 {
+            dna::teardown_item(
+                "organism", subject,
+                "its genome repository: not known on this machine (no allocation cache): nothing removed",
+                "-", "-", "note", "", "", FORGET_STEP_COVERED,
+            )
+        } else if std::str::starts_with(groot, store) {
+            dna::teardown_item(
+                "organism", subject,
+                "its genome repository " + groot + ", the habitat's clone of its sapling",
+                "1 directory", "yes, at the pinned revision: commits made there since are lost",
+                "dir-rm", "", groot, FORGET_STEP_FILES,
+            )
+        } else {
+            dna::teardown_item(
+                "organism", subject,
+                "its genome repository " + groot
+                    + ": a checkout outside the habitat, the person's: kept",
+                "-", "-", "note", "", "", FORGET_STEP_COVERED,
+            )
+        };
+        items = dna::teardown_more(items, genome);
+        // its forge repository
+        let forge = std::io::fs::read_file(dna::forge_cache_path(child)) or "";
+        let fp = std::json::find_string_field(forge, "provider");
+        let repo = std::json::find_string_field(forge, "repo");
+        if fp == "forgejo" && len(repo) > 0 {
+            let slash = std::str::index_of(repo, "/");
+            let user = if slash > 0 { repo[0..slash] } else { repo };
+            forgejo_users = forgejo_users + ", " + user;
+            accounts = accounts + 1;
+            forgejo_repos = forgejo_repos + (if len(forgejo_repos) > 0 { ", " } else { "" }) + repo;
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "organism", subject,
+                    "its Forgejo repository " + repo + " and user " + user
+                        + ": removed with the habitat's Forgejo",
+                    "1 repository", "no", "covered", "", "", FORGET_STEP_COVERED,
+                ),
+            );
+        } else if fp == "github" && len(repo) > 0 {
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "organism", subject,
+                    "its forge repository " + repo + " on GitHub: not the habitat's: kept",
+                    "-", "-", "note", "", "", FORGET_STEP_COVERED,
+                ),
+            );
+        }
+        // its allocations, by host
+        items = dna::teardown_more(
+            items,
+            forget_allocation_items(allocations, child, subject, "organism"),
+        );
+        // its slots
+        if local_vault {
+            let s = forget_organism_slots(groot, taken);
+            let mut mine = s.drawn;
+            let mut arest = allocations;
+            while len(arest) > 0 {
+                let anl = std::str::index_of(arest, "\n");
+                let aline = arest[0..anl];
+                arest = arest[(anl + 1)..len(arest)];
+                if std::str::starts_with(aline, child + "/") {
+                    let abody = aline[(std::str::index_of(aline, "\t") + 1)..len(aline)];
+                    mine = forget_row_slots(mine, abody, taken);
+                    kept_slots = kept_slots + forget_supplied(abody);
+                }
+            }
+            mine = forget_slot(mine, dna::forgejo_vault(child), taken);
+            taken = taken + mine;
+            kept_slots = kept_slots + s.kept;
+            organism_slots = dna::teardown_more(
+                organism_slots,
+                forget_vault_item(subject, mine, "the slots of " + name),
+            );
+        }
+    }
+
+    // ---- the vault: the habitat's own slots, then its organisms'
+    if local_vault {
+        let s = forget_organism_slots(root, taken);
+        let mut mine = s.drawn;
+        let mut arest = allocations;
+        while len(arest) > 0 {
+            let anl = std::str::index_of(arest, "\n");
+            let aline = arest[0..anl];
+            arest = arest[(anl + 1)..len(arest)];
+            if std::str::starts_with(aline, key + "/") {
+                let abody = aline[(std::str::index_of(aline, "\t") + 1)..len(aline)];
+                mine = forget_row_slots(mine, abody, taken);
+                kept_slots = kept_slots + forget_supplied(abody);
+            }
+        }
+        mine = forget_slot(mine, dna::FORGEJO_ADMIN_VAULT, taken);
+        mine = forget_slot(mine, dna::habitat_key_slot(root), taken);
+        taken = taken + mine;
+        items = dna::teardown_more(
+            items,
+            forget_vault_item(
+                "",
+                mine,
+                "the habitat's slots (" + std::secret::vault_local_dir() + ")",
+            ),
+        );
+        items = dna::teardown_more(items, organism_slots);
+        let mut kept = "";
+        let mut krest = kept_slots + s.kept;
+        while len(krest) > 0 {
+            let knl = std::str::index_of(krest, "\n");
+            kept = forget_slot(kept, krest[0..knl], taken);
+            krest = krest[(knl + 1)..len(krest)];
+        }
+        if len(kept) > 0 {
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "vault", "",
+                    "kept: " + forget_lines_joined(kept)
+                        + " (credentials a person supplied, which the habitat did not mint)",
+                    dna::teardown_plural(forget_line_count(kept), "slot", "slots"), "-", "note",
+                    "", "", FORGET_STEP_COVERED,
+                ),
+            );
+        }
+    } else {
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "vault", "",
+                "the vault at HALE_VAULT_ADDR is provisioned out of band: its slots are kept",
+                "-", "-", "note", "", "", FORGET_STEP_COVERED,
+            ),
+        );
+    }
+
+    // ---- the habitat's Forgejo and its accounts
+    let own_forge = std::io::fs::read_file(dna::forge_cache_path(key)) or "";
+    if std::json::find_string_field(own_forge, "provider") == "forgejo" {
+        let users = dna::FORGEJO_ADMIN + forgejo_users;
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "forge", "",
+                "the habitat's Forgejo at " + std::json::find_string_field(own_forge, "address")
+                    + " (service forge), its volume deleted: its accounts " + users
+                    + (
+                        if len(forgejo_repos) > 0 {
+                            "; its repositories " + forgejo_repos
+                        } else {
+                            ""
+                        }
+                    ),
+                dna::teardown_plural(accounts, "account", "accounts"),
+                "no: every account, repository and pull request there is deleted",
+                "volume-rm", "", forget_volume("forge"), FORGET_STEP_VOLUMES,
+            ),
+        );
+    }
+
+    // ---- the hosts, and what the habitat runs on each
+    let mut remote = "";
+    let mut hrest = hosts;
+    while len(hrest) > 0 {
+        let sp = std::str::index_of(hrest, " ");
+        let name = hrest[0..sp];
+        hrest = hrest[(sp + 1)..len(hrest)];
+        let h = dna::recorded_host(root, name);
+        if h.state == "removed" { continue; }
+        if h.provider != "ssh" {
+            items = dna::teardown_more(
+                items,
+                dna::teardown_item(
+                    "hosts", name,
+                    name + " (" + h.provider
+                        + ", this machine): its entry, removed with the record",
+                    "1 row", "yes: `hale habitat up` records it again", "covered", "", "",
+                    FORGET_STEP_COVERED,
+                ),
+            );
+            continue;
+        }
+        items = dna::teardown_more(
+            items,
+            dna::teardown_item(
+                "hosts", name,
+                name + " (ssh, " + h.user + "@" + h.address + ":" + to_string(h.port) + ", "
+                    + h.state + ", " + h.fingerprint
+                    + "): its entry and the host key kept for it, removed with the record",
+                "1 row", "yes: `hale habitat host add " + name + "` adds it again", "covered",
+                name, dna::teardown_host_said(h), FORGET_STEP_COVERED,
+            ),
+        );
+        items = dna::teardown_more(items, dna::host_key_note(root, h, "note-keep"));
+        remote = dna::teardown_more(remote, dna::host_teardown_items(root, name, false, ""));
+    }
+    items = dna::teardown_more(items, remote);
+    return answer("[" + items + "]\n");
+}
+
+// `habitat-teardown-run <file> [--as <who>]`: the items of the plan in
+// `file` executed in order (dna/core/teardown.hl), the report a JSON array.
+fn habitat_teardown_run_verb(root: String, file: String, by: String) -> Answer {
+    let plan = std::io::fs::read_file(file) or "";
+    if len(plan) == 0 { return fail("habitat-teardown-run: no plan in " + file); }
+    return answer(dna::teardown_run(root, plan, if len(by) > 0 { by } else { "habitat" }) + "\n");
+}

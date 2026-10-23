@@ -16,9 +16,11 @@
 // the host key first seen printed; the key is authorized inside the
 // container; a probe moves the host to `ready` with what it offers; a render
 // is applied there by the `ssh` provider and observed `up`, and the head's
-// `Commands::allocations` observes it the same way; the host is not removed
-// while that allocation is placed on it; withdrawn, the allocation is down;
-// a host key that changes is refused; and the host is removed. The
+// `Commands::allocations` observes it the same way; the host's removal is
+// planned (`--plan`: the allocation and what stops there), refused off a
+// terminal and on a name typed back that is not the host's, with nothing
+// touched; a host key that changes is refused; and confirmed by the host's
+// name, the removal stops the allocation there and removes the host. The
 // habitat's private key never appears in anything printed. Without docker
 // compose nothing here is exercised.
 
@@ -36,6 +38,15 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
         900,
         "sh\n-c\ncd \"$1\" && shift && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_NATS_URL_OWNER ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_TRUSTED_LOCAL=1 && exec \"$@\"\nsh\n"
             + dir + "\n" + argv,
+    );
+}
+
+// The shell command line `line` run in `dir` at a terminal, with `typed`
+// typed at it.
+fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
+    return in_dir(
+        dir,
+        "sh\n-c\nprintf '%s\\n' \"$1\" | script -qec \"$2\" /dev/null\nsh\n" + typed + "\n" + line,
     );
 }
 
@@ -122,8 +133,10 @@ fn sshd_compose(port: Int, home: String, socket: String, uid: String, gid: Strin
 }
 
 fn main() {
-    if dna::run_tool("docker\ncompose\nversion").code != 0 {
-        eprintln("habitat_hosts_test: not exercised (docker compose is not on PATH)");
+    if dna::run_tool("docker\ncompose\nversion").code != 0
+        || dna::run_tool("sh\n-c\ncommand -v script").code != 0
+    {
+        eprintln("habitat_hosts_test: not exercised (docker compose or script is not on PATH)");
         return;
     }
     if dna::local_habitat_project() == dna::developer_habitat_project() {
@@ -308,35 +321,50 @@ fn main() {
         "the head observes it over SSH: " + seen,
     );
 
-    // ---- not removed while an allocation is placed on it
-    let refused = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\nlocalhost");
+    // ---- removed plan-then-confirm: the plan names the allocation and what
+    // stops on the host, and nothing is touched until the host's name is
+    // typed back at a terminal
+    let planned = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\nlocalhost\n--plan");
     std::test::assert(
-        refused.code != 0
+        planned.code == 0
+            && std::str::contains(planned.stdout, "the plan to remove the host localhost:")
             && std::str::contains(
-                refused.stderr,
-                "allocations are placed on localhost: " + key + "/probe",
+                planned.stdout,
+                key + "/probe: probe of " + render.project
+                    + ": stopped and removed (1 container, 0 volumes",
             )
-            && std::str::contains(refused.stderr, "(allocations_placed)"),
-        "a host with an allocation on it is not removed: " + refused.stdout + refused.stderr,
+            && std::str::contains(planned.stdout, "~/.hale/habitat/" + render.project)
+            && std::str::contains(planned.stdout, key + "/probe: unplaced in the habitat's record")
+            && std::str::contains(planned.stdout, "marked removed in the habitat's record")
+            && std::str::contains(planned.stdout, "authorized_keys: the habitat cannot remove it"),
+        "the plan lists the allocation and what stops on the host: " + planned.stdout
+            + planned.stderr,
+    );
+    std::test::assert_eq_str(ssh.observe(a).state, "up", "the plan touches nothing");
+    let piped = in_dir(
+        scratch,
+        "sh\n-c\nexec \"$1\" habitat host remove localhost </dev/null\nsh\n" + toolchain(),
+    );
+    std::test::assert(
+        piped.code == 2 && std::str::contains(piped.stderr, "stdin is not a terminal"),
+        "a removal off a terminal is refused: " + piped.stdout + piped.stderr,
+    );
+    let wrong = at_terminal(scratch, "rack-b.lan", toolchain() + " habitat host remove localhost");
+    std::test::assert(
+        wrong.code != 0 && std::str::contains(wrong.stdout, "(confirm_mismatch)"),
+        "a name that is not the host's is refused: " + wrong.stdout + wrong.stderr,
+    );
+    std::test::assert_eq_str(ssh.observe(a).state, "up", "and touches nothing");
+    std::test::assert(
+        len(host_in(face, "localhost", "ready", 5)) > 0,
+        "the host is kept",
     );
 
-    // ---- withdrawn: down, and no longer placed
-    let withdrawn = ssh.withdraw("localhost", render);
-    std::test::assert(withdrawn.ok, "the render is withdrawn: " + withdrawn.why);
-    std::test::assert_eq_str(ssh.observe(a).state, "down", "observed down");
-    let unplaced = j.append(
-        j.revision(),
-        "habitat.allocated",
-        key + "/probe",
-        "{\"organism\":\"" + key + "\",\"role\":\"probe\",\"service\":\"probe\",\"project\":\""
-            + render.project + "\",\"provider\":\"ssh\",\"host\":\"\",\"vault\":[]}",
-    );
-    std::test::assert(unplaced.ok, "the allocation is no longer placed: " + unplaced.error);
-
-    // ---- a host key that changes is refused
+    // ---- a host key that changes is refused (the machine's key is put
+    // back after)
     let rekeyed = dna::run_tool(
         "docker\nexec\n" + container
-            + "\nsh\n-c\nrm -f /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub && ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key && kill -HUP 1",
+            + "\nsh\n-c\ncp /etc/ssh/ssh_host_ed25519_key /root/k && cp /etc/ssh/ssh_host_ed25519_key.pub /root/k.pub && rm -f /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub && ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key && kill -HUP 1",
     );
     std::test::assert_eq_int(rekeyed.code, 0, "the machine's host key changes: " + rekeyed.stderr);
     std::time::sleep(1s);
@@ -345,12 +373,26 @@ fn main() {
         changed.code != 0 && std::str::contains(changed.stderr, "host_key_changed"),
         "a changed host key is refused: " + changed.stdout + changed.stderr,
     );
+    let restored = dna::run_tool(
+        "docker\nexec\n" + container
+            + "\nsh\n-c\ncp /root/k /etc/ssh/ssh_host_ed25519_key && cp /root/k.pub /etc/ssh/ssh_host_ed25519_key.pub && kill -HUP 1",
+    );
+    std::test::assert_eq_int(restored.code, 0, "the machine's key is put back: " + restored.stderr);
+    std::time::sleep(1s);
 
-    // ---- removed
-    let removed = in_dir(scratch, toolchain() + "\nhabitat\nhost\nremove\nlocalhost");
+    // ---- confirmed: the plan executed item by item, the allocation
+    // stopped there and unplaced, the host removed
+    let removed = at_terminal(scratch, "localhost", toolchain() + " habitat host remove localhost");
     std::test::assert(
-        removed.code == 0 && std::str::contains(removed.stdout, "): removed"),
-        "the host is removed: " + removed.stdout + removed.stderr,
+        removed.code == 0 && std::str::contains(removed.stdout, "): removed")
+            && std::str::contains(removed.stdout, "done      " + key + "/probe: probe of ")
+            && !std::str::contains(removed.stdout, "FAILED"),
+        "the host is removed with what ran there: " + removed.stdout + removed.stderr,
+    );
+    std::test::assert_eq_str(ssh.observe(a).state, "down", "what ran there is gone");
+    std::test::assert(
+        !std::io::fs::file_exists(home + "/.hale/habitat/" + render.project),
+        "and the files copied there",
     );
     std::test::assert(
         len(element(surface_read(face, "Commands::hosts", "hosts"), "name", "localhost")) == 0,

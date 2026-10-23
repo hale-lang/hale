@@ -6516,16 +6516,34 @@ them from the face as it relays the index: `POST
 member. `habitat.host` and `habitat.policy` are row kinds of the habitat's
 record, written by `hale habitat up`; an allocation's provider and host
 are fields of the existing `habitat.allocated` row. `Commands::hosts`
-leaves out a removed host. Three Board rows (`requires: [owner]`) manage
-the hosts: `Commands::add_host` (`{name, user, port}`), `Commands::probe_host`
-and `Commands::remove_host` (`{name}`), each answering `{ok, code, why,
-host, public_key, authorize}`: the host as its row now states it, and for
+leaves out a removed host. Four Board rows (`requires: [owner]`) manage
+the hosts: `Commands::add_host` (`{name, user, port}`) and
+`Commands::probe_host` (`{name}`), each answering `{ok, code, why, host,
+public_key, authorize}`: the host as its row now states it, and for
 `add_host` the habitat's public key and the line the host's
-`~/.ssh/authorized_keys` takes. A refusal is `code` with `why`
-(`invalid_host`, `host_exists`, `unreachable`, `key_unavailable`,
-`not_found`, `host_key_changed`, `allocations_placed`, `not_removable`,
-`record_refused`). Each row they write is in the name of the person the
-caller maps to. They are what `hale habitat host add|probe|remove`
+`~/.ssh/authorized_keys` takes; `Commands::plan_remove_host` (`{name}`), a
+read, answering `{ok, code, why, plan, confirm}`: the removal's plan, a
+JSON array of items (`spec/habitat.md`, Destroying: plan, then confirm),
+and the name to type back to confirm it (`""` when the plan stops and
+deletes nothing on the host); and `Commands::remove_host` (`{name,
+confirm}`), answering `{ok, code, why, host, plan, report}`: it plans
+again with the same auditor and, when the plan stops or deletes anything
+on the host, executes it only when `confirm` is the host's name, item by
+item, `report` saying of each item `done`, `failed` or `left`. A refusal
+is `code` with `why` (`invalid_host`, `host_exists`, `unreachable`,
+`key_unavailable`, `not_found`, `host_key_changed`, `not_removable`,
+`confirm_required`, `confirm_mismatch`, `plan_changed`, `partly_removed`,
+`record_refused`). The plan's reply carries its `digest`, and
+`remove_host` takes it (`{name, confirm, digest}`), refusing `plan_changed`
+when the plan is another now. Two more Board rows remove an organism the
+habitat grafted, the same way: `Commands::plan_remove_organism` (`{name}`,
+a read answering `{ok, code, why, plan, confirm, digest}`) and
+`Commands::remove_organism` (`{name, confirm, digest}`, answering `{ok,
+code, why, plan, report}`; refusals `not_found`, `ambiguous`,
+`not_removable`, `confirm_required`, `confirm_mismatch`, `plan_changed`,
+`partly_removed`); an organism removed is its `habitat.grafted` and
+`habitat.allocated` rows written again with `"state": "removed"`.
+Each row they write is in the name of the person the caller maps to. They are what `hale habitat host add|probe|remove`
 calls, over the head's socket (`spec/habitat.md`, Hosts, providers and
 placement). Two more Board rows place and apply the allocations:
 `Commands::place_allocation` (`{allocation, host}`, answering `{ok, code,

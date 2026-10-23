@@ -1,0 +1,1446 @@
+// dna/core/teardown.hl — what a habitat act would remove, planned before
+// anything is (phase 4 ruling: destroy is plan-then-confirm).
+//
+// A teardown is a plan: a list of items, each one thing that would be
+// stopped or removed, with what it is, its size or count, and whether it
+// is recoverable. One auditor computes the plan and the same items are then
+// executed one by one, in order, so what is printed is exactly what is done;
+// nothing else decides what to remove. An execution that fails stops at the
+// failed item and reports which items were done and which were not, and
+// leaves the rest; run again, the act plans again from what remains.
+//
+// An item is a JSON object, its fields strings but `step`: `group` (what it is: `habitat`,
+// `organism`, `compose`, `vault`, `forge`, `hosts`, `remote`), `subject`
+// (the organism or host it belongs to), `what`, `measure` (its size or
+// count), `recoverable` (`no`, or `yes` and how), `action` (what executing
+// it does), `host` (the host an action runs on), `args` (the action's
+// arguments, a line each: the volumes, slots or paths it removes) and
+// `step` (the order it is executed in, an Int).
+//
+// This file holds the host's part: what the habitat ran on an `ssh` host,
+// as the host answers over SSH, and the actions that stop and delete it
+// there. `hale habitat host remove` (`Commands::plan_remove_host`,
+// `::remove_host`) plans and executes a host's alone; `hale habitat down
+// --forget` plans each host's beside the rest of the habitat.
+
+// One item of a plan, as a JSON object.
+fn teardown_item(
+    group: String,
+    subject: String,
+    what: String,
+    measure: String,
+    recoverable: String,
+    action: String,
+    host: String,
+    args: String,
+    step: Int
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("group", group);
+    b.string_field("subject", subject);
+    b.string_field("what", what);
+    b.string_field("measure", measure);
+    b.string_field("recoverable", recoverable);
+    b.string_field("action", action);
+    b.string_field("host", host);
+    b.string_field("args", args);
+    b.int_field("step", step);
+    b.end_object();
+    return b.result();
+}
+
+// `items` with `item` after them, comma-separated: a plan is `[` + items + `]`.
+fn teardown_more(items: String, item: String) -> String {
+    if len(item) == 0 { return items; }
+    return if len(items) > 0 { items + "," + item } else { item };
+}
+
+// The steps a host's items are executed at: what runs on it first, then
+// the record's rows about it.
+const TEARDOWN_STEP_REMOTE: Int = 20;
+const TEARDOWN_STEP_ROWS: Int = 90;
+
+// How many times `needle` occurs in `text`.
+@bounded_by(text)
+fn teardown_count(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut at = 0;
+    while at < len(text) {
+        let rest = text[at..len(text)];
+        let i = std::str::index_of(rest, needle);
+        if i < 0 { return n; }
+        n = n + 1;
+        at = at + i + len(needle);
+    }
+    return n;
+}
+
+fn teardown_plural(n: Int, one: String, many: String) -> String {
+    return to_string(n) + " " + (if n == 1 { one } else { many });
+}
+
+// The latest `kind` row of each entity in the habitat's record at `root`, a
+// line each: `<entity>\t<body>`. An entity whose latest row says it was
+// removed (`"state": "removed"`, an organism's graft and allocations) is
+// the record's history alone, and left out.
+@bounded_by(root)
+fn teardown_latest(root: String, kind: String) -> String {
+    let j = RecordJournal { repo: root, dsn: kept_dsn(root, HEAD_DSN_ENV), author: "habitat" };
+    let moved = j.refresh();
+    let n = j.revision();
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != kind { continue; }
+        // the latest row of its entity alone
+        let mut later = false;
+        let mut k = i;
+        while k < n && !later {
+            let f = j.read(k);
+            if f.kind == kind && f.entity == e.entity { later = true; }
+            k = k + 1;
+        }
+        if !later && std::json::find_string_field(e.body, "state") != "removed" {
+            out = out + e.entity + "\t" + e.body + "\n";
+        }
+    }
+    return out;
+}
+
+// The latest `habitat.allocated` row of each allocation in the habitat's
+// record at `root`, a line each: `<entity>\t<body>`.
+fn teardown_allocations(root: String) -> String {
+    return teardown_latest(root, "habitat.allocated");
+}
+
+// What the habitat ran on a host, as the host answers over SSH, sorted: a
+// line each, `c|<project>|<service>|<name>` per compose container, `v|<project>|<volume>`
+// per compose volume, `n|<project>|<network>` per compose network, `d|<name>`
+// per directory under `~/.hale/habitat`.
+type HostHoldings {
+    ok: Bool = false;
+    // the habitat's key was never authorized there: it ran nothing there
+    never: Bool = false;
+    why: String = "";
+    lines: String = "";
+}
+
+fn host_holdings(root: String, h: Host) -> HostHoldings {
+    if h.state != "ready" { return HostHoldings { never: true, why: h.state }; }
+    let script = "o=$(docker ps -a --filter label=com.docker.compose.project --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}|{{.Names}}' && docker volume ls --filter label=com.docker.compose.project --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter label=com.docker.compose.project --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && for d in .hale/habitat/*; do if [ -d \"$d\" ]; then echo \"d|${d#.hale/habitat/}\"; fi; done) && printf '%s\\n' \"$o\" | sort";
+    let r = ssh_run(root, h, script, "");
+    if r.code != 0 {
+        let failed = ssh_failure(r);
+        return HostHoldings {
+            why: (if len(failed) > 0 { failed } else { "docker there failed" }) + ": "
+                + trim_nl(r.stderr),
+        };
+    }
+    return HostHoldings { ok: true, lines: trim_nl(r.stdout) + "\n" };
+}
+
+// Whether `project` is one of the habitat's on the host whose own project
+// is `base`: that one, or one named after it (an organism's services).
+fn teardown_ours(project: String, base: String) -> Bool {
+    return project == base || std::str::starts_with(project, base + "-");
+}
+
+// `project` added to the newline-delimited `seen` (which starts "\n").
+fn teardown_seen(seen: String, project: String) -> String {
+    if std::str::contains(seen, "\n" + project + "\n") { return seen; }
+    return seen + project + "\n";
+}
+
+// What `h` holds of `project` (of `service` alone when one is named): its
+// containers and its volumes.
+fn held_containers(held: HostHoldings, project: String, service: String) -> Int {
+    if len(service) > 0 {
+        return teardown_count(held.lines, "c|" + project + "|" + service + "|");
+    }
+    return teardown_count(held.lines, "c|" + project + "|");
+}
+
+// The plan's items for the host `name` (comma-separated, "" for none): for
+// each allocation placed on it or applied there, what stops and is deleted
+// there; each other project of the habitat's there taken down; the
+// directories the renders were copied to removed; and with `rows`, the
+// record's side (each allocation placed there unplaced, the host's entry
+// removed) and the authorized key line it cannot remove, noted.
+@bounded_by(root)
+fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> String {
+    let h = recorded_host(root, name);
+    if h.provider != "ssh" || h.state == "removed" { return ""; }
+    let base = placed_project(name);
+    let held = host_holdings(root, h);
+    let mut items = "";
+    let mut unplace = "";
+    let mut seen = "\n";
+    // what the allocations' items take down: their containers and volumes'
+    // listing lines, and the projects taken down whole
+    let mut claimed = "\n";
+    let mut downed = "\n";
+    // whether an allocation of `only` was applied there: its render's
+    // directory goes with it
+    let mut touched = false;
+    let mut rest = teardown_allocations(root);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        let entity = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let slash = std::str::index_of(entity, "/");
+        if slash < 0 { continue; }
+        let key = entity[0..slash];
+        if len(only) > 0 && key != only { continue; }
+        let role = std::json::find_string_field(body, "role");
+        let placed_here = std::json::find_string_field(body, "host") == name;
+        let applied = placed_on(key, role);
+        let applied_here = applied.host == name;
+        if !placed_here && !applied_here { continue; }
+        if placed_here && rows {
+            unplace = teardown_more(
+                unplace,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": unplaced in the habitat's record",
+                    "1 row",
+                    "yes: `hale habitat place " + entity + " <host>` places it again",
+                    "unplace",
+                    name,
+                    entity,
+                    TEARDOWN_STEP_ROWS,
+                ),
+            );
+        }
+        // a heart's database and broker are tenants of the memory and nerves
+        // servers, and go with them
+        if role == "database" || role == "broker" { continue; }
+        if !held.ok && !held.never {
+            // the host does not answer: what runs there for this allocation is
+            // named and left, and the habitat's side of it goes
+            let named = std::json::find_string_field(body, "service");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "unreachable: left on " + name
+                        + ", cannot be removed from here (not recoverable from the habitat): "
+                        + entity + (if len(named) > 0 { " (" + named + ")" } else { "" }),
+                    "unknown",
+                    "no: not recoverable from the habitat",
+                    "unreachable",
+                    name,
+                    key + "\n" + role,
+                    TEARDOWN_STEP_REMOTE,
+                ),
+            );
+            continue;
+        }
+        if !held.ok { continue; }
+        let project = if applied_here && len(applied.project) > 0 {
+            applied.project
+        } else {
+            std::json::find_string_field(body, "project")
+        };
+        if len(project) == 0 { continue; }
+        let named = std::json::find_string_field(body, "service");
+        let service = if role == "services" {
+            ""
+        } else if len(named) > 0 {
+            named
+        } else {
+            compose_service(role, key)
+        };
+        let containers = held_containers(held, project, service);
+        let volume = if len(service) > 0 { project + "_" + service } else { "" };
+        let volumes = if len(service) > 0 {
+            teardown_count("\n" + held.lines, "\nv|" + project + "|" + volume + "\n")
+        } else {
+            teardown_count(held.lines, "v|" + project + "|")
+        };
+        seen = teardown_seen(seen, project);
+        if containers == 0 && volumes == 0 { continue; }
+        touched = true;
+        // the resources it audited there, by name: what its execution removes,
+        // and nothing else
+        let mut held_by = "";
+        if role == "services" {
+            downed = teardown_seen(downed, project);
+            held_by = teardown_lines(held.lines, "c|" + project + "|")
+                + teardown_lines(held.lines, "v|" + project + "|")
+                + teardown_lines(held.lines, "n|" + project + "|");
+        } else {
+            held_by = teardown_lines(held.lines, "c|" + project + "|" + service + "|")
+                + (if volumes > 0 { "v|" + project + "|" + volume + "\n" } else { "" });
+            // the project's networks too, when its every container is this one's
+            if containers == held_containers(held, project, "") {
+                held_by = held_by + teardown_lines(held.lines, "n|" + project + "|");
+            }
+        }
+        claimed = claimed + held_by;
+        let measure = teardown_plural(containers, "container", "containers") + ", "
+            + teardown_plural(volumes, "volume", "volumes");
+        if role == "services" {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": the organism's services, compose project " + project
+                        + ": containers stopped and removed, volumes deleted",
+                    measure,
+                    if volumes > 0 {
+                        "no: their data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings them up again"
+                    },
+                    "remote-project-down",
+                    name,
+                    project + "\n" + trim_nl(held_by),
+                    TEARDOWN_STEP_REMOTE,
+                ),
+            );
+        } else {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": " + service + " of " + project + ": stopped and removed"
+                        + (if volumes > 0 { ", its volume " + volume + " deleted" } else { "" }),
+                    measure,
+                    if volumes > 0 {
+                        "no: its data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings it up again"
+                    },
+                    "remote-withdraw",
+                    name,
+                    project + "\n" + service + "\n" + key + "\n" + role + "\n" + trim_nl(held_by),
+                    TEARDOWN_STEP_REMOTE,
+                ),
+            );
+        }
+    }
+    if held.ok {
+        // each other project of the habitat's on the host, whole (but for an
+        // organism's own teardown, which leaves the habitat's)
+        let mut projects = "\n";
+        let mut lines = held.lines;
+        while len(lines) > 0 {
+            let nl = std::str::index_of(lines, "\n");
+            let l = lines[0..nl];
+            lines = lines[(nl + 1)..len(lines)];
+            if !std::str::starts_with(l, "c|") && !std::str::starts_with(l, "v|")
+                && !std::str::starts_with(l, "n|")
+            {
+                continue;
+            }
+            let tail = l[2..len(l)];
+            let bar = std::str::index_of(tail, "|");
+            if bar < 0 { continue; }
+            let p = tail[0..bar];
+            if len(only) == 0 && teardown_ours(p, base)
+                && !std::str::contains(downed, "\n" + p + "\n")
+                && !std::str::contains(claimed, "\n" + l + "\n")
+            {
+                projects = teardown_seen(projects, p);
+            }
+        }
+        let mut ps = projects[1..len(projects)];
+        while len(ps) > 0 {
+            let nl = std::str::index_of(ps, "\n");
+            let p = ps[0..nl];
+            ps = ps[(nl + 1)..len(ps)];
+            seen = teardown_seen(seen, p);
+            // what is left of it, by name: the lines no allocation's item took
+            let mut left = "";
+            let mut ls = teardown_lines(held.lines, "c|" + p + "|")
+                + teardown_lines(held.lines, "v|" + p + "|")
+                + teardown_lines(held.lines, "n|" + p + "|");
+            while len(ls) > 0 {
+                let lnl = std::str::index_of(ls, "\n");
+                let one = ls[0..lnl];
+                ls = ls[(lnl + 1)..len(ls)];
+                if !std::str::contains(claimed, "\n" + one + "\n") { left = left + one + "\n"; }
+            }
+            let containers = teardown_count("\n" + left, "\nc|");
+            let volumes = teardown_count("\n" + left, "\nv|");
+            let networks = teardown_count("\n" + left, "\nn|");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "compose project " + p
+                        + ": what is left of it stopped and removed, its volumes deleted",
+                    teardown_plural(containers, "container", "containers") + ", "
+                        + teardown_plural(volumes, "volume", "volumes") + ", "
+                        + teardown_plural(networks, "network", "networks"),
+                    if volumes > 0 {
+                        "no: its data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings it up again"
+                    },
+                    "remote-project-down",
+                    name,
+                    p + "\n" + trim_nl(left),
+                    TEARDOWN_STEP_REMOTE + 1,
+                ),
+            );
+        }
+        // the directories the renders were copied to
+        let mut dirs = held.lines;
+        while len(dirs) > 0 {
+            let nl = std::str::index_of(dirs, "\n");
+            let l = dirs[0..nl];
+            dirs = dirs[(nl + 1)..len(dirs)];
+            if !std::str::starts_with(l, "d|") { continue; }
+            let d = l[2..len(l)];
+            if len(only) > 0 && d != base + "-" + only { continue; }
+            if !teardown_ours(d, base) && !std::str::contains(seen, "\n" + d + "\n") { continue; }
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "~/.hale/habitat/" + d + ": the files the habitat copied there",
+                    "1 directory",
+                    "yes: `hale habitat apply` copies them again",
+                    "remote-dir-rm",
+                    name,
+                    d,
+                    TEARDOWN_STEP_REMOTE + 2,
+                ),
+            );
+        }
+        if len(only) > 0 && touched {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "~/.hale/habitat/" + base + "/" + only
+                        + ": the files the habitat copied there for it",
+                    "1 directory",
+                    "yes: `hale habitat apply` copies them again",
+                    "remote-subdir-rm",
+                    name,
+                    base + "\n" + only,
+                    TEARDOWN_STEP_REMOTE + 2,
+                ),
+            );
+        }
+    } else if held.never {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "remote",
+                name,
+                "nothing of the habitat's runs on " + name
+                    + ": its key was never authorized there ("
+                    + held.why + ")",
+                "nothing",
+                "-",
+                "note",
+                name,
+                "",
+                TEARDOWN_STEP_REMOTE,
+            ),
+        );
+    } else {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "remote",
+                name,
+                "unreachable: left on " + name
+                    + ", cannot be removed from here (not recoverable from the habitat): whatever else the habitat ran or copied there ("
+                    + held.why + ")",
+                "unknown",
+                "no: not recoverable from the habitat",
+                "unreachable",
+                name,
+                "",
+                TEARDOWN_STEP_REMOTE,
+            ),
+        );
+    }
+    if !rows { return items; }
+    items = teardown_more(items, unplace);
+    items = teardown_more(
+        items,
+        teardown_item(
+            "remote",
+            name,
+            "the host " + name + " (" + h.user + "@" + h.address + ":" + to_string(h.port)
+                + "): its entry, marked removed in the habitat's record",
+            "1 row",
+            "yes: `hale habitat host add " + name + "` adds it again",
+            "host-removed",
+            name,
+            teardown_host_said(h),
+            TEARDOWN_STEP_ROWS + 1,
+        ),
+    );
+    return teardown_more(items, host_key_note(root, h, "note"));
+}
+
+// The note for the line `h`'s `~/.ssh/authorized_keys` took: the habitat
+// cannot remove it; the person does, on that machine. `action` is `note`, or
+// `note-keep` where the act that removes the record keeps the note after it.
+fn host_key_note(root: String, h: Host, action: String) -> String {
+    let line = habitat_public_key(root);
+    return teardown_item(
+        "hosts",
+        h.name,
+        "the line " + (if len(line) > 0 { "`" + line + "`" } else { "of the habitat's key" })
+            + " in " + h.user + "@" + h.name
+            + ":~/.ssh/authorized_keys: the habitat cannot remove it; remove it on that machine",
+        "1 line",
+        "-",
+        action,
+        h.name,
+        line,
+        TEARDOWN_STEP_ROWS + 2,
+    );
+}
+
+// Whether a plan holds anything but the host's own entry and notes: what a
+// host's removal confirms by its name.
+@bounded_by(plan)
+fn teardown_destroys(plan: String) -> Bool {
+    let mut it = std::json::array_first(plan);
+    while !it.done {
+        let a = std::json::find_string_field(it.element, "action");
+        if a != "note" && a != "host-removed" { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// The `n`th line of `text` (from 0), "" past its end.
+@bounded_by(text)
+fn teardown_arg(text: String, n: Int) -> String {
+    let mut rest = text;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// Whether `s` is safe inside single quotes on a shell line.
+fn teardown_quotable(s: String) -> Bool {
+    return len(s) > 0 && !std::str::contains(s, "'") && !std::str::contains(s, "\n")
+        && !std::str::contains(s, "/");
+}
+
+// A row of the habitat's record: "" once it is written, else why not.
+fn teardown_row(root: String, kind: String, entity: String, body: String, by: String) -> String {
+    let j = RecordJournal { repo: root, dsn: kept_dsn(root, HEAD_DSN_ENV), author: by };
+    let moved = j.refresh();
+    let r = j.append(j.revision(), kind, entity, body);
+    return if r.ok { "" } else { "the habitat's record refused the row (" + r.error + ")" };
+}
+
+// The allocation row `body` with its host emptied: placed nowhere.
+@bounded_by(body)
+fn teardown_unplaced(body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    let mut it = std::json::object_first(body);
+    while !it.done {
+        let k = std::json::obj_key_string(it, body);
+        if k != "host" { b.field(k, std::json::obj_value_raw(it, body)); }
+        it = std::json::object_next(it, body);
+    }
+    b.string_field("host", "");
+    b.end_object();
+    return b.result();
+}
+
+// The item executed: "" once it is done, else why it is not. The host's
+// actions run over SSH; the record's write rows in the name of `by`. A note
+// is nothing to do.
+@bounded_by(root)
+fn teardown_execute(root: String, item: String, by: String) -> String {
+    let action = std::json::find_string_field(item, "action");
+    let host = std::json::find_string_field(item, "host");
+    let args = std::json::find_string_field(item, "args");
+    if action == "note" || action == "covered" { return ""; }
+    if action == "unreachable" {
+        // left on the host; where the habitat last applied it is nowhere now
+        let ukey = teardown_arg(args, 0);
+        let urole = teardown_arg(args, 1);
+        if len(ukey) > 0 && placed_on(ukey, urole).host == host {
+            std::io::fs::unlink(placed_path(ukey, urole)) or discard;
+        }
+        return "";
+    }
+    let local = teardown_local(root, action, args, by);
+    if local != "-" { return local; }
+    if action == "unplace" {
+        let mut rest = teardown_allocations(root);
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if std::str::starts_with(line, args + "\t") {
+                let body = line[(len(args) + 1)..len(line)];
+                return teardown_row(root, "habitat.allocated", args, teardown_unplaced(body), by);
+            }
+        }
+        return "";
+    }
+    let h = recorded_host(root, host);
+    if action == "host-removed" {
+        if len(h.provider) == 0 || h.state == "removed" { return ""; }
+        let mut gone = h;
+        gone.state = "removed";
+        gone.reachable = false;
+        return teardown_row(root, "habitat.host", host, host_row_body(gone), by);
+    }
+    if h.provider != "ssh" { return "no ssh host `" + host + "` in the habitat's record"; }
+    let project = teardown_arg(args, 0);
+    if !teardown_quotable(project) { return "`" + project + "` is no project's name"; }
+    let service = teardown_arg(args, 1);
+    let mut script = "";
+    if action == "remote-withdraw" || action == "remote-project-down" {
+        // exactly the resources the plan audited, by name
+        script = teardown_remove_script(
+            teardown_after(args, if action == "remote-withdraw" { 4 } else { 1 }),
+        );
+        if std::str::starts_with(script, "!") { return script[1..len(script)]; }
+    } else if action == "remote-dir-rm" {
+        script = "rm -rf -- '.hale/habitat/" + project + "'";
+    } else if action == "remote-subdir-rm" {
+        if !teardown_quotable(service) { return "`" + service + "` is no directory's name"; }
+        script = "rm -rf -- '.hale/habitat/" + project + "/" + service + "'";
+    }
+    if len(script) == 0 { return "`" + action + "` is no action of a host's"; }
+    let r = ssh_run(root, h, script, "");
+    if r.code != 0 {
+        let failed = ssh_failure(r);
+        return (if len(failed) > 0 { failed + ": " } else { "" }) + teardown_failure(r);
+    }
+    if action == "remote-withdraw" {
+        // withdrawn: where it was applied is nowhere now
+        let key = teardown_arg(args, 2);
+        let role = teardown_arg(args, 3);
+        if placed_on(key, role).host == host {
+            std::io::fs::unlink(placed_path(key, role)) or discard;
+        }
+    }
+    return "";
+}
+
+// The plan executed item by item, in order, stopping at the first that
+// fails: a JSON array of each item's `what`, its `state` (`done`, `failed`
+// or `left`) and, for the failed one, `why`.
+@bounded_by(plan)
+fn teardown_run(root: String, plan: String, by: String) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut failed = false;
+    let mut it = std::json::array_first(plan);
+    while !it.done {
+        let what = std::json::find_string_field(it.element, "what");
+        let why = if failed { "" } else { teardown_execute(root, it.element, by) };
+        out.begin_object();
+        out.string_field("what", what);
+        out.string_field("action", std::json::find_string_field(it.element, "action"));
+        out.string_field(
+            "state",
+            if failed { "left" } else if len(why) > 0 { "failed" } else { "done" },
+        );
+        out.string_field("why", why);
+        out.end_object();
+        if len(why) > 0 { failed = true; }
+        it = std::json::array_next(it);
+    }
+    out.end_array();
+    return out.result();
+}
+
+// Whether every item of a run's report was done.
+@bounded_by(report)
+fn teardown_all_done(report: String) -> Bool {
+    let mut it = std::json::array_first(report);
+    while !it.done {
+        if std::json::find_string_field(it.element, "state") != "done" { return false; }
+        it = std::json::array_next(it);
+    }
+    return true;
+}
+
+// `script`, one shell line, run on this machine: "" once it exits 0, else
+// what it said.
+fn teardown_sh(script: String) -> String {
+    let r = run_tool("sh\n-c\n" + script);
+    return if r.code == 0 { "" } else { teardown_failure(r) };
+}
+
+// Why a tool that exited nonzero failed: what it said (its error, else its
+// output), a secret-looking word redacted, and its exit status; never
+// empty, so a failed item is never taken for a done one.
+fn teardown_failure(r: RunResult) -> String {
+    let said = trim_nl(if len(trim_nl(r.stderr)) > 0 { r.stderr } else { r.stdout });
+    let shown = teardown_redact(said);
+    return (if len(shown) > 0 { shown + " " } else { "" }) + "(exit " + to_string(r.code) + ")";
+}
+
+// `text` with every word that looks like a secret (24 or more letters,
+// digits and `+/=`, a digit among them, no `-` or `_` joining it: a token, a
+// key, a password) replaced by `[redacted]`.
+@bounded_by(text)
+fn teardown_redact(text: String) -> String {
+    let mut out = "";
+    let mut word = "";
+    let mut i = 0;
+    while i <= len(text) {
+        let c = if i < len(text) { text[i..(i + 1)] } else { " " };
+        let part = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "+" || c == "/" || c == "=" || c == "_" || c == "-";
+        if part {
+            word = word + c;
+        } else {
+            out = out + (if teardown_secretish(word) { "[redacted]" } else { word })
+                + (if i < len(text) { c } else { "" });
+            word = "";
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+@bounded_by(word)
+fn teardown_secretish(word: String) -> Bool {
+    if len(word) < 24 { return false; }
+    // a name (a project's, a volume's) is joined by `-` or `_`; a token, a
+    // key or a drawn password is one run of letters, digits and `+/=`
+    let mut digit = false;
+    let mut i = 0;
+    while i < len(word) {
+        let c = word[i..(i + 1)];
+        if c == "-" || c == "_" { return false; }
+        if c >= "0" && c <= "9" { digit = true; }
+        i = i + 1;
+    }
+    return digit;
+}
+
+// Whether `s` is one word a shell line may carry in single quotes.
+fn teardown_word(s: String) -> Bool {
+    return teardown_quotable(s) && !std::str::contains(s, " ");
+}
+
+// An item of this machine's executed: "" once it is done, else why not;
+// "-" for an action that is not this machine's.
+@bounded_by(args)
+fn teardown_local(root: String, action: String, args: String, by: String) -> String {
+    let first = teardown_arg(args, 0);
+    if action == "service-rm" || action == "project-rm" {
+        // exactly the resources the plan audited, by name
+        if !teardown_word(first) { return "`" + first + "` is no project's name"; }
+        let script = teardown_remove_script(teardown_after(args, 1));
+        if std::str::starts_with(script, "!") { return script[1..len(script)]; }
+        return teardown_sh(script);
+    }
+    if action == "volume-rm" || action == "vault-rm" {
+        let mut rest = args;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let w = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if !teardown_word(w) || std::str::starts_with(w, ".") {
+                return "`" + w + "` is no name of one";
+            }
+            if action == "volume-rm" {
+                let why = teardown_sh("docker volume rm -f '" + w + "' >/dev/null");
+                if len(why) > 0 { return why; }
+            } else {
+                if len(std::env::var("HALE_VAULT_ADDR")) > 0 {
+                    return "the vault is at HALE_VAULT_ADDR, provisioned out of band";
+                }
+                std::io::fs::unlink(std::secret::vault_local_dir() + "/" + w) or discard;
+            }
+        }
+        return "";
+    }
+    if action == "dir-rm" {
+        let habitat = local_habitat_dir() + "/";
+        if !std::str::starts_with(first, habitat) || std::str::contains(first, "/../")
+            || std::str::contains(first, "'")
+        {
+            return first + " is not the habitat's to remove";
+        }
+        return teardown_sh("rm -rf -- '" + first + "'");
+    }
+    if action == "forgejo-user-rm" {
+        // exactly the audited repositories, by id, then the account by id
+        if !teardown_word(first) { return "`" + first + "` is no account's name"; }
+        let fkey = teardown_arg(args, 1);
+        let audited = teardown_after(args, 2);
+        let uid = std::str::replace(teardown_arg(args, 2), "id:", "");
+        let now = forgejo_held(fkey);
+        if !now.ok { return "the habitat's Forgejo did not answer for " + first + ": " + now.why; }
+        if "id:" + now.id + "\n" + now.repos != audited
+            + (if std::str::ends_with(audited, "\n") { "" } else { "\n" })
+        {
+            return "plan_changed: the account " + first
+                + " or its repositories changed since the plan; nothing of it was deleted";
+        }
+        let api = ForgejoApi { address: forgejo_address(), token_slot: forgejo_vault(fkey) };
+        let mut rest = now.repos;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            // `r:<id>:<owner/name>`, checked by id before it is deleted
+            let tail = line[2..len(line)];
+            let colon = std::str::index_of(tail, ":");
+            let rid = tail[0..colon];
+            let full = tail[(colon + 1)..len(tail)];
+            let seen = api.call("GET", "/repositories/" + rid, "");
+            if seen.status == 404 { continue; }
+            if std::json::find_string_field(seen.body, "full_name") != full {
+                return "plan_changed: the repository " + rid + " is not " + full + " now";
+            }
+            let gone = api.call("DELETE", "/repos/" + full, "");
+            if !gone.ok && gone.status != 404 { return "the repository " + full + ": " + gone.why; }
+        }
+        if !teardown_word(uid) { return "`" + uid + "` is no account's id"; }
+        let r = run_tool(
+            forgejo_compose()
+                + "\nexec\n-T\nforge\nsh\n-c\nsu-exec git forgejo admin user delete --id '" + uid
+                + "'",
+        );
+        if r.code == 0 || std::str::contains(r.stderr + r.stdout, "does not exist") { return ""; }
+        return "the habitat's Forgejo did not delete " + first + " (id " + uid + "): "
+            + teardown_failure(r);
+    }
+    if action == "organism-removed" { return organism_removed_rows(root, first, by); }
+    return "-";
+}
+
+// `body` with `"state": "removed"`, and for an allocation placed nowhere.
+@bounded_by(body)
+fn teardown_removed_body(body: String, unplace: Bool) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    let mut it = std::json::object_first(body);
+    while !it.done {
+        let k = std::json::obj_key_string(it, body);
+        if k != "state" && !(unplace && k == "host") {
+            b.field(k, std::json::obj_value_raw(it, body));
+        }
+        it = std::json::object_next(it, body);
+    }
+    if unplace { b.string_field("host", ""); }
+    b.string_field("state", "removed");
+    b.end_object();
+    return b.result();
+}
+
+// The organism keyed `key` marked removed in the habitat's record: each of
+// its allocations' rows, then its graft's, in the name of `by`.
+@bounded_by(root)
+fn organism_removed_rows(root: String, key: String, by: String) -> String {
+    let mut rest = teardown_allocations(root);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::starts_with(line, key + "/") { continue; }
+        let tab = std::str::index_of(line, "\t");
+        let why = teardown_row(
+            root,
+            "habitat.allocated",
+            line[0..tab],
+            teardown_removed_body(line[(tab + 1)..len(line)], true),
+            by,
+        );
+        if len(why) > 0 { return why; }
+    }
+    let mut grafted = teardown_latest(root, "habitat.grafted");
+    while len(grafted) > 0 {
+        let nl = std::str::index_of(grafted, "\n");
+        let line = grafted[0..nl];
+        grafted = grafted[(nl + 1)..len(grafted)];
+        if std::str::starts_with(line, key + "\t") {
+            return teardown_row(
+                root,
+                "habitat.grafted",
+                key,
+                teardown_removed_body(line[(len(key) + 1)..len(line)], false),
+                by,
+            );
+        }
+    }
+    return "";
+}
+
+// The organism the habitat grafted as `name` (or keyed `name`): its key and
+// its graft row's body, or why there is none.
+type GraftedOrganism {
+    key: String = "";
+    body: String = "";
+    code: String = "";
+    why: String = "";
+}
+
+@bounded_by(root)
+fn grafted_organism(root: String, name: String) -> GraftedOrganism {
+    let mut found = GraftedOrganism { };
+    let mut n = 0;
+    let mut rest = teardown_latest(root, "habitat.grafted");
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        let key = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        if std::json::find_string_field(body, "name") == name || key == name {
+            found = GraftedOrganism { key: key, body: body };
+            n = n + 1;
+        }
+    }
+    if n == 0 {
+        return GraftedOrganism {
+            code: "not_found",
+            why: "the habitat grafted no organism `" + name + "`",
+        };
+    }
+    if n > 1 {
+        return GraftedOrganism {
+            code: "ambiguous",
+            why: "the habitat grafted more than one organism named `" + name
+                + "`: name it by its key",
+        };
+    }
+    return found;
+}
+
+// The plan's items for removing the organism keyed `key` (its graft row's
+// body `body`), comma-separated: its record and memory, its genome
+// repository, its Forgejo repository and account, its allocations by host
+// (this machine's volumes; another host's through that host's items, or,
+// when it does not answer, named and left), its compose services and
+// projects, its vault slots, its files here, and its rows in the habitat's
+// record marked removed.
+@bounded_by(root)
+fn organism_teardown_items(root: String, key: String, body: String) -> String {
+    let name = std::json::find_string_field(body, "name");
+    let subject = name + " (" + key + "…)";
+    let project = local_habitat_project();
+    let habitat = local_habitat_dir();
+    let mut items = "";
+    let mut services = "";
+    let mut hosts = "\n";
+    let mut slots = "\n";
+    // the supplied slots its rows name, kept
+    let mut keep = "\n";
+    let mut rows = 1;
+    let mut rest = teardown_allocations(root);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !std::str::starts_with(line, key + "/") { continue; }
+        rows = rows + 1;
+        let tab = std::str::index_of(line, "\t");
+        let entity = line[0..tab];
+        let abody = line[(tab + 1)..len(line)];
+        let role = std::json::find_string_field(abody, "role");
+        let provider = std::json::find_string_field(abody, "provider");
+        // the slots its row names, but a forge's credential a person supplied
+        // (any forge but the habitat's own Forgejo, whose token it mints)
+        let supplied = role == "forge" && provider != "forgejo";
+        if supplied {
+            let kv = std::json::find_string_field(abody, "key_vault");
+            if len(kv) > 0 && !std::str::contains(keep, "\n" + kv + "\n") {
+                keep = keep + kv + "\n";
+            }
+        }
+        let mut vt = std::json::array_first(
+            std::json::find_field_raw(if supplied { "{}" } else { abody }, "vault"),
+        );
+        while !vt.done {
+            let slot = std::json::find_string_field("{\"s\":" + vt.element + "}", "s");
+            if len(slot) > 0 && !std::str::contains(slots, "\n" + slot + "\n") {
+                slots = slots + slot + "\n";
+            }
+            vt = std::json::array_next(vt);
+        }
+        if role == "forge" || role == "identity" { continue; }
+        // where it is applied, as the habitat recorded it (this machine when
+        // nothing says otherwise), is where its resources are; a placement on
+        // another host not applied yet is audited there too, for what may be
+        // there already
+        let applied = placed_on(key, role);
+        let host = if len(applied.host) > 0 { applied.host } else { "local" };
+        let row_host = std::json::find_string_field(abody, "host");
+        if provider == "ssh" && len(row_host) > 0 && row_host != "local" && row_host != host
+            && !std::str::contains(hosts, "\n" + row_host + "\n")
+        {
+            hosts = hosts + row_host + "\n";
+        }
+        let service = compose_service(role, key);
+        let mut item = "";
+        if provider == "operator" {
+            item = teardown_item(
+                "allocations", subject,
+                entity + ": on the operator's server, adopted, never the habitat's: kept",
+                "-", "-", "note", "", "", 85,
+            );
+        } else if role == "database" || role == "broker" {
+            item = teardown_item(
+                "allocations", subject,
+                entity + ": a tenant of its "
+                    + (if role == "database" { "memory" } else { "nerves" })
+                    + " server, removed with it",
+                "-", "no", "covered", "", "", 85,
+            );
+        } else if host != "local" {
+            if !std::str::contains(hosts, "\n" + host + "\n") { hosts = hosts + host + "\n"; }
+            item = teardown_item(
+                if role == "memory" { "record" } else { "allocations" }, subject,
+                (if role == "memory" { "its record, in its memory " } else { entity + ": " })
+                    + "on " + host + ", removed with that host's items below",
+                "-", "no", "covered", "", "", 85,
+            );
+        } else if role == "services" {
+            // its project's resources here, by name: what is removed, and
+            // nothing that appears after
+            let own = local_project_lines(project + "-" + key);
+            item = teardown_item(
+                "compose", subject,
+                entity + ": its services, compose project " + project + "-" + key
+                    + ": containers removed, volumes deleted",
+                teardown_plural(teardown_count("\n" + own, "\nc|"), "container", "containers")
+                    + ", "
+                    + teardown_plural(teardown_count("\n" + own, "\nv|"), "volume", "volumes"),
+                "no: their data is deleted", "project-rm", "",
+                project + "-" + key + "\n" + trim_nl(own), 40,
+            );
+        } else if len(service) > 0 {
+            services = services + "\n" + service;
+            item = teardown_item(
+                if role == "memory" { "record" } else { "allocations" }, subject,
+                (
+                    if role == "memory" {
+                        "its record, in its memory (" + service + ")"
+                    } else {
+                        entity + ": " + role + " (" + service + ") on this machine"
+                    }
+                )
+                    + ", its volume " + project + "_" + service + " deleted",
+                "1 volume",
+                if role == "memory" {
+                    "no: the record and every row of it are deleted"
+                } else {
+                    "no: its data is deleted"
+                },
+                "volume-rm", "", project + "_" + service, 50,
+            );
+        }
+        items = teardown_more(items, item);
+    }
+    if len(services) > 0 {
+        // its containers here, by name
+        let listing = local_project_lines(project);
+        let mut named = "";
+        let mut ss = services[1..len(services)] + "\n";
+        while len(ss) > 0 {
+            let snl = std::str::index_of(ss, "\n");
+            named = named + teardown_lines(listing, "c|" + project + "|" + ss[0..snl] + "|");
+            ss = ss[(snl + 1)..len(ss)];
+        }
+        items = teardown_more(
+            items,
+            teardown_item(
+                "compose", subject,
+                "its services of " + project + ":" + std::str::replace(services, "\n", " ")
+                    + ": stopped and removed",
+                teardown_plural(teardown_count("\n" + named, "\nc|"), "container", "containers"),
+                "no: the organism is removed",
+                "service-rm", "", project + "\n" + trim_nl(named), 30,
+            ),
+        );
+    }
+    // what runs for it on the other hosts
+    let mut hs = hosts[1..len(hosts)];
+    while len(hs) > 0 {
+        let nl = std::str::index_of(hs, "\n");
+        let h = hs[0..nl];
+        hs = hs[(nl + 1)..len(hs)];
+        items = teardown_more(items, host_teardown_items(root, h, false, key));
+    }
+    // its genome repository
+    let cache = std::io::fs::read_file(habitat + "/allocations/" + key + "/allocation.json") or "";
+    let groot = std::json::find_string_field(cache, "root");
+    if std::str::starts_with(groot, habitat + "/saplings/") {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "genome", subject,
+                "its genome repository " + groot + ", the habitat's clone of its sapling",
+                "1 directory", "yes, at the pinned revision: commits made there since are lost",
+                "dir-rm", "", groot, 65,
+            ),
+        );
+    } else {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "genome", subject,
+                "its genome repository "
+                    + (if len(groot) > 0 { groot } else { "(not known on this machine)" })
+                    + ": a checkout outside the habitat, the person's: kept",
+                "-", "-", "note", "", "", 85,
+            ),
+        );
+    }
+    // its forge repository and account
+    let forge = std::io::fs::read_file(forge_cache_path(key)) or "";
+    let fp = std::json::find_string_field(forge, "provider");
+    let repo = std::json::find_string_field(forge, "repo");
+    if fp == "forgejo" && len(repo) > 0 {
+        let slash = std::str::index_of(repo, "/");
+        let user = if slash > 0 { repo[0..slash] } else { repo };
+        // the account and its repositories as Forgejo answers them, by id:
+        // what is deleted, and nothing added since
+        let held = forgejo_held(key);
+        if held.ok {
+            let n = teardown_count("\n" + held.repos, "\nr:");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its Forgejo account " + user + " (id " + held.id + ") and its repositories "
+                        + forgejo_repo_names(held.repos) + ", with every pull request there",
+                    "1 account, " + teardown_plural(n, "repository", "repositories"),
+                    "no: they are deleted",
+                    "forgejo-user-rm", "",
+                    user + "\n" + key + "\nid:" + held.id + "\n" + trim_nl(held.repos), 55,
+                ),
+            );
+        } else {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "forge", subject,
+                    "its Forgejo account " + user + " could not be read (" + held.why
+                        + "): it is left in the habitat's Forgejo, which forgetting the habitat removes",
+                    "unknown", "-", "note", "", "", 85,
+                ),
+            );
+        }
+    } else if len(repo) > 0 {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "forge", subject,
+                "its forge repository " + repo + " (" + fp + "): not the habitat's: kept",
+                "-", "-", "note", "", "", 85,
+            ),
+        );
+    }
+    // its vault slots: those its rows name and those named for its key, and
+    // its service client's, named for it, when no other organism bears its
+    // name
+    if len(std::env::var("HALE_VAULT_ADDR")) > 0 {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "vault", subject,
+                "the vault at HALE_VAULT_ADDR is provisioned out of band: its slots are kept",
+                "-", "-", "note", "", "", 85,
+            ),
+        );
+    } else {
+        let dir = std::secret::vault_local_dir();
+        let mut kept = "";
+        let mut listed = run_tool("ls\n-A\n" + dir).stdout;
+        while len(listed) > 0 {
+            let nl = std::str::index_of(listed, "\n");
+            let f = if nl < 0 { listed } else { listed[0..nl] };
+            listed = if nl < 0 { "" } else { listed[(nl + 1)..len(listed)] };
+            let ours = !std::str::contains(keep, "\n" + f + "\n")
+                && (
+                    std::str::contains(f, key) || std::str::contains(slots, "\n" + f + "\n")
+                        || (f == "oidc-service-" + name && grafted_organism(root, name).key == key)
+                );
+            if len(f) > 0 && ours && !std::str::contains(kept, "\n" + f) { kept = kept + "\n" + f; }
+        }
+        if len(kept) > 0 {
+            let n = teardown_count(kept, "\n");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "vault", subject,
+                    "its slots: " + std::str::replace(kept[1..len(kept)], "\n", ", "),
+                    teardown_plural(n, "slot", "slots"), "no: their values are deleted",
+                    "vault-rm", "", kept[1..len(kept)], 60,
+                ),
+            );
+        }
+        if len(keep) > 1 {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "vault", subject,
+                    "kept: " + std::str::replace(trim_nl(keep[1..len(keep)]), "\n", ", ")
+                        + " (credentials a person supplied, which the habitat did not mint)",
+                    teardown_plural(teardown_count(keep, "\n") - 1, "slot", "slots"), "-",
+                    "note", "", "", 85,
+                ),
+            );
+        }
+    }
+    // its files here, and its rows
+    if std::io::fs::file_exists(habitat + "/allocations/" + key) {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "allocations", subject,
+                "its allocation files on this machine (" + habitat + "/allocations/" + key
+                    + "): compose files, ports, secrets files and caches",
+                "1 directory", "no", "dir-rm", "", habitat + "/allocations/" + key, 65,
+            ),
+        );
+    }
+    return teardown_more(
+        items,
+        teardown_item(
+            "record", subject,
+            "its graft and its allocations marked removed in the habitat's record",
+            teardown_plural(rows, "row", "rows"), "no: the habitat no longer knows it",
+            "organism-removed", "", key, TEARDOWN_STEP_ROWS,
+        ),
+    );
+}
+
+// `plan` with its items in the order they are executed: by `step`, from 0
+// to 100, each step's in the plan's order.
+@bounded_by(plan)
+fn teardown_in_steps(plan: String) -> String {
+    let mut out = "";
+    let mut step = 0;
+    while step <= 100 {
+        let mut it = std::json::array_first(plan);
+        while !it.done {
+            if std::json::find_int_field(it.element, "step") == step {
+                out = teardown_more(out, it.element);
+            }
+            it = std::json::array_next(it);
+        }
+        step = step + 1;
+    }
+    return "[" + out + "]";
+}
+
+// What the habitat's record says of `h`, as a plan binds it: how it is
+// reached, its state and the host key it trusts. A plan made before the host
+// changed is not the plan of the host now.
+fn teardown_host_said(h: Host) -> String {
+    return h.user + "@" + h.address + ":" + to_string(h.port) + " " + h.state + " " + h.host_key;
+}
+
+// The digest a confirmation binds a plan by: each item's group, subject,
+// action, host, arguments and recoverability, in order. Its sizes, counts
+// and wording are left out (a volume grows while the person reads), and
+// everything that decides what is removed is in.
+@bounded_by(plan)
+fn teardown_digest(plan: String) -> String {
+    let mut text = "";
+    let mut it = std::json::array_first(plan);
+    while !it.done {
+        let e = it.element;
+        text = text + std::json::find_string_field(e, "group") + "|"
+            + std::json::find_string_field(e, "subject") + "|"
+            + std::json::find_string_field(e, "action") + "|"
+            + std::json::find_string_field(e, "host") + "|"
+            + std::json::find_string_field(e, "args") + "|"
+            + std::json::find_string_field(e, "recoverable") + "\n";
+        it = std::json::array_next(it);
+    }
+    return "sha256:" + hex(std::crypto::sha256(std::bytes::from_string(text)));
+}
+
+// The lines of the listing `lines` that start with `prefix`, each ending in
+// a newline.
+@bounded_by(lines)
+fn teardown_lines(lines: String, prefix: String) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let l = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(l, prefix) { out = out + l + "\n"; }
+    }
+    return out;
+}
+
+// What follows the first `n` lines of `text`.
+@bounded_by(text)
+fn teardown_after(text: String, n: Int) -> String {
+    let mut rest = text;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    return rest;
+}
+
+// The last `|`-separated field of a listing line.
+@bounded_by(line)
+fn teardown_last_field(line: String) -> String {
+    let mut at = len(line);
+    while at > 0 && line[(at - 1)..at] != "|" { at = at - 1; }
+    return line[at..len(line)];
+}
+
+// One shell line removing exactly the resources the listing `lines` names
+// (`c|<project>|<service>|<name>`, `v|<project>|<name>`,
+// `n|<project>|<name>`): the containers, then the volumes, then the
+// networks, each by its name; one already gone is no failure. `!` and why
+// when a name cannot be carried.
+@bounded_by(lines)
+fn teardown_remove_script(lines: String) -> String {
+    let mut out = "true";
+    let mut pass = 0;
+    while pass < 3 {
+        let kind = if pass == 0 { "c|" } else if pass == 1 { "v|" } else { "n|" };
+        let mut rest = lines;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let l = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if !std::str::starts_with(l, kind) { continue; }
+            let name = teardown_last_field(l);
+            if !teardown_word(name) { return "!`" + name + "` is no resource's name"; }
+            let q = "'" + name + "'";
+            out = out + " && "
+                + (
+                    if pass == 0 {
+                        "{ e=$(docker rm -f " + q
+                            + " 2>&1 >/dev/null) || ! docker container inspect "
+                            + q + " >/dev/null 2>&1 || { echo \"container " + name
+                            + ": $e\" >&2; false; }; }"
+                    } else if pass == 1 {
+                        "docker volume rm -f " + q + " >/dev/null"
+                    } else {
+                        "{ e=$(docker network rm " + q
+                            + " 2>&1 >/dev/null) || ! docker network inspect "
+                            + q + " >/dev/null 2>&1 || { echo \"network " + name
+                            + ": $e\" >&2; false; }; }"
+                    }
+                );
+        }
+        pass = pass + 1;
+    }
+    return out;
+}
+
+// The resources of the compose project `project` on this machine, sorted,
+// as listing lines (`c|…`, `v|…`, `n|…`): what an item removing it binds.
+fn local_project_lines(project: String) -> String {
+    if !teardown_word(project) { return ""; }
+    let label = "label=com.docker.compose.project=" + project;
+    let r = run_tool(
+        "sh\n-c\no=$(docker ps -a --filter \"$1\" --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}|{{.Names}}' && docker volume ls --filter \"$1\" --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter \"$1\" --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}') && printf '%s\\n' \"$o\" | sed '/^$/d' | sort\nsh\n"
+            + label,
+    );
+    return if r.code == 0 { r.stdout } else { "" };
+}
+
+// The organism keyed `key`'s Forgejo account as Forgejo answers it, asked
+// with its own token: its id and its repositories, `r:<id>:<owner/name>` a
+// line, sorted.
+type ForgejoHeld {
+    ok: Bool = false;
+    id: String = "";
+    repos: String = "";
+    why: String = "";
+}
+
+@bounded_by(key)
+fn forgejo_held(key: String) -> ForgejoHeld {
+    let api = ForgejoApi { address: forgejo_address(), token_slot: forgejo_vault(key) };
+    let me = api.call("GET", "/user", "");
+    if !me.ok { return ForgejoHeld { why: me.why }; }
+    let listed = api.call("GET", "/user/repos?limit=50", "");
+    if !listed.ok { return ForgejoHeld { why: listed.why }; }
+    let mut lines = "";
+    let mut it = std::json::array_first(listed.body);
+    while !it.done {
+        lines = lines + "r:" + to_string(std::json::find_int_field(it.element, "id")) + ":"
+            + std::json::find_string_field(it.element, "full_name") + "\n";
+        it = std::json::array_next(it);
+    }
+    return ForgejoHeld {
+        ok: true,
+        id: to_string(std::json::find_int_field(me.body, "id")),
+        repos: teardown_sorted(lines),
+    };
+}
+
+// The owner/name of each `r:<id>:<owner/name>` line, comma-separated.
+@bounded_by(repos)
+fn forgejo_repo_names(repos: String) -> String {
+    let mut out = "";
+    let mut rest = repos;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tail = line[2..len(line)];
+        let colon = std::str::index_of(tail, ":");
+        out = out + (if len(out) > 0 { ", " } else { "" }) + tail[(colon + 1)..len(tail)] + " (id "
+            + tail[0..colon] + ")";
+    }
+    return if len(out) > 0 { out } else { "(none)" };
+}
+
+// The newline-terminated `lines`, sorted.
+@bounded_by(lines)
+fn teardown_sorted(lines: String) -> String {
+    let mut rest = lines;
+    let mut out = "";
+    while len(rest) > 0 {
+        // the least line left, taken out once
+        let mut least = "";
+        let mut found = false;
+        let mut scan = rest;
+        while len(scan) > 0 {
+            let nl = std::str::index_of(scan, "\n");
+            let l = scan[0..nl];
+            scan = scan[(nl + 1)..len(scan)];
+            if !found || l < least { least = l; found = true; }
+        }
+        out = out + least + "\n";
+        let at = std::str::index_of("\n" + rest, "\n" + least + "\n");
+        rest = rest[0..at] + rest[(at + len(least) + 1)..len(rest)];
+    }
+    return out;
+}

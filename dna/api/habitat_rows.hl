@@ -55,7 +55,14 @@ fn habitat_latest(j: dna::Journal, kind: String) -> LatestRows {
     let mut i = 0;
     while i < j.revision() {
         let e = j.read(i);
-        if e.kind == kind { latest.set(LatestRow { entity: e.entity, at: i }); }
+        // an organism removed (its graft's and its allocations' latest rows
+        // say `"state": "removed"`) is the record's history alone: no row of
+        // it holds (a host keeps its `removed` state, which its readers say)
+        if e.kind == kind {
+            let gone = kind != "habitat.host"
+                && std::json::find_string_field(e.body, "state") == "removed";
+            latest.set(LatestRow { entity: e.entity, at: if gone { -2 } else { i } });
+        }
         i = i + 1;
     }
     return latest;
