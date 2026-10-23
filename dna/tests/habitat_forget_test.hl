@@ -311,6 +311,36 @@ fn main() {
             ).ok,
         "the allocations placed there landed",
     );
+    // the second organism's memory placed on that host and never applied
+    // there: it still runs here, and its removal is planned here
+    std::test::assert(
+        j.append(
+            j.revision(),
+            "habitat.allocated",
+            dkey + "/memory",
+            "{\"organism\":\"" + dkey + "\",\"role\":\"memory\",\"service\":\"memory-" + dkey
+                + "\",\"project\":\"p\",\"provider\":\"ssh\",\"host\":\"rack-c.lan\",\"vault\":[]}",
+        ).ok,
+        "a placement of its memory, not applied, landed",
+    );
+    // the first organism's own services, a compose project of this machine
+    // holding a volume
+    let services = dna::local_habitat_project() + "-" + tkey;
+    std::test::assert(
+        dna::run_tool(
+            "docker\nvolume\ncreate\n--label\ncom.docker.compose.project=" + services + "\n"
+                + services + "_data",
+        ).code == 0
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                tkey + "/services",
+                "{\"organism\":\"" + tkey
+                    + "\",\"role\":\"services\",\"service\":\"\",\"project\":\""
+                    + services + "\",\"provider\":\"compose\",\"host\":\"local\",\"vault\":[]}",
+            ).ok,
+        "its services project and its row landed",
+    );
 
     // ---- an organism removed, plan-then-confirm: its record and memory,
     // genome, Forgejo account, allocations by host (the unanswering host's
@@ -400,6 +430,7 @@ fn main() {
             && std::str::contains(p, "the habitat's record and memory\n")
             && std::str::contains(p, "the habitat's record " + key + "…: ")
             && std::str::contains(p, "2 organisms grafted")
+            && std::str::contains(p, tkey + "/services: its services, compose project " + services)
             && std::str::contains(p, "gh-keeper-token")
             && std::str::contains(
                 p,
@@ -467,15 +498,16 @@ fn main() {
     std::test::assert_eq_str(state(home, false), kept, "a plain down removes nothing");
 
     // ---- what forgetting would remove changes while the person reads the
-    // plan (a volume of the habitat's project appears): refused
+    // plan (a volume appears in a project the plan removes whole, which a
+    // name alone would not tell): refused
     let project = dna::local_habitat_project();
     let fchanged = at_terminal_after(
         scratch,
         name,
         toolchain() + " habitat down --forget",
         "type the habitat",
-        "docker volume create --label com.docker.compose.project=" + project + " " + project
-            + "_extra >/dev/null",
+        "docker volume create --label com.docker.compose.project=" + services + " " + services
+            + "_more >/dev/null",
     );
     std::test::assert(
         fchanged.code != 0 && std::str::contains(fchanged.stdout, "(plan_changed)")

@@ -168,14 +168,11 @@ fn forget_allocation_items(
         let role = std::json::find_string_field(body, "role");
         let provider = std::json::find_string_field(body, "provider");
         if role == "head" || role == "face" || role == "forge" || role == "identity" { continue; }
+        // where it is applied, as recorded (this machine when nothing says
+        // otherwise), is where its resources are; a placement elsewhere not
+        // applied yet is audited with that host's items
         let applied = dna::placed_on(key, role);
-        let host = if applied.host != "local" {
-            applied.host
-        } else if len(std::json::find_string_field(body, "host")) > 0 && provider == "ssh" {
-            std::json::find_string_field(body, "host")
-        } else {
-            "local"
-        };
+        let host = if len(applied.host) > 0 { applied.host } else { "local" };
         let mut item = "";
         if provider == "operator" {
             item = dna::teardown_item(
@@ -203,7 +200,8 @@ fn forget_allocation_items(
                 group, subject,
                 entity + ": its services, compose project " + project
                     + ": containers removed, volumes deleted",
-                "1 project", "no: their data is deleted", "project-rm", "", project,
+                "1 project", "no: their data is deleted", "project-rm", "",
+                project + "\n" + dna::trim_nl(dna::local_project_lines(project)),
                 FORGET_STEP_VOLUMES - 10,
             );
         } else if role != "memory" {

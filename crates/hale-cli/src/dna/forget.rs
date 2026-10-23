@@ -98,8 +98,9 @@ fn habitat_name() -> String {
 /// its containers and networks, and every compose volume with its size.
 #[derive(Default)]
 struct Held {
-    containers: BTreeMap<String, usize>,
-    networks: BTreeMap<String, usize>,
+    // per project, its containers' and networks' listing lines, sorted
+    containers: BTreeMap<String, Vec<String>>,
+    networks: BTreeMap<String, Vec<String>>,
     volumes: BTreeMap<String, (String, String)>, // name -> (project, size)
 }
 
@@ -119,12 +120,14 @@ fn held() -> Result<Held, String> {
         "--filter",
         "label=com.docker.compose.project",
         "--format",
-        "{{.Label \"com.docker.compose.project\"}}",
+        "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}|{{.Names}}",
     ])?
     .lines()
     .filter(|l| !l.is_empty())
     {
-        *h.containers.entry(line.to_string()).or_default() += 1;
+        let mut w = line.splitn(3, '|');
+        let (Some(project), Some(service), Some(name)) = (w.next(), w.next(), w.next()) else { continue };
+        h.containers.entry(project.to_string()).or_default().push(format!("c|{project}|{service}|{name}"));
     }
     for line in listed(&[
         "network",
@@ -132,12 +135,21 @@ fn held() -> Result<Held, String> {
         "--filter",
         "label=com.docker.compose.project",
         "--format",
-        "{{.Label \"com.docker.compose.project\"}}",
+        "{{.Label \"com.docker.compose.project\"}}|{{.Name}}",
     ])?
     .lines()
     .filter(|l| !l.is_empty())
     {
-        *h.networks.entry(line.to_string()).or_default() += 1;
+        let Some((project, name)) = line.split_once('|') else {
+            continue;
+        };
+        h.networks
+            .entry(project.to_string())
+            .or_default()
+            .push(format!("n|{project}|{name}"));
+    }
+    for v in h.containers.values_mut().chain(h.networks.values_mut()) {
+        v.sort();
     }
     let sizes = listed(&["system", "df", "-v", "--format", "{{json .Volumes}}"])?;
     let vols: Vec<Value> = serde_json::from_str(sizes.trim()).unwrap_or_default();
@@ -357,11 +369,12 @@ fn audit() -> Result<Plan, String> {
                 i["measure"] = json!(measure);
                 claimed.extend(names);
             }
+            // a project's item names its resources: its volumes are its
             "project-rm" => claimed.extend(
-                held.volumes
-                    .iter()
-                    .filter(|(_, (p, _))| p == s(i, "args"))
-                    .map(|(n, _)| n.clone()),
+                s(i, "args")
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("v|"))
+                    .filter_map(|l| l.split_once('|').map(|(_, n)| n.to_string())),
             ),
             _ => {}
         }
@@ -369,7 +382,7 @@ fn audit() -> Result<Plan, String> {
     let covered: Vec<String> = items
         .iter()
         .filter(|i| s(i, "action") == "project-rm")
-        .map(|i| s(i, "args").to_string())
+        .filter_map(|i| s(i, "args").lines().next().map(str::to_string))
         .collect();
     let mut projects: Vec<&String> = held
         .containers
@@ -380,16 +393,21 @@ fn audit() -> Result<Plan, String> {
     projects.sort();
     projects.dedup();
     for p in projects {
-        let c = held.containers.get(p).copied().unwrap_or(0);
-        let n = held.networks.get(p).copied().unwrap_or(0);
+        // its containers and networks by name: exactly what is removed
+        let c = held.containers.get(p).cloned().unwrap_or_default();
+        let n = held.networks.get(p).cloned().unwrap_or_default();
         items.push(item(
             "compose",
             "",
             format!("compose project {p}: its containers and networks removed"),
-            format!("{c} container(s), {n} network(s)"),
+            format!("{} container(s), {} network(s)", c.len(), n.len()),
             "yes: `hale habitat up` makes them again",
             "containers-rm",
-            p.clone(),
+            std::iter::once(p.clone())
+                .chain(c)
+                .chain(n)
+                .collect::<Vec<_>>()
+                .join("\n"),
             40,
         ));
     }
@@ -535,40 +553,35 @@ fn execute_local(i: &Value, name: &str) -> Result<(), String> {
         Docker::Failed(why) => Err(why),
         _ => Ok(()),
     };
-    let by_label = |what: &[&str], project: &str| -> Result<Vec<String>, String> {
-        let mut a = what.to_vec();
-        let label = format!("label=com.docker.compose.project={project}");
-        a.extend(["--filter", label.as_str()]);
-        Ok(listed(&a)?
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect())
-    };
     match s(i, "action") {
         "note" | "covered" => Ok(()),
         "stop" => stop_processes(&mut Vec::new()),
         "containers-rm" | "project-rm" => {
-            let project = args.first().copied().unwrap_or("");
-            let ids = by_label(&["ps", "-a", "-q"], project)?;
-            if !ids.is_empty() {
-                let mut a = vec!["rm", "-f"];
-                a.extend(ids.iter().map(String::as_str));
-                gone(&a)?;
-            }
-            if s(i, "action") == "project-rm" {
-                let vs = by_label(&["volume", "ls", "-q"], project)?;
-                if !vs.is_empty() {
-                    let mut a = vec!["volume", "rm", "-f"];
-                    a.extend(vs.iter().map(String::as_str));
-                    gone(&a)?;
+            // exactly the resources the plan audited, by name: containers,
+            // then volumes, then networks; one already gone is no failure
+            for kind in ["c|", "v|", "n|"] {
+                for line in args.iter().skip(1).filter(|l| l.starts_with(kind)) {
+                    let name = line.rsplit('|').next().unwrap_or("");
+                    if name.is_empty() || name.starts_with('-') {
+                        return Err(format!("`{name}` is no resource's name"));
+                    }
+                    let (remove, inspect): (Vec<&str>, Vec<&str>) = match kind {
+                        "c|" => (vec!["rm", "-f", name], vec!["container", "inspect", name]),
+                        "v|" => (
+                            vec!["volume", "rm", "-f", name],
+                            vec!["volume", "inspect", name],
+                        ),
+                        _ => (
+                            vec!["network", "rm", name],
+                            vec!["network", "inspect", name],
+                        ),
+                    };
+                    if let Err(why) = gone(&remove) {
+                        if matches!(docker(&inspect), Docker::Answered(_)) {
+                            return Err(why);
+                        }
+                    }
                 }
-            }
-            let ns = by_label(&["network", "ls", "-q"], project)?;
-            if !ns.is_empty() {
-                let mut a = vec!["network", "rm"];
-                a.extend(ns.iter().map(String::as_str));
-                gone(&a)?;
             }
             Ok(())
         }

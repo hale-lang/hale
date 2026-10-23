@@ -116,8 +116,8 @@ fn teardown_allocations(root: String) -> String {
     return teardown_latest(root, "habitat.allocated");
 }
 
-// What the habitat ran on a host, as the host answers over SSH: a line
-// each, `c|<project>|<service>` per compose container, `v|<project>|<volume>`
+// What the habitat ran on a host, as the host answers over SSH, sorted: a
+// line each, `c|<project>|<service>|<name>` per compose container, `v|<project>|<volume>`
 // per compose volume, `n|<project>|<network>` per compose network, `d|<name>`
 // per directory under `~/.hale/habitat`.
 type HostHoldings {
@@ -130,7 +130,7 @@ type HostHoldings {
 
 fn host_holdings(root: String, h: Host) -> HostHoldings {
     if h.state != "ready" { return HostHoldings { never: true, why: h.state }; }
-    let script = "docker ps -a --filter label=com.docker.compose.project --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}' && docker volume ls --filter label=com.docker.compose.project --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter label=com.docker.compose.project --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && for d in .hale/habitat/*; do if [ -d \"$d\" ]; then echo \"d|${d#.hale/habitat/}\"; fi; done";
+    let script = "o=$(docker ps -a --filter label=com.docker.compose.project --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}|{{.Names}}' && docker volume ls --filter label=com.docker.compose.project --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter label=com.docker.compose.project --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && for d in .hale/habitat/*; do if [ -d \"$d\" ]; then echo \"d|${d#.hale/habitat/}\"; fi; done) && printf '%s\\n' \"$o\" | sort";
     let r = ssh_run(root, h, script, "");
     if r.code != 0 {
         let failed = ssh_failure(r);
@@ -158,7 +158,7 @@ fn teardown_seen(seen: String, project: String) -> String {
 // containers and its volumes.
 fn held_containers(held: HostHoldings, project: String, service: String) -> Int {
     if len(service) > 0 {
-        return teardown_count(held.lines, "c|" + project + "|" + service + "\n");
+        return teardown_count(held.lines, "c|" + project + "|" + service + "|");
     }
     return teardown_count(held.lines, "c|" + project + "|");
 }
@@ -262,20 +262,30 @@ fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> 
         let containers = held_containers(held, project, service);
         let volume = if len(service) > 0 { project + "_" + service } else { "" };
         let volumes = if len(service) > 0 {
-            teardown_count(held.lines, "v|" + project + "|" + volume + "\n")
+            teardown_count("\n" + held.lines, "\nv|" + project + "|" + volume + "\n")
         } else {
             teardown_count(held.lines, "v|" + project + "|")
         };
         seen = teardown_seen(seen, project);
         if containers == 0 && volumes == 0 { continue; }
         touched = true;
+        // the resources it audited there, by name: what its execution removes,
+        // and nothing else
+        let mut held_by = "";
         if role == "services" {
             downed = teardown_seen(downed, project);
+            held_by = teardown_lines(held.lines, "c|" + project + "|")
+                + teardown_lines(held.lines, "v|" + project + "|")
+                + teardown_lines(held.lines, "n|" + project + "|");
         } else {
-            claimed = claimed + "c|" + project + "|" + service + "\n" + "v|" + project + "|"
-                + volume
-                + "\n";
+            held_by = teardown_lines(held.lines, "c|" + project + "|" + service + "|")
+                + (if volumes > 0 { "v|" + project + "|" + volume + "\n" } else { "" });
+            // the project's networks too, when its every container is this one's
+            if containers == held_containers(held, project, "") {
+                held_by = held_by + teardown_lines(held.lines, "n|" + project + "|");
+            }
         }
+        claimed = claimed + held_by;
         let measure = teardown_plural(containers, "container", "containers") + ", "
             + teardown_plural(volumes, "volume", "volumes");
         if role == "services" {
@@ -294,7 +304,7 @@ fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> 
                     },
                     "remote-project-down",
                     name,
-                    project,
+                    project + "\n" + trim_nl(held_by),
                     TEARDOWN_STEP_REMOTE,
                 ),
             );
@@ -314,7 +324,7 @@ fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> 
                     },
                     "remote-withdraw",
                     name,
-                    project + "\n" + service + "\n" + key + "\n" + role,
+                    project + "\n" + service + "\n" + key + "\n" + role + "\n" + trim_nl(held_by),
                     TEARDOWN_STEP_REMOTE,
                 ),
             );
@@ -351,11 +361,20 @@ fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> 
             let p = ps[0..nl];
             ps = ps[(nl + 1)..len(ps)];
             seen = teardown_seen(seen, p);
-            let containers = held_containers(held, p, "")
-                - teardown_count(claimed, "\nc|" + p + "|");
-            let volumes = teardown_count(held.lines, "v|" + p + "|")
-                - teardown_count(claimed, "\nv|" + p + "|");
-            let networks = teardown_count(held.lines, "n|" + p + "|");
+            // what is left of it, by name: the lines no allocation's item took
+            let mut left = "";
+            let mut ls = teardown_lines(held.lines, "c|" + p + "|")
+                + teardown_lines(held.lines, "v|" + p + "|")
+                + teardown_lines(held.lines, "n|" + p + "|");
+            while len(ls) > 0 {
+                let lnl = std::str::index_of(ls, "\n");
+                let one = ls[0..lnl];
+                ls = ls[(lnl + 1)..len(ls)];
+                if !std::str::contains(claimed, "\n" + one + "\n") { left = left + one + "\n"; }
+            }
+            let containers = teardown_count("\n" + left, "\nc|");
+            let volumes = teardown_count("\n" + left, "\nv|");
+            let networks = teardown_count("\n" + left, "\nn|");
             items = teardown_more(
                 items,
                 teardown_item(
@@ -373,7 +392,7 @@ fn host_teardown_items(root: String, name: String, rows: Bool, only: String) -> 
                     },
                     "remote-project-down",
                     name,
-                    p,
+                    p + "\n" + trim_nl(left),
                     TEARDOWN_STEP_REMOTE + 1,
                 ),
             );
@@ -597,24 +616,14 @@ fn teardown_execute(root: String, item: String, by: String) -> String {
     if h.provider != "ssh" { return "no ssh host `" + host + "` in the habitat's record"; }
     let project = teardown_arg(args, 0);
     if !teardown_quotable(project) { return "`" + project + "` is no project's name"; }
-    let label = "label=com.docker.compose.project=" + project;
     let service = teardown_arg(args, 1);
     let mut script = "";
-    if action == "remote-withdraw" {
-        if !teardown_quotable(service) { return "`" + service + "` is no service's name"; }
-        script = "ids=$(docker ps -aq --filter '" + label
-            + "' --filter 'label=com.docker.compose.service=" + service
-            + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; } && docker volume rm -f '"
-            + project + "_" + service
-            + "' >/dev/null && if [ -z \"$(docker ps -aq --filter '" + label
-            + "')\" ]; then ns=$(docker network ls -q --filter '" + label
-            + "') && { [ -z \"$ns\" ] || docker network rm $ns >/dev/null; }; fi";
-    } else if action == "remote-project-down" {
-        script = "ids=$(docker ps -aq --filter '" + label
-            + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; } && vs=$(docker volume ls -q --filter '"
-            + label
-            + "') && { [ -z \"$vs\" ] || docker volume rm -f $vs >/dev/null; } && ns=$(docker network ls -q --filter '"
-            + label + "') && { [ -z \"$ns\" ] || docker network rm $ns >/dev/null; }";
+    if action == "remote-withdraw" || action == "remote-project-down" {
+        // exactly the resources the plan audited, by name
+        script = teardown_remove_script(
+            teardown_after(args, if action == "remote-withdraw" { 4 } else { 1 }),
+        );
+        if std::str::starts_with(script, "!") { return script[1..len(script)]; }
     } else if action == "remote-dir-rm" {
         script = "rm -rf -- '.hale/habitat/" + project + "'";
     } else if action == "remote-subdir-rm" {
@@ -694,33 +703,12 @@ fn teardown_word(s: String) -> Bool {
 @bounded_by(args)
 fn teardown_local(root: String, action: String, args: String, by: String) -> String {
     let first = teardown_arg(args, 0);
-    if action == "service-rm" {
+    if action == "service-rm" || action == "project-rm" {
+        // exactly the resources the plan audited, by name
         if !teardown_word(first) { return "`" + first + "` is no project's name"; }
-        let mut rest = args[(len(first) + 1)..len(args)];
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let service = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if !teardown_word(service) { return "`" + service + "` is no service's name"; }
-            let why = teardown_sh(
-                "ids=$(docker ps -aq --filter 'label=com.docker.compose.project=" + first
-                    + "' --filter 'label=com.docker.compose.service=" + service
-                    + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; }",
-            );
-            if len(why) > 0 { return why; }
-        }
-        return "";
-    }
-    if action == "project-rm" {
-        if !teardown_word(first) { return "`" + first + "` is no project's name"; }
-        let label = "label=com.docker.compose.project=" + first;
-        return teardown_sh(
-            "ids=$(docker ps -aq --filter '" + label
-                + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; } && vs=$(docker volume ls -q --filter '"
-                + label
-                + "') && { [ -z \"$vs\" ] || docker volume rm -f $vs >/dev/null; } && ns=$(docker network ls -q --filter '"
-                + label + "') && { [ -z \"$ns\" ] || docker network rm $ns >/dev/null; }",
-        );
+        let script = teardown_remove_script(teardown_after(args, 1));
+        if std::str::starts_with(script, "!") { return script[1..len(script)]; }
+        return teardown_sh(script);
     }
     if action == "volume-rm" || action == "vault-rm" {
         let mut rest = args;
@@ -919,15 +907,18 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
             vt = std::json::array_next(vt);
         }
         if role == "forge" || role == "identity" { continue; }
+        // where it is applied, as the habitat recorded it (this machine when
+        // nothing says otherwise), is where its resources are; a placement on
+        // another host not applied yet is audited there too, for what may be
+        // there already
         let applied = placed_on(key, role);
+        let host = if len(applied.host) > 0 { applied.host } else { "local" };
         let row_host = std::json::find_string_field(abody, "host");
-        let host = if applied.host != "local" {
-            applied.host
-        } else if provider == "ssh" && len(row_host) > 0 {
-            row_host
-        } else {
-            "local"
-        };
+        if provider == "ssh" && len(row_host) > 0 && row_host != "local" && row_host != host
+            && !std::str::contains(hosts, "\n" + row_host + "\n")
+        {
+            hosts = hosts + row_host + "\n";
+        }
         let service = compose_service(role, key);
         let mut item = "";
         if provider == "operator" {
@@ -953,11 +944,18 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
                 "-", "no", "covered", "", "", 85,
             );
         } else if role == "services" {
+            // its project's resources here, by name: what is removed, and
+            // nothing that appears after
+            let own = local_project_lines(project + "-" + key);
             item = teardown_item(
                 "compose", subject,
                 entity + ": its services, compose project " + project + "-" + key
                     + ": containers removed, volumes deleted",
-                "1 project", "no: their data is deleted", "project-rm", "", project + "-" + key, 40,
+                teardown_plural(teardown_count("\n" + own, "\nc|"), "container", "containers")
+                    + ", "
+                    + teardown_plural(teardown_count("\n" + own, "\nv|"), "volume", "volumes"),
+                "no: their data is deleted", "project-rm", "",
+                project + "-" + key + "\n" + trim_nl(own), 40,
             );
         } else if len(service) > 0 {
             services = services + "\n" + service;
@@ -983,15 +981,24 @@ fn organism_teardown_items(root: String, key: String, body: String) -> String {
         items = teardown_more(items, item);
     }
     if len(services) > 0 {
+        // its containers here, by name
+        let listing = local_project_lines(project);
+        let mut named = "";
+        let mut ss = services[1..len(services)] + "\n";
+        while len(ss) > 0 {
+            let snl = std::str::index_of(ss, "\n");
+            named = named + teardown_lines(listing, "c|" + project + "|" + ss[0..snl] + "|");
+            ss = ss[(snl + 1)..len(ss)];
+        }
         items = teardown_more(
             items,
             teardown_item(
                 "compose", subject,
                 "its services of " + project + ":" + std::str::replace(services, "\n", " ")
                     + ": stopped and removed",
-                "containers",
+                teardown_plural(teardown_count("\n" + named, "\nc|"), "container", "containers"),
                 "no: the organism is removed",
-                "service-rm", "", project + services, 30,
+                "service-rm", "", project + "\n" + trim_nl(named), 30,
             ),
         );
     }
@@ -1175,4 +1182,93 @@ fn teardown_digest(plan: String) -> String {
         it = std::json::array_next(it);
     }
     return "sha256:" + hex(std::crypto::sha256(std::bytes::from_string(text)));
+}
+
+// The lines of the listing `lines` that start with `prefix`, each ending in
+// a newline.
+@bounded_by(lines)
+fn teardown_lines(lines: String, prefix: String) -> String {
+    let mut out = "";
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let l = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(l, prefix) { out = out + l + "\n"; }
+    }
+    return out;
+}
+
+// What follows the first `n` lines of `text`.
+@bounded_by(text)
+fn teardown_after(text: String, n: Int) -> String {
+    let mut rest = text;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    return rest;
+}
+
+// The last `|`-separated field of a listing line.
+@bounded_by(line)
+fn teardown_last_field(line: String) -> String {
+    let mut at = len(line);
+    while at > 0 && line[(at - 1)..at] != "|" { at = at - 1; }
+    return line[at..len(line)];
+}
+
+// One shell line removing exactly the resources the listing `lines` names
+// (`c|<project>|<service>|<name>`, `v|<project>|<name>`,
+// `n|<project>|<name>`): the containers, then the volumes, then the
+// networks, each by its name; one already gone is no failure. `!` and why
+// when a name cannot be carried.
+@bounded_by(lines)
+fn teardown_remove_script(lines: String) -> String {
+    let mut out = "true";
+    let mut pass = 0;
+    while pass < 3 {
+        let kind = if pass == 0 { "c|" } else if pass == 1 { "v|" } else { "n|" };
+        let mut rest = lines;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let l = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if !std::str::starts_with(l, kind) { continue; }
+            let name = teardown_last_field(l);
+            if !teardown_word(name) { return "!`" + name + "` is no resource's name"; }
+            let q = "'" + name + "'";
+            out = out + " && "
+                + (
+                    if pass == 0 {
+                        "{ docker rm -f " + q + " >/dev/null 2>&1 || ! docker container inspect "
+                            + q
+                            + " >/dev/null 2>&1; }"
+                    } else if pass == 1 {
+                        "docker volume rm -f " + q + " >/dev/null"
+                    } else {
+                        "{ docker network rm " + q + " >/dev/null 2>&1 || ! docker network inspect "
+                            + q
+                            + " >/dev/null 2>&1; }"
+                    }
+                );
+        }
+        pass = pass + 1;
+    }
+    return out;
+}
+
+// The resources of the compose project `project` on this machine, sorted,
+// as listing lines (`c|…`, `v|…`, `n|…`): what an item removing it binds.
+fn local_project_lines(project: String) -> String {
+    if !teardown_word(project) { return ""; }
+    let label = "label=com.docker.compose.project=" + project;
+    let r = run_tool(
+        "sh\n-c\no=$(docker ps -a --filter \"$1\" --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}|{{.Names}}' && docker volume ls --filter \"$1\" --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter \"$1\" --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}') && printf '%s\\n' \"$o\" | sed '/^$/d' | sort\nsh\n"
+            + label,
+    );
+    return if r.code == 0 { r.stdout } else { "" };
 }

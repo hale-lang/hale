@@ -391,7 +391,14 @@ would remove changed meanwhile (an allocation placed, a host changed, a
 volume or slot appeared) it refuses (`plan_changed`), touching nothing, and
 the person plans again. The rows carry the binding as the plan's `digest`
 (each item's group, subject, action, host, arguments and recoverability,
-never its sizes, which grow while the person reads). A destroy that fails
+never its sizes, which grow while the person reads). An item's arguments
+name the resources it audited, each by its identity (every container,
+volume and network of a compose project, sorted; a volume, a vault slot, a
+path, a Forgejo account), and its execution removes exactly those: a
+resource that appeared since is a changed plan, never one swept in by a
+project's name. An allocation is planned where it is applied, as the
+habitat recorded it (this machine unless it says otherwise); a placement
+on another host not applied yet is audited there too. A destroy that fails
 part way stops at the item that failed and says which items were done and
 which were not, and leaves the rest; run again, it plans again from what
 remains.

@@ -339,7 +339,7 @@ fn host() {
         forge_token_slot  does={syscall,env,alloc}
         forgejo_exec  does={syscall,block,env,alloc}
         forgejo_healthy  does={syscall,block,time,env,alloc}
-        forget_allocation_items  does={syscall,env,alloc}
+        forget_allocation_items  does={syscall,block,env,alloc}
         forget_newest_row  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         forget_organism_slots  does={syscall,block,env,alloc}
         forget_volume  does={env,alloc}
