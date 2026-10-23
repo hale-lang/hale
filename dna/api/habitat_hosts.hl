@@ -10,9 +10,15 @@
 // `~/.ssh/authorized_keys` takes. `Commands::probe_host` probes it again: a
 // `pending-key` host whose key is now authorized moves on to `ready`, and a
 // host that answers with another host key is refused. `Commands::remove_host`
-// removes it, refused while any allocation is placed on it. Each act is a
-// `habitat.host <name>` row of the habitat's record, written when what it
-// says changed. `hale habitat host add|probe|remove` is a client of these.
+// removes it. A host with allocations is removed only once its plan was
+// shown and confirmed: `Commands::plan_remove_host`, a read, answers what
+// the removal would stop and delete there, allocation by allocation (one
+// auditor, dna/core/teardown.hl), and `Commands::remove_host` executes that
+// plan item by item only when its `confirm` is the host's name typed back,
+// refusing on a mismatch; a removal that fails part way says which items
+// were done and leaves the rest. Each act is a `habitat.host <name>` row of
+// the habitat's record, written when what it says changed. `hale habitat
+// host add|probe|remove` is a client of these.
 import "../core" as dna;
 
 type HostAdd {
@@ -22,6 +28,37 @@ type HostAdd {
 }
 
 type HostNamed { name: String = ""; }
+
+// A host's removal: its name, and the name typed back to confirm the plan
+// (needed when the plan stops or deletes anything on the host).
+type HostRemove {
+    name: String = "";
+    confirm: String = "";
+}
+
+// What removing a host would do: the plan (a JSON array of items, each
+// `group`, `subject`, `what`, `measure`, `recoverable`, `action`, `host`,
+// `args`, `step`), and the name to type back to confirm it ("" when the
+// plan stops and deletes nothing there).
+type HostPlan {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    plan: String = "[]";
+    confirm: String = "";
+}
+
+// A host's removal as executed: the host as its row now states it, the
+// plan, and the report (each item's `what`, `action`, `state`: `done`,
+// `failed` or `left`, and `why`).
+type HostRemoval {
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    host: String = "{}";
+    plan: String = "[]";
+    report: String = "[]";
+}
 
 type HostReply {
     ok: Bool = false;
@@ -172,28 +209,72 @@ fn habitat_host_probe(root: String, name: String, by: String) -> HostReply {
     return host_reply(probed, "", probed.why);
 }
 
-fn habitat_host_remove(root: String, name: String, by: String) -> HostReply {
+// Why `name` is no host the habitat can remove, "" when it is one.
+fn host_removal_refusal(root: String, name: String) -> HostPlan {
     if name == "local" {
-        return host_refused(
-            "not_removable",
-            "`local` is this machine, the compose provider's host",
-        );
+        return HostPlan {
+            code: "not_removable",
+            why: "`local` is this machine, the compose provider's host",
+        };
     }
     let h = dna::recorded_host(root, name);
     if len(h.provider) == 0 || h.state == "removed" {
-        return host_refused("not_found", "no host `" + name + "` was added");
+        return HostPlan { code: "not_found", why: "no host `" + name + "` was added" };
     }
-    let placed = host_allocations(root, name);
-    if len(placed) > 0 {
-        return host_refused(
-            "allocations_placed",
-            "allocations are placed on " + name + ": " + placed + "; move or remove them first",
-        );
+    return HostPlan { ok: true };
+}
+
+// The plan of the host's removal, as the auditor computes it: what stops
+// and is deleted there, allocation by allocation, the record's rows about
+// it, and the authorized key line it cannot remove. A read: nothing is
+// touched.
+fn habitat_host_plan_remove(root: String, name: String) -> HostPlan {
+    let refused = host_removal_refusal(root, name);
+    if !refused.ok { return refused; }
+    let plan = "[" + dna::host_teardown_items(root, name, true) + "]";
+    return HostPlan {
+        ok: true,
+        plan: plan,
+        confirm: if dna::teardown_destroys(plan) { name } else { "" },
+    };
+}
+
+fn habitat_host_remove(root: String, r: HostRemove, by: String) -> HostRemoval {
+    let refused = host_removal_refusal(root, r.name);
+    if !refused.ok { return HostRemoval { code: refused.code, why: refused.why }; }
+    let plan = "[" + dna::host_teardown_items(root, r.name, true) + "]";
+    if dna::teardown_destroys(plan) && r.confirm != r.name {
+        let placed = host_allocations(root, r.name);
+        return HostRemoval {
+            code: if len(r.confirm) == 0 { "confirm_required" } else { "confirm_mismatch" },
+            why: (if len(placed) > 0 {
+                "allocations are placed on " + r.name + ": " + placed + "; "
+            } else {
+                "the habitat runs things on " + r.name + "; "
+            })
+                + (if len(r.confirm) == 0 {
+                    "removing it stops and deletes them there: its plan is `Commands::plan_remove_host`, and it is confirmed by typing the host's name"
+                } else {
+                    "`" + r.confirm + "` is not the host's name, and nothing was removed"
+                }),
+            plan: plan,
+        };
     }
-    let mut gone = h;
-    gone.state = "removed";
-    gone.reachable = false;
-    let wrote = host_write(root, gone, by);
-    if len(wrote) > 0 { return host_refused("record_refused", wrote); }
-    return host_reply(gone, "", "");
+    let report = dna::teardown_run(root, plan, by);
+    let after = dna::recorded_host(root, r.name);
+    if !dna::teardown_all_done(report) {
+        return HostRemoval {
+            code: "partly_removed",
+            why: "the removal stopped at an item that failed; the items after it were left, and removing the host again plans from what remains",
+            host: dna::host_row_body(after),
+            plan: plan,
+            report: report,
+        };
+    }
+    return HostRemoval {
+        ok: true,
+        host: dna::host_row_body(after),
+        plan: plan,
+        report: report,
+    };
 }

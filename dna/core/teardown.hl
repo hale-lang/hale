@@ -1,0 +1,606 @@
+// dna/core/teardown.hl — what a habitat act would remove, planned before
+// anything is (phase 4 ruling: destroy is plan-then-confirm).
+//
+// A teardown is a plan: a list of items, each one thing that would be
+// stopped or removed, with what it is, its size or count, and whether it
+// is recoverable. One auditor computes the plan and the same items are then
+// executed one by one, in order, so what is printed is exactly what is done;
+// nothing else decides what to remove. An execution that fails stops at the
+// failed item and reports which items were done and which were not, and
+// leaves the rest; run again, the act plans again from what remains.
+//
+// An item is a JSON object, its fields strings but `step`: `group` (what it is: `habitat`,
+// `organism`, `compose`, `vault`, `forge`, `hosts`, `remote`), `subject`
+// (the organism or host it belongs to), `what`, `measure` (its size or
+// count), `recoverable` (`no`, or `yes` and how), `action` (what executing
+// it does), `host` (the host an action runs on), `args` (the action's
+// arguments, a line each: the volumes, slots or paths it removes) and
+// `step` (the order it is executed in, an Int).
+//
+// This file holds the host's part: what the habitat ran on an `ssh` host,
+// as the host answers over SSH, and the actions that stop and delete it
+// there. `hale habitat host remove` (`Commands::plan_remove_host`,
+// `::remove_host`) plans and executes a host's alone; `hale habitat down
+// --forget` plans each host's beside the rest of the habitat.
+
+// One item of a plan, as a JSON object.
+fn teardown_item(
+    group: String,
+    subject: String,
+    what: String,
+    measure: String,
+    recoverable: String,
+    action: String,
+    host: String,
+    args: String,
+    step: Int
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("group", group);
+    b.string_field("subject", subject);
+    b.string_field("what", what);
+    b.string_field("measure", measure);
+    b.string_field("recoverable", recoverable);
+    b.string_field("action", action);
+    b.string_field("host", host);
+    b.string_field("args", args);
+    b.int_field("step", step);
+    b.end_object();
+    return b.result();
+}
+
+// `items` with `item` after them, comma-separated: a plan is `[` + items + `]`.
+fn teardown_more(items: String, item: String) -> String {
+    if len(item) == 0 { return items; }
+    return if len(items) > 0 { items + "," + item } else { item };
+}
+
+// The steps a host's items are executed at: what runs on it first, then
+// the record's rows about it.
+const TEARDOWN_STEP_REMOTE: Int = 20;
+const TEARDOWN_STEP_ROWS: Int = 90;
+
+// How many times `needle` occurs in `text`.
+@bounded_by(text)
+fn teardown_count(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut at = 0;
+    while at < len(text) {
+        let rest = text[at..len(text)];
+        let i = std::str::index_of(rest, needle);
+        if i < 0 { return n; }
+        n = n + 1;
+        at = at + i + len(needle);
+    }
+    return n;
+}
+
+fn teardown_plural(n: Int, one: String, many: String) -> String {
+    return to_string(n) + " " + (if n == 1 { one } else { many });
+}
+
+// The latest `habitat.allocated` row of each allocation in the habitat's
+// record at `root`, a line each: `<entity>\t<body>`.
+@bounded_by(root)
+fn teardown_allocations(root: String) -> String {
+    let j = RecordJournal { repo: root, dsn: kept_dsn(root, HEAD_DSN_ENV), author: "habitat" };
+    let moved = j.refresh();
+    let n = j.revision();
+    let mut out = "";
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "habitat.allocated" { continue; }
+        // the latest row of its entity alone
+        let mut later = false;
+        let mut k = i;
+        while k < n && !later {
+            let f = j.read(k);
+            if f.kind == "habitat.allocated" && f.entity == e.entity { later = true; }
+            k = k + 1;
+        }
+        if !later { out = out + e.entity + "\t" + e.body + "\n"; }
+    }
+    return out;
+}
+
+// What the habitat ran on a host, as the host answers over SSH: a line
+// each, `c|<project>|<service>` per compose container, `v|<project>|<volume>`
+// per compose volume, `n|<project>|<network>` per compose network, `d|<name>`
+// per directory under `~/.hale/habitat`.
+type HostHoldings {
+    ok: Bool = false;
+    // the habitat's key was never authorized there: it ran nothing there
+    never: Bool = false;
+    why: String = "";
+    lines: String = "";
+}
+
+fn host_holdings(root: String, h: Host) -> HostHoldings {
+    if h.state != "ready" { return HostHoldings { never: true, why: h.state }; }
+    let script = "docker ps -a --filter label=com.docker.compose.project --format 'c|{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.service\"}}' && docker volume ls --filter label=com.docker.compose.project --format 'v|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && docker network ls --filter label=com.docker.compose.project --format 'n|{{.Label \"com.docker.compose.project\"}}|{{.Name}}' && for d in .hale/habitat/*; do if [ -d \"$d\" ]; then echo \"d|${d#.hale/habitat/}\"; fi; done";
+    let r = ssh_run(root, h, script, "");
+    if r.code != 0 {
+        let failed = ssh_failure(r);
+        return HostHoldings {
+            why: (if len(failed) > 0 { failed } else { "docker there failed" }) + ": "
+                + trim_nl(r.stderr),
+        };
+    }
+    return HostHoldings { ok: true, lines: trim_nl(r.stdout) + "\n" };
+}
+
+// Whether `project` is one of the habitat's on the host whose own project
+// is `base`: that one, or one named after it (an organism's services).
+fn teardown_ours(project: String, base: String) -> Bool {
+    return project == base || std::str::starts_with(project, base + "-");
+}
+
+// `project` added to the newline-delimited `seen` (which starts "\n").
+fn teardown_seen(seen: String, project: String) -> String {
+    if std::str::contains(seen, "\n" + project + "\n") { return seen; }
+    return seen + project + "\n";
+}
+
+// What `h` holds of `project` (of `service` alone when one is named): its
+// containers and its volumes.
+fn held_containers(held: HostHoldings, project: String, service: String) -> Int {
+    if len(service) > 0 {
+        return teardown_count(held.lines, "c|" + project + "|" + service + "\n");
+    }
+    return teardown_count(held.lines, "c|" + project + "|");
+}
+
+// The plan's items for the host `name` (comma-separated, "" for none): for
+// each allocation placed on it or applied there, what stops and is deleted
+// there; each other project of the habitat's there taken down; the
+// directories the renders were copied to removed; and with `rows`, the
+// record's side (each allocation placed there unplaced, the host's entry
+// removed) and the authorized key line it cannot remove, noted.
+@bounded_by(root)
+fn host_teardown_items(root: String, name: String, rows: Bool) -> String {
+    let h = recorded_host(root, name);
+    if h.provider != "ssh" || h.state == "removed" { return ""; }
+    let base = placed_project(name);
+    let held = host_holdings(root, h);
+    let mut items = "";
+    let mut unplace = "";
+    let mut seen = "\n";
+    // what the allocations' items take down: their containers and volumes'
+    // listing lines, and the projects taken down whole
+    let mut claimed = "\n";
+    let mut downed = "\n";
+    let mut rest = teardown_allocations(root);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        let entity = line[0..tab];
+        let body = line[(tab + 1)..len(line)];
+        let slash = std::str::index_of(entity, "/");
+        if slash < 0 { continue; }
+        let key = entity[0..slash];
+        let role = std::json::find_string_field(body, "role");
+        let placed_here = std::json::find_string_field(body, "host") == name;
+        let applied = placed_on(key, role);
+        let applied_here = applied.host == name;
+        if !placed_here && !applied_here { continue; }
+        if placed_here && rows {
+            unplace = teardown_more(
+                unplace,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": unplaced in the habitat's record",
+                    "1 row",
+                    "yes: `hale habitat place " + entity + " <host>` places it again",
+                    "unplace",
+                    name,
+                    entity,
+                    TEARDOWN_STEP_ROWS,
+                ),
+            );
+        }
+        // a heart's database and broker are tenants of the memory and nerves
+        // servers, and go with them
+        if role == "database" || role == "broker" || !held.ok { continue; }
+        let project = if applied_here && len(applied.project) > 0 {
+            applied.project
+        } else {
+            std::json::find_string_field(body, "project")
+        };
+        if len(project) == 0 { continue; }
+        let named = std::json::find_string_field(body, "service");
+        let service = if role == "services" {
+            ""
+        } else if len(named) > 0 {
+            named
+        } else {
+            compose_service(role, key)
+        };
+        let containers = held_containers(held, project, service);
+        let volume = if len(service) > 0 { project + "_" + service } else { "" };
+        let volumes = if len(service) > 0 {
+            teardown_count(held.lines, "v|" + project + "|" + volume + "\n")
+        } else {
+            teardown_count(held.lines, "v|" + project + "|")
+        };
+        seen = teardown_seen(seen, project);
+        if containers == 0 && volumes == 0 { continue; }
+        if role == "services" {
+            downed = teardown_seen(downed, project);
+        } else {
+            claimed = claimed + "c|" + project + "|" + service + "\n" + "v|" + project + "|"
+                + volume
+                + "\n";
+        }
+        let measure = teardown_plural(containers, "container", "containers") + ", "
+            + teardown_plural(volumes, "volume", "volumes");
+        if role == "services" {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": the organism's services, compose project " + project
+                        + ": containers stopped and removed, volumes deleted",
+                    measure,
+                    if volumes > 0 {
+                        "no: their data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings them up again"
+                    },
+                    "remote-project-down",
+                    name,
+                    project,
+                    TEARDOWN_STEP_REMOTE,
+                ),
+            );
+        } else {
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    entity + ": " + service + " of " + project + ": stopped and removed"
+                        + (if volumes > 0 { ", its volume " + volume + " deleted" } else { "" }),
+                    measure,
+                    if volumes > 0 {
+                        "no: its data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings it up again"
+                    },
+                    "remote-withdraw",
+                    name,
+                    project + "\n" + service + "\n" + key + "\n" + role,
+                    TEARDOWN_STEP_REMOTE,
+                ),
+            );
+        }
+    }
+    if held.ok {
+        // each other project of the habitat's on the host, whole
+        let mut projects = "\n";
+        let mut lines = held.lines;
+        while len(lines) > 0 {
+            let nl = std::str::index_of(lines, "\n");
+            let l = lines[0..nl];
+            lines = lines[(nl + 1)..len(lines)];
+            if !std::str::starts_with(l, "c|") && !std::str::starts_with(l, "v|")
+                && !std::str::starts_with(l, "n|")
+            {
+                continue;
+            }
+            let tail = l[2..len(l)];
+            let bar = std::str::index_of(tail, "|");
+            if bar < 0 { continue; }
+            let p = tail[0..bar];
+            if teardown_ours(p, base)
+                && !std::str::contains(downed, "\n" + p + "\n")
+                && !std::str::contains(claimed, "\n" + l + "\n")
+            {
+                projects = teardown_seen(projects, p);
+            }
+        }
+        let mut ps = projects[1..len(projects)];
+        while len(ps) > 0 {
+            let nl = std::str::index_of(ps, "\n");
+            let p = ps[0..nl];
+            ps = ps[(nl + 1)..len(ps)];
+            seen = teardown_seen(seen, p);
+            let containers = held_containers(held, p, "")
+                - teardown_count(claimed, "\nc|" + p + "|");
+            let volumes = teardown_count(held.lines, "v|" + p + "|")
+                - teardown_count(claimed, "\nv|" + p + "|");
+            let networks = teardown_count(held.lines, "n|" + p + "|");
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "compose project " + p
+                        + ": what is left of it stopped and removed, its volumes deleted",
+                    teardown_plural(containers, "container", "containers") + ", "
+                        + teardown_plural(volumes, "volume", "volumes") + ", "
+                        + teardown_plural(networks, "network", "networks"),
+                    if volumes > 0 {
+                        "no: its data is deleted"
+                    } else {
+                        "yes: `hale habitat apply` brings it up again"
+                    },
+                    "remote-project-down",
+                    name,
+                    p,
+                    TEARDOWN_STEP_REMOTE + 1,
+                ),
+            );
+        }
+        // the directories the renders were copied to
+        let mut dirs = held.lines;
+        while len(dirs) > 0 {
+            let nl = std::str::index_of(dirs, "\n");
+            let l = dirs[0..nl];
+            dirs = dirs[(nl + 1)..len(dirs)];
+            if !std::str::starts_with(l, "d|") { continue; }
+            let d = l[2..len(l)];
+            if !teardown_ours(d, base) && !std::str::contains(seen, "\n" + d + "\n") { continue; }
+            items = teardown_more(
+                items,
+                teardown_item(
+                    "remote",
+                    name,
+                    "~/.hale/habitat/" + d + ": the files the habitat copied there",
+                    "1 directory",
+                    "yes: `hale habitat apply` copies them again",
+                    "remote-dir-rm",
+                    name,
+                    d,
+                    TEARDOWN_STEP_REMOTE + 2,
+                ),
+            );
+        }
+    } else if held.never {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "remote",
+                name,
+                "nothing of the habitat's runs on " + name
+                    + ": its key was never authorized there ("
+                    + held.why + ")",
+                "nothing",
+                "-",
+                "note",
+                name,
+                "",
+                TEARDOWN_STEP_REMOTE,
+            ),
+        );
+    } else {
+        items = teardown_more(
+            items,
+            teardown_item(
+                "remote",
+                name,
+                "what the habitat ran on " + name + " is not known (" + held.why
+                    + "): anything there is left there",
+                "unknown",
+                "-",
+                "note",
+                name,
+                "",
+                TEARDOWN_STEP_REMOTE,
+            ),
+        );
+    }
+    if !rows { return items; }
+    items = teardown_more(items, unplace);
+    items = teardown_more(
+        items,
+        teardown_item(
+            "remote",
+            name,
+            "the host " + name + " (" + h.user + "@" + h.address + ":" + to_string(h.port)
+                + "): its entry, marked removed in the habitat's record",
+            "1 row",
+            "yes: `hale habitat host add " + name + "` adds it again",
+            "host-removed",
+            name,
+            "",
+            TEARDOWN_STEP_ROWS + 1,
+        ),
+    );
+    return teardown_more(items, host_key_note(root, h, "note"));
+}
+
+// The note for the line `h`'s `~/.ssh/authorized_keys` took: the habitat
+// cannot remove it; the person does, on that machine. `action` is `note`, or
+// `note-keep` where the act that removes the record keeps the note after it.
+fn host_key_note(root: String, h: Host, action: String) -> String {
+    let line = habitat_public_key(root);
+    return teardown_item(
+        "hosts",
+        h.name,
+        "the line " + (if len(line) > 0 { "`" + line + "`" } else { "of the habitat's key" })
+            + " in " + h.user + "@" + h.name
+            + ":~/.ssh/authorized_keys: the habitat cannot remove it; remove it on that machine",
+        "1 line",
+        "-",
+        action,
+        h.name,
+        line,
+        TEARDOWN_STEP_ROWS + 2,
+    );
+}
+
+// Whether a plan holds anything but the host's own entry and notes: what a
+// host's removal confirms by its name.
+@bounded_by(plan)
+fn teardown_destroys(plan: String) -> Bool {
+    let mut it = std::json::array_first(plan);
+    while !it.done {
+        let a = std::json::find_string_field(it.element, "action");
+        if a != "note" && a != "host-removed" { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// The `n`th line of `text` (from 0), "" past its end.
+@bounded_by(text)
+fn teardown_arg(text: String, n: Int) -> String {
+    let mut rest = text;
+    let mut i = 0;
+    while i < n {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { return ""; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+// Whether `s` is safe inside single quotes on a shell line.
+fn teardown_quotable(s: String) -> Bool {
+    return len(s) > 0 && !std::str::contains(s, "'") && !std::str::contains(s, "\n")
+        && !std::str::contains(s, "/");
+}
+
+// A row of the habitat's record: "" once it is written, else why not.
+fn teardown_row(root: String, kind: String, entity: String, body: String, by: String) -> String {
+    let j = RecordJournal { repo: root, dsn: kept_dsn(root, HEAD_DSN_ENV), author: by };
+    let moved = j.refresh();
+    let r = j.append(j.revision(), kind, entity, body);
+    return if r.ok { "" } else { "the habitat's record refused the row (" + r.error + ")" };
+}
+
+// The allocation row `body` with its host emptied: placed nowhere.
+@bounded_by(body)
+fn teardown_unplaced(body: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    let mut it = std::json::object_first(body);
+    while !it.done {
+        let k = std::json::obj_key_string(it, body);
+        if k != "host" { b.field(k, std::json::obj_value_raw(it, body)); }
+        it = std::json::object_next(it, body);
+    }
+    b.string_field("host", "");
+    b.end_object();
+    return b.result();
+}
+
+// The item executed: "" once it is done, else why it is not. The host's
+// actions run over SSH; the record's write rows in the name of `by`. A note
+// is nothing to do.
+@bounded_by(root)
+fn teardown_execute(root: String, item: String, by: String) -> String {
+    let action = std::json::find_string_field(item, "action");
+    let host = std::json::find_string_field(item, "host");
+    let args = std::json::find_string_field(item, "args");
+    if action == "note" || action == "covered" { return ""; }
+    if action == "unplace" {
+        let mut rest = teardown_allocations(root);
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if std::str::starts_with(line, args + "\t") {
+                let body = line[(len(args) + 1)..len(line)];
+                return teardown_row(root, "habitat.allocated", args, teardown_unplaced(body), by);
+            }
+        }
+        return "";
+    }
+    let h = recorded_host(root, host);
+    if action == "host-removed" {
+        if len(h.provider) == 0 || h.state == "removed" { return ""; }
+        let mut gone = h;
+        gone.state = "removed";
+        gone.reachable = false;
+        return teardown_row(root, "habitat.host", host, host_row_body(gone), by);
+    }
+    if h.provider != "ssh" { return "no ssh host `" + host + "` in the habitat's record"; }
+    let project = teardown_arg(args, 0);
+    if !teardown_quotable(project) { return "`" + project + "` is no project's name"; }
+    let label = "label=com.docker.compose.project=" + project;
+    let service = teardown_arg(args, 1);
+    let mut script = "";
+    if action == "remote-withdraw" {
+        if !teardown_quotable(service) { return "`" + service + "` is no service's name"; }
+        script = "ids=$(docker ps -aq --filter '" + label
+            + "' --filter 'label=com.docker.compose.service=" + service
+            + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; } && docker volume rm -f '"
+            + project + "_" + service
+            + "' >/dev/null && if [ -z \"$(docker ps -aq --filter '" + label
+            + "')\" ]; then ns=$(docker network ls -q --filter '" + label
+            + "') && { [ -z \"$ns\" ] || docker network rm $ns >/dev/null; }; fi";
+    } else if action == "remote-project-down" {
+        script = "ids=$(docker ps -aq --filter '" + label
+            + "') && { [ -z \"$ids\" ] || docker rm -f $ids >/dev/null; } && vs=$(docker volume ls -q --filter '"
+            + label
+            + "') && { [ -z \"$vs\" ] || docker volume rm -f $vs >/dev/null; } && ns=$(docker network ls -q --filter '"
+            + label + "') && { [ -z \"$ns\" ] || docker network rm $ns >/dev/null; }";
+    } else if action == "remote-dir-rm" {
+        script = "rm -rf -- '.hale/habitat/" + project + "'";
+    }
+    if len(script) == 0 { return "`" + action + "` is no action of a host's"; }
+    let r = ssh_run(root, h, script, "");
+    if r.code != 0 {
+        let failed = ssh_failure(r);
+        return (if len(failed) > 0 { failed + ": " } else { "" }) + trim_nl(r.stderr);
+    }
+    if action == "remote-withdraw" {
+        // withdrawn: where it was applied is nowhere now
+        let key = teardown_arg(args, 2);
+        let role = teardown_arg(args, 3);
+        if placed_on(key, role).host == host {
+            std::io::fs::unlink(placed_path(key, role)) or discard;
+        }
+    }
+    return "";
+}
+
+// The plan executed item by item, in order, stopping at the first that
+// fails: a JSON array of each item's `what`, its `state` (`done`, `failed`
+// or `left`) and, for the failed one, `why`.
+@bounded_by(plan)
+fn teardown_run(root: String, plan: String, by: String) -> String {
+    let out = std::json::Builder { };
+    out.begin_array();
+    let mut failed = false;
+    let mut it = std::json::array_first(plan);
+    while !it.done {
+        let what = std::json::find_string_field(it.element, "what");
+        let why = if failed { "" } else { teardown_execute(root, it.element, by) };
+        out.begin_object();
+        out.string_field("what", what);
+        out.string_field("action", std::json::find_string_field(it.element, "action"));
+        out.string_field(
+            "state",
+            if failed { "left" } else if len(why) > 0 { "failed" } else { "done" },
+        );
+        out.string_field("why", why);
+        out.end_object();
+        if len(why) > 0 { failed = true; }
+        it = std::json::array_next(it);
+    }
+    out.end_array();
+    return out.result();
+}
+
+// Whether every item of a run's report was done.
+@bounded_by(report)
+fn teardown_all_done(report: String) -> Bool {
+    let mut it = std::json::array_first(report);
+    while !it.done {
+        if std::json::find_string_field(it.element, "state") != "done" { return false; }
+        it = std::json::array_next(it);
+    }
+    return true;
+}

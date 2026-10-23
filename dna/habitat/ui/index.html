@@ -56,6 +56,14 @@
         </table>
         <p id="hosts-empty" class="dim" hidden>no host but this machine</p>
         <p id="host-outcome" class="outcome" hidden></p>
+        <div id="remove-confirm" class="crossing" hidden>
+          <div class="edge">crossing: remove <span id="remove-host"></span> and what runs there</div>
+          <ul id="remove-plan"></ul>
+          <form id="remove-form" autocomplete="off">
+            <label>type the host's name to confirm <input id="remove-typed" required></label>
+            <button type="submit">remove</button> <button type="button" id="remove-cancel">cancel</button>
+          </form>
+        </div>
       </section>
       <section id="host-key" class="crossing" hidden>
         <div class="edge">crossing: authorize the habitat on <span id="key-host"></span></div>

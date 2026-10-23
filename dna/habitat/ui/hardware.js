@@ -1,6 +1,9 @@
 // The operator face, screen 2: hardware. The hosts the habitat places on,
 // what each offers, the host key first seen there and the allocations placed
-// on it; add a host, probe a pending one, remove one.
+// on it; add a host, probe a pending one, remove one. A removal is planned
+// first (Commands::plan_remove_host): when the plan stops or deletes
+// anything on the host, the plan is shown and the host's name is typed back
+// to confirm, which Commands::remove_host checks before it executes it.
 //
 // Every call is the generated client's (head-client.js); nothing else
 // speaks HTTP. A refusal is the row's own outcome text, shown as it came.
@@ -9,6 +12,7 @@ import {
   commandsAllocations,
   commandsAddHost,
   commandsProbeHost,
+  commandsPlanRemoveHost,
   commandsRemoveHost,
 } from "./head-client.js";
 
@@ -68,6 +72,50 @@ async function act(call, host) {
   await refresh();
 }
 
+function itemLine(i) {
+  const measure = i.measure && i.measure !== "-" ? i.measure : "";
+  const rec = i.recoverable && i.recoverable !== "-" ? "recoverable: " + i.recoverable : "";
+  const tail = [measure, rec].filter(Boolean).join("; ");
+  return i.what + (tail ? " (" + tail + ")" : "");
+}
+
+// The removal's report: each item done, failed or left.
+function reportText(r) {
+  const report = parse(r.report);
+  const lines = report.map((x) => x.state + ": " + x.what + (x.why ? " (" + x.why + ")" : ""));
+  return (r.ok ? "" : r.code + ": " + r.why + "\n") + lines.join("\n");
+}
+
+async function removeHost(host, confirm) {
+  const out = await commandsRemoveHost({ endpoint }, { name: host, confirm });
+  if (out.kind !== "result") { outcome(refusedText(out)); return; }
+  $("remove-confirm").hidden = true;
+  outcome(reportText(out.value));
+  await refresh();
+}
+
+// A removal planned: with nothing to stop or delete there it goes ahead;
+// otherwise the plan is shown and waits for the host's name.
+async function planRemove(host) {
+  const out = await commandsPlanRemoveHost({ endpoint }, { name: host.name });
+  if (out.kind !== "result") { outcome(refusedText(out)); return; }
+  const p = out.value;
+  if (!p.ok) { outcome(p.code + ": " + p.why); return; }
+  if (!p.confirm) { await removeHost(host.name, ""); return; }
+  const list = $("remove-plan");
+  list.replaceChildren();
+  for (const i of parse(p.plan)) {
+    const li = document.createElement("li");
+    li.textContent = itemLine(i);
+    list.append(li);
+  }
+  $("remove-host").textContent = host.name;
+  $("remove-typed").value = "";
+  $("remove-confirm").dataset.host = host.name;
+  $("remove-confirm").hidden = false;
+  outcome("");
+}
+
 export async function refresh() {
   let hosts, allocs;
   try {
@@ -94,7 +142,7 @@ export async function refresh() {
     if (h.state === "pending-key") {
       actions.append(button("probe", () => act(commandsProbeHost, h)), " ");
     }
-    actions.append(button("remove", () => act(commandsRemoveHost, h)));
+    actions.append(button("remove", () => planRemove(h)));
     tr.append(
       cell(h.name),
       s,
@@ -140,3 +188,11 @@ $("key-copy").addEventListener("click", async () => {
     $("key-copied").textContent = "selected";
   }
 });
+
+$("remove-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  // the row checks the name typed back, and refuses a mismatch
+  await removeHost($("remove-confirm").dataset.host, $("remove-typed").value.trim());
+});
+
+$("remove-cancel").addEventListener("click", () => { $("remove-confirm").hidden = true; });

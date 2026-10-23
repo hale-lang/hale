@@ -29,12 +29,12 @@ const HEAD_PREFIX: String = "/api/hale/v1/head";
 // operator face makes (hosts, placement, graft): the API child
 // decides each by the visitor's own credential, as for any proxied command.
 const HEAD_SURFACE_CALL: String = "/api/hale/v1/head/surface/call/";
-const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+const HEAD_SURFACE_CALLS: String = "Commands::index Commands::hosts Commands::allocations Commands::policy Commands::nurseries Commands::saplings Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
 
 // The members of the surface that act or read a graft's log (the Board's):
 // not the reads. In a trusted-local session each carries the launch token as a
 // head's own command does, over either route.
-const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
+const HEAD_SURFACE_ACTS: String = "Commands::add_host Commands::probe_host Commands::plan_remove_host Commands::remove_host Commands::place_allocation Commands::apply_allocations Commands::graft Commands::graft_log";
 
 // Whether `path` is the relay of one of those.
 fn surface_act(path: String) -> Bool {
