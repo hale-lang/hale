@@ -68,17 +68,16 @@ digest = "sha256:bae66d743c8affe87332aa10dfc666964394d25cead9189a7d68b6608398970
 packs = []
 
 # The hale organism (D8): the organism that works on the Hale toolchain. Its
-# genome is a small repository of its own, the tree checked in at
-# saplings/hale; its codebases (hale-lang/hale, hale-lang/voice) are listed
-# in that tree's hale.toml and attached at its graft. PLACEHOLDER: the
-# repository below is not created yet. Until it is, `revision` is its main
-# branch and `digest` the checked-in tree's (a test holds the two equal);
-# a fixture grafts it from a local repository built from that tree. Once it
-# exists, the tree is pushed there and the revision pinned to the commit.
+# genome is the tree the toolchain carries at saplings/hale, embedded as the
+# packs are, with no remote (`toolchain:` names it); its codebases
+# (hale-lang/hale, hale-lang/voice) are listed in that tree's hale.toml and
+# attached at its graft. The digest is that tree's, made a repository (a test
+# holds the two equal); the graft makes the organism's own repository from it
+# in the habitat and mirrors it to the habitat's forge.
 [[sapling]]
 name = "hale"
 summary = "the organism that works on the Hale toolchain: its codebases are hale-lang/hale and hale-lang/voice"
-repo = "https://github.com/hale-lang/hale-organism"
-revision = "main"
+repo = "toolchain:saplings/hale"
+revision = "embedded"
 digest = "sha256:495126fbfb6bf33bcc8471f79867f2c7bb1801810510c9b217cc06c40a68d1c1"
 packs = ["hale-organism"]

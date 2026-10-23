@@ -117,7 +117,10 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      repository there grafted as the habitat's child, the
                      packs it adopts proposed to its Board (--set values go
                      to them), and the sapling, revision and digest recorded
-                     on the graft's row. A bare name only; ./<name> is a
+                     on the graft's row. A sapling the toolchain carries
+                     (`hale`) is no fetch: its tree is made the organism's
+                     own repository there, with no remote, and its digest
+                     checked the same way. A bare name only; ./<name> is a
                      directory.
 --no-head            (graft) the act itself: a sapling's graft is otherwise
                      the head's Commands::graft while the head answers.
