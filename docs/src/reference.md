@@ -88,7 +88,7 @@ Every subcommand accepts `--help` (or `-h`) as its first argument.
 
 | Command | Description |
 |---|---|
-| `hale fleet <check\|dump\|sign\|attest\|keygen>` | Verify, export, sign, or attest multi-binary `fleet locus` topologies |
+| `hale fleet <check\|dump\|export\|sign\|keygen>` | Verify, export (`export` writes the deployment rows as the plan document), or sign multi-binary `fleet locus` topologies |
 | `hale deploy render <compose\|kubernetes> <file\|dir>` | Render `docker-compose.yml` or Kubernetes manifests (`Deployment`, `Service`, `ConfigMap`) from a `fleet locus` |
 | `hale node <name>` | Run a host agent that supervises fleet instances assigned to `<name>` |
 | `hale topology graph <file\|dir>` | Render the program's locus and bus topology graph |

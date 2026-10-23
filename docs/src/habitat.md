@@ -79,22 +79,9 @@ HALE_API_TOKEN=<the person's ID token> hale mcp --app mcp://127.0.0.1:<port>
 
 The agent's tools are the head's rows that person may call (`Commands__hosts`, `Commands__add_host`, …). A row they may not call is refused `unauthorized`, exactly as the face is refused, and every act is a row in their name. `hale habitat brief` (the row `Commands__brief`) is where such an agent starts: the Board's charter, the rules it works by, and the live state. [`agents/operator.md`](https://github.com/hale-lang/hale/blob/main/agents/operator.md) is the agent's own brief: the words, the rules, and which rows read, act or propose.
 
-<!--
-DRAFT. The walkthrough below includes Phase 4 habitat placement and model-routing
-commands from in-flight branches that have not yet landed on `main`:
-- `hale habitat place`, `apply [<host>]`, `graft --host`, `model-map`, and
-  `model-probe`, plus the operator face's infrastructure/organisms action buttons
-  (D4 `dna/habitat-placement`, D5 `dna/acceptance-homelab`, `face/operator-actions`).
-- Building `voice`'s image from a fetched sapling tree currently requires running
-  `scripts/hale-toolchain.sh` inside the fetched tree (`voice#45`).
--->
-
 ## Walkthrough: Deploying and Querying `voice` in a Habitat
 
 This walkthrough covers taking a machine with `hale`, `docker compose`, `git`, and a browser from a cold start to streaming an LLM completion response through the `voice` nursery sapling.
-
-> [!NOTE]
-> **In-Flight Phase 4 Commands:** Steps 1–3 (`hale habitat up`, `status`, `nursery list`, `graft voice`, `host add`, `host probe`) are built on `main` today. The remote host placement (`graft --host`, `place`, `apply`), and model routing (`model-map`, `model-probe`) commands in Steps 3, 4, and 6 are part of the Phase 4 placement and homelab track (`D4`/`D5`) and are not on `main` yet.
 
 ### 1. Start the Habitat and Inspect Status
 
@@ -111,7 +98,7 @@ face    http://127.0.0.1:<port>/ (up, ...)
 
 ### 2. Sign In to the Operator Face
 
-Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the **hardware**, **infrastructure**, and **organisms** tabs ([The head and the face](./dna/head.md)).
+Open the `face` URL in your browser. On a `local` habitat, the head redirects through the local OIDC identity provider, signs you in automatically as `local-sub` (mapped to your local user for an 8-hour session with no password setup required), and displays the four screens: **habitat** (the index and its name), **hardware**, **infrastructure**, and **organisms** ([The head and the face](./dna/head.md)).
 
 ### 3. Graft the `voice` Sapling (Local or LAN Host)
 
@@ -124,7 +111,7 @@ hale habitat graft voice
 
 `graft` fetches the pinned revision of `voice` into `<habitat>/saplings/voice`, verifies its SHA-256 tree digest, grafts it as a child organism of the habitat, and allocates its requested roles (`memory`, `nerves`, heart `database`, and `broker`).
 
-To place `voice` onto a remote LAN host over SSH instead (requires the Phase 4 `--host` placement flag after registering the host via `host add` and `host probe`):
+To place `voice` onto a remote LAN host over SSH instead (register the host with `host add` and `host probe` first):
 
 ```sh
 # Register the LAN host and append the printed habitat public key to ~/.ssh/authorized_keys on rack-a.lan:
@@ -133,7 +120,7 @@ hale habitat host add rack-a.lan --user ops
 # Verify SSH connectivity and host capabilities (docker compose, OS, arch):
 hale habitat host probe rack-a.lan
 
-# Graft voice onto rack-a.lan (Phase 4 D4/D5):
+# Graft voice onto rack-a.lan:
 hale habitat graft voice --host rack-a.lan
 ```
 
@@ -200,7 +187,7 @@ VOICE_ENROLLMENT_TOKEN=vn-... docker compose -p <project> up -d node
 
 ### 6. Point an Organism's Model Map at `voice`
 
-Store the `vk-...` API key in a vault slot (`hale dna secret set <SLOT>` inside `voice`'s directory), then map the `think.standard` model category to `voice` and probe it (`Phase 4 D5`):
+Store the `vk-...` API key in a vault slot (`hale dna secret set <SLOT>` inside `voice`'s directory), then map the `think.standard` model category to `voice` and probe it:
 
 ```sh
 hale habitat model-map voice think.standard echo-1 \
@@ -228,6 +215,7 @@ curl -N http://localhost:8080/v1/chat/completions \
 - **Forgetting a habitat:** `hale habitat down --forget` removes the habitat whole, plan first, like terraform. It prints everything it would remove, grouped: the habitat's record and memory (row count, organisms, newest row), each grafted organism (record, genome repository, Forgejo repository, allocations by host), the compose projects and volumes, the vault slots (by name, never a value), the Forgejo instance and its accounts, the hosts, and what it runs on each host over SSH, each line with its size or count and whether it is recoverable. Nothing is touched until you type the habitat's name back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way says what was done and what was not, and running it again plans from what remains. The one thing it cannot remove is the line each host's `~/.ssh/authorized_keys` took: it is noted, and the next plan shows it until you remove it there and a forget clears the note. A host that does not answer is planned as `unreachable: left on <host>`: the habitat's side goes and what is left there is named. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept. If anything changes between the plan and your confirmation, the act refuses with `plan_changed` and you plan again.
 - **Removing an organism:** `hale habitat organism remove <name>` plans and confirms the same way (its record and memory, genome repository, Forgejo repository and account, allocations by host, compose services, vault slots), typed back by the organism's name; the organisms screen of the operator face offers the same.
 - **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
+- **Model map and graft log rows:** `model-map` and `model-probe` are the head's `Commands::set_model_map` and `Commands::probe_model`; a key is named only by its vault slot. The face follows a graft's log through `Commands::graft_log`, which reads only the log of a graft the habitat itself started.
 - **No model:** every face screen works with the models catalog empty. Without a model, asks and leg work become handed Tasks that a person takes and reports done as text from the face; nothing waits on a model or times out into a leg ([Workflows: with no model](./dna/workflow.md#with-no-model)).
 - **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
 - **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.
