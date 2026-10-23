@@ -8,6 +8,168 @@ behavior.
 
 ## Unreleased
 
+## v0.29.0 — a habitat run from a browser (2026-10-23)
+
+A habitat now runs from a browser. After `hale habitat up`, a person signs in to the operator face, adds machines of the LAN over SSH, places the habitat's services on them, and grafts organisms from the nursery onto the host they choose. Every step is a row of the habitat's head, in that person's name. On the language side, an HTTP client reads a response as it arrives, a REST surface can hand everything else to a handler of the program's own, and a deployment of several programs is declared in source as a fleet.
+
+**The operator face.** `hale habitat up` serves four screens with no build step: sign-in and the habitat's state, hardware, infrastructure and organisms (#1720, #1740). `hale habitat up --name <name>` names the habitat at birth (#1742).
+
+**Hosts and placement.** The habitat places through providers: `compose` on this machine, `ssh` on a machine of the LAN reached with the habitat's own key (#1721, #1724). `hale habitat place` binds an allocation to a host, and `hale habitat apply` brings it up there and reports its pulse. Addresses follow placement, and a moved memory starts empty only with `--fresh` (#1739).
+
+**Organisms from the nursery.** A nursery offers saplings, organisms pinned by revision and digest, grafted by name with no checkout, and a newer revision waits for the Board (#1725). The toolchain's nursery carries the hale organism, whose codebases are hale and voice, and voice itself (#1742, #1743). `hale habitat graft <sapling> --host <name>` puts one on a host (#1739).
+
+**Forge and identity.** The forge is a gate, not a store, and the local profile's is the habitat's own Forgejo. GitHub is an allocation the Board makes, and nothing of an organism's own goes there otherwise (#1742).
+
+**Working without a model.** Every screen and verb works with the models catalog empty: a person takes a Task and reports it done as text, and nothing times out into a leg (#1742). With a model, `hale habitat model-map` points an organism's calls at it, voice included (#1742).
+
+**Pairing with an agent.** The head serves its commands over MCP under the person's session and roles, and `hale habitat brief` renders the Board's view as a prompt (#1728).
+
+**Destroying is planned first.** `hale habitat down --forget`, `hale habitat host remove` and `hale habitat organism remove` print what they would remove, grouped and with recoverability, and act only after the name is typed back. There is no `--yes`, and a plain `hale habitat down` removes nothing (#1744).
+
+**The language.** `std::http` reads a body as it arrives, as chunks or as server-sent events, with bounded waits and a deferred opening so a relay stays responsive (#1719, #1729, #1736). `http::Rest` takes a `fallback` handler, a `max_request_bytes` cap, and refuses cross-site writes by default (#1722, #1733). The JSON codec encodes in linear time and memory (#1734). `fleet locus` declares a deployment of several programs, checked as one graph and rendered per host (#1723, #1726).
+
+**Breaking changes, measured against v0.28.0:** a fleet plan JSON is no longer an input, and fleets are seeds (#1726). `hale dna github sync` is now `hale dna forge sync` (#1742). `Commands::remove_host` takes a confirmation and the plan's digest (#1744). Over-cap HTTP bodies answer `413`, and Rest rows refuse non-JSON bodies (#1733). Habitats born before this release re-init.
+
+The item-level notes follow, one entry per change with every PR reference.
+
+- `std::http` reads a response body as it arrives: `std::http::BodyReader { req }` hands it on a chunk at a time (`chunk()`) and `std::http::SseReader { req }` an event at a time (`event()`). They mirror the Server's `BodyWriter` / `SseWriter`, work over http and https alike, and have the whole-body read's deadline (`timeout_ms`) and failure kinds. The body's end is the new kind `end`, and a body cut off mid-stream fails `recv_failed`. A relay that reads an upstream's events and writes them to its own `SseWriter` is one loop, and a vault-sealed key revealed into the reader's request headers is accepted as a wire write (#1698).
+
+### The habitat's operator face
+
+- `hale habitat up` serves the operator face's first screen under `/app/` of the habitat's face address: the sign-in edge, then the habitat's name, state, record revision and organisms, read through a generated JS client of the head's `Commands::index` row. It has no build step; its visual rules are CSS custom properties for the next screens to reuse. A habitat born earlier keeps its old genome.
+
+### The habitat: hosts, providers and placement
+
+- The DNA core declares a `Provider` interface (`offers`, `allocate` by role, `place`, `apply` a render, `observe`), with an implementation in memory for tests and the `compose` provider for this machine.
+- `hale habitat up` runs through the `compose` provider. It brings every allocation up, the habitat's own and each tenant's, and produces this machine as the host `local` with what it offers (`compose`, plus `systemd-user` where the user's systemd answers).
+- `up` also records the `local` profile's policy as `habitat.policy` rows (a provider per role) and places the habitat's head and face on `local`.
+- Every `habitat.allocated` row names its `provider` and its `host`.
+- The head's surface serves three new reads: `Commands::hosts`, `Commands::allocations` (each with what its provider observes now: `up`, `degraded` or `down`) and `Commands::policy`. The head relays them from the face, as it relays the index.
+- A habitat born before this change re-inits; nothing migrates.
+
+- `http::Rest { …, fallback: self.data_plane }` hands a request whose path matches no row to a `std::http::Handler` the program owns. The handler answers on the same listener and connection, with the request untouched, and can stream, send SSE or take the connection over as under `std::http::Server`. A row's path stays the transport's (`405`, `OPTIONS`, CORS). The exposure's bearer and roles gate the rows only, so the fallback does its own authentication. Place the handler on the exposure's `where async_io` pool. With no fallback, an unmatched path is still `404`.
+
+### Fleets in source
+
+- `fleet locus NAME { params placement bindings claims }` declares a deployment of other seeds' `main` loci, a locus kind beside `main`: its params are imported mains, `placement` gives each a default `host("…")` or `replicas(n)`, `bindings` names the subjects that wire them, and `claims` state the law across them. `hale check` judges a fleet seed; `hale build` refuses it, since a fleet runs only as its instances.
+- `hale fleet check <fleet seed>` derives the deployment's rows (components, instances, placement defaults, endpoints, routes) from the instances' artifacts and the bindings, prints them, and judges the claims across the instances as one graph. A route through an instance whose own main does not bind the subject, over another transport, or with no publisher or subscriber is refused. A `[fleets]` entry may name a fleet seed.
+
+### The habitat: hosts over SSH
+
+- `hale habitat host add <name> [--user <u>] [--port <n>]` adds a machine of the LAN, by the name it resolves under, as a host the habitat places on over plain SSH.
+  - The habitat reaches it with its own ed25519 keypair. The keypair is made into its vault on first need and is never printed.
+  - The command prints the host key first seen (trusted from then on), the habitat's public key, and the line to append to the machine's `~/.ssh/authorized_keys`.
+  - The host is `pending-key` until that line is there.
+- `hale habitat host probe <name>` moves the host to `ready` once the key is authorized, with what it offers: docker compose, the user's systemd, OS and architecture. A changed host key is refused.
+- `hale habitat host remove <name>` is refused while an allocation is placed on the host.
+- Each verb is a Board command of the habitat's head: `Commands::add_host`, `::probe_host` and `::remove_host`.
+- The `ssh` provider applies a render on a host with docker compose there, withdraws it, and observes it. The `Provider` interface gains `withdraw`.
+
+### The habitat: saplings
+
+- A nursery can offer **saplings** beside its packs. A sapling is an organism's seed, pinned by repository, revision and digest, with the packs it adopts at graft. The toolchain's nursery offers `voice`.
+- `hale habitat graft <sapling>` grafts a sapling by name with no checkout:
+  - it fetches the pinned revision into the habitat's store and checks its digest (a mismatch refuses);
+  - it grafts the organism and proposes its packs to the new Board;
+  - it records the sapling, revision and digest on the graft's row.
+- The habitat's nurseries are rows of its record: the toolchain's, plus each directory or git repository the Board trusts (`hale habitat nursery add`, the head's `Commands::add_nursery`).
+- `hale habitat nursery refresh` (and `up`) reads what the nurseries offer. A newer revision of a pinned sapling is filed for the Board, never pulled. `hale habitat nursery ratify <sapling>` pins it.
+- The head lists `Commands::nurseries` and `Commands::saplings`.
+
+### Fleets: the seed is the input (breaking)
+
+- **Breaking:** a fleet plan JSON is no longer an input anywhere. `hale fleet check|dump` take a fleet seed (a seed declaring `fleet locus`), `[fleets]` entries name fleet seeds (a `.json` entry is refused), the DNA's `[dna] fleet` names one, and `hale deploy render` renders one. Convert a plan to a `fleet locus` seed; `hale fleet export <seed>` writes the old document from the seed's rows for whoever reads one.
+- **Breaking:** `hale fleet sign <seed> --key K` signs the fleet's deployment rows (`fleet.sig` beside the seed) instead of an artifact file, and `--trust` / `[fleet_trust]` verify that signature. `hale fleet attest` is removed with the plan's `binary` rows. `hale dna plan-of` is `hale dna fleet-of`.
+- `hale deploy render <fleet seed> [--placement <file>]` renders one description per host: each instance on the host its allocation row names, else its placement default, a compose project per host, and a route between hosts declared in each project by its `instance@host` endpoints.
+- A fleet placement names one instance per host (`gw: host("a"), host("b");`), instance ids are `<param>-<i>`, an end whose own main does not bind the subject joins the route the fleet's binding configures, and a fleet seed is checked without merging the seeds it imports.
+
+### The habitat: the forge is a gate, and the local one is Forgejo
+
+- **The forge is a gate, not a store.** Code goes out through it as branches, and verdicts come back through it. The organism reads nothing from it that it did not already decide. A Review lives in the record, its candidate is a branch in git, and the pull request is a mirror. Which forge stands in the gate is an allocation, and swapping it is swapping a remote.
+- **The local profile's forge is Forgejo.** `hale habitat up` brings one up as a service of the habitat's compose project, as it brings up memory and the nerves. The image is pinned by digest. Its administrator's password is drawn into the vault (`forgejo-admin`), and rows name the slot, never the value. A graft makes the organism a Forgejo user of its own, named for it and its key so that no two organisms share one, with a token in its own vault slot (`forgejo-<id>`), plus a repository for its codebase. A leg's git hand pushes there as that user. `ForgejoForge` implements the core's `Forge` interface beside GitHub's; a gate's run there is the current status of its context, never an earlier pass. GitHub is the allocation when a Board names it. `none`, a bare remote whose Reviews are decided in the organism's own face or CLI, stays as the fallback when there is no infrastructure. Neither GitHub nor `none` is the default; on an operator's backends the forge is `none` until the Board allocates one.
+- **Breaking:** `hale dna github sync` and the `dna.github` setting are gone. Use `hale dna forge sync`, which behaves as `github sync` did against whichever forge the allocation names. Allocate a forge with `hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>]` (the head's `Commands::allocate_forge`, a Board command). `dna.github.board` stays. The face's forge form (`dna.forge.configure`) now sets only the forge's Board logins, refuses a `github` argument, and the project view shows the allocated repository.
+- To move a project from the local forge to GitHub, change the remote, change the allocation, and sync. A Review still open reappears as a pull request on the new forge. Nothing migrates, and the old forge's pull request is left as it was.
+- `forge` and `identity` are roles the habitat allocates, as it allocates memory. Each is a `habitat.allocated` row naming its provider, recorded once when absent, and a retried graft finishes what an interrupted one left out. The identity is the habitat's own sign-in. `Commands::allocations` lists both, and a graft takes `--forge <provider>`.
+- No practice, workflow or standard names a forge by kind: "open a review" is the verb, and the allocation answers it. A leg's hands are the same: their forge, `AllocatedForge`, reads the organism's allocation at each call, as forge sync does. A guard test reads every pack for a forge's name, and refuses a leg's hands that name a forge kind.
+
+### The habitat: an agent pairs with a person
+
+- The head serves its commands over MCP too (`mcp::Rpc`), under the same bearer and roles as its commands port. An agent pairing with a person connects with `hale mcp --app mcp://127.0.0.1:<port>` and the person's ID token in `HALE_API_TOKEN`. Its tools are the rows that person may call, and a row they may not call is refused as the face is refused. `hale habitat status` prints the endpoint.
+- The habitat's Board acts (`Commands::add_host`, `::probe_host`, `::remove_host`, `::add_nursery`, `::ratify_sapling`) write their rows in the name of the person who asked.
+- `hale habitat brief` (the head's read `Commands::brief`) prints the Board's hat as a prompt with the live state: hosts, allocations and their pulse, organisms, saplings, and what waits for the Board. It never reads the vault.
+- `agents/operator.md` is the pairing agent's brief: the words, the rules, which rows read, act or propose, and how to connect.
+
+- `std::http::BodyReader.chunk_within(ms)` and `std::http::SseReader.event_within(ms)` wait at most `ms` for the next piece of a streamed body and fail with a new `HttpError` kind, `idle`, when none arrived, leaving the stream open: the next read carries on where it stopped, a partly read event stays buffered, and the exchange's `timeout_ms` still ends the stream. A relay that also serves a control channel reads with a bounded wait instead of shrinking its deadline.
+
+- A DNA head stopped while it waited on its API child (a proxied read, a relayed command) answers that request 503, retryable, and finishes its drain, instead of being ended at the runtime's drain grace.
+
+- `http::Rest` takes `max_request_bytes` (1 MiB unless set, at most 1 GiB), the body cap of its listener, rows and fallback alike; a body over an HTTP transport's cap is `413` `too_large` (it was `400` `malformed` at a fixed 1 MiB).
+- An `http::Rest` row refuses a body that is not `application/json` (`415`) and a write with no body from an `Origin` its `cors` does not list (`403`): a cross-site form can no longer post to it. Clients that send `Content-Type: application/json` and no `Origin` are unaffected.
+
+- The json codec writes a record in time and memory linear in its text: a list of N records cost O(N²) (about 800 MB for a 1000-record page), now its size. The api codec and `std::json`'s derived encoder share the fix.
+
+- `std::http::BodyReader` and `SseReader` take `deferred: true`: birth sends nothing, and `open_within(ms)` (or the first `chunk_within` / `event_within`, which fail `idle` meanwhile) advances the opening, so an upstream that never sends its response head no longer holds the caller for the whole deadline. The dial stays bounded by the deadline.
+
+### DNA: the solo path, with no model
+
+- Every face screen works with the models catalog empty.
+- On a generated organism with no model, an ask is a person's job, handed unassigned with no plan asked. Work a leg or the editor would perform is a person's case.
+- "No model" means none is mapped and the catalog reaches none. A canned or recorded model counts; a local server counts only while it is running. `hale dna models category` gives the legs back.
+- Nothing waits on a model or times out into a leg.
+- The head's `Commands::take_task` and `Commands::complete_task` let a person take a handed Task and report it done with the work as text, from the standard face (**Take this Task**, **Report done**), each a row in their name.
+
+### The habitat: a name, and the hale organism
+
+- `hale habitat up --name <name>` names the habitat at its birth. The name is a DNS label, and a habitat born with no `--name` is `local`. It is recorded on the habitat's `habitat.profile` row and kept: asking a born habitat for another name is refused. `hale habitat status`, the head's `Commands::index` (`name`) and the operator face show it.
+- The toolchain's nursery offers **the hale organism** as the `hale` sapling. It is the organism that works on the Hale toolchain. Its genome is a small repository of its own, and its codebases are `hale-lang/hale` and `hale-lang/voice`. Its positions are the new `hale-organism` pack.
+- A genome's codebases attach at its graft: `[[dna.codebase]]` in its `hale.toml` (with `name`, `repo`, `branch`, `build`, `test` and `toolchain`) becomes `codebase.attached` rows of the grafted organism's record. Each attaches once, and nothing is cloned.
+
+### The habitat: placing allocations on hosts
+
+- `hale habitat place <key>/<role> <host>` (the Board's `Commands::place_allocation`) binds an allocation (memory, nerves, the senses' store, or an organism's services) to a host. It applies nothing.
+- `hale habitat apply [<host>] [--fresh]` (`Commands::apply_allocations`):
+  - withdraws each moved allocation where it ran;
+  - brings it up where it is placed, with that host's provider;
+  - exports the rows as the `--placement` file;
+  - records each apply;
+  - prints the pulse.
+- Addresses follow placement: on another host, an allocation's DSN or URL is the host's name and the port it publishes there.
+- A moved memory starts empty. A memory that holds its organism's record moves only with `--fresh`, and the habitat's own memory never moves.
+- `hale habitat graft <sapling> --host <name>` grafts an organism onto a host. The graft is the head's `Commands::graft`.
+- The habitat's index lists each organism's purpose and pulse.
+
+### The operator face's screens
+
+- The operator face (`dna/habitat/ui`) gains three screens beside the habitat's: hardware (hosts, add a host and copy its key line, probe, remove), infrastructure (allocations with a host picker, `apply` and its pulse, a confirm before a move starts a memory empty) and organisms (purpose and pulse, saplings, and a graft per sapling that follows its log). `Commands::graft_log` serves a graft's log by its id.
+
+### The habitat: the homelab acceptance
+
+- The new acceptance fixture `dna/tests/acceptance_homelab_test.hl` runs phase 4's exit end to end. After `hale habitat up`, every step is a row of the head's surface:
+  - a host is added over SSH and authorized;
+  - voice is grafted by name from a nursery onto the host and applied there;
+  - a streamed request through voice answers from the host's model;
+  - the reads list voice placed and up.
+- The fixture names what it does not prove: voice's own programs, and the Mac's node.
+- `model.category` names where the model is asked (`hale dna models category … --endpoint <url> [--key-vault <slot>]`). The habitat's head sets it for a tenant with `Commands::set_model_map` (`hale habitat model-map`) and asks the mapped model with `Commands::probe_model`.
+- `Commands::add_nursery` now reads what the nursery offers at once.
+- A nursery the Board trusts is read before the toolchain's, so it can offer a sapling over the bundled one; the Board ratifies the change.
+
+- The homelab acceptance's habitat is born named (`hale habitat up --name homelab-test`). Its first graft is the hale organism from the toolchain's nursery, with its codebases attached. Voice is grafted after it. The fixture checks the habitat's name in the index and through the face, and both organisms with their codebases.
+
+### The habitat: the hale organism is carried by the toolchain
+
+- The bundled `hale` sapling is the tree the toolchain carries (`toolchain:saplings/hale`), pinned by its digest, with no repository anywhere else.
+- `hale habitat graft hale` makes it the organism's own repository in the habitat, checks its digest (a tree that is not the pinned one is refused), and mirrors it to the habitat's Forgejo. Nothing of an organism's own goes to GitHub unless its Board allocates GitHub.
+- Voice's entry still fetches its public repository.
+
+### Destroy is plan-then-confirm
+
+- `hale habitat down --forget` removes the habitat whole, planned first like terraform: it prints everything it would remove, grouped (the habitat's record and memory with its row count, organisms and newest row; each grafted organism's record, genome repository, Forgejo repository and allocations by host; the compose projects and volumes; the vault slots, by name only; the Forgejo instance and its accounts; the hosts; and what it runs on each host over SSH), each line with its size or count and whether it is recoverable. Nothing is touched until the habitat's name is typed back at a terminal; there is no `--yes`, and without a terminal it refuses. `--plan` prints the plan and exits. A forget that fails part way reports what was done and what was not, and plans again from what remains. The line each host's `authorized_keys` took is noted, never removed.
+- `hale habitat host remove <name>` on a host with allocations no longer refuses (`allocations_placed` is gone): it prints the plan (each allocation and what stops or is deleted on that host) and executes it only once the host's name is typed back. `Commands::plan_remove_host` is the plan as a read; `Commands::remove_host` takes `{name, confirm}` and refuses `confirm_required` / `confirm_mismatch`. **Breaking:** `remove_host`'s request and reply changed shape (the generated clients are regenerated); `--forget` is new, so no earlier forget acted without a plan. The operator face's hardware screen shows the plan and a field for the host's name.
+- `hale habitat organism remove <name> [--plan]` removes one organism the habitat grafted, planned the same way (its record and memory, genome repository, Forgejo repository and account, allocations by host, compose services and projects, vault slots) and confirmed by its name typed back; `Commands::plan_remove_organism` and `Commands::remove_organism`, and a `remove` action on the operator face's organisms screen.
+- Every destroy binds its confirmation to the plan shown: when what it would remove changed in the meantime it refuses with `plan_changed` and nothing is touched. A host that does not answer over SSH stays removable: what is left there is named as unreachable and not recoverable from the habitat. Slots a person supplied (a GitHub token, a `--key-vault` slot) are kept, never removed.
+- A plain `hale habitat down` stops processes and removes nothing.
+
 ## v0.28.0 — an upstream change worked to a merged pull request (2026-10-21)
 
 An organism now keeps an outside codebase current with the systems it calls. When a watched upstream moves, the organism files the task itself. A leg answers with a pull request or a no-impact brief, each with receipts, and the team's merge on the forge comes back as the verdict. On the language side, a program imports the surfaces it calls, calls them through a typed client, serves REST by route, and says which locus holds a record's state.
