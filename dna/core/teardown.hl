@@ -634,7 +634,7 @@ fn teardown_execute(root: String, item: String, by: String) -> String {
     let r = ssh_run(root, h, script, "");
     if r.code != 0 {
         let failed = ssh_failure(r);
-        return (if len(failed) > 0 { failed + ": " } else { "" }) + trim_nl(r.stderr);
+        return (if len(failed) > 0 { failed + ": " } else { "" }) + teardown_failure(r);
     }
     if action == "remote-withdraw" {
         // withdrawn: where it was applied is nowhere now
@@ -690,7 +690,56 @@ fn teardown_all_done(report: String) -> Bool {
 // what it said.
 fn teardown_sh(script: String) -> String {
     let r = run_tool("sh\n-c\n" + script);
-    return if r.code == 0 { "" } else { trim_nl(r.stderr) };
+    return if r.code == 0 { "" } else { teardown_failure(r) };
+}
+
+// Why a tool that exited nonzero failed: what it said (its error, else its
+// output), a secret-looking word redacted, and its exit status; never
+// empty, so a failed item is never taken for a done one.
+fn teardown_failure(r: RunResult) -> String {
+    let said = trim_nl(if len(trim_nl(r.stderr)) > 0 { r.stderr } else { r.stdout });
+    let shown = teardown_redact(said);
+    return (if len(shown) > 0 { shown + " " } else { "" }) + "(exit " + to_string(r.code) + ")";
+}
+
+// `text` with every word that looks like a secret (24 or more letters,
+// digits and `+/=`, a digit among them, no `-` or `_` joining it: a token, a
+// key, a password) replaced by `[redacted]`.
+@bounded_by(text)
+fn teardown_redact(text: String) -> String {
+    let mut out = "";
+    let mut word = "";
+    let mut i = 0;
+    while i <= len(text) {
+        let c = if i < len(text) { text[i..(i + 1)] } else { " " };
+        let part = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+            || c == "+" || c == "/" || c == "=" || c == "_" || c == "-";
+        if part {
+            word = word + c;
+        } else {
+            out = out + (if teardown_secretish(word) { "[redacted]" } else { word })
+                + (if i < len(text) { c } else { "" });
+            word = "";
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+@bounded_by(word)
+fn teardown_secretish(word: String) -> Bool {
+    if len(word) < 24 { return false; }
+    // a name (a project's, a volume's) is joined by `-` or `_`; a token, a
+    // key or a drawn password is one run of letters, digits and `+/=`
+    let mut digit = false;
+    let mut i = 0;
+    while i < len(word) {
+        let c = word[i..(i + 1)];
+        if c == "-" || c == "_" { return false; }
+        if c >= "0" && c <= "9" { digit = true; }
+        i = i + 1;
+    }
+    return digit;
 }
 
 // Whether `s` is one word a shell line may carry in single quotes.
@@ -781,7 +830,7 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         );
         if r.code == 0 || std::str::contains(r.stderr + r.stdout, "does not exist") { return ""; }
         return "the habitat's Forgejo did not delete " + first + " (id " + uid + "): "
-            + trim_nl(r.stderr + r.stdout);
+            + teardown_failure(r);
     }
     if action == "organism-removed" { return organism_removed_rows(root, first, by); }
     return "-";
@@ -1294,15 +1343,17 @@ fn teardown_remove_script(lines: String) -> String {
             out = out + " && "
                 + (
                     if pass == 0 {
-                        "{ docker rm -f " + q + " >/dev/null 2>&1 || ! docker container inspect "
-                            + q
-                            + " >/dev/null 2>&1; }"
+                        "{ e=$(docker rm -f " + q
+                            + " 2>&1 >/dev/null) || ! docker container inspect "
+                            + q + " >/dev/null 2>&1 || { echo \"container " + name
+                            + ": $e\" >&2; false; }; }"
                     } else if pass == 1 {
                         "docker volume rm -f " + q + " >/dev/null"
                     } else {
-                        "{ docker network rm " + q + " >/dev/null 2>&1 || ! docker network inspect "
-                            + q
-                            + " >/dev/null 2>&1; }"
+                        "{ e=$(docker network rm " + q
+                            + " 2>&1 >/dev/null) || ! docker network inspect "
+                            + q + " >/dev/null 2>&1 || { echo \"network " + name
+                            + ": $e\" >&2; false; }; }"
                     }
                 );
         }

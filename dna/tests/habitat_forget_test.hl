@@ -423,6 +423,49 @@ fn main() {
         "a repository added before the confirmation is refused: " + rchanged.stdout
             + rchanged.stderr,
     );
+    // a resource that cannot be removed: the organism's services project's
+    // network, with a container of no project's attached. The removal stops
+    // there, says which item and why, and leaves the rest
+    let dservices = dna::local_habitat_project() + "-" + dkey;
+    let blocker = "dna-forget-blocker-" + to_string(std::process::pid());
+    std::test::assert(
+        dna::run_tool(
+            "docker\nnetwork\ncreate\n--label\ncom.docker.compose.project=" + dservices + "\n"
+                + dservices + "_default",
+        ).code == 0
+            && dna::run_tool(
+                "docker\nrun\n-d\n--name\n" + blocker + "\n--network\n" + dservices
+                    + "_default\nbusybox:1.36\nsleep\n600",
+            ).code == 0
+            && j.append(
+                j.revision(),
+                "habitat.allocated",
+                dkey + "/services",
+                "{\"organism\":\"" + dkey
+                    + "\",\"role\":\"services\",\"service\":\"\",\"project\":\""
+                    + dservices + "\",\"provider\":\"compose\",\"host\":\"local\",\"vault\":[]}",
+            ).ok,
+        "a network the removal cannot remove is in its way",
+    );
+    let stuck = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
+    std::test::assert(
+        stuck.code != 0
+            && std::str::contains(stuck.stdout, "FAILED    " + dkey + "/services: its services")
+            && std::str::contains(stuck.stdout, "network " + dservices + "_default: ")
+            && std::str::contains(stuck.stdout, "(exit ")
+            && std::str::contains(
+                stuck.stdout,
+                "not done  its record, in its memory (memory-" + dkey,
+            )
+            && std::str::contains(stuck.stdout, "(partly_removed)"),
+        "a removal that cannot remove an item says which and why, and leaves the rest: "
+            + stuck.stdout + stuck.stderr,
+    );
+    std::test::assert(
+        std::str::contains(state(home, false), "memory-" + dkey),
+        "its memory's volume, after the failed item, is left",
+    );
+    dna::run_tool("docker\nrm\n-f\n" + blocker);
     let removed = at_terminal(scratch, "doomed", toolchain() + " habitat organism remove doomed");
     std::test::assert(
         removed.code == 0 && std::str::contains(removed.stdout, "the organism doomed is removed")

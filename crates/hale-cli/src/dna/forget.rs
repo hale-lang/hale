@@ -759,7 +759,7 @@ fn execute(items: &[Value], name: &str) -> bool {
                         println!("{:<10}{}", "done", s(i, "what"))
                     }
                     Some((state, Some(why))) if state == "failed" => {
-                        println!("{:<10}{}: {why}", "FAILED", s(i, "what"));
+                        println!("{:<10}{}: {}", "FAILED", s(i, "what"), redact(why));
                         failed = true;
                     }
                     _ => {
@@ -774,13 +774,42 @@ fn execute(items: &[Value], name: &str) -> bool {
         match execute_local(order[k], name) {
             Ok(()) => println!("{:<10}{}", "done", s(order[k], "what")),
             Err(why) => {
-                println!("{:<10}{}: {why}", "FAILED", s(order[k], "what"));
+                println!("{:<10}{}: {}", "FAILED", s(order[k], "what"), redact(&why));
                 failed = true;
             }
         }
         k += 1;
     }
     !failed
+}
+
+/// `text` with every word that looks like a secret (24 or more of letters,
+/// digits and `+/=`, a digit among them, no `-` or `_` joining it)
+/// replaced by `[redacted]`, as
+/// `dna::teardown_redact` does a host's.
+fn redact(text: &str) -> String {
+    let part = |c: char| c.is_ascii_alphanumeric() || "+/=_-".contains(c);
+    let mut out = String::new();
+    let mut word = String::new();
+    for c in text.chars().chain(std::iter::once('\0')) {
+        if part(c) {
+            word.push(c);
+            continue;
+        }
+        if word.len() >= 24
+            && word.chars().any(|d| d.is_ascii_digit())
+            && !word.contains(['-', '_'])
+        {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(&word);
+        }
+        word.clear();
+        if c != '\0' {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// What a confirmation binds a plan by: each item's group, subject,
@@ -864,5 +893,16 @@ pub(super) fn forget(plan_only: bool) -> ExitCode {
     } else {
         eprintln!("hale habitat down --forget: the forget stopped at an item that failed; the items after it were left, and `hale habitat down --forget` plans again from what remains");
         ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact;
+
+    #[test]
+    fn a_failure_reason_keeps_names_and_hides_secrets() {
+        let said = "network hale-habitat-local-9d76b848-e73f4da39bb8_default: token 0123456789abcdef0123456789abcdef01234567 refused (exit 1)";
+        assert_eq!(redact(said), "network hale-habitat-local-9d76b848-e73f4da39bb8_default: token [redacted] refused (exit 1)");
     }
 }
