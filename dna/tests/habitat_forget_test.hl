@@ -47,7 +47,8 @@ fn at_terminal(dir: String, typed: String, line: String) -> dna::RunResult {
 
 // The shell command line `line` run in `dir` at a terminal: once it prints
 // `prompt`, the shell line `change` runs, and then `typed` is typed at it
-// (what changes while a person reads a plan).
+// (what changes while a person reads a plan). What the terminal shows is
+// kept in `dir` (the fixture's scratch root) while it runs.
 fn at_terminal_after(
     dir: String,
     typed: String,
@@ -57,7 +58,7 @@ fn at_terminal_after(
 ) -> dna::RunResult {
     return in_dir(
         dir,
-        "sh\n-c\no=$(mktemp) && n=0 && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s\nsh\n"
+        "sh\n-c\no=\"$PWD/terminal-$$.log\" && n=0 && { until grep -q \"$3\" \"$o\" || [ $n -gt 600 ]; do sleep 0.5; n=$((n+1)); done; sh -c \"$4\"; printf '%s\\n' \"$1\"; } | script -qefc \"$2\" \"$o\" >/dev/null; s=$?; cat \"$o\"; rm -f \"$o\"; exit $s\nsh\n"
             + typed + "\n" + line + "\n" + prompt + "\n" + change,
     );
 }
