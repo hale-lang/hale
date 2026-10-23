@@ -65,6 +65,34 @@ fn allocation_body(organism: String, a: dna::Allocation) -> String {
     return b.result();
 }
 
+// An allocation of a role no compose service holds (a forge, an
+// identity): its provider, its host ("" for none) and address, and the
+// vault slot it holds by name (never a value).
+fn role_body(
+    organism: String,
+    role: String,
+    provider: String,
+    host: String,
+    address: String,
+    key_vault: String
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("organism", organism);
+    b.string_field("role", role);
+    b.string_field("service", "");
+    b.string_field("provider", provider);
+    b.string_field("host", host);
+    b.string_field("address", address);
+    b.string_field("repo", "");
+    b.string_field("key_vault", key_vault);
+    b.begin_array_field("vault");
+    if len(key_vault) > 0 { b.string_value(key_vault); }
+    b.end_array();
+    b.end_object();
+    return b.result();
+}
+
 // `habitat-place <backends>` on the habitat's genome: what was recorded, a
 // line each.
 fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> Answer {
@@ -125,6 +153,57 @@ fn habitat_place_verb(root: String, backends: String, memory: dna::Memory) -> An
         placed = placed + (if len(placed) > 0 { ", " } else { "" }) + role;
     }
     out = out + "placed  the habitat's " + placed + " on " + host.name + " (compose)\n";
+
+    // its forge and its identity, roles it allocates as it allocates its
+    // memory: the forge the policy names until the Board allocates another
+    // (never overwritten here), the identity its own sign-in at its address;
+    // both recorded once, when absent, so a resumed `up` leaves them as born.
+    // The local profile's forge is the habitat's own Forgejo, brought up at
+    // every `up` as memory and the nerves are (phase 4 ruling)
+    let forge_key = key + "/forge";
+    let fp = dna::profile_provider("local", backends, "forge");
+    let recorded = len(latest_body(j, "habitat.allocated", forge_key)) > 0;
+    let runs = if recorded { dna::forge_allocated(root).provider } else { fp };
+    if runs == "forgejo" {
+        let why = forgejo_up();
+        if len(why) > 0 { return fail("habitat-place: the habitat's forge: " + why); }
+    }
+    if !recorded {
+        let forgejo = fp == "forgejo";
+        let address = if forgejo { dna::forgejo_address() } else { "" };
+        let slot = if forgejo { dna::FORGEJO_ADMIN_VAULT } else { "" };
+        rows = rows
+            + row_line(
+                "habitat.allocated",
+                forge_key,
+                role_body(organism, "forge", fp, if forgejo { "local" } else { "" }, address, slot),
+            );
+        let kept = dna::forge_cache(
+            key,
+            dna::ForgeAllocation { provider: fp, address: address, key_vault: slot },
+        );
+    }
+    let issuer = oidc_issuer(root);
+    let ib = role_body(
+        organism,
+        "identity",
+        dna::profile_provider("local", backends, "identity"),
+        "local",
+        issuer,
+        "",
+    );
+    if len(latest_body(j, "habitat.allocated", key + "/identity")) == 0 {
+        rows = rows + row_line("habitat.allocated", key + "/identity", ib);
+    }
+    let f = dna::forge_allocated(root);
+    out = out + "roles   the habitat's forge (" + f.provider
+        + (if len(f.address) > 0 { " at " + f.address } else { "" })
+        + (if len(f.key_vault) > 0 {
+            "; its administrator in the vault slot " + f.key_vault
+        } else {
+            ""
+        })
+        + ") and identity (oidc-stub at " + issuer + ")\n";
     if len(rows) > 0 && append_lines(root, rows, memory) < 0 {
         return fail("habitat-place: the habitat's record refused the rows");
     }

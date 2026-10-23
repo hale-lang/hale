@@ -51,7 +51,7 @@ fn own_arguments(operation: String) -> String {
     if operation == "dna.project.init" || operation == "dna.project.attach" { return "root"; }
     if operation == "dna.project.forget" { return "application_id"; }
     if operation == "dna.project.publish" { return "remote message"; }
-    if operation == "dna.forge.configure" { return "github board"; }
+    if operation == "dna.forge.configure" { return "board"; }
     return "";
 }
 
@@ -167,30 +167,6 @@ fn project_name_ok(name: String) -> Bool {
         i = i + 1;
     }
     return true;
-}
-
-// `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`
-fn github_ok(value: String) -> Bool {
-    let slash = std::str::index_of(value, "/");
-    if slash < 1 || slash == len(value) - 1 { return false; }
-    let mut i = 0;
-    let mut slashes = 0;
-    while i < len(value) {
-        let c = std::str::byte_at_unchecked(value, i);
-        if c == 47 { slashes = slashes + 1; }
-        else if !(
-            (c >= 65 && c <= 90)
-                || (c >= 97 && c <= 122)
-                || (c >= 48 && c <= 57)
-                || c == 95
-                || c == 46
-                || c == 45
-        ) {
-            return false;
-        }
-        i = i + 1;
-    }
-    return slashes == 1;
 }
 
 // `^[A-Za-z0-9-]{1,39}$`
@@ -415,16 +391,10 @@ fn plan_publish(cfg: HeadConfig, ctx: HeadContext, arguments: String) -> Plan {
     };
 }
 
+// The forge's Board logins (`dna.github.board`). The forge itself is the
+// habitat's allocation (`hale habitat forge`, `Commands::allocate_forge`),
+// never a setting here: a `github` argument is refused as unknown.
 fn plan_forge_configure(ctx: HeadContext, arguments: String) -> Plan {
-    let github = argument(arguments, "github");
-    if len(github) > 0 && !github_ok(github) {
-        return Plan {
-            refused: "name_invalid",
-            reason: "github must be owner/repo",
-            kind: "inline",
-            deadline_secs: 10,
-        };
-    }
     let board = board_setting(arguments);
     if board == "!" {
         return Plan {
@@ -436,26 +406,20 @@ fn plan_forge_configure(ctx: HeadContext, arguments: String) -> Plan {
     }
     let record = dna::MemoryRecord { repo: ctx.active_root };
     let mut ok = true;
-    if len(github) > 0 {
-        ok = record.set_setting("github", github);
-    } else if len(record.setting("github")) > 0 {
-        ok = record.unset_setting("github");
-    }
     if len(board) > 0 {
-        ok = ok && record.set_setting("github.board", board);
+        ok = record.set_setting("github.board", board);
     } else if len(record.setting("github.board")) > 0 {
-        ok = ok && record.unset_setting("github.board");
+        ok = record.unset_setting("github.board");
     }
     if !ok {
         return Plan {
             kind: "inline",
-            reason: "git config refused the forge settings",
+            reason: "git config refused the forge's board",
             deadline_secs: 10,
         };
     }
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("github", record.setting("github"));
     b.field("board", logins_json(record.setting("github.board")));
     b.end_object();
     return Plan { ok: true, kind: "inline", deadline_secs: 10, outcome: b.result() };
@@ -465,7 +429,7 @@ fn plan_forge_sync(ctx: HeadContext) -> Plan {
     return Plan {
         ok: true,
         kind: "run",
-        script: "exec \"$HALE_BIN\" dna github sync",
+        script: "exec \"$HALE_BIN\" dna forge sync",
         cwd: ctx.active_root,
         envs: "GH_PROMPT_DISABLED=1\nGH_NO_UPDATE_NOTIFIER=1\n",
         deadline_secs: 180,

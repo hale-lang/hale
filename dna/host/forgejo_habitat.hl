@@ -1,0 +1,81 @@
+// dna/host/forgejo_habitat.hl — a grafted organism's place at the habitat's
+// Forgejo (phase 4 ruling).
+//
+// The local profile's forge is the habitat's own Forgejo (dna/core/forgejo.hl).
+// A graft gives the organism a Forgejo user of its own, its token drawn into
+// the vault slot `forgejo-<key>`, and a repository for its codebase, holding
+// its code as the graft left it; the graft records the forge allocation that
+// names them. A Review's candidate goes out as a branch of that repository,
+// and its pull request is a mirror.
+
+import "../core" as dna;
+
+// The JSON of a repository to make: `name`, its default branch, public on
+// the habitat's loopback forge.
+fn forgejo_repo_json(name: String, branch: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", name);
+    b.string_field("default_branch", branch);
+    b.bool_field("private", false);
+    b.end_object();
+    return b.result();
+}
+
+// `habitat-forge-provision <name> <key> <organism root>` on the habitat's
+// genome: the organism `name` keyed `key` made a user of the habitat's
+// Forgejo, its token in the vault, its repository made and its code pushed
+// there (`-` for a root the habitat does not know: nothing is pushed).
+// What it was given, as `address=`, `repo=`, `key_vault=` and `branch=`
+// lines (the slot's name, never its value).
+fn habitat_forge_provision_verb(
+    genome: String,
+    name: String,
+    key: String,
+    organism: String
+) -> Answer {
+    if len(name) == 0 || len(key) != 12 || len(organism) == 0 {
+        return fail("usage: habitat-forge-provision <name> <key> <organism root>");
+    }
+    // the habitat's Forgejo, brought up when it is not (an operator's
+    // habitat runs one only once an organism is allocated it)
+    let up = forgejo_up();
+    if len(up) > 0 { return fail("habitat-forge-provision: " + up); }
+    let address = dna::forgejo_address();
+    // the organism's own account, named for it and its key
+    let user = dna::forgejo_user_for(name, key);
+    let made = forgejo_user(user, key);
+    if len(made) > 0 { return fail("habitat-forge-provision: " + made); }
+    let slot = dna::forgejo_vault(key);
+    let api = dna::ForgejoApi { address: address, token_slot: slot };
+    let repo = user + "/" + dna::forgejo_user_name(name);
+    let named = genome_branch(organism);
+    let branch = if len(named) > 0 { named } else { "main" };
+    let got = api.call("GET", "/repos/" + repo, "");
+    if !got.ok {
+        if got.status != 404 { return fail("habitat-forge-provision: " + got.why); }
+        let c = api.call(
+            "POST",
+            "/user/repos",
+            forgejo_repo_json(dna::forgejo_user_name(name), branch),
+        );
+        if !c.ok { return fail("habitat-forge-provision: the repository " + repo + ": " + c.why); }
+    }
+    // its code as the graft left it, so a Review's pull request has a base
+    if organism != "-" && len(genome_commit(organism, "HEAD")) > 0 {
+        let e = genome_push_url(
+            organism,
+            address + "/" + repo + ".git",
+            user,
+            slot,
+            "HEAD",
+            branch,
+            false,
+        );
+        if len(e) > 0 { return fail("habitat-forge-provision: the push to " + repo + ": " + e); }
+    }
+    return answer(
+        "address=" + address + "\nrepo=" + repo + "\nkey_vault=" + slot + "\nbranch=" + branch
+            + "\nuser=" + user + "\n",
+    );
+}

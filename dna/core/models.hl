@@ -29,6 +29,11 @@ type ModelRequest {
     // the model the Work's mapping resolved (`model_resolve`): one gateway
     // serves many, so the request names it; "" = the backend's own
     model: String = "";
+    // where the mapping says the model is asked (its category's endpoint),
+    // "" = the backend's own; and the vault slot of that endpoint's key
+    // ("" = it takes none): never the performer's key sent elsewhere
+    endpoint: String = "";
+    key_vault: String = "";
     // a JSON object of string pairs the call is attributed by (the attempt,
     // the position, the holder): attribution only, never authority; "" = none
     metadata: String = "";
@@ -567,10 +572,40 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
 // The vault's name for the model key `key`.
 fn model_key_slot(key: String) -> String { return "model-" + key; }
 
+// POST a JSON body to an endpoint that takes no key (a mapped endpoint
+// with no `key_vault`: a gateway on the LAN): no credential attached.
+fn post_json_keyless(
+    url: String,
+    body: String,
+    extra: String
+) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    let u = std::http::parse_url(url) or raise;
+    return std::http::request(std::http::ClientRequest {
+        method: "POST",
+        url: u,
+        // header lines joined by CRLF, none after the last
+        headers: if len(extra) >= 2 && std::str::ends_with(extra, "\r\n") {
+            "Content-Type: application/json\r\n" + extra[0..(len(extra) - 2)]
+        } else if len(extra) > 0 {
+            "Content-Type: application/json\r\n" + extra
+        } else {
+            "Content-Type: application/json"
+        },
+        body: std::bytes::from_string(body)
+    }) or raise;
+}
+
 @sealed locus HostedCredential {
-    params { key: String = "OPENAI_API_KEY"; scheme: String = "bearer"; }
+    params {
+        key: String = "OPENAI_API_KEY";
+        scheme: String = "bearer";
+        // a vault slot named outright (a mapped endpoint's `key_vault`)
+        vault_slot: String = "";
+    }
     // the vault's name for it, read where it is presented and nowhere else
-    fn slot() -> String { return model_key_slot(self.key); }
+    fn slot() -> String {
+        return if len(self.vault_slot) > 0 { self.vault_slot } else { model_key_slot(self.key) };
+    }
     fn ready() -> Bool { return std::secret::Credential { vault: self.slot() }.ready(); }
     @effects(is: { secret_use })
     fn fingerprint() -> String {
@@ -640,9 +675,22 @@ locus OpenAiChat {
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
+        // the mapping may name where the model is asked (its category's
+        // endpoint) and that endpoint's own key by vault slot: the
+        // performer's own key never goes to another endpoint
+        let mapped = len(req.endpoint) > 0;
+        let mapped_key = HostedCredential { vault_slot: req.key_vault };
+        let keyed = len(req.key_vault) > 0;
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
-            endpoint: self.endpoint, credential: self.credential.fingerprint(),
+            endpoint: if mapped { req.endpoint } else { self.endpoint },
+            credential: if !mapped {
+                self.credential.fingerprint()
+            } else if keyed {
+                mapped_key.fingerprint()
+            } else {
+                ""
+            },
             requested_model: if len(req.model) > 0 { req.model } else { self.model },
             params: temperature_param(self.temperature_milli) + " max_tokens="
                 + to_string(self.max_tokens),
@@ -655,8 +703,14 @@ locus OpenAiChat {
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
-        if !self.allows(req.data_class) {
-            ev.refused = if self.credential.ready() {
+        let permitted = if mapped {
+            !protected_class(req.data_class) && (!keyed || mapped_key.ready())
+        } else {
+            self.allows(req.data_class)
+        };
+        if !permitted {
+            let ready = if mapped { !keyed || mapped_key.ready() } else { self.credential.ready() };
+            ev.refused = if ready {
                 "data class " + req.data_class
             } else {
                 "credential not present"
@@ -684,11 +738,13 @@ locus OpenAiChat {
         } else {
             ""
         };
-        let resp = self.credential.post_json(
-            self.endpoint,
-            body,
-            extra,
-        ) or self.transport_failed(err);
+        let resp = if !mapped {
+            self.credential.post_json(self.endpoint, body, extra) or self.transport_failed(err)
+        } else if keyed {
+            mapped_key.post_json(req.endpoint, body, extra) or self.transport_failed(err)
+        } else {
+            post_json_keyless(req.endpoint, body, extra) or self.transport_failed(err)
+        };
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
@@ -924,6 +980,30 @@ locus AnthropicMessages {
 // server on this host). No credential, no external_model class: the
 // prompt does not leave the process boundary the law cares about, so
 // a customer-data path may reach it.
+// Whether `endpoint` (`http://host:port/…`) accepts a connection when its
+// host is this one (127.0.0.1 or localhost); an endpoint elsewhere is taken
+// to answer, never probed (a connection to a host that is gone may take
+// minutes to fail).
+fn local_endpoint_answers(endpoint: String) -> Bool {
+    let scheme = std::str::index_of(endpoint, "://");
+    let rest = if scheme < 0 { endpoint } else { endpoint[(scheme + 3)..len(endpoint)] };
+    let slash = std::str::index_of(rest, "/");
+    let hostport = if slash < 0 { rest } else { rest[0..slash] };
+    let colon = std::str::index_of(hostport, ":");
+    let host = if colon < 0 { hostport } else { hostport[0..colon] };
+    if host != "127.0.0.1" && host != "localhost" { return true; }
+    let port = if colon < 0 {
+        80
+    } else {
+        std::str::parse_int(hostport[(colon + 1)..len(hostport)]) or 0
+    };
+    if port < 1 || port > 65535 { return false; }
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::close_fd(fd);
+    return true;
+}
+
 locus LocalModel {
     params {
         name: String = "private";
@@ -940,7 +1020,11 @@ locus LocalModel {
     fn adapter() -> String { return "local"; }
     fn price_micros(req: ModelRequest) -> Int { return 0; }
     fn model_name() -> String { return self.model; }
-    fn allows(data_class: String) -> Bool { return true; }
+    // A server on this host permits a call while it accepts one: a local
+    // model that is not running permits nothing, so a router whose only
+    // backend it is has no model (the solo path). An endpoint off this
+    // host is not probed.
+    fn allows(data_class: String) -> Bool { return local_endpoint_answers(self.endpoint); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     fn complete(req: ModelRequest) -> ModelResult {
@@ -1059,15 +1143,28 @@ locus ModelRouter {
         quick: ModelBackend = FakeModel { name: "quick", model: "quick-1", price_micros: 5 };
         deep: ModelBackend = FakeModel { name: "deep", model: "deep-1", price_micros: 50 };
         private: ModelBackend = LocalFakeModel { };
+        // a category the habitat's model map points at an endpoint is asked
+        // there (the request's `endpoint`, its key the request's `key_vault`
+        // slot or none), whichever backend the catalog would have chosen
+        mapped: ModelBackend = OpenAiChat { name: "mapped" };
         selection: ModelSelection = EvidenceAwareSelection { };
         spent_micros: Int = 0; // what this router's calls cost, a counter; the org's allowance is the substrate's Budget (GH #583)
         calls: Int = 0;
         last_backend: String = "";
         last_adapter: String = ""; // the adapter of the backend that answered last (GH #1131)
     }
+    // Whether any backend permits a call at all (internal data): the router
+    // has a model to ask. False when every backend is a hosted one with no
+    // key or a local server that is not running (the solo path).
+    fn standing() -> Bool {
+        return self.quick.allows("internal") || self.deep.allows("internal")
+            || self.private.allows("internal");
+    }
     // Whether the backend this request would go to works in place (a
     // harness): the editor asks before it exports a worktree.
     fn in_place(req: ModelRequest) -> Bool {
+        // a mapped endpoint answers with text
+        if len(req.endpoint) > 0 { return false; }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)
@@ -1084,6 +1181,8 @@ locus ModelRouter {
     // would go to knows before sending (GH #1131); -1 when the cost is
     // learned only from the answer, or no backend is permitted.
     fn price_micros(req: ModelRequest) -> Int {
+        // a mapped endpoint's cost is learned from its answer
+        if len(req.endpoint) > 0 { return -1; }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)
@@ -1098,6 +1197,17 @@ locus ModelRouter {
     }
     // The router returns DATA. Which backend answered is recorded, not hidden.
     fn ask(req: ModelRequest) -> ModelResult {
+        // the mapping's endpoint answers a mapped category, with its own key
+        // or none: the catalog's backends (and their keys) are not asked,
+        // and a key the vault lacks is refused there, never answered elsewhere
+        if len(req.endpoint) > 0 {
+            self.calls = self.calls + 1;
+            self.last_backend = "mapped";
+            self.last_adapter = self.mapped.adapter();
+            let m = self.mapped.complete(req);
+            self.spent_micros = self.spent_micros + m.cost_micros;
+            return m;
+        }
         let quick_ok = self.quick.allows(req.data_class)
             && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class)

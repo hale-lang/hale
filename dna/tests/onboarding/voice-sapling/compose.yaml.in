@@ -1,0 +1,19 @@
+# voice's one service, on the host's network: it answers on the host at
+# VOICE_PORT and reaches the host's model at the seat's address. The
+# fixture writes the two ports before it commits the sapling.
+services:
+  voice:
+    image: python:3.12-alpine
+    network_mode: host
+    working_dir: /srv
+    volumes:
+      - "./voice.py:/srv/voice.py:ro"
+    environment:
+      VOICE_PORT: "@VOICE_PORT@"
+      VOICE_SEAT: "http://127.0.0.1:@MODEL_PORT@/v1/chat/completions"
+    command: ["python3", "-u", "/srv/voice.py"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,os; urllib.request.urlopen('http://localhost:' + os.environ['VOICE_PORT'] + '/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

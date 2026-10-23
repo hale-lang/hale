@@ -29,14 +29,17 @@ pub(super) fn trusts_nursery(source: &str) -> bool {
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
+    r#"usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator] [--name <name>]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
        hale habitat place <key>/<role> <host>
+       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat model-probe <organism> <mode>.<size>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
+       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
@@ -75,7 +78,12 @@ up                   birth the habitat the first time, from the genome the
                      store as its project's allocations; `operator` adopts
                      the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
                      HALE_DNA_NATS_URL_OWNER name, and provisions nothing
-                     of its own. The hosted profile is not built.
+                     of its own. --name names the habitat at its birth (a
+                     DNS label: lowercase letters, digits and `-`, at most
+                     63; `local` when none is given), recorded on its
+                     `habitat.profile` row and kept: `status`, the head's
+                     Commands::index and the operator face show it. The
+                     hosted profile is not built.
 graft <dir>          birth an organism as the habitat's child, the one way an
                      organism other than the habitat is born: its record's
                      genesis names the habitat's record as its parent, the
@@ -118,6 +126,14 @@ graft <sapling>      graft a sapling the habitat pins, by name, with no
                      (a compose.yaml at its root), are allocations of the
                      host, brought up there by its provider, and its
                      addresses are derived from there.
+model-map <organism> <category> <model>
+                     point a grafted organism's model map at an endpoint
+                     (the head's Commands::set_model_map: `hale dna models
+                     category … --endpoint <url> [--key-vault <slot>]` run
+                     in its directory); a key only by its vault slot's name.
+model-probe <organism> <category>
+                     ask the model that category names, where the map says
+                     it is asked, once (Commands::probe_model).
 place <alloc> <host> place an allocation (`<key>/<role>`: memory, nerves,
                      senses, services) on a host (the head's
                      Commands::place_allocation); nothing applies yet.
@@ -137,6 +153,19 @@ nursery add <source> the Board trusts a nursery, a directory or a git
                      pins the revision filed (nothing grafted moves); `list`
                      shows the nurseries and saplings. The toolchain's own
                      nursery is always one.
+forge <organism> <provider>
+                     allocate the organism's forge (`habitat` for the
+                     habitat's own): forgejo (the habitat's own Forgejo,
+                     the local profile's default: a user and a repository
+                     there, its token a vault slot), github with --repo
+                     owner/name and --key-vault, the vault slot of its
+                     token (`forge-token` by default; never the token),
+                     file (a forge of files, the fixtures') or none (a bare
+                     remote; Reviews decided in the face or CLI). The head's
+                     Commands::allocate_forge while the head answers; the
+                     act itself with --no-head. `hale dna forge sync`
+                     syncs with what is allocated. A graft takes
+                     --forge <provider> over the habitat's policy.
 handover [organism]  what the habitat hands the organism's heart, one
                      NAME=value a line, a secret only by its vault slot's
                      name: HALE_DNA_APPLICATION_ID, HALE_DNA_HEAD_URL,
@@ -236,7 +265,10 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         Some("host") => host(&args[1..]),
         Some("brief") if args.len() == 1 => brief(),
         Some("place") => sapling::place_cmd(&args[1..]),
+        Some("model-map") => sapling::model_map_cmd(&args[1..], false),
+        Some("model-probe") => sapling::model_map_cmd(&args[1..], true),
         Some("apply") => sapling::apply_cmd(&args[1..]),
+        Some("forge") => sapling::forge_cmd(&args[1..]),
         Some("status") if args.len() == 1 => status(),
         Some("down") if args.len() == 1 => down(),
         Some("sweep") if args.get(1).map(String::as_str) == Some("--test-vaults") && args.len() <= 3 => {
@@ -550,6 +582,9 @@ pub(super) fn place_for_graft(key: &str) -> Result<Option<String>, String> {
     }
     Ok(Some(format!("{:<8}its memory, nerves and senses' store on {} ({})", "placed", h["host"].as_str().unwrap_or(""), h["provider"].as_str().unwrap_or(""))))
 }
+/// The forge provider a graft names for its organism (`--forge`), over the
+/// habitat's policy.
+pub(super) static GRAFT_FORGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// One run of a heart's declared migration, a `habitat.migrated
 /// <id>/<role>` row owed to the habitat's record: the command, its exit
@@ -843,6 +878,41 @@ fn backends_file() -> PathBuf {
     PathBuf::from(local_habitat_dir()).join("backends")
 }
 
+/// The name the habitat was born with, kept beside it as its backends are.
+fn name_file() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("name")
+}
+
+/// The name a habitat has when its birth named none.
+const DEFAULT_HABITAT_NAME: &str = "local";
+
+/// Whether `name` is a DNS label: 1 to 63 lowercase letters, digits and
+/// `-`, neither first nor last a `-`.
+fn habitat_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !name.starts_with('-') && !name.ends_with('-')
+}
+
+/// The habitat's name for this run of `up`: the one it was born with (kept
+/// beside it, and on its `habitat.profile` row), or for a habitat not yet
+/// born the one asked (`local` by default). A habitat keeps its name: one
+/// asked of a habitat born with another is refused.
+fn name_of(asked: Option<&str>) -> Result<String, String> {
+    if let Some(a) = asked {
+        if !habitat_name_ok(a) {
+            return Err(format!("`--name {a}`: a habitat's name is a DNS label: 1 to 63 lowercase letters, digits and `-`, neither first nor last a `-`"));
+        }
+    }
+    let born_any = genome_dir().join("hale.toml").is_file() || backends_file().exists();
+    let kept = std::fs::read_to_string(name_file()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let born = kept.or_else(|| born_any.then(|| DEFAULT_HABITAT_NAME.to_string()));
+    match (born, asked) {
+        (Some(b), Some(a)) if b != a => Err(format!("the habitat is named `{b}`: a habitat keeps the name it was born with")),
+        (Some(b), _) => Ok(b),
+        (None, Some(a)) => Ok(a.to_string()),
+        (None, None) => Ok(DEFAULT_HABITAT_NAME.to_string()),
+    }
+}
+
 /// The backends this run of `up` uses: the ones the habitat was born on
 /// (kept beside it, and as its `habitat.profile` row), or for a habitat not
 /// yet born the ones asked (`own` by default); refused when the asking or
@@ -875,6 +945,7 @@ fn up(args: &[String]) -> ExitCode {
     let mut no_body = false;
     let mut profile = "local".to_string();
     let mut asked: Option<String> = None;
+    let mut asked_name: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -886,6 +957,10 @@ fn up(args: &[String]) -> ExitCode {
             }
             "--profile" if i + 1 < args.len() => {
                 profile = args[i + 1].clone();
+                i += 1;
+            }
+            "--name" if i + 1 < args.len() => {
+                asked_name = Some(args[i + 1].clone());
                 i += 1;
             }
             other => {
@@ -919,7 +994,14 @@ fn up(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    match bring_up(&backends) {
+    let name = match name_of(asked_name.as_deref()) {
+        Ok(n) => n,
+        Err(why) => {
+            eprintln!("hale habitat up: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    match bring_up(&backends, &name) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -1005,7 +1087,7 @@ fn place(genome: &Path, backends: &str) -> Result<(), String> {
 /// upgrade), and every tenant's recorded allocation brought up. A tenant is
 /// never migrated here: `up` runs under ongoing work, and an organism's
 /// allocation moves at its upgrade or with `hale habitat migrate`.
-fn bring_up(backends: &str) -> Result<Vec<String>, String> {
+fn bring_up(backends: &str, name: &str) -> Result<Vec<String>, String> {
     let genome = genome_dir();
     let mut out = vec![format!("habitat local at {} (compose project {}; {backends} backends)", local_habitat_dir(), local_habitat_project())];
     // born whole once its identity is pinned and no birth is pending: a
@@ -1019,7 +1101,10 @@ fn bring_up(backends: &str) -> Result<Vec<String>, String> {
         if !backends_file().exists() {
             std::fs::write(backends_file(), format!("{backends}\n")).map_err(|e| format!("write {}: {e}", backends_file().display()))?;
         }
-        out.extend(birth(&genome, backends)?);
+        if !name_file().exists() {
+            std::fs::write(name_file(), format!("{name}\n")).map_err(|e| format!("write {}: {e}", name_file().display()))?;
+        }
+        out.extend(birth(&genome, backends, name)?);
     }
     let own = allocation_dir(&genome);
     let versions = toolchain_versions(&genome);
@@ -1066,7 +1151,7 @@ fn birth_done(step: &str) -> Result<(), String> {
 /// failing after the identity was pinned) is resumed by the next `up`: a
 /// pin whose record never reached memory is a birth that did not happen,
 /// and is drawn again.
-fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
+fn birth(genome: &Path, backends: &str, name: &str) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(genome).map_err(|e| format!("create {}: {e}", genome.display()))?;
     for f in hale_dna::HABITAT_FILES {
         let rel = f.path.strip_prefix("dna/habitat/").unwrap_or(f.path);
@@ -1122,10 +1207,10 @@ fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
         out.push(format!("recorded {n} allocation row(s) in the habitat's record"));
     }
     if !have.contains(&"profile") {
-        // its profile: the backends it was born on, a row as every
-        // provisioning choice is (never a DSN or a URL)
+        // its profile: the backends it was born on and its name, a row as
+        // every provisioning choice is (never a DSN or a URL)
         let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
-        let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project() }).to_string() });
+        let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project(), "name": name }).to_string() });
         std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
         let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
         let _ = std::fs::remove_file(&profile);
@@ -1491,6 +1576,10 @@ fn mcp_port() -> Option<u16> {
 fn status() -> ExitCode {
     let genome = genome_dir();
     println!("habitat local at {} (compose project {})", local_habitat_dir(), local_habitat_project());
+    // its name, as its record holds it (the `habitat.profile` row)
+    let recorded = rows_of(&genome).iter().rev().find(|r| r["kind"] == "habitat.profile").and_then(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())).and_then(|b| b["name"].as_str().map(str::to_string));
+    let kept = std::fs::read_to_string(name_file()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    println!("{:<8}{}", "name", recorded.or(kept).unwrap_or_else(|| DEFAULT_HABITAT_NAME.to_string()));
     match manifest_pin(&genome.join("hale.toml")).ok().flatten() {
         Some(id) => println!("genome  {} (record {}…)", genome.display(), &id[..12.min(id.len())]),
         None => println!("genome  not born: `hale habitat up` births it"),
@@ -1840,6 +1929,14 @@ fn graft(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--no-head" => no_head = true,
+            "--forge" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("hale habitat graft: `--forge` takes a provider (forgejo, github, file, none)\n{}", usage_text());
+                    return ExitCode::from(2);
+                };
+                let _ = GRAFT_FORGE.set(v.clone());
+                i += 1;
+            }
             "--attach" => attach = true,
             "--no-library" => library = false,
             "--no-pack" => pack = false,
@@ -2091,6 +2188,15 @@ fn graft_lines(dir: &Path, attach: bool, library: bool, pack: bool, shape: &Shap
         landed?;
         out.push(format!("recorded the graft of {}… in the habitat's record", &child[..12]));
     }
+    // its forge and its identity, roles the habitat allocates as it
+    // allocates its memory: the forge the policy (or `--forge`) names, the
+    // identity the habitat's own sign-in at the organism's issuer; outside
+    // the graft row's branch, so a retry finishes what a failure left
+    out.extend(sapling::allocate_roles(&child, &root)?);
+    // its codebases, as its manifest lists them: attached in its record
+    // (`codebase.attached`, phase 3's attach), nothing cloned until a leg
+    // works one; each once, however many times the graft goes on
+    out.extend(attach_codebases(&root)?);
     // the standard practices, the law every organism is born under, for
     // the child's Board (a process of its own: the verb execs the host),
     // proposed once
@@ -2183,6 +2289,65 @@ fn pinned_genesis(root: &Path) -> PinnedGenesis {
 /// be read.
 fn rows_of(root: &Path) -> Vec<serde_json::Value> {
     host_run("record-rows", root, &[]).map(|rows| rows.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default()
+}
+
+/// A codebase a genome's manifest lists (`[[dna.codebase]]` in its
+/// hale.toml): the fields phase 3's `hale dna codebase attach` takes.
+#[derive(Debug, PartialEq)]
+struct ManifestCodebase {
+    name: String,
+    repo: String,
+    branch: String,
+    build: String,
+    test: String,
+    toolchain: String,
+}
+
+/// The codebases the manifest text lists, in its order.
+fn manifest_codebases(text: &str) -> Result<Vec<ManifestCodebase>, String> {
+    let table: toml::Table = text.parse().map_err(|e| format!("hale.toml does not parse: {e}"))?;
+    let Some(list) = table.get("dna").and_then(|d| d.get("codebase")) else { return Ok(Vec::new()) };
+    let list = list.as_array().ok_or("[dna] codebase is not a list of tables (`[[dna.codebase]]`)")?;
+    list.iter()
+        .map(|c| {
+            let field = |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let cb = ManifestCodebase { name: field("name"), repo: field("repo"), branch: field("branch"), build: field("build"), test: field("test"), toolchain: field("toolchain") };
+            if cb.name.is_empty() || cb.repo.is_empty() {
+                return Err(format!("a [[dna.codebase]] names its `name` and its `repo` ({c})"));
+            }
+            Ok(cb)
+        })
+        .collect()
+}
+
+/// The organism at `root` given the codebases its manifest lists: each one
+/// its record does not hold yet attached by the host's `codebase attach`
+/// (a `codebase.attached` row in its record, as the habitat's act). What
+/// was attached, a line each.
+fn attach_codebases(root: &Path) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(root.join("hale.toml")).unwrap_or_default();
+    let listed = manifest_codebases(&text)?;
+    if listed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let held: Vec<String> = rows_of(root).iter().filter(|r| r["kind"] == "codebase.attached").filter_map(|r| r["body"].as_str().and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok()).and_then(|b| b["name"].as_str().map(str::to_string))).collect();
+    let mut out = Vec::new();
+    for c in listed {
+        if held.contains(&c.name) {
+            out.push(format!("{:<8}the codebase `{}` (its record holds it)", "kept", c.name));
+            continue;
+        }
+        let mut args = vec!["attach".to_string(), c.name.clone(), "--repo".into(), c.repo.clone(), "--build".into(), c.build.clone(), "--test".into(), c.test.clone(), "--as".into(), "habitat".into()];
+        if !c.branch.is_empty() {
+            args.extend(["--branch".to_string(), c.branch.clone()]);
+        }
+        if !c.toolchain.is_empty() {
+            args.extend(["--toolchain".to_string(), c.toolchain.clone()]);
+        }
+        host_run("codebase", root, &args).map_err(|e| format!("the codebase `{}` was not attached: {e}", c.name))?;
+        out.push(format!("attached the codebase `{}` ({}, {}), as its manifest lists it", c.name, c.repo, if c.branch.is_empty() { "main" } else { &c.branch }));
+    }
+    Ok(out)
 }
 
 /// GH #1653: the `database` heart role provisioned for the organism at
@@ -2282,6 +2447,33 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D8: a genome's manifest lists its codebases with phase 3's attach
+    /// fields; one without a name or a repository is refused.
+    #[test]
+    fn a_manifest_lists_its_codebases() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dna/nursery/saplings/hale/hale.toml")).unwrap();
+        let listed = manifest_codebases(&text).unwrap();
+        let names: Vec<&str> = listed.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["hale", "voice"]);
+        assert!(listed.iter().all(|c| !c.repo.is_empty() && !c.build.is_empty() && !c.test.is_empty() && !c.toolchain.is_empty()), "{listed:?}");
+        // voice's seeds, built and tested as its CI does
+        assert_eq!(listed[1].build, "hale build api && hale build brain && hale build node");
+        assert_eq!(listed[1].test, "hale test api && hale test store && hale test brain && hale test node");
+        assert!(manifest_codebases("[dna]\nneeds = [\"memory\", \"nerves\"]\n").unwrap().is_empty());
+        assert!(manifest_codebases("[[dna.codebase]]\nname = \"x\"\n").is_err());
+    }
+
+    /// D8: a habitat's name is a DNS label.
+    #[test]
+    fn a_habitat_name_is_a_dns_label() {
+        for ok in ["local", "homelab-test", "h", "a1-b2", &"x".repeat(63)] {
+            assert!(habitat_name_ok(ok), "{ok}");
+        }
+        for bad in ["", "Homelab", "home_lab", "-lab", "lab-", "home.lab", "home lab", &"x".repeat(64)] {
+            assert!(!habitat_name_ok(bad), "{bad}");
+        }
+    }
 
     /// GH #1653: a heart migration is declared for a heart role the
     /// genome needs, as its `command` alone.

@@ -37,7 +37,8 @@ function crossing(why) {
 
 function render(r) {
   const organisms = parse(r.organisms);
-  const name = (r.purpose || "").split("\n")[0].trim() || "habitat";
+  // the habitat's name, as its record holds it (`hale habitat up --name`)
+  const name = r.name || (r.purpose || "").split("\n")[0].trim() || "habitat";
   show("crossing", false);
   show("habitat", true);
   $("name").textContent = name;

@@ -1116,6 +1116,14 @@ locus CommandAdmission {
         if self.personless(ctx) { return GraftLogReply { code: "forbidden" }; }
         return habitat_graft_log(a);
     }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_set_model_map(self.root, a);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        if self.personless(ctx) { return ModelMapReply { code: "forbidden" }; }
+        return habitat_probe_model(self.root, a);
+    }
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's acts on them.
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
@@ -1129,6 +1137,30 @@ locus CommandAdmission {
     fn add_nursery(a: NurseryAdd, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
         return habitat_nursery_add(self.root, a, self.author(ctx));
+    }
+    // The solo path (solo_tasks.hl): a person takes a handed Task and
+    // reports it done, as text, in their own name.
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                t.task_id,
+                "forbidden",
+                "a Task is taken by a person of the record",
+            );
+        }
+        return solo_take(self.root, t.task_id, who);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        let who = self.roles.person(ctx.caller);
+        if self.personless(ctx) || len(who) == 0 {
+            return task_act_refused(
+                d.task_id,
+                "forbidden",
+                "a Task is reported done by a person of the record",
+            );
+        }
+        return solo_done(self.root, d.task_id, d.text, who);
     }
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
@@ -1159,6 +1191,10 @@ locus CommandAdmission {
     fn remove_host(n: HostNamed, ctx: std::api::Context) -> HostReply {
         if self.personless(ctx) { return HostReply { code: "forbidden" }; }
         return habitat_host_remove(self.root, n.name, self.author(ctx));
+    }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
+        return habitat_allocate_forge(self.root, a);
     }
     // Recovery: a command by the request id the caller minted, under the
     // provider's own recovery grant.
@@ -1246,6 +1282,12 @@ locus Commands {
     fn graft_log(a: GraftLogAsk, ctx: std::api::Context) -> GraftLogReply {
         return self.admission.graft_log(a, ctx);
     }
+    fn set_model_map(a: ModelMapSet, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.set_model_map(a, ctx);
+    }
+    fn probe_model(a: ModelProbe, ctx: std::api::Context) -> ModelMapReply {
+        return self.admission.probe_model(a, ctx);
+    }
     fn nurseries(a: HabitatAsk, ctx: std::api::Context) -> NurseryRows {
         return self.admission.nurseries(a, ctx);
     }
@@ -1258,6 +1300,12 @@ locus Commands {
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         return self.admission.ratify_sapling(n, ctx);
     }
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        return self.admission.take_task(t, ctx);
+    }
+    fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
+        return self.admission.complete_task(d, ctx);
+    }
     fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
         return self.admission.add_host(a, ctx);
     }
@@ -1269,6 +1317,9 @@ locus Commands {
     }
     fn brief(a: HabitatAsk, ctx: std::api::Context) -> HabitatBrief {
         return self.admission.brief(a, ctx);
+    }
+    fn allocate_forge(a: ForgeAllocate, ctx: std::api::Context) -> NurseryReply {
+        return self.admission.allocate_forge(a, ctx);
     }
     // The structure (ops::StructureCommandCodec): every change the CLI's
     // `position open`, `fill` and `apply` make, and the batch's preview
@@ -1325,6 +1376,10 @@ api HeadCommands {
     rpc Commands::propose_organization requires: [owner];
     rpc Commands::create_task;
     rpc Commands::reassign_task requires: [owner];
+    // The solo path (solo_tasks.hl): a person of the record takes a handed
+    // Task no one holds, and reports one theirs done as text.
+    rpc Commands::take_task;
+    rpc Commands::complete_task;
     rpc Commands::retire_person requires: [owner];
     rpc Commands::claim requires: [position];
     rpc Commands::outcome requires: [position];
@@ -1365,6 +1420,10 @@ api HeadCommands {
     // A sapling grafted by name, on a host (habitat_placement.hl). The Board's.
     rpc Commands::graft requires: [owner];
     rpc Commands::graft_log requires: [owner];
+    // A tenant's model map pointed at an endpoint, and a call on it
+    // (habitat_placement.hl). The Board's.
+    rpc Commands::set_model_map requires: [owner];
+    rpc Commands::probe_model requires: [owner];
     // The habitat's nurseries and saplings (habitat_rows.hl): two reads, and
     // the Board's: a nursery trusted, a sapling's newer revision ratified.
     rpc Commands::nurseries;
@@ -1379,6 +1438,9 @@ api HeadCommands {
     // The habitat's brief (habitat_brief.hl): the Board's hat as a prompt,
     // with the live state, for an agent pairing with a person. A read.
     rpc Commands::brief;
+
+    // An organism's forge allocated (habitat_rows.hl). The Board's.
+    rpc Commands::allocate_forge requires: [owner];
 }
 
 // A seat as a structure command names it: `position:<name>` from a name

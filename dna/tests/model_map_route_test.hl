@@ -1,0 +1,168 @@
+// dna/tests/model_map_route_test.hl — a mapped category's calls go where the
+// mapping says.
+//
+// The habitat's model map names, for a category, the model and where it is
+// asked: its endpoint, and the vault slot of that endpoint's key (none for a
+// gateway on the LAN). A leg's Work on that category is answered there, not
+// by the backend the organism's catalog would have chosen: the router takes
+// the mapping when it picks a backend, for a leg's Work as for a probe. The
+// endpoint here is the cycle's canned OpenAI-compatible gateway (the
+// acceptance fixture's voice stands in front of the same), on this
+// machine's loopback; the organism's own backends are fakes that say so if
+// asked. A mapped endpoint whose key slot the vault does not hold is
+// refused, and the default backend is not asked in its place.
+
+import "../core" as dna;
+import "../core/legs" as legs;
+
+fn hat_for(j: dna::Journal, task: String) -> dna::Hat {
+    return dna::hat_compose(j, dna::HatInputs {
+        work_id: task + "/wf1/s0/w0",
+        task_id: task,
+        performer_kind: "agent",
+        objective: "assess the change",
+        target: "org/api",
+        output_contract: "Assessment", requires: "judgment", head: "abc"
+    }, dna::ContextPackage { }, false);
+}
+
+fn performer() -> legs::ModelPerformer {
+    return legs::ModelPerformer {
+        router: dna::ModelRouter {
+            quick: dna::FakeModel { name: "q", answer: "the organism's default backend answered" },
+            deep: dna::FakeModel { name: "d", answer: "the organism's default backend answered" },
+        },
+        effect: "idempotent",
+    };
+}
+
+// The leg's call for a Work wearing `hat`, as `ModelPerformer.perform`
+// builds it: the model, endpoint and key slot its mapping resolved.
+fn request_for(hat: dna::Hat, attempt: String) -> dna::ModelRequest {
+    let choice = std::json::find_field_raw(dna::hat_json(hat), "model");
+    return dna::ModelRequest {
+        attempt_id: attempt,
+        role: "assess",
+        prompt: "assess it",
+        prompt_digest: dna::digest_of("assess it"),
+        context_bytes: 9,
+        data_class: "internal",
+        model: std::json::find_string_field(choice, "model"),
+        endpoint: std::json::find_string_field(choice, "endpoint"),
+        key_vault: std::json::find_string_field(choice, "key_vault"),
+        idempotency_key: attempt + ":call:1"
+    };
+}
+
+fn main() {
+    if dna::run_tool("python3\n--version").code != 0 {
+        eprintln(
+            "model_map_route_test: not exercised (python3 is not on PATH: the gateway stands in with it)",
+        );
+        return;
+    }
+    let source = (
+        if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." }
+    )
+        + "/scripts/dna-cycle/canned-gateway.py";
+    std::test::assert(std::io::fs::file_exists(source), "the canned gateway is at " + source);
+    let scratch = dna::scratch_root("model-map-route");
+    dna::reap_on_exit(scratch);
+    let port = dna::free_port(0);
+    let log = scratch + "/gateway.log";
+    let started = dna::run_tool(
+        "sh\n-c\nnohup python3 \"$1\" \"$2\" \"$3\" >/dev/null 2>&1 </dev/null & echo $!\nsh\n"
+            + source + "\n" + to_string(port) + "\n" + log,
+    );
+    let pid = dna::trim_nl(started.stdout);
+    let endpoint = "http://127.0.0.1:" + to_string(port) + "/v1/chat/completions";
+    let mut up = false;
+    let mut tries = 0;
+    while !up && tries < 100 {
+        up = dna::run_tool(
+            "curl\n-s\n-o\n/dev/null\nhttp://127.0.0.1:" + to_string(port) + "/",
+        ).code == 0;
+        if !up { std::time::sleep(100ms); }
+        tries = tries + 1;
+    }
+    std::test::assert(up, "the gateway answers on " + to_string(port));
+
+    // ---- the habitat maps `tools.quick` to a model at the gateway, keyless
+    let j = dna::MemJournal { };
+    let r1 = j.append(
+        j.revision(),
+        "model.rule",
+        "default",
+        "{\"size\": \"quick\", \"permit\": \"\", \"by\": \"board\"}",
+    );
+    let r2 = j.append(
+        j.revision(),
+        "model.category",
+        "tools.quick",
+        "{\"model\": \"voice-local\", \"tool_calls\": true, \"endpoint\": \"" + endpoint
+            + "\", \"key_vault\": \"\", \"by\": \"board\"}",
+    );
+    let hat = hat_for(j, "t1");
+    std::test::assert(
+        std::str::contains(hat.model, endpoint),
+        "the hat carries the mapped endpoint: " + hat.model,
+    );
+
+    // ---- a leg's Work on it is answered at the gateway, never by the
+    // organism's default backend
+    let p = performer();
+    let brief = legs::Brief {
+        attempt_id: "t1/a0",
+        performer_kind: "agent",
+        hat: dna::hat_json(hat),
+        rendered: "assess it",
+    };
+    let r = p.asked(brief, request_for(hat, "t1/a0"));
+    let seen = std::io::fs::read_file(log) or "";
+    std::test::assert(
+        r.ok
+            && std::str::contains(r.output, "assessment: worth doing")
+            && !std::str::contains(r.output, "default backend"),
+        "the leg's call is answered at the gateway: " + r.output + r.refused,
+    );
+    std::test::assert(
+        std::str::contains(seen, "\"model\": \"voice-local\"")
+            && std::str::contains(seen, "\"authorized\": false"),
+        "the gateway was asked for the mapped model, with no key: " + seen,
+    );
+    std::test::assert(
+        std::str::contains(p.calls, endpoint),
+        "and the call's evidence names the endpoint: " + p.calls,
+    );
+
+    // ---- mapped with a key slot the vault does not hold: refused, and the
+    // default backend is not asked in its place
+    let r3 = j.append(
+        j.revision(),
+        "model.category",
+        "tools.quick",
+        "{\"model\": \"voice-local\", \"tool_calls\": true, \"endpoint\": \"" + endpoint
+            + "\", \"key_vault\": \"model-route-absent-slot\", \"by\": \"board\"}",
+    );
+    let q = performer();
+    let hat2 = hat_for(j, "t2");
+    let keyed = q.asked(
+        legs::Brief {
+            attempt_id: "t2/a0",
+            performer_kind: "agent",
+            hat: dna::hat_json(hat2),
+            rendered: "assess it",
+        },
+        request_for(hat2, "t2/a0"),
+    );
+    std::test::assert(
+        !keyed.ok
+            && keyed.refused == "credential not present"
+            && !std::str::contains(keyed.output, "default backend"),
+        "a mapped key the vault lacks is refused, never answered elsewhere: " + keyed.output
+            + keyed.refused,
+    );
+
+    dna::run_tool("kill\n" + pid);
+    dna::scratch_done(scratch);
+}

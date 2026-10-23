@@ -553,39 +553,40 @@ locus HeadCases {
         self.f.json.eq(self.f.head_state(), "busy", "");
     }
 
+    // the forge is the habitat's allocation (`hale habitat forge`), never a
+    // setting: the operation sets the forge's Board alone, and the project
+    // reads the allocation back
     fn forge() {
-        let bad = self.f.submit(
+        self.f.error(
+            "POST",
+            HEAD + "/commands",
+            self.f.command_headers(),
             fixture::command(
                 "head-forge-bad",
                 "dna.forge.configure",
                 self.f.identity,
-                "{\"github\":\"not a repo\",\"board\":[]}",
+                "{\"github\":\"example/repo\",\"board\":[]}",
             ),
-            200,
+            400,
+            "invalid_command",
         );
-        self.f.json.eq(bad, "state", "refused");
-        self.f.json.eq(bad, "reason_code", "name_invalid");
         let receipt = self.f.submit(
             fixture::command(
                 "head-forge-1",
                 "dna.forge.configure",
                 self.f.identity,
-                "{\"github\":\"example/repo\",\"board\":[\"riley\",\"mara\"]}",
+                "{\"board\":[\"riley\",\"mara\"]}",
             ),
             200,
         );
         self.f.json.eq(receipt, "state", "succeeded");
-        self.f.json.eq(self.f.json.raw(receipt, "outcome"), "github", "example/repo");
-        std::test::assert_eq_str(
-            self.f.git("config\ndna.github"),
-            "example/repo",
-            "dna.github read back",
-        );
         std::test::assert_eq_str(
             self.f.git("config\ndna.github.board"),
             "riley,mara",
             "dna.github.board read back",
         );
+        let unset = dna::run_tool("git\n-C\n" + self.f.project + "\nconfig\ndna.github");
+        std::test::assert(unset.code != 0, "the retired setting is never written");
         let detail = self.f.json.data(
             self.f.validate(
                 self.f.http("GET", HEAD + "/projects?id=" + self.f.identity, "", ""),
@@ -594,7 +595,11 @@ locus HeadCases {
             ),
         );
         let item = std::json::array_first(self.f.json.raw(detail, "items")).element;
-        self.f.json.eq(self.f.json.raw(item, "forge"), "github", "example/repo");
+        self.f.json.eq(
+            self.f.json.raw(item, "forge"),
+            "github",
+            dna::forge_allocated(self.f.project).repo,
+        );
         std::test::assert_eq_int(
             self.f.json.count(self.f.json.raw(self.f.json.raw(item, "forge"), "board")),
             2,
@@ -605,13 +610,13 @@ locus HeadCases {
                 "head-forge-2",
                 "dna.forge.configure",
                 self.f.identity,
-                "{\"github\":\"\",\"board\":[]}",
+                "{\"board\":[]}",
             ),
             200,
         );
         self.f.json.eq(cleared, "state", "succeeded");
-        let gone = dna::run_tool("git\n-C\n" + self.f.project + "\nconfig\ndna.github");
-        std::test::assert(gone.code != 0, "dna.github unset");
+        let gone = dna::run_tool("git\n-C\n" + self.f.project + "\nconfig\ndna.github.board");
+        std::test::assert(gone.code != 0, "dna.github.board unset");
     }
 
     fn publish_case() {

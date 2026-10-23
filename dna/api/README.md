@@ -703,7 +703,8 @@ Operations (all version 1): `dna.project.create` / `init` (600 s runs of
 (inline; attach validates the worktree, the Record, the `dna/` seed, and
 refuses `principal_unsupported` / `trust_unsupported` for OIDC or signed
 projects), `dna.project.sync` / `publish` (a commit and push of the genome,
-then a sync), `dna.forge.configure` / `sync`, and the fourteen body, secret,
+then a sync), `dna.forge.configure` (the forge's Board logins alone: the
+forge is the habitat's allocation, `hale habitat forge`) / `sync`, and the fourteen body, secret,
 model, connection and handoff operations of the head's contract.
 A secret is never a value on this wire: `dna.secret.set` names a **source** —
 a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`

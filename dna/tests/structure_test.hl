@@ -865,7 +865,18 @@ locus App {
         );
         let appd = self.dna("review\ndesign\napprove\n--as\nada\n--authority\nboard\n--no-wait");
         std::test::assert_eq_int(appd.code, 0, "and the design: " + appd.stdout + appd.stderr);
-        let appafter = self.show_org(apphead, 480, "reviewer");
+        // the chart as memory projects it once both verdicts land: polled for
+        // the reviewer's mandate ratified and none pending, since the
+        // reviewer's line is there (pending) before its ratification is
+        let mut appafter = "";
+        let mut polls = 0;
+        while polls < 480 {
+            appafter = self.show_org(apphead, 1, "{mandate: ratified; roles: reviewer}");
+            if len(appafter) > 0 && !std::str::contains(appafter, "{mandate: pending") { break; }
+            std::time::sleep(500ms);
+            polls = polls + 1;
+        }
+        if len(appafter) == 0 { appafter = self.show_org(apphead, 1, ""); }
         std::test::assert(
             std::str::contains(appafter, "dev {mandate: ratified; roles: editor, reader}")
                 && std::str::contains(appafter, "{mandate: ratified; roles: reviewer}")

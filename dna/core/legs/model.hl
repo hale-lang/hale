@@ -334,6 +334,8 @@ locus ModelPerformer {
             attempt_id: brief.attempt_id,
             adapter: self.router.last_adapter,
             backend: r.backend,
+            // where a mapped category's call went (never its key)
+            endpoint: req.endpoint,
             requested_model: r.model,
             reported_model: r.model,
             prompt_digest: req.prompt_digest,
@@ -747,6 +749,15 @@ locus ModelPerformer {
             model: std::json::find_string_field(
                 std::json::find_field_raw(brief.hat, "model"),
                 "model",
+            ),
+            // and where the mapping says it is asked, with its key's slot
+            endpoint: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "endpoint",
+            ),
+            key_vault: std::json::find_string_field(
+                std::json::find_field_raw(brief.hat, "model"),
+                "key_vault",
             ),
             metadata: call_metadata(brief),
             // one call of the attempt: a retry of it is the same call

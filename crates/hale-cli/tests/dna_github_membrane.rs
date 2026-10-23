@@ -133,7 +133,10 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
     git(&["config", "user.name", "riley"], &app);
     git(&["config", "user.email", "r@l"], &app);
-    git(&["config", "dna.github", "o/r"], &app);
+    // the organism's forge: GitHub, allocated by the habitat, its token the
+    // vault slot the allocation names
+    let (ok, out) = hale(&["habitat", "forge", "orggh", "github", "--repo", "o/r", "--key-vault", "forge-token"], &d);
+    assert!(ok && out.contains("orggh's forge: github o/r"), "{out}");
     git(&["config", "dna.github.board", "octocat,riley"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);

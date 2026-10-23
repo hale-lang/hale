@@ -120,6 +120,7 @@ No Docker Compose files are added to your repository checkout. Instead, PostgreS
 Because allocations are keyed by record identity:
 - Multiple clones or Git worktrees of the same organism share the same PostgreSQL database, NATS stream, and Prometheus server.
 - Stopping `hale dna dev` leaves the backing containers running in the habitat.
+- The habitat also runs one Forgejo, its forge: the graft made your organism a user there and a repository for its code, and `hale dna forge sync` sends the code out through it and brings the reviews on it back ([The forge mirror](./head.md#the-forge-mirror-hale-dna-forge-sync)).
 - After updating the `hale` toolchain, run `hale habitat migrate` to idempotently update schemas and bring up any new habitat services (including `senses-<id>`):
 
 ```sh

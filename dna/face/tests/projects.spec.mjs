@@ -41,7 +41,7 @@ function outcomeFor(s, body) {
   switch (body.operation) {
     case 'dna.project.attach': case 'dna.project.create': case 'dna.project.init': return { application_id: APP, root: '/home/operator/dna/demo', name: 'demo', api_port: 8793, authority_written: true };
     case 'dna.project.sync': return { summary: 'no remote: the record is local', record: { head_before: s.recordHead || RECORD, head_after: s.recordHead || RECORD, rows: [] } };
-    case 'dna.forge.configure': return { github: body.arguments.github, board: body.arguments.board };
+    case 'dna.forge.configure': return { board: body.arguments.board };
     case 'dna.secret.set': case 'dna.secret.rotate': return { name: body.arguments.name, where: 'local', source_consumed: body.arguments.source.kind === 'file', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'secret.rotated', entity: body.arguments.name, author: 'riley' }] } };
     case 'dna.body.provision': return body.arguments.dry_run ? { target: body.arguments.target, dry_run: true, preview: '#!/bin/sh\n# provisioning preview for ' + body.arguments.target + '\n' } : { target: body.arguments.target, dry_run: false, text: 'provisioned', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'body.provisioned', entity: body.arguments.target, author: 'riley' }] } };
     case 'dna.connection.propose': return { name: body.arguments.name, text: 'proposed', record: { head_before: RECORD, head_after: NEXT, rows: [{ seq: 13, kind: 'connection.proposed', entity: body.arguments.name, author: 'riley' }] } };
@@ -54,7 +54,7 @@ function applyEffect(s, body) {
   switch (body.operation) {
     case 'dna.project.attach': case 'dna.project.create': case 'dna.project.init': s.active = true; break;
     case 'dna.project.detach': s.active = false; break;
-    case 'dna.forge.configure': s.github = body.arguments.github; s.board = body.arguments.board; break;
+    case 'dna.forge.configure': s.board = body.arguments.board; break;
     case 'dna.secret.set': case 'dna.secret.rotate': s.secrets = [...s.secrets, body.arguments.name]; s.recordHead = NEXT; break;
     case 'dna.body.provision': if (!body.arguments.dry_run) s.recordHead = NEXT; break;
     case 'dna.connection.propose': s.connections = [...s.connections, { name: body.arguments.name, url: body.arguments.record_url, position: body.arguments.position, purpose: body.arguments.purpose, classes: body.arguments.classes, state: 'proposed' }]; s.recordHead = NEXT; break;
@@ -208,7 +208,7 @@ test('Projects: an attached head renders every operation form; secrets name a so
   await expect(registry).toContainText('demo'); await expect(registry).toContainText('active'); await expect(registry).toContainText('forge octo/demo');
   await expect(registry).toContainText('Secrets set');
   await expect(registry).toContainText('MODEL_API_KEY');
-  for (const title of ['Sync record', 'Publish genome', 'Configure forge', 'Sync forge', 'Start local body', 'Stop local body', 'Provision body', 'Start remote body', 'Stop remote body', 'Remote body logs', 'Set secret', 'Rotate secret', 'Probe models', 'Propose connection', 'Close connection', 'Publish handoff', 'Accept handoff', 'Sync handoffs']) await expect(form(page, title), title).toBeVisible();
+  for (const title of ['Sync record', 'Publish genome', 'Forge board', 'Sync forge', 'Start local body', 'Stop local body', 'Provision body', 'Start remote body', 'Stop remote body', 'Remote body logs', 'Set secret', 'Rotate secret', 'Probe models', 'Propose connection', 'Close connection', 'Publish handoff', 'Accept handoff', 'Sync handoffs']) await expect(form(page, title), title).toBeVisible();
   await expect(form(page, 'Provision body').getByRole('button', { name: 'Preview provisioning', exact: true })).toBeEnabled();
   for (const title of ['Set secret', 'Rotate secret']) {
     const secret = form(page, title);
@@ -331,13 +331,14 @@ test('Projects: a succeeded verb is observed through the head, the preview submi
   expect(host.state().posts.at(-1).body.arguments).toEqual({ target: 'operator@body.example', dsn: '', dir: '', dry_run: true });
   await expect(request(page).locator('pre')).toContainText('provisioning preview for operator@body.example');
   await request(page).getByRole('button', { name: 'Dismiss', exact: true }).click();
-  const forge = form(page, 'Configure forge');
-  await forge.getByLabel(/GitHub repository/).fill('octo/demo');
+  // the forge is the habitat's allocation: this form sets its Board alone
+  const forge = form(page, 'Forge board');
+  await expect(forge.getByLabel(/GitHub repository/)).toHaveCount(0);
   await forge.getByLabel(/Board logins/).fill('alice, bob');
-  await forge.getByRole('button', { name: 'Configure forge', exact: true }).click();
+  await forge.getByRole('button', { name: 'Set forge board', exact: true }).click();
   await expect(request(page)).toHaveAttribute('data-observation', 'observed');
-  expect(host.state().posts.at(-1).body).toMatchObject({ operation: 'dna.forge.configure', target: { kind: 'dna.project', id: APP }, context: { head: 'local', application_id: APP }, arguments: { github: 'octo/demo', board: ['alice', 'bob'] } });
-  await expect(page.getByRole('region', { name: 'Project registry', exact: true })).toContainText('forge octo/demo');
+  expect(host.state().posts.at(-1).body).toMatchObject({ operation: 'dna.forge.configure', target: { kind: 'dna.project', id: APP }, context: { head: 'local', application_id: APP } });
+  expect(host.state().posts.at(-1).body.arguments).toEqual({ board: ['alice', 'bob'] });
   await request(page).getByRole('button', { name: 'Dismiss', exact: true }).click();
   const secret = form(page, 'Set secret');
   await secret.getByLabel('Secret name', { exact: true }).selectOption('MODEL_API_KEY');

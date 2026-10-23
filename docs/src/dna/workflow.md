@@ -248,6 +248,22 @@ A human case waits indefinitely across restarts until its assignee resolves it:
 | `hale dna task reassign <id> --to <new> --as <user>` | `task.reassigned` | Transfers an open case to another person |
 | `hale dna retire <user> --to <successor>` | `person.retired` | Transfers all open cases held by `<user>` to `<successor>` and blocks future assignments to `<user>` |
 
+The face offers the same two steps for a case that needs no evidence. They are the head's rows `Commands::take_task` and `Commands::complete_task`, the face's **Take this Task** and **Report done**:
+
+- **Take this Task** makes an unassigned case yours (`task.reassigned` from no one to you).
+- **Report done** closes a case that is yours, or unassigned, with what you did as text (`task.done`, `by <you>: <text>`).
+
+### With no model
+
+An organism whose models catalog is empty still works; this is the solo path.
+
+- **What counts as no model:** none is mapped (`hale dna models category`), and the catalog reaches none: its hosted backends have no key and its local server is not running. A canned or recorded model counts as a model.
+- **Asks:** with no model, every ask is a person's job. No plan is asked, and the ask is handed unassigned, never given to the editor.
+- **Leg work:** a judgment, or Work routed to a position, is a leg's only while there is a model. With none it is a person's case.
+- **Timers:** no timer moves work to a leg.
+
+A person takes each case and reports it done as text, and its execution settles.
+
 Examples of closing a case with evidence or an authorized exception:
 
 ```sh

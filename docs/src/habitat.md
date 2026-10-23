@@ -4,7 +4,8 @@ A **habitat** is the root DNA organism shipped with the Hale toolchain (`spec/ha
 
 ```sh
 # 1. Start the local habitat organism, its Compose services, and its operator UI
-hale habitat up
+#    (named at its birth; `local` when no --name is given, and kept after)
+hale habitat up --name homelab
 
 # 2. Graft a new application or a pinned nursery sapling as a child of the habitat
 hale habitat graft my-service
@@ -32,6 +33,7 @@ Unlike an application organism that supervises a user-written application heart,
   - The habitat allocates the infrastructure roles declared in the child's `hale.toml` (`[dna] needs`: `memory` and `nerves` always, `senses` unless omitted, plus an optional tenant `database` for a Hale heart passed as `HALE_DNA_DATABASE_DSN`) and records those allocations in the habitat's own record.
   - The habitat decides the `scope` on `application.attached` and issues per-client database, broker, and vault credentials.
   - The habitat proposes the `standard` practices pack to the child's Board.
+  - On its own backends, the habitat gives the child a user and a repository at its own Forgejo, the local profile's forge. The forge is a gate, not a store: code goes out through it as branches and verdicts come back through it. GitHub is the allocation when a Board names it (`hale habitat forge <organism> github --repo <owner/name>`).
 - **Deployment and Reflexes:** For habitat-scoped applications, the habitat elaborates placement declarations into container manifests or Compose configurations, applies them using habitat-held credentials, monitors child readiness, capacity, metrics, and logs, and restarts or rescales child bodies via reflexes.
 
 ---
@@ -62,7 +64,8 @@ hale habitat graft voice
 ```
 
 1. **Grafting by name (`hale habitat graft <sapling>`):** Pass a bare sapling name (such as `voice`, shipped in the toolchain nursery; `./<name>` denotes a local directory). The habitat fetches the pinned revision into `<habitat>/saplings/<name>`, verifies its file digest against the nursery pin (aborting on any mismatch), grafts it as a child of the habitat, proposes its bundled packs, and records the sapling name, revision, and digest on the graft row.
-2. **Updating sapling pins (`refresh` and `ratify`):** Running `hale habitat nursery refresh` (also run during `hale habitat up`) inspects all trusted nurseries. Newly discovered saplings are pinned automatically; if an already-pinned sapling offers a newer revision, the habitat files it for the Board without moving existing organisms. Run `hale habitat nursery ratify <sapling>` to pin the newer revision for future grafts.
+2. **A genome's codebases attach at its graft:** a `[[dna.codebase]]` list in the sapling's `hale.toml` (each with `name`, `repo`, `branch`, `build`, `test`, `toolchain`) becomes `codebase.attached` rows of the grafted organism's record, once each; nothing is cloned until a leg works one. The toolchain nursery's `hale` sapling is **the hale organism**: its genome is its own small repository, and its codebases are `hale-lang/hale` and `hale-lang/voice`.
+3. **Updating sapling pins (`refresh` and `ratify`):** Running `hale habitat nursery refresh` (also run during `hale habitat up`) inspects all trusted nurseries. Newly discovered saplings are pinned automatically; if an already-pinned sapling offers a newer revision, the habitat files it for the Board without moving existing organisms. Run `hale habitat nursery ratify <sapling>` to pin the newer revision for future grafts.
 
 ---
 
@@ -223,6 +226,7 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 - **Stopping and restarting:** `hale habitat status` reports any degraded or stopped allocations. `hale habitat down` stops the body while preserving all Postgres/NATS data; `hale habitat up` brings it back online.
 - **Resuming interrupted grafts:** `hale habitat graft` verifies pinned file digests before grafting and resumes cleanly from its last completed step if interrupted.
+- **No model:** every face screen works with the models catalog empty. Without a model, asks and leg work become handed Tasks that a person takes and reports done as text from the face; nothing waits on a model or times out into a leg ([Workflows: with no model](./dna/workflow.md#with-no-model)).
 - **SSH host key verification:** `hale habitat host probe` rejects any host whose SSH host key has changed since `host add`; a host in `pending-key` state is waiting for the habitat's public key line in `~/.ssh/authorized_keys`.
 - **Agent operator brief:** `hale habitat brief` prints the Board's live context package (hosts, allocations, organisms, saplings, and pending Board items). It reads the record alone, never the vault.
 

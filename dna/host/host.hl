@@ -2880,7 +2880,7 @@ main locus Host {
         // record gained) after a step that may have written
         let viewed = watch(self.view);
         if forge_kind(self.root) != "none" {
-            let g = github_sync_of(self.view, self.root, self.seed, self.memory);
+            let g = forge_sync_of(self.view, self.root, self.seed, self.memory);
             if g.ok {
                 print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: "));
             } else {

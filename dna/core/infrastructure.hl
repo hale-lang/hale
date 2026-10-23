@@ -311,7 +311,7 @@ interface Provider {
 }
 
 // The roles a habitat allocates, in the order its policy lists them.
-const HABITAT_ROLES: String = "memory nerves senses database broker head face";
+const HABITAT_ROLES: String = "memory nerves senses database broker head face forge identity";
 
 // Whether the space-separated `words` hold `word`.
 fn has_word(words: String, word: String) -> Bool {
@@ -319,12 +319,19 @@ fn has_word(words: String, word: String) -> Bool {
 }
 
 // The provider a profile's preset gives `role` on these backends: `local`
-// gives `compose` every role; on `operator` backends, the roles the
+// gives `compose` every role it runs, `none` (no forge) the `forge` and
+// `oidc-stub` (the habitat's own sign-in) the `identity`; on `operator` backends, the roles the
 // operator's servers hold (memory, nerves and the heart's database) are
 // the `operator`'s, adopted and never applied, and the `broker` is not
 // allocated there (""). "" for a profile that is not built.
 fn profile_provider(profile: String, backends: String, role: String) -> String {
     if profile != "local" || !has_word(HABITAT_ROLES, role) { return ""; }
+    // the forge an organism's reviews go to: the habitat's own Forgejo on
+    // its own backends (phase 4 ruling), none on an operator's until the
+    // Board allocates one; the identity its people sign in through: the
+    // habitat's stub
+    if role == "forge" { return if backends == "operator" { "none" } else { "forgejo" }; }
+    if role == "identity" { return "oidc-stub"; }
     if backends == "operator" {
         if role == "broker" { return ""; }
         if role == "memory" || role == "nerves" || role == "database" { return "operator"; }
@@ -681,4 +688,57 @@ locus MemProvider {
         if self.applied == 0 { return AllocationState { detail: "nothing applied" }; }
         return AllocationState { state: "up", detail: "up in memory" };
     }
+}
+
+// ---- the forge an organism is allocated (phase 4) ---------------------------
+//
+// `forge` is a role the habitat allocates, as it allocates memory: a
+// `habitat.allocated <key>/forge` row names its provider (`none`, the
+// default; `github`; `file`, the fixtures' forge of files), the repository
+// at the forge (`owner/name`) and the vault slot of its token (never the
+// token). What was allocated is kept beside the organism's allocations
+// (`allocations/<key>/forge.json`, the local profile's cache of the row),
+// where the host reads it at each sync.
+
+type ForgeAllocation {
+    provider: String = "none";
+    repo: String = "";
+    key_vault: String = "";
+    address: String = ""; // where the forge answers (a Forgejo's), "" for GitHub's own
+}
+
+fn forge_cache_path(key: String) -> String {
+    return local_habitat_dir() + "/allocations/" + key + "/forge.json";
+}
+
+// The forge the organism at `root` is allocated: `none` when nothing is.
+fn forge_allocated(root: String) -> ForgeAllocation {
+    let key = allocation_key(root);
+    if len(key) == 0 { return ForgeAllocation { }; }
+    let text = std::io::fs::read_file(forge_cache_path(key)) or "";
+    if len(text) == 0 { return ForgeAllocation { }; }
+    let p = std::json::find_string_field(text, "provider");
+    return ForgeAllocation {
+        provider: if len(p) > 0 { p } else { "none" },
+        repo: std::json::find_string_field(text, "repo"),
+        key_vault: std::json::find_string_field(text, "key_vault"),
+        address: std::json::find_string_field(text, "address"),
+    };
+}
+
+// `f` kept as the forge the organism keyed `key` is allocated: "" once it
+// is, else why not.
+fn forge_cache(key: String, f: ForgeAllocation) -> String {
+    let dir = local_habitat_dir() + "/allocations/" + key;
+    if run_tool("mkdir\n-p\n-m\n700\n" + dir).code != 0 { return "cannot make " + dir; }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("provider", f.provider);
+    b.string_field("repo", f.repo);
+    b.string_field("key_vault", f.key_vault);
+    b.string_field("address", f.address);
+    b.end_object();
+    let mut ok = true;
+    std::io::fs::write_file(forge_cache_path(key), b.result() + "\n") or { ok = false; };
+    return if ok { "" } else { "cannot write " + forge_cache_path(key) };
 }

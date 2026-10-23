@@ -161,8 +161,11 @@ locus HeadLease {
 // (`dna::scratch_root`, one per worktree, swept by `clean` and by the
 // suite), so nothing a performer does reaches the primary checkout;
 // patches through a file, commits under the leg's own name.
+// `root` is the organism's ("": HALE_DNA_GENOME, else the leg's own
+// directory): a push to a repository at its allocated Forgejo goes as its
+// own Forgejo user (`push`).
 locus ScratchGit {
-    params { made: Int = 0; roots: String = ""; }
+    params { made: Int = 0; roots: String = ""; root: String = ""; }
     fn worktree(repo: String, base: String) -> HandResult {
         self.made = self.made + 1;
         let dir = dna::scratch_root("legs-git-" + to_string(self.made));
@@ -220,8 +223,44 @@ locus ScratchGit {
         let out = dna::run_tool("git\n-C\n" + worktree + "\ncheckout\n--quiet\n-b\n" + name);
         return hand_result(out, name);
     }
+    // The branch pushed to the worktree's origin. A repository at the
+    // organism's allocated Forgejo takes it as the organism's own user, its
+    // token the vault slot the allocation names: the token reaches git
+    // through a credential helper reading a file only this user can read,
+    // never an argv or this process's environment.
     fn push(worktree: String, name: String) -> HandResult {
-        let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+        let f = dna::forge_allocated(allocated_root(self.root));
+        let origin = dna::trim_nl(
+            dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin").stdout,
+        );
+        let slash = std::str::index_of(f.repo, "/");
+        if f.provider != "forgejo" || len(allocated_slug(f.address, origin)) == 0 || slash <= 0 {
+            let out = dna::run_tool("git\n-C\n" + worktree + "\npush\n--quiet\norigin\n" + name);
+            return hand_result(out, name);
+        }
+        let token = std::secret::Credential { vault: f.key_vault };
+        if !token.ready() {
+            return HandResult {
+                error: "no token in the vault slot " + f.key_vault
+                    + " the organism's forge allocation names",
+            };
+        }
+        let made = dna::run_tool("mktemp\n-d\n-t\nhale-leg-forge-XXXXXX");
+        let dir = dna::trim_nl(made.stdout);
+        if made.code != 0 || len(dir) == 0 {
+            return HandResult { error: "no private directory for the forge's token" };
+        }
+        if !token.write_private(dir + "/token") {
+            dna::run_tool("rm\n-rf\n" + dir);
+            return HandResult { error: "the forge's token could not be written for git" };
+        }
+        let out = dna::run_tool(
+            "git\n-C\n" + worktree
+                + "\n-c\ncredential.helper=\n-c\ncredential.helper=!f() { echo username="
+                + f.repo[0..slash] + "; echo \"password=$(cat '" + dir
+                + "/token')\"; }; f\npush\n--quiet\norigin\n" + name,
+        );
+        dna::run_tool("rm\n-rf\n" + dir);
         return hand_result(out, name);
     }
 }
@@ -264,6 +303,96 @@ locus GhForge {
             },
         };
     }
+}
+
+// The forge a leg's review opens at is the organism's allocation (phase 4
+// ruling): "open a review" is the verb, and the allocation answers it —
+// the habitat's Forgejo, GitHub, or none. No leg names a forge by kind.
+// `root` is the organism's root ("": HALE_DNA_GENOME, else the leg's own
+// directory, where `hale dna work` runs it); the allocation is read at each
+// call, as the host's forge sync reads it.
+locus AllocatedForge {
+    params { root: String = ""; }
+    fn organism() -> String { return allocated_root(self.root); }
+    fn open_review(worktree: String, title: String, body: String) -> HandResult {
+        let f = dna::forge_allocated(self.organism());
+        if f.provider == "github" {
+            let gh = GhForge { };
+            return gh.open_review(worktree, title, body);
+        }
+        if f.provider != "forgejo" {
+            return HandResult {
+                error: "no forge to open a review at: the organism's forge allocation is "
+                    + f.provider + " (its Reviews are decided in its own face or CLI)",
+            };
+        }
+        let origin = dna::run_tool("git\n-C\n" + worktree + "\nremote\nget-url\norigin");
+        let slug = allocated_slug(f.address, dna::trim_nl(origin.stdout));
+        if len(slug) == 0 {
+            return HandResult {
+                error: "the codebase's repository (" + dna::trim_nl(origin.stdout)
+                    + ") is not at the allocated forge, " + f.address,
+            };
+        }
+        let head = dna::run_tool(
+            "git\n-C\n" + worktree + "\nsymbolic-ref\n--short\nrefs/remotes/origin/HEAD",
+        );
+        let named = dna::trim_nl(head.stdout);
+        let fj = dna::ForgejoForge {
+            address: f.address,
+            repo: slug,
+            base: if std::str::starts_with(named, "origin/") {
+                named[7..len(named)]
+            } else {
+                "main"
+            },
+            token_slot: f.key_vault,
+        };
+        let bridge = ForgeBridge { forge: fj };
+        return bridge.open_review(worktree, title, body);
+    }
+    fn verdict(review: String) -> HandResult {
+        let f = dna::forge_allocated(self.organism());
+        if f.provider == "github" {
+            let gh = GhForge { };
+            return gh.verdict(review);
+        }
+        if f.provider != "forgejo" {
+            return HandResult {
+                error: "no forge to read a verdict from: the organism's forge allocation is "
+                    + f.provider,
+            };
+        }
+        let pulls = std::str::index_of(review, "/pulls/");
+        let slug = if pulls > 0 { allocated_slug(f.address, review[0..pulls]) } else { "" };
+        if len(slug) == 0 {
+            return HandResult { error: "the review " + review + " is not at the allocated forge" };
+        }
+        let fj = dna::ForgejoForge { address: f.address, repo: slug, token_slot: f.key_vault };
+        let bridge = ForgeBridge { forge: fj };
+        return bridge.verdict(review);
+    }
+}
+
+// The organism a leg's hands act for: `root`, else HALE_DNA_GENOME, else
+// the leg's own directory (where `hale dna work` runs it).
+fn allocated_root(root: String) -> String {
+    if len(root) > 0 { return root; }
+    let named = std::env::var("HALE_DNA_GENOME");
+    return if len(named) > 0 { named } else { "." };
+}
+
+// The `owner/name` of a repository at the forge at `address`, from its url
+// there (`<address>/<owner>/<name>[.git]`); "" when it is elsewhere.
+fn allocated_slug(address: String, repo: String) -> String {
+    if len(address) == 0 || !std::str::starts_with(repo, address + "/") { return ""; }
+    let mut r = repo[(len(address) + 1)..len(repo)];
+    if std::str::ends_with(r, ".git") { r = r[0..(len(r) - 4)]; }
+    let slash = std::str::index_of(r, "/");
+    if slash <= 0 || slash == len(r) - 1 || std::str::contains(r[(slash + 1)..len(r)], "/") {
+        return "";
+    }
+    return r;
 }
 
 // The forge hand over the core's `Forge` (a code-review host behind an
@@ -417,7 +546,8 @@ locus NoHeart {
 locus Hands {
     params {
         git: GitHand = ScratchGit { };
-        forge: ForgeHand = GhForge { };
+        // the organism's forge allocation answers "open a review"
+        forge: ForgeHand = AllocatedForge { };
         toolchain: ToolchainHand = Toolchain { };
         go: GoHand = GoToolchain { };
         deploy: DeployHand = NoDeploy { };

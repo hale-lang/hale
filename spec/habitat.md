@@ -14,6 +14,15 @@ genome document's `law` items. It is the one organism born without a
 parent. **Every other organism is grafted from it**: its record's genesis
 names the habitat's record as its parent.
 
+**A habitat has a name**, given at its birth with `hale habitat up --name
+<name>`: a DNS label (1 to 63 lowercase letters, digits and `-`, neither
+first nor last a `-`); `local` when its birth names none. The name is
+recorded on its `habitat.profile` row and kept: an `up` that asks another
+name of a habitat born is refused (exit 2). `hale habitat status` shows it
+(`name` line), the head's `Commands::index` answers it (`name`, `""` for
+any record but a habitat's), and the operator face's first screen shows it
+as the habitat's name.
+
 The local habitat is one docker compose project per machine, named for the
 habitat, with a service per allocation, under
 `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`. `HALE_DNA_HABITAT`
@@ -149,7 +158,18 @@ which derives their addresses from there, so its record is born in the
 memory there. Its own services (a `compose.yaml` at its root) are an
 allocation `<key>/services` of that host (its `render_dir` and
 `render_files`), applied there through the head. Every allocation names its
-provider: the host's. A sapling's graft is the head's Board command
+provider: the host's. A tenant's model map is the head's Board command
+`Commands::set_model_map` (`{organism, category, model, endpoint,
+key_vault, tools}`, `hale habitat model-map`): the organism's `hale dna
+models category … --endpoint <url> [--key-vault <slot>]`, run in its
+directory, a key only by its vault slot's name; `Commands::probe_model`
+(`{organism, category}`, `hale habitat model-probe`) asks the model the
+category names, where the map says, once, and answers what it said, never
+a key. A leg's Work on a mapped category is asked the same way: the model
+router (`ModelRouter`, `dna/core/models.hl`) sends a request that names an
+endpoint there, with that endpoint's key slot or none, whichever backend
+the organism's catalog would have chosen, and a key slot the vault lacks is
+refused there, never answered by another backend. A sapling's graft is the head's Board command
 `Commands::graft` (`{sapling, host, library}`): it starts the act, which
 takes minutes, and answers at once with its log (`<habitat>/grafts/<name>.log`,
 its exit status beside it in `<log>.exit`); the end of the graft is its
@@ -172,6 +192,87 @@ allocated and placed on that host, each a row written only when the record
 does not already say it (below). The head's surface reads them back
 (`spec/dna.md`, The head's surface).
 
+## Forge and identity
+
+**The forge is a gate, not a store.** Code goes out through it as
+branches, and verdicts come back through it; the organism reads nothing from
+it that it did not already decide. A Review lives in the record, its
+candidate is a branch in git, and the pull request is a mirror. Which forge
+stands in the gate is an allocation, and swapping it is swapping a remote.
+
+`forge` and `identity` are roles the habitat allocates, as it allocates an
+organism's memory: each a `habitat.allocated <id>/forge` and
+`<id>/identity` row naming its provider, written once, when absent, at `up`
+for the habitat and at a graft for the organism (a retried graft records
+what an interrupted one left out, and never overwrites an allocation the
+Board made since). The identity is `oidc-stub`, the habitat's own sign-in,
+at the organism's issuer (`dna.oidc.issuer`, else the stub's default
+address), which `Commands::allocations` observes by whether it answers.
+
+**The `local` profile's forge is Forgejo**, the habitat's own: on its own
+backends the compose provider brings one Forgejo up at every `hale habitat
+up`, as it brings up memory and the nerves. It is a service (`forge`) of the
+habitat's compose project, its image pinned by digest, published on a
+loopback port chosen once (`<habitat>/forge/port`), its data in the
+project's volume. Its administrator (`hale-admin`) has a password drawn
+into the vault the first time (`forgejo-admin`); the server reads it from
+the file compose mounts, inside the container, never from a command line,
+and the habitat's forge row names the slot, never the value. On an
+operator's backends the policy's forge is `none` until the Board allocates
+one. A graft gives the organism a Forgejo user of its own, named for it and
+its key (`<name>-<id>`, so two organisms never share an account however
+alike their names), its token drawn into the vault slot `forgejo-<id>`,
+and a repository for its codebase (`<name>-<id>/<name>`); its forge row names the provider
+`forgejo`, the address, the repository and the slot. `hale dna forge sync`
+keeps the organism's branch there as it stands (a branch the forge moved
+past, by a merge there, is left as the forge has it), pushing as the
+organism's user with its token handed to git through a credential helper
+reading a private file.
+
+The forge's implementations sit behind the core's `Forge` interface:
+`ForgejoForge` (Forgejo's API, which maps onto GitHub's nearly one to one:
+a pull request per review, its approving or change-requesting reviews as
+verdicts, the current status of each context at the candidate as its
+check runs (a pass before a failed or pending rerun is never one), a
+comment at settlement),
+GitHub through `gh`, the file forge (the fixtures'), and `NoForge`, a bare
+remote whose Reviews are decided in the organism's own face or CLI, the
+no-infrastructure fallback. **GitHub is the allocation when a Board names
+it**; neither GitHub nor `none` is the default. A graft takes `--forge
+<provider>` over the policy. The Board allocates a forge with
+`Commands::allocate_forge` (`{organism, provider, repo, key_vault}`, `hale
+habitat forge <organism> forgejo|github|file|none [--repo <owner/name>]
+[--key-vault <slot>]`; `habitat` names the habitat's own): Forgejo makes the
+organism's user and repository there as a graft does; GitHub names its
+repository and the vault slot of its token (`forge-token` by default), never
+the token; `file` is a forge of files. The host reads the allocation from
+its cache beside the organism's allocations (`allocations/<id>/forge.json`)
+at each sync; `HALE_DNA_FORGE` stays the fixtures' override.
+
+`hale dna forge sync` is the forge's pass, against whichever forge the
+allocation names, as `github sync` was: a pending mutation Review is opened
+as a pull request (its candidate pushed as `dna/<review>`), the forge's
+verdicts and check runs come back as rows, a settlement goes back as a
+comment, and a leg's review at an attached codebase's forge comes back as
+`task.delivered` when merged or `task.refused` when closed, its comments as
+receipts. The `github.pr` row names the forge it was opened at, and only the
+rows of the forge in the gate now are read: moving a project from one forge
+to another is changing the remote, changing the allocation, and syncing. A
+Review still open reappears as a pull request at the new forge; nothing
+migrates, and the old forge's pull request is left as it was.
+
+No practice, workflow or standard names a forge by kind: "open a review" is
+the verb, and the allocation answers it (a guard test reads every pack). A
+leg's hands are the same: their forge is `AllocatedForge`
+(`dna/core/legs/hands.hl`), which reads the organism's allocation at each
+call, as forge sync does, and opens the leg's review at the allocated
+Forgejo (the codebase's repository there, by its url), through `gh` for
+GitHub, or refuses with `none`; the git hand (`ScratchGit`) pushes a
+leg's branch to a repository at the allocated Forgejo as the organism's
+own user, its token handed to git through a credential helper reading a
+private file. The guard refuses a `Hands` whose forge
+names a kind.
+
 ## Nurseries and saplings
 
 A **sapling** is an organism's seed in a nursery, an entry beside its
@@ -185,8 +286,8 @@ the habitat trusts is trusted for its tenants' `pack apply --from` too.
 
 What the nurseries offer is read into the record by the habitat's acts:
 `up`, `hale habitat nursery add` and `hale habitat nursery refresh`. The
-first nursery to offer a name holds it (the toolchain's, then the
-trusted ones). A sapling first seen is pinned, a `habitat.sapling <name>`
+first nursery to offer a name holds it (the trusted ones, then the
+toolchain's, which is the default a trusted one may offer over). A sapling first seen is pinned, a `habitat.sapling <name>`
 row. **An upgrade is a proposal, never a pull**: a revision or digest
 other than the pinned one is filed as a `habitat.sapling.proposed <name>`
 row, once, and nothing moves; `Commands::ratify_sapling` (`hale habitat
@@ -209,9 +310,56 @@ checked at. Where the organism is placed is the graft's placement
 argument, not built yet.
 
 The toolchain's nursery offers **voice** (`hale-lang/voice`, pinned at a
-commit). A sapling needs nothing beyond what an attached repository
+commit) and **the hale organism** (`hale`). A sapling needs nothing beyond what an attached repository
 needs: a `hale.toml` with its `[dna] needs`, and, for a heart migration,
 a command that runs from a fresh fetch.
+
+**The hale organism** is the organism that works on the Hale toolchain.
+Its genome is its own small repository: the tree checked in at
+`dna/nursery/saplings/hale` (its `hale.toml` with `[dna]`, its main, a
+README). The code it works on is its codebases, other repositories its
+manifest lists, `hale-lang/hale` and `hale-lang/voice`; its positions and
+their mandates are the nursery's `hale-organism` pack, which the sapling
+adopts at graft. It is neither the compiler's repository as a sapling nor
+the habitat's own organism. Its repository is not created yet: the
+nursery's entry names a placeholder url, pinned at `main` by the
+checked-in tree's digest (a test holds the two equal); once the
+repository exists, the tree is pushed there and the entry pinned to the
+commit.
+
+**A genome's codebases attach at its graft.** `[[dna.codebase]]` in its
+`hale.toml` lists them with phase 3's attach fields (`name`, `repo`,
+`branch`, `build`, `test`, `toolchain`). After the graft's row, each one
+the organism's record does not hold is attached by the host's `codebase
+attach` (as `hale dna codebase attach` does, as the habitat), a
+`codebase.attached` row; nothing is cloned until a leg works one. A graft
+that goes on attaches none twice.
+
+## Acceptance: the homelab case
+
+`dna/tests/acceptance_homelab_test.hl` is phase 4's exit at fixture level.
+After `hale habitat up` on an empty box, every step is a row of the head's
+surface, called on its socket as the operator face calls its rows: a
+machine of the LAN is added over SSH (`add_host`), authorized by its owner
+and probed (`probe_host`); a nursery is trusted (`add_nursery`) and its
+voice ratified over the bundled pin (`ratify_sapling`); voice is grafted by
+name onto the machine (`graft`) and applied there (`apply_allocations`)
+from its own compose; a streamed `/v1/chat/completions` through it, at the
+machine's name, answers as server-sent events from a local model on the
+machine's network; the grafted organism's model map is pointed at voice's
+endpoint on the machine (`set_model_map`) and its model call goes through
+voice to that model (`probe_model`); and the reads (`index` with purpose
+and pulse, `allocations`, `saplings`, `hosts`) list it placed and up. The fixture's
+machine is an sshd container driving this box's docker daemon, named
+`localhost` with its port; its voice is a checked-in minimal tree with
+voice's shape (`dna/tests/onboarding/voice-sapling`) in a local git
+nursery; its model is the cycle's canned OpenAI-compatible gateway. It
+says, as `SKIPPED`, what it does not prove: voice's own programs, store and
+broker (the real voice needs voice#44 and a network fetch); the Mac's
+launchd node.
+The real run adds them: a Linux box with docker as the host, Ollama on it
+over the host's network, the Mac as a launchd voice node, the real voice
+from the bundled nursery, all through the face.
 
 ## Long-lived, and only its acts provision
 
@@ -236,9 +384,9 @@ they call the head's socket, so the habitat's body must be up.
 
 | Verb | Behaviour |
 |---|---|
-| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator]` | Births the habitat the first time, then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
+| `up [--foreground \| --no-body] [--profile local] [--backends own\|operator] [--name <name>]` | Births the habitat the first time (named `--name`, `local` by default; above), then brings every recorded allocation up through the `compose` provider, migrating any whose recorded schema version is behind this toolchain's, records its placement (its host, its policy, its head and face; above), and starts the habitat's body: a systemd user unit named for the habitat or, with `--foreground`, this process; and its face (below), a second unit or a child of this process. `--no-body` births it, brings its allocations up and records its placement, and starts no body. Idempotent. `--profile` takes `local`; any other is refused (exit 2). |
 | `brief` | Prints the habitat's brief (below): the head's `Commands::brief`, asked over the head's socket as the person this account maps to. |
-| `status` | The habitat, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
+| `status` | The habitat, its name, its genome, body and face (its address), its head's MCP endpoint while the face runs, and each allocation: its organism, whether each role's service runs, the schema version memory and the nerves record against this toolchain's, and how a heart's declared migration last ran. |
 | `down` | Stops the habitat's face, its body and every service of its project. Data is kept; `up` brings them back. |
 | `migrate [organism]` | Brings the organism's allocations up and migrates them: memory's schema and the nerves' stream move to this toolchain's, and the head's DSN is kept in the checkout's `.hale/dna/memory.env`. With `HALE_DNA_MEMORY_DSN_OWNER` or `HALE_DNA_NATS_URL_OWNER` set, that server is migrated instead. Idempotent; the organism defaults to the current directory. Runs the heart's declared migrations (below). |
 | `sweep <root> \| --test-vaults [<root>]` | Takes down every compose project run from under `<root>`, a test's habitat, and confirms it gone by the project's label. Never the developer's habitat nor one outside `<root>`. Exit 1 names what survived. `--test-vaults` sweeps the vaults of processes that are gone. Nothing is done without docker. |
@@ -250,6 +398,7 @@ they call the head's socket, so the habitat's body must be up.
 | `host remove <name>` | Removes the host, a `habitat.host` row in state `removed`. Refused while any allocation is placed on it, naming them (`allocations_placed`); `local` is not removed. |
 | `graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]…` | Grafts a sapling the habitat pins, by name, placed on the host `--host` names (above). |
 | `nursery add <source> \| refresh \| list \| ratify <sapling>` | `add`: the Board trusts a nursery (`Commands::add_nursery`), then what it offers is read; `refresh`: every nursery read again; `list`: the nurseries and saplings (`Commands::nurseries`, `::saplings`); `ratify`: the filed revision pinned (`Commands::ratify_sapling`). |
+| `forge <organism> forgejo\|github\|file\|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]` | Allocates the organism's forge (above): the head's `Commands::allocate_forge` while it answers, the act itself with `--no-head`. |
 | `handover [organism]` | Prints what the habitat hands the organism's heart, one `NAME=value` a line. |
 
 The free-standing birth verbs are retired (`spec/dna.md`, Graft): each
@@ -374,6 +523,26 @@ from}` answering `{text, next, done, exit}`, the Board's like the graft; it
 reads only the log of a graft this head started, by its id, and refuses any
 other name or path) until it is done, then refreshes the lists.
 
+## The solo path: no model
+
+Every face screen works with the models catalog empty: no `model.category`
+row, no seat, no key. With no model:
+
+- **No verb requires one.** The operator face's screens read
+  `Commands::index`, `::hosts`, `::allocations`, `::policy`, `::nurseries` and
+  `::saplings`, none of which asks a model.
+- **A person does the organism's work.** With no model (none mapped, none
+  the catalog reaches; a canned or recorded one counts), an ask is a
+  person's job, handed unassigned with no plan asked, and a Work a leg or
+  the editor would perform is a person's case.
+  `spec/dna.md` (Graft, and Workflow execution: human cases) has both rules.
+- **The face does the person's part.** A person takes a handed Task
+  (`Commands::take_task`) and reports it done with the work as text
+  (`Commands::complete_task`, a `task.done` row in their name).
+- **Nothing times out into a leg.**
+
+The models screen's empty map is the normal state, not an error.
+
 ## Backends
 
 Chosen at the habitat's birth and kept.
@@ -426,7 +595,7 @@ organism and the role (`<id>/<role>`), never by a checkout.
 | `habitat.policy <role>` | at `up`, whenever the role's provider changes | `role`, `provider`, `profile`, `backends` |
 | `habitat.migrated <id>/<role>` | each time an organism role's schema version moves | `organism`, `role`, `from`, `schema_version` (memory's `MEMORY_SCHEMA_VERSION`, the nerves' `NERVES_STREAM_VERSION`) |
 | `habitat.migrated <id>/<role>` | each run of a heart's declared migration | `organism`, `role`, `command`, `status`, `output` (a heart role carries no version) |
-| `habitat.profile local` | at birth | `profile`, `backends`, `project` |
+| `habitat.profile local` | at birth | `profile`, `backends`, `project`, `name` |
 | `habitat.grafted <child>` | at a graft | `child`, `parent`, `needs`, `backends`, `name` (the directory), `face` and `head` (the organism's addresses), `purpose` (its declared purpose), and for a sapling's graft `sapling`, `revision`, `digest` and `nursery` |
 | `habitat.applied <key>/<role>` | at each apply of an allocation | `host`, `provider`, `ok`, `why`, `state` (the pulse after), `fresh` |
 | `habitat.nursery <source>` | when the Board trusts a nursery | `source`, `kind` (`dir` or `git`), `state` (`trusted`) |

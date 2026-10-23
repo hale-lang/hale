@@ -502,7 +502,7 @@ review … refused the verdict: …
   - `authority … does not satisfy …`: Pass an `--authority` that meets or exceeds the Review's required authority (`board` for Board-level Reviews).
   - `reviewer … authored the candidate`: Code changes require two-person review (someone other than the candidate's author must approve).
   - `reviewer … holds no position this Review requires (…)`: The Review is routed (`hale dna route`); only holders of the required signer positions may approve it.
-- **`hale dna: review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna github sync`)`:** Remove `--evidence`; CI gate runs are observed automatically from the forge.
+- **`hale dna: review: a verdict cites no gate run; the host observes each gate's run at the forge (`hale dna forge sync`)`:** Remove `--evidence`; CI gate runs are observed automatically from the forge.
 
 ### Every Review needs the Board
 

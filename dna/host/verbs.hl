@@ -814,7 +814,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
     if len(gates) > 0 {
         out = out + "  against a passing run of " + std::str::replace(gates, " ", ", ")
-            + " at the candidate, as the forge reports it (`hale dna github sync`)\n";
+            + " at the candidate, as the forge reports it (`hale dna forge sync`)\n";
     }
     // what it still awaits, as its last signature said
     let mut awaiting = "";
@@ -1243,6 +1243,8 @@ fn model_map_verb(
     price_in: String,
     price_out: String,
     who_flag: String,
+    endpoint: String,
+    key_vault: String,
     memory: dna::Memory
 ) -> Answer {
     let no_head = record_refusal(root);
@@ -1321,22 +1323,35 @@ fn model_map_verb(
             );
         }
         let s0 = sync_record(root, memory);
+        // where the model is asked, and its key by vault slot: a URL and a
+        // slot's name, never a key
+        if len(endpoint) > 0
+            && !std::str::starts_with(endpoint, "http://")
+            && !std::str::starts_with(endpoint, "https://")
+        {
+            return fail("models category " + key + ": --endpoint is an http(s) URL");
+        }
+        if len(key_vault) > 0 && !std::secret::vault_name_is_safe(key_vault) {
+            return fail("models category " + key + ": --key-vault names a vault slot");
+        }
         let body = "{\"model\": " + quote(value) + ", \"tool_calls\": "
             + (if tools { "true" } else { "false" }) + ", \"input_micros_per_1k\": "
-            + to_string(pin) + ", \"output_micros_per_1k\": " + to_string(pout) + ", \"by\": "
-            + quote(who) + "}";
+            + to_string(pin) + ", \"output_micros_per_1k\": " + to_string(pout)
+            + (if len(endpoint) > 0 { ", \"endpoint\": " + quote(endpoint) } else { "" })
+            + (if len(key_vault) > 0 { ", \"key_vault\": " + quote(key_vault) } else { "" })
+            + ", \"by\": " + quote(who) + "}";
         if !append_as(root, "model.category", key, body, who, memory) {
             return fail("the record refused the append");
         }
         let s1 = sync_record(root, memory);
         return answer(
             "model.category " + key + ": " + value + (if tools { " (tool calls)" } else { "" })
-                + "\n",
+                + (if len(endpoint) > 0 { " at " + endpoint } else { "" }) + "\n",
         );
     }
     if len(sub) > 0 && sub != "map" {
         return fail(
-            "models: `models map`, `models rule <selector> <size> [--permit <sizes>]`, or `models category <mode>.<size> <model> [--tools] [--price-in <micros>] [--price-out <micros>]`",
+            "models: `models map`, `models rule <selector> <size> [--permit <sizes>]`, or `models category <mode>.<size> <model> [--tools] [--price-in <micros>] [--price-out <micros>] [--endpoint <url>] [--key-vault <slot>]`",
         );
     }
     let s = sync_record(root, memory);

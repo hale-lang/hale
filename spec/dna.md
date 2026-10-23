@@ -1631,6 +1631,11 @@ the toolchain hand a leg works the codebase with (anything but `go`,
 `hale` or `none` is refused); `none` leaves build and test as the opaque
 commands, and `hale` is recorded for the hale hand to select by.
 
+A genome's manifest may list its codebases, `[[dna.codebase]]` in its
+`hale.toml` with the same fields (`name`, `repo`, `branch`, `build`,
+`test`, `toolchain`); the habitat attaches each one at the organism's graft
+as this verb does, once (`spec/habitat.md`, Nurseries and saplings).
+
 A `go` codebase's leg holds a Go hand (`legs::GoToolchain`, beside
 `Toolchain` in `dna/core/legs/hands.hl`, behind the `GoHand` interface and
 `Hands.go`) with three tools added to the hat's `tool_grant`: `go_vet`
@@ -1834,10 +1839,12 @@ what it read), and the tool calls (a `read` row names its `path`).
 learns it through the `Forge` interface (`dna/core/forge.hl`):
 `review_state` (`open`, `merged\t<commit>`, `closed`, `unknown`),
 `review_body` and `review_comments` (`who\tkey\ttext`, newlines as `\n`),
-beside the verdict, check and comment methods. The host's `github_sync`
-asks it for every codebase review not yet decided, per codebase (GitHub's
-`gh pr view` for a `github` forge, the repository taken from the
-codebase's url; the file forge's `<n>.merged`, `<n>.said` for fixtures),
+beside the verdict, check and comment methods. The host's forge sync
+asks it for every codebase review not yet decided, per codebase (the
+allocated Forgejo's API for a codebase whose repository is there, by its
+url; GitHub's `gh pr view` for a `github` forge, the repository taken
+from the codebase's url; the file forge's `<n>.merged`, `<n>.said` for
+fixtures),
 through `codebase_intake` (`dna/core/codebase_reviews.hl`), which returns
 the rows and writes none:
 
@@ -2661,7 +2668,9 @@ memory is named to it.
   `tape.hl`) stay in the core while the editor and leader call them
   in process. A performer is handed the brief and
   the hands as interfaces — git in scratch, the forge (it decides, a
-  leg never merges), the toolchain; deploy and the heart's API refuse,
+  leg never merges; the organism's forge allocation answers "open a
+  review", `AllocatedForge`, and no hand names a forge by kind), the
+  toolchain; deploy and the heart's API refuse,
   naming #987 — and answers a performance (a result struct until #732).
   The verb is the project's own program, built beside the vendored
   seed under `.hale/dna/legs` by the host; `hale mcp` exposes it as
@@ -3200,6 +3209,24 @@ the offer. An admission the record refuses holds the attempt for
 completed when the record resumes or on `redrive` without a restart,
 and the hand-off is announced only once it is durable.
 
+The solo path: the generated org chart sets `solo_without_model` on its
+substrate. While the organism has no model (`has_model`: no `model.category`
+row names one, `model_mapped`, and the editor's router permits no call, its
+hosted backends keyless and its local server, which `LocalModel` probes on
+this host, not running; a canned or recorded backend is a model), a Work the
+routing would hand to a leg (an agent's: a judgment, a Work routed to a
+position) or to the editor is a human leaf instead, a case for a person, and
+the case is handed unassigned with no word asked of the leader. The
+organism's own steps (an `organism` Work: applying a ratified change,
+raising a concern) need no model and stay the organism's. Nothing
+waits on a model and nothing times out into a leg; mapping a category or
+giving the catalog a model gives the next execution its legs back. A
+substrate a program wires itself (`solo_without_model` false, the default)
+routes as before. A chart generated
+before the flag routes as before, and `hale dna upgrade` does not add it:
+DNA migrates nothing, and such an organism takes the solo path when it is
+born again (`hale habitat graft`).
+
 ## Workflow execution: human completion
 
 A case is completed by its person through the tooling of the day —
@@ -3217,6 +3244,15 @@ barrier, so the Work settles done, the step counts it, and a
 completion the record already holds an outcome for changes nothing.
 The report is kept until the record is seen to hold the outcome, as
 an edit's is.
+
+The face reaches the same through two rows of the head's surface, each
+in the caller's name (any person of the record), answering `{ok, code,
+why, task_id, state, assignee}`: `Commands::take_task` (`{task_id}`: a
+handed Task that names no assignee becomes the caller's, a
+`task.reassigned` row from `""`) and `Commands::complete_task`
+(`{task_id, text}`: a `task.done` row whose body is `by <who>: <text>`,
+refused `evidence_required` where the bound practice wants evidence, and
+by memory's gate for anyone but the assignee).
 
 The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
@@ -3704,7 +3740,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   which records it is connected to — declared by its pieces. `hale
   dna profile` prints one line per axis from the pieces alone: the
   record's remote, the body lease and its last tick, `[dna] fleet`,
-  the knowledge store's environment, `dna.trust`, `dna.github`; the
+  the knowledge store's environment, `dna.trust`, the forge allocation; the
   status projection carries a `profile:` and a `body:` line. `hale
   habitat graft <name> --profile local|remote-body [--remote <url>]
   [--body <user@host>]` sets pieces (a remote, `dna.body`); the profile name
@@ -4124,9 +4160,17 @@ The organization's models are a catalog in source (GH #583 M1):
   selector is `default`, `position:<name>`, `contract:<Name>` or
   `task:<id>`, a size `quick`, `standard` or `deep`, and `--permit`
   the sizes a more specific selector may move it to. **`models category
-  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]`**
-  appends `model.category` (prices in micro-dollars per 1k tokens); a
-  `tools` or `do` category without `--tools` is refused. **`models
+  <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+  [--endpoint <url>] [--key-vault <slot>]`** appends `model.category`
+  (prices in micro-dollars per 1k tokens); a `tools` or `do` category
+  without `--tools` is refused. `--endpoint` names where the model is
+  asked, an OpenAI-compatible chat URL (voice's on a host, say), and
+  `--key-vault` the vault slot of that endpoint's key, a slot's name and
+  never a key: a Work the category resolves for is asked there by its
+  `openai-chat` performer, with that slot's key or, with none, no key at all
+  (the performer's own key never goes to another endpoint). The habitat's
+  head sets it for a tenant as `Commands::set_model_map`
+  (`spec/habitat.md`). **`models
   map`** lists the latest row per selector and per category. A graft
   (`hale habitat graft`) seeds a starting mapping when a hosted model's key is in the
   vault: `model.rule default` at `standard` (permitting every size), and
@@ -4564,7 +4608,10 @@ The live half is memory's, projected from the record by the spine
   next birth in the record, which may be another ask's. An answer that names
   no kind and no class leaves the defaults standing — class
   `application`, the ask's own target — and the admission says it did
-  not parse. Without a leader the ask is an application change. An
+  not parse. On the solo path (below, Workflow execution: human cases), an
+  organism with no model asks no plan: the ask is a person's job, admitted
+  under `ask-person` and handed unassigned, for a person to take, and never
+  reaches the editor, which is a model too (`spec/habitat.md`). Without a leader the ask is an application change. An
   ask whose leader has not answered yet is in planning, and asked
   again meanwhile is not asked of the leader twice. No `task.planned`,
   `task.pending` or `task.resumed` row is written: the admission is
@@ -5821,9 +5868,13 @@ The assembly names what fills each role; `hale check` sees the wiring.
 - **Board** (the `board` field, a `Membrane`) — where humans see and
   decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
-  relayed by the host); GitHub, mirrored by the host when `git config
-  dna.github` names `owner/repo`: every pending mutation Review becomes
-  a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the
+  relayed by the host); the organism's forge, mirrored by the host:
+  the forge is a gate, not a store, and which forge stands in it is the
+  organism's forge allocation (`spec/habitat.md`, Forge and identity) —
+  the habitat's own Forgejo by default in the local profile, GitHub when a
+  Board names it (`hale habitat forge <organism> github --repo
+  owner/repo`). Against whichever it is, every pending mutation Review becomes
+  a pull request (`github.pr`, naming the forge; the candidate pushed to `dna/<id>`, the
   three views as the body), every GitHub review on it becomes a
   `review.verdict` row in the reviewer's login (authority `board` when
   `dna.github.board` lists the login, else `reviewer`; each review
@@ -5839,13 +5890,23 @@ The assembly names what fills each role; `hale check` sees the wiring.
   forge's own key so each is admitted once), `comment`, `close_review`,
   `present`, `name`. `GitHubForge` (`gh`) is one implementation; the
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
-  `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
-  behaviour, and `hale dna profile`'s `github:` line names which the
-  host found (`HALE_DNA_FORGE`, or `dna.github`). The forge's pass
+  `<n>.verdicts`) is the fixtures'; `ForgejoForge` (Forgejo's API, a
+  token the vault slot of the organism's own Forgejo user holds) is the
+  local profile's; `NoForge` is a bare remote's honest
+  behaviour, the no-infrastructure fallback, and `hale dna profile`'s `github:` line names which the
+  host found: the organism's forge allocation (or `HALE_DNA_FORGE`, the
+  fixtures' override). `hale dna forge sync` syncs with the allocated
+  forge; with `none` allocated it answers `forge: no forge allocated`.
+  (`hale dna github sync` is gone.) The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
-  not change with the forge. Nothing in the core or the host spells
-  `gh` outside that one implementation.
+  not change with the forge. Only the `github.pr` rows of the forge in
+  the gate now are read: after the allocation (and the remote) moves to
+  another forge, a Review still open is opened again there and nothing
+  migrates. Nothing in the core or the host spells
+  `gh` outside that one implementation, and no practice, workflow or
+  standard names a forge by kind: "open a review" is the verb, and the
+  allocation answers it.
 - **Deployment** — `Deployment`: `NoDeployment` (a host expresses:
   `hale dna dev`), `ShellDeployment { command, seed }` (the command
   owns expressing and judging: `express <candidate> <seed>` returning 0
@@ -6117,7 +6178,7 @@ over one seed, one command per process (GH #1490):
 - **the verb program**, `dna/host/verb`: every other verb, one-shot —
   the projections (`status`, `history`, `review`, `board`, `report`,
   `pressure`, `fleet`), the writers (`task create`, a verdict,
-  `pressure raise`, `sync`, `deploy`, `rollback`, `github sync`) and
+  `pressure raise`, `sync`, `deploy`, `rollback`, `forge sync`) and
   the rest. It imports the host's seed and starts no locus that runs
   or handles the bus, so it runs to exit, and the memory-bound survey
   judges it as it judges a script (`spec/verification.md`).
@@ -6419,7 +6480,9 @@ connections on the loopback, `grafted` otherwise), the address of its face
 and the address of its head, its declared `purpose` (the `PURPOSE` of its
 `dna/org/purpose.hl`, taken at its graft) and its `pulse` (the worst state
 the providers of its allocations observe now, each where it was last
-applied: `down` over `degraded` over `up`, `""` when none is observed). No manifest table, record family or row kind
+applied: `down` over `degraded` over `up`, `""` when none is observed; its
+forge and identity, the habitat's services it is given, are observed with
+the allocations and are not its pulse). No manifest table, record family or row kind
 is added: the addresses are fields of the existing `habitat.grafted` row
 (`name`, `face`, `head`), taken at the graft. An organism's address is a
 block of `HEAD_BLOCK` (8) consecutive loopback ports, found free from a

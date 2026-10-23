@@ -19,14 +19,17 @@ Most `hale dna` commands accept an optional `[project]` directory path and defau
 The local habitat provisions and manages every organism's infrastructure (Postgres memory, NATS JetStream nerves, and Prometheus senses store) under `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`.
 
 ```text
-usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator]
+usage: hale habitat up [--foreground | --no-body] [--profile local] [--backends own|operator] [--name <name>]
        hale habitat graft <dir> [--attach] [--no-library] [--no-pack]
                           [--profile local|remote-body [--remote <url>] [--body <user@host>]]
                           [--with <pack> [--set <param>=<value>]… [--as <who>]]
        hale habitat graft <sapling> [--host <name>] [--no-library] [--no-pack] [--set <param>=<value>]… [--no-head]
        hale habitat place <key>/<role> <host>
+       hale habitat model-map <organism> <mode>.<size> <model> [--endpoint <url>] [--key-vault <slot>] [--tools]
+       hale habitat model-probe <organism> <mode>.<size>
        hale habitat apply [<host>] [--fresh]
        hale habitat nursery add <dir|git-url> | refresh | list | ratify <sapling>
+       hale habitat forge <organism> forgejo|github|file|none [--repo <owner/name>] [--key-vault <slot>] [--no-head]
        hale habitat handover [organism]
        hale habitat host add <name> [--user <user>] [--port <n>]
        hale habitat host probe <name>
@@ -209,7 +212,7 @@ hale dna work <verb> …       a leg's verbs against the head's API (--api, --as
                              renew, allowance, submit (--from-worktree), settle, release, friction, hand, run — the project's performers (dna/org/work.hl);
                              loop --parallel N is a worker: N children, each its own holder; loop --drain ends one
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each
-hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N]
+hale dna models map | rule <selector> <size> [--permit <sizes>] | category <mode>.<size> <model> [--tools] [--price-in N] [--price-out N] [--endpoint <url>] [--key-vault <slot>]
                              which model a Work gets, as rows in your name (--as <who>): a rule says the size a kind of work needs
                              (default, position:<name>, contract:<Name>, task:<id>; quick standard deep), a category which model fills it
 ```
@@ -254,8 +257,8 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              write a verdict into the record, which a node relays; the Review decides
 hale dna route [--json] (<path>… | --diff <range>)
                              who must sign a change set, and the gates it is judged against
-hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts
-                             (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)
+hale dna forge sync          mirror pending Reviews to the allocated forge and read its reviews back as verdicts
+                             (the habitat's Forgejo by default; `hale habitat forge <organism> github --repo owner/repo` for GitHub, via `gh`; dna.github.board logins,…)
 hale dna report [project]    file a report from the record since the last one (report.filed)
 ```
 
@@ -344,7 +347,7 @@ The table below lists environment variables set by operators; internal child-pro
 | `dna.oidc.service` | `<subject>=<service>` mapping from OIDC `sub` claim to a read-only service principal (multi-valued). |
 | `dna.oidc.board` | Comma-separated member names authorized to act with `board` authority. |
 | `dna.oidc.key` | Base64 `SubjectPublicKeyInfo` pinned signing key required for loopback OIDC issuers. |
-| `dna.github`, `dna.github.board` | Target `<owner>/<repo>` for `hale dna github sync`, and comma-separated GitHub logins whose PR reviews carry `board` authority. |
+| `dna.github.board` | Comma-separated logins whose reviews at the forge carry `board` authority (the repository is the forge allocation's, `hale habitat forge`). |
 
 ---
 
@@ -433,7 +436,7 @@ Every event row contains a `kind`, `entity`, `body`, and `author`. In Postgres m
 | `review.verdict` / `review.command_decided` | `record` | Verdict submitted by a reviewer (CLI, UI, or GitHub PR sync). |
 | `review.settled` / `review.refused` / `review.reasoned` | `record` | Final settlement of the Review, verdict refusal reason, and reviewer comment. |
 | `gate.observed` | `record` | CI check run status at the candidate commit observed from the forge. |
-| `github.pr` / `github.commented` | `record` | Mirrored GitHub Pull Request URL/number and settlement comment posted by `hale dna github sync`. |
+| `github.pr` / `github.commented` | `record` | The pull request a Review opened at the forge (its url, number and forge) and the settlement commented back by `hale dna forge sync`. |
 
 ### 5. Heart, Body, Codebases, and Fleet
 
