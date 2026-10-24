@@ -65,7 +65,7 @@ resolution cheap:
 |---|---|---|
 | **Rich** (proj_rich, N≈4–10) | Per-locus bump arena. | Coordinatees attached as small array; full state per coordinatee; freed wholesale on locus dissolution. Low churn expected. |
 | **Chunked** (proj_chunked, N≈10–30) | Per-locus arena with **per-coordinatee sub-regions**. Each accept allocates a sub-region; each dissolution frees one wholesale. Bookkeeping slots reclaimed via free-list. | Typed-message-header per coordinatee; moderate churn supported. |
-| **Recognition** (proj_recognition, N≈100–500) | Sub-mode-typed recpool selected at the locus declaration site (`fixed_cell`, `shared_slab`, `spillover`, or `summary_only`). v1 ships `fixed_cell` (bitmap-tracked fixed cells; child's arena lives inline in the cell) and `shared_slab` (one bump arena shared across all children; per-child release is a no-op). See **Recognition sub-modes** below. | Summary-only per coordinatee; many supported; minimal per-coordinatee state. |
+| **Recognition** (proj_recognition, N≈100–500) | Sub-mode-typed recpool selected at the locus declaration site (`fixed_cell`, `shared_slab`, `spillover`, or `summary_only`). v1 ships `fixed_cell` (bitmap-tracked fixed cells; child's arena lives inline in the cell) and `shared_slab` (one bump arena shared across admitted children; release returns admission capacity while retaining bytes). See **Recognition sub-modes** below. | Summary-only per coordinatee; many supported; minimal per-coordinatee state. |
 
 The `N≈…` figures are the *expected* coordinatee counts each
 class is tuned for, not hard caps. The `for child in
@@ -76,8 +76,8 @@ state lives above — is a heap buffer that grows geometrically
 children regardless of class. (Before 2026-05-29 this was a
 fixed 16-slot inline array with no bounds check; accepting a
 17th child while iterating `self.children` corrupted adjacent
-struct memory.) Recognition's `fixed_cell` cap is the one real
-hard limit, and it is an explicit, declared budget enforced as a
+struct memory.) Recognition's `fixed_cell` and `shared_slab` admission caps are real
+hard limits, and it is an explicit, declared budget enforced as a
 runtime error — not an implementation ceiling.
 
 The compiler picks based on the locus's declared projection
@@ -104,10 +104,28 @@ reject at the resolver with a "v1.x pending" diagnostic.
 
 | Sub-mode | Commitment | Backing | Per-child release |
 |---|---|---|---|
-| `fixed_cell` | "Each child fits in a cell sized for the accept-type union. Cap of N children. Overflow is a hard runtime error." | `lotus_recpool_fixed_*`. One contiguous block of `N × stride` bytes; each cell holds an inline `lotus_arena_t` + chunk header + payload. Bitmap-tracked acquire/release. The cell IS the child's arena. | Clears the bitmap bit. Slot is reusable. |
-| `shared_slab` | "All children share a single bump arena sized for the accept-type union × cap. The whole slab frees at parent dissolve." | `lotus_recpool_slab_*`. One `lotus_arena_t` with a single fixed-size chunk; `fixed_size=1` so it never grows. Every acquire returns the SAME arena pointer — sibling allocations interleave. | No-op. Slab freed wholesale at parent dissolve. |
+| `fixed_cell` | "Each child fits in a cell sized from the concrete accepted child layout. Cap of N children. Overflow is a hard runtime error." | `lotus_recpool_fixed_*`. One contiguous block of `N × stride` bytes; each cell holds an inline `lotus_arena_t` + chunk header + payload. Atomic bitmap reservations on acquire/release. The cell IS the child's arena. | Clears the bitmap bit. Slot is reusable. |
+| `shared_slab` | "All children share a single bump arena sized from the concrete accepted child layout × cap. The whole slab frees at parent dissolve." | `lotus_recpool_slab_*`. One `lotus_arena_t` with a single fixed-size chunk; `fixed_size=1` so it never grows. Successful acquire reserves one of `cap` concurrent slots and returns the SAME arena pointer — sibling allocations interleave. | Returns one admission reservation; bump position and bytes remain until parent dissolve. |
 | `spillover` *(v1.x pending)* | "Each child fits in a cell; overflow malloc-fallback with one-time warning. Graceful degradation under load." | Future: `lotus_recpool_spillover_*`. Per-cell `fixed_cell` plus a heap-allocated fallback. | TBD. |
 | `summary_only` *(v1.x pending)* | "Children carry zero per-instance state; all allocations live in the parent's arena." | Future: type-system rule prohibiting child arena allocation; parent's `__arena` is the only storage. | No-op. |
+
+Current recognition lowering requires a concrete accepted child type;
+an interface accept is refused because no union layout is implemented.
+The cap belongs to one owner instance's recpool and is shared by its
+successful acquisitions.
+An exhausted acquire returns NULL, and lowering reports
+`RecognitionPoolUnavailable` before the owner constructs and exposes the
+rejected child's params, subscriptions, `accept` or `birth`. Cross-domain
+callers may already have evaluated and serialized params for the request. This is a hard runtime failure. Releasing a flow
+child returns its admission reservation; a resident retains it until reclaim.
+For `shared_slab`, returning a reservation does not recover the child's bump
+allocations. Repeated flow births can therefore exhaust the fixed storage
+budget even while the number of live children stays below the cap.
+
+This bounds recpool reservations. It does not establish a complete bound on
+instance structs, queued work, temporary allocations, owner populations, or
+old/new incarnation overlap. Those require the retained-resource claim's
+separate accounting.
 
 The arena handle returned by `lotus_recpool_fixed_acquire` /
 `lotus_recpool_slab_acquire` is a `lotus_arena_t*` so child
@@ -126,6 +144,23 @@ discriminator on every locus struct (0 = regular
 step; consumed at child dissolve. Uniform layout so the
 dissolve path doesn't branch on whether the locus opted into
 the recognition surface.
+
+### Compiler storage-policy authority
+
+The allocation summary captures a `StorageProjectionRow` with each locus
+shape: effective class, recognition parameters, and accept-hook presence.
+Explicit annotations win; otherwise an acceptor gets chunked and a
+non-acceptor gets rich. The summary's recognition-cap accessor reads this
+row, and the model stores its source-neutral policy value.
+
+The lowering view rekeys these rows for the completed concrete generic
+inventory; the cap and mode are declaration literals, independent of type
+substitution. Locus layout and constructors consume the required rows.
+They do not resurvey annotations or choose defaults again. Missing storage
+rows fail as named `alloc_summary` compiler refusals. This shared authority
+is not a retained-resource proof: allocation shape, actual owner instances,
+retention, pending construction and incarnation overlap require their own
+accounting.
 
 ## Capacity slots (F.22)
 
@@ -495,8 +530,8 @@ Sub-mode-typed at the locus declaration site
 ```c
 /* fixed_cell — bitmap-tracked cells; the cell IS the child's
  * arena. Per-child release clears the bit. The compiler
- * computes cell_bytes from the parent's accept-method type
- * union; user code only spells cap. */
+ * computes cell_bytes from the concrete accepted child's
+ * struct size; interface layouts are refused; user code spells cap. */
 struct lotus_recpool_fixed {
     size_t cap_count, cell_bytes, cell_stride, bitmap_words;
     uint64_t *bitmap;
@@ -506,8 +541,9 @@ struct lotus_recpool_fixed {
 };
 
 /* shared_slab — one shared arena; every acquire returns the
- * same pointer; per-child release is no-op. Slab size also
- * derived from the accept-type union × cap. */
+ * same pointer while below the admission cap; release returns a
+ * reservation without freeing bytes. Slab size also
+ * derived from the concrete accepted child layout × cap. */
 struct lotus_recpool_slab {
     size_t cap_count, slab_bytes;
     lotus_arena_t *slab_arena;   /* fixed_size=1 */

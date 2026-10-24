@@ -30,7 +30,7 @@
 use hale_syntax::Span;
 
 use crate::alloc_summary::{
-    AllocSite, AllocSummary, CallEdge, Callee, FnKey, FnSummary,
+    AllocSite, AllocSummary, CallEdge, Callee, FnKey, FnSummary, InitializationEdge,
 };
 
 /// Runaway-graph guard, inherited from `budget_check`: a diamond-heavy
@@ -96,6 +96,13 @@ pub trait FactVisitor {
         sub: Self::Fact,
         emit: bool,
     ) -> Self::Fact;
+    /// A constructor in a loop evaluates the omitted default each iteration.
+    /// This edge has no authored call-site ordinal.
+    fn loop_initialization(
+        &mut self, key: &FnKey, edge: &InitializationEdge, sub: Self::Fact, emit: bool,
+    ) -> Self::Fact;
+    /// A repeated closure checkpoint contributes the evaluated body's fact.
+    fn loop_closure(&mut self, _key:&FnKey, _edge:&crate::alloc_summary::ClosureEvaluationEdge, _sub:Self::Fact, _emit:bool) -> Self::Fact { self.saturated() }
     /// #392: fold the facts of two ALTERNATIVES of one interface-
     /// dispatch site (edges sharing a `dispatch_group`). A dispatch
     /// invokes exactly one alternative, so this is a join, not a
@@ -202,6 +209,27 @@ fn walk_inner<V: FactVisitor>(
                 }
             }
         }
+    }
+    for edge in &fs.initializations {
+        *steps += 1;
+        if *steps > MAX_STEPS || path.contains(&edge.target) {
+            path.pop();
+            return visitor.saturated();
+        }
+        let in_loop = edge.loop_depth > 0;
+        let sub = walk_inner(summary, &edge.target, visitor, path, steps, emit && !in_loop);
+        let fact = if in_loop && !visitor.is_zero(&sub) {
+            visitor.loop_initialization(key, edge, sub, emit)
+        } else { sub };
+        total = visitor.combine(total, fact);
+    }
+    for edge in &fs.closure_evaluations {
+        *steps+=1;
+        if *steps>MAX_STEPS || path.contains(&edge.target) { path.pop(); return visitor.saturated(); }
+        let repeated=edge.loop_depth>0;
+        let sub=walk_inner(summary,&edge.target,visitor,path,steps,emit && !repeated);
+        let fact=if repeated && !visitor.is_zero(&sub) { visitor.loop_closure(key,edge,sub,emit) } else { sub };
+        total=visitor.combine(total,fact);
     }
     path.pop();
     total
@@ -355,6 +383,17 @@ fn witness_inner(
             }
         }
     }
+    for edge in fs.effect_evaluations() {
+        *steps += 1;
+        if *steps > MAX_STEPS { break; }
+        if path.contains(&edge.target) { continue; }
+        if let Some(mut tail) = witness_inner(summary, edge.target, pred, path, steps) {
+            let mut out = vec![WitnessStep { in_fn: key.clone(), span: edge.span, label: edge.target.display() }];
+            out.append(&mut tail);
+            path.pop();
+            return Some(out);
+        }
+    }
     path.pop();
     None
 }
@@ -372,4 +411,3 @@ pub fn render_witness(root: &FnKey, steps: &[WitnessStep]) -> String {
     }
     s
 }
-

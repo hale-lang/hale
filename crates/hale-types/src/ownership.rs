@@ -212,6 +212,35 @@ pub enum Owner {
     Placement(String),
 }
 
+/// The construction context that overrides the enclosing method's supervisor.
+/// This selects a pointer source, not a runtime instance or an allocation owner.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum SupervisionOverride {
+    FieldHolder,
+    ParamsInitializer,
+    Enclosing,
+}
+
+impl Owner {
+    /// Runtime-context selection for an instantiation. `Some(None)` is a
+    /// holder without an authored literal (for example a synthesized prelude),
+    /// distinct from no holder. Lowering supplies context availability; it
+    /// does not infer supervision from allocation ownership alone.
+    pub fn supervision_override(
+        &self,
+        holder: Option<Option<ExprId>>,
+        params_initializer: bool,
+    ) -> SupervisionOverride {
+        match (self, holder) {
+            (Owner::Field { owner, .. }, Some(Some(literal))) if *owner == literal => SupervisionOverride::FieldHolder,
+            (Owner::Placement(_), Some(_)) => SupervisionOverride::FieldHolder,
+            (Owner::Field { owner, .. }, None) if *owner == ExprId::DECLARED && params_initializer => SupervisionOverride::ParamsInitializer,
+            (Owner::Placement(_), None) if params_initializer => SupervisionOverride::ParamsInitializer,
+            _ => SupervisionOverride::Enclosing,
+        }
+    }
+}
+
 /// The finer question a FACTORY CALL site can answer on both sides.
 /// The flags there decide one bit — "does this frame register a GH
 /// #402 / #793 temporary for the value" — and, when it does, at what

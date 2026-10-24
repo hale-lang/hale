@@ -124,6 +124,40 @@ fn the_plan_is_demanded_once_and_no_check_builds_it() {
     let errors: Vec<String> = s.demand_check().expect("checked").diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(s.builds()["lifecycle_order"], 0, "the check reads no lifecycle plan");
+    assert_eq!(s.builds()["lifecycle_context"], 0);
+    let contexts = s.demand_lifecycle_contexts().expect("source contexts");
+    assert!(std::ptr::eq(contexts, s.demand_lifecycle_contexts().expect("cached contexts")));
+    assert_eq!(s.builds()["lifecycle_context"], 1);
+    assert_eq!(s.builds()["lifecycle_order"], 0, "source contexts derive no emission plan");
+    let model = s.demand_model().expect("source model");
+    let canonical = model.analyses.lifecycle_contexts.as_ref().expect("canonical source contexts");
+    assert_eq!(canonical.contexts.len(), contexts.instances.len());
+    assert_eq!(canonical.domains.iter().map(|d| &d.source).collect::<Vec<_>>(), s.demand_placement().unwrap().domains.iter().collect::<Vec<_>>());
+    for (original, projected) in contexts.instances.iter().zip(&canonical.contexts) {
+        assert_eq!(original.site.template,projected.template);
+        assert_eq!(original.contributions,projected.contributions);
+        assert_eq!(original.bound,projected.bound);
+        assert_eq!(original.site.decl.site,projected.declaration.key.site);
+    }
+    assert_eq!(s.builds()["lifecycle_order"], 0, "model reads no obligation plan");
+    assert_eq!(s.builds()["lifecycle_context"], 1, "model and plan share the source family");
+    canonical.validate(model).expect("valid contexts");
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].own = Some(hale_types::placement::DomainId(u32::MAX));
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].declaration.key.site.universe = SiteUniverse::StdlibAnalysis;
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].owner = Some(0);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })));
+    let mut broken = model.clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts[0].contributions[0].owner = Some(1);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })), "two-template ownership cycle");
+    let mut broken = model.clone();
+    let duplicate = broken.analyses.lifecycle_contexts.as_ref().unwrap().contexts[0].clone();
+    broken.analyses.lifecycle_contexts.as_mut().unwrap().contexts.push(duplicate);
+    assert!(matches!(broken.validate(),Err(hale_model::ModelError::InvalidLifecycleContext { .. })), "duplicate source template");
     let first: *const LifecyclePlan = plan(&s);
     let again: *const LifecyclePlan = plan(&s);
     assert_eq!(first, again);
@@ -143,6 +177,28 @@ fn the_plans_laws_hold_over_the_corpus() {
         let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
         let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else { continue };
         let Ok(plan) = s.demand_lifecycle() else { continue };
+        let contexts = s.demand_lifecycle_contexts().expect("plan has source contexts");
+        for row in &contexts.instances {
+            assert_eq!(row.universe, row.site.decl.site.universe, "{}: source universe", p.origin);
+            for gap in &row.owner_gaps {
+                if let hale_types::lifecycle_context::OwnerGap::Recursive { candidate } = gap {
+                    assert!(*candidate < contexts.instances.len(), "{}: recursive owner identity", p.origin);
+                }
+            }
+            for contribution in &row.contributions {
+                for domain in [contribution.it, contribution.own].into_iter().flatten() {
+                    assert!((domain.0 as usize) < plan.domains.len(), "{}: domain identity", p.origin);
+                }
+                if let Some(owner) = contribution.owner {
+                    let parent = &contexts.instances[owner];
+                    if let Some(under) = contribution.under {
+                        assert!(under < parent.contributions.len(), "{}: parent context identity", p.origin);
+                    }
+                } else {
+                    assert!(contribution.under.is_none(), "{}: parent context without owner", p.origin);
+                }
+            }
+        }
         programs += 1;
         instances += plan.instances.len();
         rows += plan.obligations.len();

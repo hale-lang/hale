@@ -1,0 +1,6 @@
+fn observe() -> Int { println("field default observed"); return 1; }
+type Settings { n: Int = observe(); }
+locus Worker { fn measure() { let settings = Settings { }; } }
+group workers = { Worker };
+main locus App { claims { quiet: forbid reaches(workers, effects(stdio)); } }
+fn main() { App { }; }

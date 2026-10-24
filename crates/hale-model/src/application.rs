@@ -19,7 +19,7 @@ use crate::claim_ir::{ClaimIrError, ClaimIrTable, ClaimRow};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
-    CostSite, GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
+    CostSite, GroupMember, GroupSelector, Construction, Initialization, MemberOf, Owns, PhaseOf, PlacedIn,
     Publish, Realizes, SelectorForm, Subscribe, Supervises, TopicBinding,
 };
 
@@ -27,6 +27,49 @@ use crate::relation::{
 /// interpretation changes — a schema addition is not a semantics
 /// bump; a reinterpretation is.
 pub const MODEL_SEMANTICS_V1: u32 = 1;
+
+/// Failure handlers share the canonical function coverage contract.
+/// Version 1 required every failure handler to remain unanalyzed.
+pub const MODEL_SEMANTICS_V2: u32 = 2;
+
+/// The executable-body universe includes parameter defaults and distinct
+/// constructor-evaluation edges; callable-name lookup remains unchanged.
+pub const MODEL_SEMANTICS_V3: u32 = 3;
+
+/// Executable record defaults have real type owners. Constructor evaluation
+/// ranges over typed locus and record declarations in separate namespaces.
+pub const MODEL_SEMANTICS_V4: u32 = 4;
+
+/// Call-site argument defaults are separate executions owned by their callable.
+pub const MODEL_SEMANTICS_V5: u32 = 5;
+
+/// Closure assertion bodies and exact explicit-checkpoint evaluation accounts.
+pub const MODEL_SEMANTICS_V6: u32 = 6;
+
+/// Resolved construction with an automatic assertion requires explicit
+/// invocation-context residue until that execution is represented.
+pub const MODEL_SEMANTICS_V7: u32 = 7;
+
+/// Automatic assertion declarations belong to their source epoch even when
+/// no authored lifecycle hook exists. Explicit checkpoints keep caller phases.
+pub const MODEL_SEMANTICS_V8: u32 = 8;
+
+/// Birth-check clauses have their own executable identities, birth phase
+/// membership and conditional-failure and construction coverage accounts.
+pub const MODEL_SEMANTICS_V9: u32 = 9;
+
+/// Self lifecycle declarations and constructor birth entries remain distinct
+/// from authored calls; invocation-context coverage is mandatory.
+pub const MODEL_SEMANTICS_V10: u32 = 10;
+
+/// Constructors have guarded may-entries for every nonempty self lifecycle
+/// stage. Known work participates in reachability without implying admission,
+/// scheduling, a caller frame, or complete lifecycle execution coverage.
+pub const MODEL_SEMANTICS_V11: u32 = 11;
+
+/// Parent callback source contexts and guarded execution use distinct root
+/// namespaces; unresolved runtime invocation coverage remains explicit.
+pub const MODEL_SEMANTICS_V12: u32 = 12;
 
 /// Named hash algorithms over a model. The replay-compatibility law
 /// (crate docs): the first artifact encoder reproduces
@@ -46,9 +89,8 @@ pub enum ModelHashKind {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ModelHeader {
-    /// `ANALYSIS_SEMANTICS_VERSION` at derivation. Bumped when a
-    /// judgment's MEANING changes, so evidence produced under older
-    /// semantics is refused rather than silently reinterpreted.
+    /// The model semantics version at derivation. This is distinct
+    /// from the analysis engine version carried by evidence bindings.
     pub semantics: u32,
     /// The application entrypoint (main locus name, or `main`).
     pub entrypoint: String,
@@ -138,6 +180,30 @@ pub struct Relations {
     /// SITE-grained call edges. Collapsing these to a set computes
     /// reachability where the language means executions.
     pub calls: Vec<Call>,
+    /// Source constructor evaluations, independent of authored call ordinals.
+    pub initializes: Vec<Initialization>,
+    /// Source constructors and supplied parameters, which close the omission account.
+    pub constructions: Vec<Construction>,
+    /// Caller-side evaluations of omitted arguments, tied to named calls.
+    pub argument_evaluations: Vec<crate::ArgumentEvaluation>,
+    /// Source closure assertion definitions, with typed owner and epoch.
+    pub closure_definitions: Vec<crate::ClosureDefinition>,
+    /// Executable birth-time predicates, in function identity order.
+    pub birth_checks: Vec<crate::BirthCheckDefinition>,
+    /// Authored self lifecycle hook identities and empty-body facts.
+    pub lifecycle_definitions: Vec<crate::LifecycleDefinition>,
+    /// Constructor entries kept separate from authored call sites.
+    pub lifecycle_evaluations: Vec<crate::LifecycleEvaluation>,
+    /// Parent admission/release declarations, including source-empty bodies.
+    pub protocol_definitions: Vec<crate::ProtocolDefinition>,
+    /// Actual source roots and nested constructors under accepting parents.
+    pub protocol_contexts: Vec<crate::ProtocolContext>,
+    /// Guarded nonempty parent entries, referencing the shared contexts.
+    pub protocol_evaluations: Vec<crate::ProtocolEvaluation>,
+    /// Explicit intrinsic checkpoints, including checkpoints with no assertions.
+    pub closure_checks: Vec<crate::ClosureCheck>,
+    /// Assertion executions at explicit checkpoints.
+    pub closure_evaluations: Vec<crate::ClosureEvaluation>,
     /// Dispatches through an interface nothing conforms to — not holes,
     /// and not edges.
     pub dead_interface_calls: Vec<DeadInterfaceCall>,
@@ -198,6 +264,11 @@ pub struct DispatchGate {
 /// the legacy artifact schema is versioned past.
 #[derive(Clone, Debug, Default)]
 pub struct Analyses {
+    /// Source lifecycle contexts; absence is unavailable, never an empty proof.
+    pub lifecycle_contexts: Option<crate::construction::LifecycleInventory>,
+    /// Typed recovery observations with symbolic operands. This inventory
+    /// is not a complete behavioral recovery relation or a containment proof.
+    pub recovery: crate::recovery::RecoveryInventory,
     /// The program's dispatch plan (GH #476 Change 8), as the model
     /// holds it (F.40 phase 4, S9): the one plan lowering lowers,
     /// derived once per snapshot from the bus graph's gates and the
@@ -223,13 +294,21 @@ pub struct Analyses {
 /// must replay the evaluator's order exactly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StdlibAbsorption {
+    /// Original user constructor site for a lifecycle entry, when available.
+    /// Source identity is kept separate from portable execution ordinals.
+    pub entry_constructor_source: Option<hale_graph::ids::SiteId>,
     /// The user function whose call site enters the stdlib interior
     /// this row describes.
     pub from: FunctionId,
-    /// The authored site ordinal within `from` (stdlib calls consume
-    /// ordinals like every authored site), so the judgment can
-    /// interleave the entry edge at the evaluator's BFS position.
+    /// The source site ordinal within `from`. `entry_initialization`
+    /// selects the constructor namespace; `entry_bus` selects the publish
+    /// namespace; otherwise this is an authored call ordinal.
     pub site: u32,
+    /// An omitted parameter or field evaluated by the constructor at `site`.
+    /// This entry has neither a dispatch group nor a bus delivery identity.
+    pub entry_initialization: Option<crate::Initializer>,
+    /// Constructor entry into a foreign self lifecycle body, not a call site.
+    pub entry_lifecycle: Option<crate::LifecycleStage>,
     /// Dispatch rendering of the ENTRY step (a stdlib conformer
     /// alternative of an interface dispatch), when it is one.
     pub entry_dispatch: Option<(String, String)>,
@@ -253,6 +332,19 @@ pub struct StdlibAbsorption {
     pub nodes: Vec<AbsorbedNode>,
 }
 
+impl StdlibAbsorption {
+    /// Canonical ordering keeps call, constructor and publish ordinals in
+    /// separate namespaces. Multiple conformers may share one call key.
+    pub fn entry_key(&self) -> (FunctionId, u8, u32, u32) {
+        match (&self.entry_initialization, &self.entry_bus) {
+            (Some(default), _) => (self.from, if default.kind == crate::InitializerKind::Argument { 3 } else { 1 }, self.site, default.ordinal),
+            (_, Some(_)) => (self.from, 2, self.site, 0),
+            _ if self.entry_lifecycle.is_some() => (self.from, 4, self.site, self.entry_lifecycle.unwrap() as u32),
+            _ => (self.from, 0, self.site, 0),
+        }
+    }
+}
+
 /// One interior stdlib vertex: its display spelling and its body's
 /// walk-relevant events, in body order (the evaluator collects call
 /// edges and returns at the FIRST unfollowable one, then scans
@@ -260,6 +352,11 @@ pub struct StdlibAbsorption {
 /// claim's via masks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbsorbedNode {
+    /// Present exactly for a constructor-default body, from the shared
+    /// source inventory. Event validation never infers this from its display.
+    pub initializer: Option<crate::Initializer>,
+    /// Self lifecycle declaration carried from the source inventory.
+    pub lifecycle: Option<crate::LifecycleStage>,
     /// e.g. `std::io::tcp::Stream::send` (demangled like every
     /// witness spelling).
     pub display: String,
@@ -284,9 +381,23 @@ pub struct AbsorbedNode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbsorbedEvent {
-    /// A resolved call edge — interior or re-emergent.
+    /// Constructor entry into an actual self lifecycle body. Frame and
+    /// scheduling coverage stay separate from the known effect graph.
+    Lifecycle {
+        /// Interior or re-emergent hook body.
+        target: AbsorbedTarget,
+        /// The hook's source stage.
+        stage: crate::LifecycleStage,
+        /// Construction repetition context.
+        in_loop: bool,
+    },
+    /// A resolved execution edge — interior or re-emergent. Initialization
+    /// metadata distinguishes inline parameter evaluation from a call.
     Call {
         target: AbsorbedTarget,
+        /// Present for an omitted-parameter evaluation rather than a call.
+        /// The edge enters its real default body and has no dispatch group.
+        initialization: Option<crate::Initializer>,
         /// (interface display, method) when the edge is a dispatch
         /// alternative.
         dispatch: Option<(String, String)>,
@@ -540,7 +651,7 @@ pub struct EvidenceTable {
 }
 
 impl ApplicationModel {
-    /// The relevant (non-failure) members a locus OWNS — from the
+    /// The executable members a locus OWNS — from the
     /// closed `owner` account, which `member_of` must mirror
     /// exactly (validated). Shared by the model validator and the
     /// sidecar API, so coverage is judged from one relation.
@@ -551,26 +662,24 @@ impl ApplicationModel {
         self.entities
             .functions
             .iter()
-            .filter(|f| {
-                f.owner == Some(lid)
-                    && !matches!(
-                        f.kind,
-                        crate::entity::FunctionKind::FailureHandler
-                    )
-            })
+            .filter(|f| f.owner == Some(lid))
             .all(|f| f.analyzed)
     }
 
     /// The OWNERSHIP + COVERAGE laws (round 15) — one shared
     /// validator: `member_of` is a total, exclusive partition
-    /// agreeing with `Function::owner` (a free fn owns nothing
-    /// and appears in no row; every other kind has exactly one
-    /// row, at its canonical owner), and every coverage law from
+    /// agreeing with `Function::owner` (free functions and type-owned field
+    /// defaults appear in no locus-member row; other kinds have exactly
+    /// one row at their canonical locus owner), and every coverage law from
     /// rounds 10–14. `ApplicationModel::validate` calls this, and
     /// so does `EvidenceTable::validate` — a model whose
     /// ownership account is corrupted cannot certify anything,
     /// digests notwithstanding.
     pub fn validate_coverage(&self) -> Result<(), ModelError> {
+        self.validate_initialization()?;
+        self.validate_argument_evaluations()?;
+        self.validate_source_phases()?;
+        self.validate_closure_evaluations()?;
         let e = &self.entities;
         // Ownership partition: rows per function.
         let mut rows_of: std::collections::BTreeMap<
@@ -588,13 +697,12 @@ impl ApplicationModel {
                 .get(&(i as u32))
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let free =
-                matches!(f.kind, crate::entity::FunctionKind::Free);
+            let free = matches!(f.kind, crate::entity::FunctionKind::Free | crate::entity::FunctionKind::FieldDefault) || (f.kind == crate::entity::FunctionKind::ArgumentDefault && f.owner.is_none());
             if free != f.owner.is_none() {
                 return Err(ModelError::CoverageLaw {
                     index: i,
-                    law: "free functions own nothing; every \
-                          other kind has a canonical owner",
+                    law: "free functions and field defaults have no locus owner; \
+                          other kinds have a canonical locus owner",
                 });
             }
             match f.owner {
@@ -662,16 +770,7 @@ impl ApplicationModel {
                           walked set is the summary set",
                 });
             }
-            if matches!(
-                f.kind,
-                crate::entity::FunctionKind::FailureHandler
-            ) && f.analyzed
-            {
-                return Err(ModelError::CoverageLaw {
-                    index: i,
-                    law: "failure handlers are never analyzed",
-                });
-            }
+
         }
         // Unanalyzed-residue law.
         {
@@ -740,6 +839,348 @@ impl ApplicationModel {
             .map(|(i, _)| crate::ids::FunctionId(i as u32))
     }
 
+    /// Validate default-body identities and the exact omission account of
+    /// represented constructors. Evidence admission shares these laws.
+    fn validate_initialization(&self) -> Result<(), ModelError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        use crate::{ConstructorTarget, FunctionKind, InitializerKind};
+        let e = &self.entities;
+        let r = &self.relations;
+        let prov = |table, index, p: ProvenanceId| {
+            if p.index() >= self.provenance.records.len() { Err(ModelError::DanglingProvenance { table, index }) } else { Ok(()) }
+        };
+        let valid_owner = |owner: ConstructorTarget| match owner {
+            ConstructorTarget::Locus(l) => l.index() < e.loci.len(),
+            ConstructorTarget::Type(t) => t.index() < e.types.len(),
+        };
+        let mut names = BTreeSet::new();
+        let mut ordinals = BTreeSet::new();
+        let mut defaults: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for (i, function) in e.functions.iter().enumerate() {
+            let expected = match function.kind {
+                FunctionKind::ParameterDefault => Some(InitializerKind::Parameter),
+                FunctionKind::FieldDefault => Some(InitializerKind::Field),
+                FunctionKind::ArgumentDefault => Some(InitializerKind::Argument),
+                _ => None,
+            };
+            if expected != function.initializer.as_ref().map(|d| d.kind)
+                || function.type_owner.is_some() != (function.kind == FunctionKind::FieldDefault)
+                || (function.kind == FunctionKind::FieldDefault && function.owner.is_some()) {
+                return Err(ModelError::CoverageLaw { index: i, law: "default kind and exclusive declaration ownership disagree" });
+            }
+            if let Some(default) = &function.initializer {
+                if default.kind == InitializerKind::Argument { continue; }
+                let owner = function.initializer_owner().ok_or(ModelError::CoverageLaw { index: i, law: "a default must have its typed declaration owner" })?;
+                if !valid_owner(owner) || default.field.is_empty()
+                    || !names.insert((owner, &default.field)) || !ordinals.insert((owner, default.ordinal)) {
+                    return Err(ModelError::CoverageLaw { index: i, law: "defaults require unique declared names and ordinals" });
+                }
+                if let ConstructorTarget::Type(t) = owner {
+                    let ty = &e.types[t.index()];
+                    if function.name != format!("{}::fields::{}", ty.name, default.field)
+                        || function.display != format!("{}::fields::{}", ty.display, default.field) {
+                        return Err(ModelError::CoverageLaw { index: i, law: "a field default's identity must agree with its type owner" });
+                    }
+                }
+                defaults.entry(owner).or_default().push((crate::FunctionId(i as u32), default));
+            }
+        }
+        check_sorted_keys("constructions", r.constructions.iter().map(|x| (x.function, x.site)))?;
+        let mut constructors = BTreeMap::new();
+        let mut expected = BTreeSet::new();
+        for (i, row) in r.constructions.iter().enumerate() {
+            if row.function.index() >= e.functions.len() || !valid_owner(row.owner) {
+                return Err(ModelError::DanglingId { table: "constructions", index: i });
+            }
+            if row.supplied.iter().any(|name| name.is_empty()) || row.supplied.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(ModelError::CoverageLaw { index: i, law: "constructor overrides must be sorted unique field names" });
+            }
+            prov("constructions", i, row.provenance)?;
+            constructors.insert((row.function, row.site), row);
+            for (target, default) in defaults.get(&row.owner).into_iter().flatten() {
+                if row.supplied.binary_search(&default.field).is_err() {
+                    expected.insert((row.function, row.site, default.ordinal, *target));
+                }
+            }
+        }
+        check_sorted_keys("initializes", r.initializes.iter().map(|x| (x.from, x.site, x.member, x.to)))?;
+        for (i, row) in r.initializes.iter().enumerate() {
+            if row.from.index() >= e.functions.len() || row.to.index() >= e.functions.len() || !valid_owner(row.owner) {
+                return Err(ModelError::DanglingId { table: "initializes", index: i });
+            }
+            let target = &e.functions[row.to.index()];
+            let constructor = constructors.get(&(row.from, row.site));
+            if target.initializer_owner() != Some(row.owner) || target.initializer.as_ref()
+                .is_none_or(|default| default.field != row.field || default.ordinal != row.member)
+                || constructor.is_none_or(|constructor| constructor.owner != row.owner
+                    || constructor.in_loop != row.in_loop || constructor.unbounded != row.unbounded || constructor.provenance != row.provenance) {
+                return Err(ModelError::CoverageLaw { index: i, law: "initialization must enter the constructed declaration's omitted default" });
+            }
+            prov("initializes", i, row.provenance)?;
+        }
+        let actual: BTreeSet<_> = r.initializes.iter().map(|row| (row.from, row.site, row.member, row.to)).collect();
+        if actual != expected {
+            return Err(ModelError::CoverageLaw { index: 0, law: "initializations must equal exactly the omitted defaults of represented constructors" });
+        }
+        Ok(())
+    }
+
+    /// The source hook account closes constructor entry without borrowing a
+    /// call ordinal or manufacturing a native frame/admission context.
+    fn validate_lifecycle_evaluations(&self) -> Result<(), ModelError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let e = &self.entities; let r = &self.relations;
+        let bad = |index, law| ModelError::CoverageLaw { index, law };
+        check_sorted_keys("lifecycle_definitions", r.lifecycle_definitions.iter().map(|d| d.function))?;
+        check_sorted_keys("lifecycle_evaluations", r.lifecycle_evaluations.iter().map(|d| (d.from,d.site,d.stage,d.to)))?;
+        let mut hooks = BTreeMap::new(); let mut owners = BTreeSet::new(); let mut definitions = BTreeSet::new();
+        for (index, d) in r.lifecycle_definitions.iter().enumerate() {
+            let f = e.functions.get(d.function.index()).ok_or(ModelError::DanglingId { table:"lifecycle_definitions",index })?;
+            let owner = e.loci.get(d.owner.index()).ok_or(ModelError::DanglingId { table:"lifecycle_definitions",index })?;
+            if f.kind != crate::FunctionKind::Hook || f.owner != Some(d.owner) || f.decl.is_none() || !f.analyzed || !f.summarized
+                || f.name != format!("{}::{}",owner.name,d.stage.as_str()) || f.display != format!("{}::{}",owner.display,d.stage.as_str())
+                || !definitions.insert((d.owner,d.stage)) { return Err(bad(index,"lifecycle hook identity, source stage and locus ownership must agree")); }
+            let phases: Vec<_> = r.phase_of.iter().filter(|p| p.function == d.function).collect();
+            if phases.len()!=1 || !e.phases.get(phases[0].phase.index()).is_some_and(|p| p.name==d.stage.as_str()) {
+                return Err(bad(index,"self lifecycle definitions require their exact source phase"));
+            }
+            if d.empty && (!f.direct_effects.is_empty() || !f.effect_lower_bound.is_empty() || f.effects_unknown
+                || r.calls.iter().any(|c| c.from==d.function) || r.initializes.iter().any(|c| c.from==d.function)
+                || r.constructions.iter().any(|c| c.function==d.function) || r.lifecycle_evaluations.iter().any(|c| c.from==d.function)
+                || r.publishes.iter().any(|c| c.function==d.function)) {
+                return Err(bad(index,"an empty lifecycle body cannot hide represented execution"));
+            }
+            if !d.empty { owners.insert(d.owner); }
+            hooks.insert(d.function,d);
+        }
+        for (index,_) in e.functions.iter().enumerate().filter(|(_,f)| f.kind==crate::FunctionKind::Hook) {
+            let source_stage = r.phase_of.iter().filter(|p| p.function==crate::FunctionId(index as u32))
+                .filter_map(|p| e.phases.get(p.phase.index())).any(|p| matches!(p.name.as_str(),"birth"|"run"|"drain"|"dissolve"));
+            if source_stage != hooks.contains_key(&crate::FunctionId(index as u32)) {
+                return Err(bad(index,"every authored self lifecycle body requires exactly one definition"));
+            }
+        }
+        let hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
+        let mut expected = BTreeMap::new();
+        for (index,c) in r.constructions.iter().enumerate() {
+            if let crate::ConstructorTarget::Locus(owner) = c.owner {
+                for d in hooks.values().filter(|d| d.owner==owner && !d.empty) {
+                    expected.insert((c.function,c.site,d.stage,d.function),(c.in_loop,c.unbounded,c.provenance,c.source));
+                }
+                if owners.contains(&owner) && !self.holes.iter().any(|h| h.at==crate::EntityRef::Function(c.function)
+                    && h.kind==crate::HoleKind::UnmodeledInitialization && h.provenance==c.provenance && h.hides.contains(hides)) {
+                    return Err(bad(index,"self lifecycle construction requires scoped invocation-context coverage"));
+                }
+            }
+        }
+        let mut actual = BTreeSet::new();
+        for (index,v) in r.lifecycle_evaluations.iter().enumerate() {
+            let key = (v.from,v.site,v.stage,v.to);
+            if expected.get(&key)!=Some(&(v.in_loop,v.unbounded,v.provenance,v.source)) || v.guard!=v.stage.entry_guard() || !actual.insert(key) {
+                return Err(bad(index,"lifecycle entries must preserve the actual constructor, body and repetition context"));
+            }
+        }
+        if actual != expected.keys().copied().collect() { return Err(bad(0,"lifecycle entries must equal exactly the represented constructors' guarded nonempty lifecycle hooks")); }
+        Ok(())
+    }
+
+    /// Clause identity, order and birth-phase membership are source facts.
+    fn validate_birth_checks(&self) -> Result<(), ModelError> {
+        use std::collections::BTreeSet;
+        let e = &self.entities;
+        let r = &self.relations;
+        let bad = |index, law| ModelError::CoverageLaw { index, law };
+        check_sorted_keys("birth_checks", r.birth_checks.iter().map(|b| b.function))?;
+        let mut bodies = BTreeSet::new();
+        let mut ordinals = BTreeSet::new();
+        let failure_hides = crate::HoleKind::UnmodeledFailureDispatch.implicit_execution_families().unwrap();
+        for (index, clause) in r.birth_checks.iter().enumerate() {
+            let f = e.functions.get(clause.function.index()).ok_or(ModelError::DanglingId { table: "birth_checks", index })?;
+            let owner = e.loci.get(clause.owner.index()).ok_or(ModelError::DanglingId { table: "birth_checks", index })?;
+            let member = format!("birth_checks::{}", clause.ordinal);
+            if f.kind != crate::FunctionKind::BirthCheck || f.owner != Some(clause.owner)
+                || !f.analyzed || !f.summarized || f.decl.is_none() || clause.closure.is_empty() || clause.ordinal == u32::MAX
+                || f.name != format!("{}::{member}", owner.name) || f.display != format!("{}::{member}", owner.display)
+                || !bodies.insert(clause.function) || !ordinals.insert((clause.owner, clause.ordinal)) {
+                return Err(bad(index, "birth check identity, clause order and locus ownership must agree"));
+            }
+            let phases: Vec<_> = r.phase_of.iter().filter(|p| p.function == clause.function).collect();
+            if phases.len() != 1 || !e.phases.get(phases[0].phase.index()).is_some_and(|p| p.name == "birth") {
+                return Err(bad(index, "birth checks require exactly their birth source phase"));
+            }
+            if !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(clause.function)
+                && h.kind == crate::HoleKind::UnmodeledFailureDispatch && h.hides.contains(failure_hides)) {
+                return Err(bad(index, "conditional birth rejection requires scoped failure-dispatch coverage"));
+            }
+        }
+        for (index, f) in e.functions.iter().enumerate() {
+            if (f.kind == crate::FunctionKind::BirthCheck) != bodies.contains(&crate::FunctionId(index as u32)) {
+                return Err(bad(index, "every birth check requires exactly one source definition"));
+            }
+        }
+        let owners: BTreeSet<_> = r.birth_checks.iter().map(|b| b.owner).collect();
+        let invocation_hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
+        for (index, construction) in r.constructions.iter().enumerate() {
+            if matches!(construction.owner, crate::ConstructorTarget::Locus(owner) if owners.contains(&owner))
+                && !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(construction.function)
+                    && h.kind == crate::HoleKind::UnmodeledInitialization && h.provenance == construction.provenance
+                    && h.hides.contains(invocation_hides)) {
+                return Err(bad(index, "birth-check construction requires scoped invocation-context coverage"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase-bearing declarations retain exactly one source phase. A missing
+    /// relation must not turn an authored body into a vacuous lifecycle phase.
+    fn validate_source_phases(&self) -> Result<(), ModelError> {
+        self.validate_birth_checks()?;
+        self.validate_lifecycle_evaluations()?;
+        self.validate_protocol_account()?;
+        let mut counts = vec![0usize; self.entities.functions.len()];
+        check_sorted_keys("phase_of", self.relations.phase_of.iter().map(|p| (p.function, p.phase)))?;
+        for (index, binding) in self.relations.phase_of.iter().enumerate() {
+            if binding.function.index() >= counts.len() || binding.phase.index() >= self.entities.phases.len() {
+                return Err(ModelError::DanglingId { table: "phase_of", index });
+            }
+            counts[binding.function.index()] += 1;
+        }
+        for (index, function) in self.entities.functions.iter().enumerate() {
+            let required = match function.kind {
+                crate::FunctionKind::Hook | crate::FunctionKind::Method | crate::FunctionKind::Mode | crate::FunctionKind::FailureHandler | crate::FunctionKind::BirthCheck => 1,
+                crate::FunctionKind::ClosureAssertion => continue, // epoch-specific law below
+                _ => 0,
+            };
+            if counts[index] != required {
+                return Err(ModelError::CoverageLaw { index, law: "phase-bearing bodies require exactly one source phase; other bodies inherit their invocation context" });
+            }
+        }
+        Ok(())
+    }
+
+    /// Assertions and checkpoints retain their source identities and typed
+    /// owners; each checkpoint evaluates exactly its owner's explicit set.
+    fn validate_closure_evaluations(&self) -> Result<(), ModelError> {
+        use std::collections::{BTreeMap,BTreeSet};
+        let e=&self.entities; let r=&self.relations;
+        let bad=|index,law| ModelError::CoverageLaw { index,law };
+        check_sorted_keys("closure_definitions",r.closure_definitions.iter().map(|d| d.function))?;
+        check_sorted_keys("closure_checks",r.closure_checks.iter().map(|c| (c.function,c.site)))?;
+        check_sorted_keys("closure_evaluations",r.closure_evaluations.iter().map(|v| (v.from,v.site,v.closure,v.to)))?;
+        let mut definitions=BTreeMap::new(); let mut ordinals=BTreeSet::new(); let mut names=BTreeSet::new();
+        for (index,d) in r.closure_definitions.iter().enumerate() {
+            let f=e.functions.get(d.function.index()).ok_or(ModelError::DanglingId { table:"closure_definitions",index })?;
+            let owner=e.loci.get(d.owner.index()).ok_or(ModelError::DanglingId { table:"closure_definitions",index })?;
+            if f.kind!=crate::FunctionKind::ClosureAssertion || f.owner!=Some(d.owner) || !f.analyzed || !f.summarized || f.decl.is_none()
+                || d.name.is_empty() || d.ordinal==u32::MAX || f.name!=format!("{}::closures::{}",owner.name,d.name)
+                || f.display!=format!("{}::closures::{}",owner.display,d.name)
+                || !ordinals.insert((d.owner,d.ordinal)) || !names.insert((d.owner,d.name.as_str())) {
+                return Err(bad(index,"closure assertion definition, identity and locus ownership must agree"));
+            }
+            definitions.insert(d.function,d);
+            let phases: Vec<_> = r.phase_of.iter().filter(|p| p.function == d.function).collect();
+            let valid = if d.epoch == crate::ClosureEpoch::Explicit { phases.is_empty() } else {
+                phases.len() == 1 && e.phases.get(phases[0].phase.index()).is_some_and(|p| p.name == d.epoch.as_str())
+            };
+            if !valid {
+                return Err(bad(index,"closure assertion source phase must agree exactly with its automatic epoch"));
+            }
+        }
+        for (index,f) in e.functions.iter().enumerate() {
+            if (f.kind==crate::FunctionKind::ClosureAssertion)!=definitions.contains_key(&crate::FunctionId(index as u32)) {
+                return Err(bad(index,"every closure assertion has exactly one definition"));
+            }
+        }
+        let mut expected=BTreeSet::new(); let mut checks=BTreeMap::new(); let mut sources=BTreeSet::new();
+        for (index,c) in r.closure_checks.iter().enumerate() {
+            let f=e.functions.get(c.function.index()).ok_or(ModelError::DanglingId { table:"closure_checks",index })?;
+            if f.owner!=Some(c.owner) || !f.analyzed || !f.summarized || f.initializer.is_some() || c.owner.index()>=e.loci.len() || c.provenance.index()>=self.provenance.records.len() || (c.unbounded && !c.in_loop)
+                || !sources.insert((c.function,c.source)) {
+                return Err(bad(index,"closure checkpoint must name its actual implicit-self owner and unique source site"));
+            }
+            checks.insert((c.function,c.site),c);
+            for d in r.closure_definitions.iter().filter(|d| d.owner==c.owner && d.epoch==crate::ClosureEpoch::Explicit) {
+                expected.insert((c.function,c.site,d.ordinal,d.function));
+            }
+        }
+        let mut actual=BTreeSet::new();
+        for (index,v) in r.closure_evaluations.iter().enumerate() {
+            let check=checks.get(&(v.from,v.site)).ok_or_else(|| bad(index,"closure evaluation must name a represented checkpoint"))?;
+            if !expected.contains(&(v.from,v.site,v.closure,v.to)) || v.in_loop!=check.in_loop || v.unbounded!=check.unbounded || v.provenance!=check.provenance
+                || !actual.insert((v.from,v.site,v.closure,v.to)) {
+                return Err(bad(index,"closure evaluation must preserve the exact assertion and checkpoint account"));
+            }
+        }
+        if actual!=expected { return Err(bad(0,"closure evaluations must equal all explicit assertions of each represented checkpoint")); }
+        let automatic_owners: BTreeSet<_> = r.closure_definitions.iter()
+            .filter(|d| d.epoch != crate::ClosureEpoch::Explicit).map(|d| d.owner).collect();
+        let hides = crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
+        for (index, construction) in r.constructions.iter().enumerate() {
+            if matches!(construction.owner, crate::ConstructorTarget::Locus(owner) if automatic_owners.contains(&owner))
+                && !self.holes.iter().any(|h| h.at == crate::EntityRef::Function(construction.function)
+                    && h.kind == crate::HoleKind::UnmodeledInitialization && h.provenance == construction.provenance
+                    && h.hides.contains(hides)) {
+                return Err(bad(index,"automatic closure construction requires scoped invocation-context coverage"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_argument_evaluations(&self) -> Result<(), ModelError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        use crate::{FunctionKind, InitializerKind, DispatchKind};
+        let functions = &self.entities.functions;
+        let mut defaults: BTreeMap<crate::FunctionId, Vec<_>> = BTreeMap::new();
+        let mut names = BTreeSet::new(); let mut positions = BTreeSet::new();
+        for (index, function) in functions.iter().enumerate() {
+            if function.argument_owner.is_some() != (function.kind == FunctionKind::ArgumentDefault) {
+                return Err(ModelError::CoverageLaw { index, law: "only argument defaults have a callable owner" });
+            }
+            let Some(owner) = function.argument_owner else { continue };
+            let parent = functions.get(owner.index()).ok_or(ModelError::DanglingId { table: "argument default owner", index })?;
+            let default = function.initializer.as_ref().ok_or(ModelError::CoverageLaw { index, law: "an argument default requires its declared parameter identity" })?;
+            if parent.initializer.is_some() || function.owner != parent.owner || function.type_owner.is_some()
+                || !function.analyzed || !function.summarized || default.kind != InitializerKind::Argument || default.field.is_empty() || default.ordinal == u32::MAX
+                || function.name != format!("{}::args::{}", parent.name, default.field)
+                || function.display != format!("{}::args::{}", parent.display, default.field)
+                || !names.insert((owner, &default.field)) || !positions.insert((owner, default.ordinal)) {
+                return Err(ModelError::CoverageLaw { index, law: "argument defaults require a real callable owner and unique parameter identity" });
+            }
+            defaults.entry(owner).or_default().push((crate::FunctionId(index as u32), default));
+        }
+        let mut calls = BTreeMap::new(); let mut expected = BTreeSet::new();
+        for (index, call) in self.relations.calls.iter().enumerate() {
+            let Some(supplied) = call.supplied else { continue };
+            if call.dispatch != DispatchKind::Direct || call.from.index() >= functions.len() || call.to.index() >= functions.len() {
+                return Err(ModelError::CoverageLaw { index, law: "argument counts belong to represented direct named calls" });
+            }
+            if defaults.get(&call.to).is_some_and(|rows| supplied > rows.iter().map(|(_,d)| d.ordinal + 1).max().unwrap_or(0)) {
+                return Err(ModelError::CoverageLaw { index, law: "a named call cannot supply more arguments than its signature" });
+            }
+            if calls.insert((call.from, call.site, call.to), call).is_some() {
+                return Err(ModelError::CoverageLaw { index, law: "a named call has one argument omission account" });
+            }
+            for (target, default) in defaults.get(&call.to).into_iter().flatten() {
+                if default.ordinal >= supplied { expected.insert((call.from, call.site, call.to, default.ordinal, *target)); }
+            }
+        }
+        check_sorted_keys("argument_evaluations", self.relations.argument_evaluations.iter().map(|r| (r.from,r.site,r.callee,r.argument,r.to)))?;
+        let mut actual = BTreeSet::new();
+        for (index, edge) in self.relations.argument_evaluations.iter().enumerate() {
+            let target = functions.get(edge.to.index()).ok_or(ModelError::DanglingId { table: "argument_evaluations", index })?;
+            let call = calls.get(&(edge.from,edge.site,edge.callee));
+            if target.argument_owner != Some(edge.callee) || target.initializer.as_ref().is_none_or(|d| d.ordinal != edge.argument || d.field != edge.parameter)
+                || call.is_none_or(|c| c.in_loop != edge.in_loop || c.unbounded != edge.unbounded || c.provenance != edge.provenance) {
+                return Err(ModelError::CoverageLaw { index, law: "argument evaluation must match its named call and declared default" });
+            }
+            actual.insert((edge.from,edge.site,edge.callee,edge.argument,edge.to));
+        }
+        if actual != expected {
+            return Err(ModelError::CoverageLaw { index: 0, law: "argument evaluations must equal exactly the omitted defaults of named calls" });
+        }
+        Ok(())
+    }
+
     /// The model's analysis-coverage identity (round 10): fnv1a64
     /// over every locus's `analyzable` bit and every function's
     /// `analyzed` bit, in canonical entity order. Evidence
@@ -763,6 +1204,18 @@ impl ApplicationModel {
                     crate::entity::FunctionKind::FailureHandler
                 ) as u8,
             ]);
+            match f.argument_owner {
+                Some(owner) => { eat(&[3]); eat(&owner.0.to_le_bytes()); }
+                None => eat(&[0]),
+            }
+            match f.type_owner {
+                Some(t) => { eat(&[2]); eat(&t.0.to_le_bytes()); }
+                None => eat(&[0]),
+            }
+            if let Some(default) = &f.initializer {
+                eat(&[match default.kind { crate::InitializerKind::Parameter => 1, crate::InitializerKind::Field => 2, crate::InitializerKind::Argument => 3 }]);
+                eat(default.field.as_bytes()); eat(&[0]); eat(&default.ordinal.to_le_bytes());
+            }
             // Ownership is coverage-bearing (round 15): moving a
             // member changes which locus's coverage it counts
             // toward.
@@ -1052,6 +1505,8 @@ pub struct ApplicationModel {
 /// "this value is not a model".
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ModelError {
+    /// This validator cannot interpret the model's semantic contract.
+    UnsupportedModelSemantics { actual: u32 },
     /// A table (or set-like nested vector) is not canonically
     /// sorted + deduplicated by its semantic key. Carries the table
     /// name and the first offending index.
@@ -1075,6 +1530,13 @@ pub enum ModelError {
     /// A zero capacity: `Bounded(0)` / a zero topic bound is
     /// excluded by the settled bounds design (GH #255).
     InvalidBound { table: &'static str, index: usize },
+    /// A flow has no release witness, or a witness carries an empty
+    /// external owner or specialization identity, or a template hole
+    /// targets a concrete declaration.
+    InvalidFlowClass { locus: usize },
+    /// A symbolic recovery observation has an invalid reference or shape.
+    InvalidRecoveryFact { index: usize },
+    InvalidLifecycleContext { index: usize },
     /// A locus instance's `decl` field and its `realizes` row
     /// disagree — two authorities for one fact drifted.
     RealizesDisagrees { index: usize },
@@ -1098,7 +1560,7 @@ pub enum ModelError {
     /// mirrored in the schema).
     IllegalFallback { index: usize },
     /// A coverage law is violated (round 11): `summarized ⇒
-    /// analyzed`, `FailureHandler ⇒ ¬analyzed`, or the legacy fn
+    /// analyzed`, `analyzed ⇒ summarized`, or the legacy fn
     /// sort disagrees with the summarized set.
     CoverageLaw { index: usize, law: &'static str },
     /// A topic declares `on_unmatched: fallback` but has no
@@ -1337,6 +1799,11 @@ impl ApplicationModel {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
+        if self.header.semantics != MODEL_SEMANTICS_V12 {
+            return Err(ModelError::UnsupportedModelSemantics { actual: self.header.semantics });
+        }
+        self.analyses.recovery.validate(self)?;
+        if let Some(contexts) = &self.analyses.lifecycle_contexts { contexts.validate(self)?; }
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
 
@@ -1469,6 +1936,30 @@ impl ApplicationModel {
         }
         for (i, l) in e.loci.iter().enumerate() {
             prov("loci", i, l.provenance)?;
+            if let crate::FlowClass::Flow { releases } = &l.flow {
+                if releases.is_empty() {
+                    return Err(ModelError::InvalidFlowClass { locus: i });
+                }
+                check_sorted_keys("loci.flow.releases", releases.iter())?;
+                for release in releases {
+                    match &release.owner {
+                        crate::FlowOwner::Declared(owner) if owner.index() >= loci => {
+                            return Err(ModelError::DanglingId {
+                                table: "loci.flow.releases.owner",
+                                index: i,
+                            });
+                        }
+                        crate::FlowOwner::External(name) if name.is_empty() => {
+                            return Err(ModelError::InvalidFlowClass { locus: i });
+                        }
+                        _ => {}
+                    }
+                    if release.specialization.as_ref().is_some_and(String::is_empty) {
+                        return Err(ModelError::InvalidFlowClass { locus: i });
+                    }
+                    prov("loci.flow.releases", i, release.provenance)?;
+                }
+            }
         }
         for (i, inst) in e.locus_instances.iter().enumerate() {
             if inst.decl.index() >= loci {
@@ -1558,6 +2049,13 @@ impl ApplicationModel {
                 .any(|h| h.at == at && h.hides.intersects(family))
         };
 
+        for (i, locus) in e.loci.iter().enumerate() {
+            if matches!(locus.flow, crate::FlowClass::GenericTemplate)
+                && !hole_at(EntityRef::LocusDecl(crate::LocusDeclId(i as u32)), crate::RelationSet::FLOW_CLASSIFICATION)
+            {
+                return Err(ModelError::UnrepresentedUnknown { table: "loci.flow", index: i });
+            }
+        }
         // --- relations: canonical order, ranges, provenance, and
         // the cross-authority agreement laws.
         let r = &self.relations;
@@ -2138,6 +2636,13 @@ impl ApplicationModel {
                     index: i,
                 });
             }
+            if h.kind == crate::HoleKind::GenericFlowTemplate {
+                if let EntityRef::LocusDecl(id) = h.at {
+                    if !matches!(e.loci[id.index()].flow, crate::FlowClass::GenericTemplate) {
+                        return Err(ModelError::InvalidFlowClass { locus: id.index() });
+                    }
+                }
+            }
             prov("holes", i, h.provenance)?;
         }
 
@@ -2148,7 +2653,7 @@ impl ApplicationModel {
         for (i, w) in
             self.analyses.stdlib_absorption.windows(2).enumerate()
         {
-            if (w[0].from, w[0].site) > (w[1].from, w[1].site) {
+            if w[0].entry_key() > w[1].entry_key() {
                 return Err(ModelError::NotCanonical {
                     table: "legacy.stdlib_absorption",
                     index: i + 1,
@@ -2226,7 +2731,7 @@ impl ApplicationModel {
             }
             // A delivery entry sits at a publish site, which is no
             // call site: it joins no dispatch class.
-            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none()) {
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none()) {
                 join(
                     (a.from.0, a.site),
                     a.entry_dispatch.clone(),
@@ -2254,6 +2759,25 @@ impl ApplicationModel {
                     table: "legacy.stdlib_absorption",
                     index: i,
                 });
+            }
+            if a.entry_constructor_source.is_some() && a.entry_lifecycle.is_none() {
+                return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle_source",index:i });
+            }
+            if a.entry_lifecycle.is_some_and(|stage| a.nodes[0].lifecycle != Some(stage) || a.entry_initialization.is_some()
+                || a.entry_dispatch.is_some() || a.entry_group.is_some() || a.entry_bus.is_some()) {
+                return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle",index:i });
+            }
+            if a.entry_lifecycle.is_some() || a.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,crate::AbsorbedEvent::Lifecycle { .. }))) {
+                let hides=crate::HoleKind::UnmodeledInitialization.implicit_execution_families().unwrap();
+                if !self.holes.iter().any(|h| h.at==crate::EntityRef::Function(a.from)
+                    && h.kind==crate::HoleKind::UnmodeledInitialization && h.hides.contains(hides)) {
+                    return Err(ModelError::CoverageLaw { index:i,law:"foreign lifecycle entry requires scoped invocation-context coverage" });
+                }
+            }
+            if a.entry_initialization != a.nodes[0].initializer
+                || a.entry_initialization.as_ref().is_some_and(|default|
+                    a.entry_bus.is_some() || a.entry_dispatch.is_some() || a.entry_group.is_some() || default.field.is_empty()) {
+                return Err(ModelError::NotCanonical { table: "legacy.stdlib_absorption.initialization", index: i });
             }
             // The entry's dispatch label binds to the entry
             // NODE's method identity (round 8) — textual agreement
@@ -2285,6 +2809,9 @@ impl ApplicationModel {
                 });
             }
             for n in &a.nodes {
+                if n.lifecycle.is_some_and(|stage| n.initializer.is_some() || n.display.rsplit("::").next()!=Some(stage.as_str())) {
+                    return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle",index:i });
+                }
                 // Interior dispatch identity (round 7): one group
                 // id inside a node is ONE dispatch — `bound` folds
                 // same-group alternatives with MAX, so an
@@ -2295,8 +2822,18 @@ impl ApplicationModel {
                 > = std::collections::BTreeMap::new();
                 for ev in &n.events {
                     match ev {
+                        crate::AbsorbedEvent::Lifecycle { target,stage,.. } => {
+                            let actual = match target {
+                                crate::AbsorbedTarget::Interior(n) => a.nodes.get(*n as usize).and_then(|n| n.lifecycle),
+                                crate::AbsorbedTarget::User(f) => self.relations.lifecycle_definitions.iter().find(|d| d.function==*f).map(|d| d.stage),
+                            };
+                            if actual!=Some(*stage) {
+                                return Err(ModelError::NotCanonical { table:"legacy.stdlib_absorption.lifecycle",index:i });
+                            }
+                        }
                         crate::AbsorbedEvent::Call {
                             target,
+                            initialization,
                             dispatch,
                             group,
                             ..
@@ -2315,6 +2852,14 @@ impl ApplicationModel {
                                         "legacy.stdlib_absorption",
                                     index: i,
                                 });
+                            }
+                            let target_default = match target {
+                                crate::AbsorbedTarget::User(f) => &e.functions[f.index()].initializer,
+                                crate::AbsorbedTarget::Interior(n) => &a.nodes[*n as usize].initializer,
+                            };
+                            if initialization != target_default || initialization.as_ref().is_some_and(|default|
+                                default.field.is_empty() || dispatch.is_some() || group.is_some()) {
+                                return Err(ModelError::NotCanonical { table: "legacy.stdlib_absorption.initialization", index: i });
                             }
                             // A dispatch label binds to its
                             // TARGET (round 8): the rendered
@@ -2454,7 +2999,7 @@ impl ApplicationModel {
                     .or_default()
                     .resolved = true;
             }
-            for a in &self.analyses.stdlib_absorption {
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none() && a.entry_initialization.is_none() && a.entry_lifecycle.is_none()) {
                 call_sites
                     .entry((a.from.0, a.site))
                     .or_default()

@@ -109,6 +109,15 @@ const ON_FAILURE: &str = "locus Alpha {\n    params { n: Int = 0; }\n    \
     on_failure(x: Alpha, err: ClosureViolation) { self.seen = self.seen + x.n; }\n    \
     run() { self.a.go(); }\n}\nfn main() { App { }; }\n";
 
+#[test]
+fn placement_a_fresh_field_without_its_construction_context_is_refused() {
+    let (msg, _) = refused_without("construction_supervisor", ON_FAILURE, "placement", |view| {
+        let row = view.placement.instances.values_mut().find(|r| r.construction_supervisor.is_some()).unwrap();
+        row.construction_supervisor = None;
+    });
+    assert!(msg.contains("construction supervisor"), "{msg}");
+}
+
 /// `handler_routing`: the handler table is one fn per routing row,
 /// keyed by the row's site; a declared `on_failure` with no row is
 /// refused at its declaration, never routed by the child's name.
@@ -310,4 +319,76 @@ fn alloc_summary_a_declaration_without_its_routing_rows_is_refused() {
         v.alloc_routing = hale_types::alloc_routing::AllocRouting::default()
     });
     assert!(msg.contains("no elision rows") || msg.contains("no caller-arena row"), "{msg}");
+}
+
+
+#[test]
+fn flow_instances_a_view_without_membership_is_refused() {
+    let (message, _) = refused_without("flow_instances", "fn main() { }", "flow_instances", |v| v.flows = None);
+    assert!(message.contains("concrete flow membership"), "{message}");
+}
+
+#[test]
+fn alloc_summary_storage_projection_rows_are_required_including_monomorphs() {
+    let source = "locus Child { } locus Owner<T> : projection recognition(cap = 2, fixed_cell) { accept(c: T) { } } fn main() { let owner: Owner<Child> = Owner { }; }";
+    refused_without("storage_projection_table", source, "alloc_summary", |v| v.storage_projections = None);
+    let (message, at) = refused_without("storage_projection_monomorph", source, "alloc_summary", |v| {
+        assert!(v.storage_projections.as_mut().unwrap().remove("Owner_Child").is_some());
+    });
+    assert!(message.contains("Owner_Child"), "{message}");
+    assert!(at.is_some());
+}
+
+#[test]
+fn lowering_enforces_the_projection_rows_cap_instead_of_resurveying_source() {
+    let source = "locus Child { } locus Owner : projection recognition(cap = 2, fixed_cell) { params { n: Int = 0; } accept(c: Child) { self.n = self.n + 1; println(self.n); } run() { Child { }; Child { }; println(\"completed\"); } } fn main() { Owner { }; }";
+    let program = hale_syntax::parse_source(source).unwrap();
+    let snap = Snapshot::from_program(program, Vec::new(), Config::build(Target::host())).unwrap_or_else(|_| panic!("load"));
+    let mut view = snap.demand_lowering().unwrap_or_else(|b| panic!("{:?} {:?}", b.refused, b.because)).clone();
+    let run = |view: &LoweringView, tag| {
+        let bin = harness::unique_bin(tag);
+        build_resolved(view, &bin, &build_opts::options()).unwrap();
+        let result = std::process::Command::new(&bin).output().unwrap();
+        let _ = std::fs::remove_file(&bin);
+        result
+    };
+    let control = run(&view, "storage_projection_cap_two");
+    assert!(control.status.success(), "{}", String::from_utf8_lossy(&control.stderr));
+    assert_eq!(String::from_utf8_lossy(&control.stdout), "1\n2\ncompleted\n");
+    view.storage_projections.as_mut().unwrap().get_mut("Owner").unwrap().class = hale_syntax::ast::ProjectionClass::Recognition(Some(hale_syntax::ast::RecognitionParams { cap: 1, sub_mode: hale_syntax::ast::RecognitionSubMode::FixedCell }));
+    let bounded = run(&view, "storage_projection_cap_one");
+    assert!(!bounded.status.success());
+    assert_eq!(String::from_utf8_lossy(&bounded.stdout), "1\n");
+    assert!(String::from_utf8_lossy(&bounded.stderr).contains("RecognitionPoolUnavailable"));
+}
+
+#[test]
+fn alloc_summary_self_lifecycle_hook_rows_are_required_and_identity_bound() {
+    let source = "locus Child<T> { params { value: T; } birth() { let observed = self.value; } } fn main() { let child: Child<Int> = Child { value: 7 }; }";
+    refused_without("lifecycle_hook_inventory", source, "alloc_summary", |v| v.lifecycle_hooks = None);
+    let (message, _) = refused_without("lifecycle_hook_owner", source, "alloc_summary", |v| {
+        let rows = v.lifecycle_hooks.as_mut().unwrap();
+        let owner = *rows.iter().find(|(_, hooks)| hooks.iter().any(|h| h.stage == hale_model::LifecycleStage::Birth)).unwrap().0;
+        rows.remove(&owner);
+    });
+    assert!(message.contains("source birth hook"), "{message}");
+    let (message, _) = refused_without("lifecycle_hook_identity", source, "alloc_summary", |v| {
+        let hook = v.lifecycle_hooks.as_mut().unwrap().values_mut().flatten()
+            .find(|h| h.stage == hale_model::LifecycleStage::Birth).unwrap();
+        hook.declaration.0 += 1;
+    });
+    assert!(message.contains("identity"), "{message}");
+}
+
+#[test]
+fn alloc_summary_parent_protocol_inventory_and_identity_are_required() {
+    let source = "locus Child { } locus Parent { accept(c: Child) { } release(c: Child) { } } fn main() { Parent { }; }";
+    refused_without("protocol_table", source, "alloc_summary", |v| v.protocol_hooks = None);
+    for stage in [hale_types::protocol_execution::ProtocolStage::Accept, hale_types::protocol_execution::ProtocolStage::Release] {
+        let (message, _) = refused_without("protocol_identity", source, "alloc_summary", |v| {
+            let hook = v.protocol_hooks.as_mut().unwrap().values_mut().flatten().find(|h| h.stage == stage).unwrap();
+            hook.declaration.0 += 1;
+        });
+        assert!(message.contains("identity"), "{message}");
+    }
 }

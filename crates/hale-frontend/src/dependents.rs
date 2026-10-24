@@ -15,15 +15,17 @@
 //!   relation demands no effects fixpoint): a declaration whose body
 //!   calls a fn or a method of another reads it, and the readers close
 //!   transitively — the reveal rule's transparency is a fixpoint over the
-//!   bodies a call reaches. A body the reveal rule reads that is no row
+//!   bodies a call or constructor-default evaluation reaches. Constructor
+//!   omission edges are read from the same summary, never re-resolved here.
+//!   A body the reveal rule reads that is no row
 //!   (an `on_failure` handler, a params initializer, a constant's value,
 //!   a callee that is no name…) is summarized beside the rows
 //!   ([`AllocSummary::declaration_bodies`]), keyed to its declaration's
 //!   site, and its calls are that declaration's. A call to a fn the
 //!   summary has no row for is unresolved, and its bare name joins the
 //!   fns of that name. A call the summary records no edge for at all
-//!   (one in a position no summary body covers: a closure's clauses, a
-//!   type's field defaults) makes the declaration holding it a dependent
+//!   (one in a position no summary body covers, such as a closure's
+//!   clauses) makes the declaration holding it a dependent
 //!   of every declaration.
 //! - **The surface's codecs**: the expansion of a surface's serve sites
 //!   (and of a hub's bindings) generates, from the types the rows carry,
@@ -208,7 +210,7 @@ impl DependencyIndex {
             .fns
             .values()
             .filter(|fs| f.summary.is_own(&fs.key))
-            .chain(f.summary.declaration_bodies.iter().map(|b| &b.summary))
+            .chain(f.summary.declaration_bodies.iter().filter(|b| b.universe == hale_types::placement::SiteUniverse::User).map(|b| &b.summary))
             .flat_map(|fs| fs.calls.iter().map(|e| (e.span.start.0, e.span.end.0)))
             .collect();
         // Each declaration's own items, modules flattened: what a name
@@ -302,13 +304,23 @@ impl DependencyIndex {
                         callers[callee].insert(caller);
                     }
                 }
+                for edge in &fs.initializations {
+                    for callee in of_key(&edge.target) {
+                        callers[callee].insert(caller);
+                    }
+                }
             }
         }
         // The bodies that are no row, each its declaration's own.
-        for body in &f.summary.declaration_bodies {
+        for body in f.summary.declaration_bodies.iter().filter(|b| b.universe == hale_types::placement::SiteUniverse::User) {
             let Some(&caller) = owner_of.get(&body.declaration.index) else { continue };
             for edge in &body.summary.calls {
                 for callee in callees(edge) {
+                    callers[callee].insert(caller);
+                }
+            }
+            for edge in &body.summary.initializations {
+                for callee in of_key(&edge.target) {
                     callers[callee].insert(caller);
                 }
             }

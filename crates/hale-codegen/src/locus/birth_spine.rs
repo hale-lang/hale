@@ -22,6 +22,25 @@ use crate::codegen::{CodegenError, Cx, LocusInfo, Scope, SelfCx};
 use crate::locus::dissolve::LocusDissolve;
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Resolve the native birth body through the source declaration inventory.
+    /// Empty-body elision is the producer's fact, checked against the declared
+    /// ABI entry; it is not recovered from a method-name search at invocation.
+    pub(crate) fn birth_method(&self, info: &LocusInfo<'ctx>, locus: &str, skip_empty: bool) -> Result<Option<FunctionValue<'ctx>>, CodegenError> {
+        let missing = |detail: &str| CodegenError::missing_row("alloc_summary", format!("source birth hook for `{locus}`: {detail}"), None);
+        let hooks = self.lifecycle_hooks.get(&info.decl.0).ok_or_else(|| missing("locus inventory is absent"))?;
+        let mut births = hooks.iter().filter(|h| h.stage == hale_types::lifecycle_hooks::LifecycleStage::Birth);
+        let Some(hook) = births.next() else {
+            if info.birth_declaration.is_some() { return Err(missing("declared body is absent")); }
+            return Ok(None);
+        };
+        if births.next().is_some() || hook.synthesized || info.birth_declaration.map(|id| id.0) != Some(hook.declaration.0)
+            || info.empty_lifecycle.contains("birth") != hook.empty {
+            return Err(missing("source identity, stage or empty-body fact disagrees with the native declaration"));
+        }
+        if hook.empty && skip_empty { return Ok(None); }
+        info.methods.get("birth").copied().map(Some).ok_or_else(|| missing("declared native body is absent"))
+    }
+
     /// The order the plan places the birth-spine steps `kinds` in for
     /// the declaration `locus`.
     pub(crate) fn birth_spine_order(
@@ -296,11 +315,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let mut scope = Scope::default();
         // The checks are the locus's own text, typed in its body.
-        let out = self.in_body(info.decl, |cx| {
-            for bc in checks {
-                cx.emit_birth_check(bc, self_ptr, info, locus_name, &mut scope)?;
-            }
-            Ok(())
+        let out = checks.iter().try_for_each(|bc| {
+            self.in_body(bc.id, |cx| cx.emit_birth_check(bc, self_ptr, info, locus_name, &mut scope))
         });
         self.in_params_default = prev_ipd_bc;
         self.current_self = prev_self;

@@ -219,10 +219,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn registers_early(&self, locus: &str) -> bool {
         let Some(info) = self.user_loci.get(locus) else { return false };
         let accepted_or_bubbled = self.current_self.as_ref().is_some_and(|cs| {
-            let accepts = match self.specialized_accepts.get(&cs.locus_name) {
-                Some(a) => a.contains(locus),
-                None => self.ownership_accepts.get(&cs.locus_name).is_some_and(|a| a.contains(locus)),
-            };
+            let accepts = self.ownership_accepts.get(&cs.locus_name).is_some_and(|a| a.contains(locus));
             let key = (cs.locus_name.clone(), locus.to_string());
             accepts
                 || self.ownership_bubble_plan.contains_key(&key)

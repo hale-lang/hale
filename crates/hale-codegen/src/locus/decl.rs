@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
-    LocusAnnotation, LocusDecl, LocusMember, ModeKind,
-    ParamInit, ProjectionClass, RecoveryEvent, ScheduleClass,
+    LocusDecl, LocusMember, ModeKind,
+    ParamInit, RecoveryEvent, ScheduleClass,
     TypeExpr,
 };
 use hale_types::form_rows::Discipline;
@@ -114,27 +114,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             // name.
             return Ok(());
         }
-        // Resolve projection class: explicit annotation wins;
-        // otherwise default per spec/memory.md (chunked if
-        // accept declared, rich otherwise — recognition is
-        // explicit-only since N≈100-500 is too aggressive for
-        // implicit choice).
-        let has_accept = l.members.iter().any(|m| {
-            matches!(m, LocusMember::Lifecycle(lc)
-                if matches!(lc.kind, LifecycleKind::Accept))
-        });
-        let projection_class: ProjectionClass = l
-            .annotations
-            .iter()
-            .find_map(|a| match a {
-                LocusAnnotation::Projection(pc) => Some(*pc),
-                _ => None,
-            })
-            .unwrap_or(if has_accept {
-                ProjectionClass::Chunked
-            } else {
-                ProjectionClass::Rich
-            });
+        // The allocation summary owns the effective policy. The view
+        // rekeys it for concrete specializations before lowering starts.
+        let storage = self.storage_projections.get(&l.name.name).copied()
+            .ok_or_else(|| CodegenError::missing_row("alloc_summary", format!("storage projection of `{}`", l.name.name), Some(l.name.span)))?;
+        let projection_class = storage.class;
+        let has_accept = storage.accepts_children;
 
         // m25: schedule class. Default cooperative — even though
         // current codegen runs everything synchronously (which is
@@ -657,7 +642,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let owner_types = self
             .ownership_accepts
             .values()
-            .chain(self.specialized_accepts.values())
             .filter(|accepted| accepted.contains(&l.name.name))
             .count();
         let owner_tracker_field_idx = if owner_types > 1 {
@@ -687,6 +671,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 llvm_field_tys.push(ptr_field_t.into());
                 idx += 1;
             }
+        }
+        let mut owner_alternative_field_idxs = BTreeMap::new();
+        for key in self.ownership_alternative_forwarding.get(&l.name.name).into_iter().flatten() {
+            owner_alternative_field_idxs.insert(key.clone(), idx);
+            llvm_field_tys.push(ptr_field_t.into());
+            idx += 1;
         }
         // m43: append one i64 __duration_last_fire field per
         // duration-epoch closure on this locus (in declaration
@@ -1258,7 +1248,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         idx += 1;
         // Synthetic `__built_params: ptr` — the params this instance
         // was built with, copied once after its params loop, for a
-        // locus some `on_failure` restarts in place. `restart_in_place`
+        // locus a typed recovery may restart in place. `restart_in_place`
         // puts them back: params are settled once, from the literal,
         // and a restart never re-evaluates a default. Null otherwise.
         let built_params_field_idx = idx;
@@ -1393,6 +1383,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 owner_release_field_idx,
                 owner_tracker_field_idx,
                 owner_forward_field_idxs,
+                owner_alternative_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,
                 anchor_records,
@@ -1401,6 +1392,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 capacity_slots,
                 arena_elidable: self.locus_elision(&l.name.name)?.arena,
                 empty_lifecycle: std::collections::BTreeSet::new(),
+                birth_declaration: None,
             },
         );
         Ok(())
@@ -1435,6 +1427,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             BTreeMap::new();
         let mut empty_lifecycle: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
+        let mut birth_declaration = None;
         let mut accept_param: Option<(String, String)> = None;
         let mut release_param: Option<(String, String)> = None;
         let mut accept_fns: BTreeMap<String, FunctionValue<'ctx>> = BTreeMap::new();
@@ -1529,9 +1522,17 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 None,
                             );
                             methods.insert(kind, func);
-                            if hale_types::lifecycle::body_is_empty(&lc.body) {
-                                empty_lifecycle.insert(kind);
+                            if lc.kind == LifecycleKind::Birth { birth_declaration = Some(lc.id); }
+                            let stage = hale_types::lifecycle_hooks::stage(lc.kind).expect("self lifecycle stage");
+                            let missing = || CodegenError::missing_row("alloc_summary",format!("source {kind} hook for `{}`: declaration identity or synthesis status is absent",l.name.name),Some(lc.span));
+                            let hooks = self.lifecycle_hooks.get(&l.id.0).ok_or_else(missing)?;
+                            let mut candidates = hooks.iter().filter(|h| h.stage == stage);
+                            let hook = candidates.next().ok_or_else(missing)?;
+                            if candidates.next().is_some() || hook.declaration.0 != lc.id.0 || hook.synthesized != lc.synthesized {
+                                return Err(missing());
                             }
+                            let empty = hook.empty;
+                            if empty { empty_lifecycle.insert(kind); }
                         }
                         LifecycleKind::Accept => {
                             if lc.params.len() != 1 {
@@ -1584,9 +1585,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             };
                             accept_param =
                                 Some((p.name.name.clone(), child_written));
-                            if hale_types::lifecycle::body_is_empty(&lc.body) {
-                                empty_lifecycle.insert("accept");
-                            }
+                            let stage = hale_types::protocol_execution::ProtocolStage::Accept;
+                            let missing = || CodegenError::missing_row("alloc_summary",format!("source accept hook for `{}`: declaration identity or synthesis status is absent",l.name.name),Some(lc.span));
+                            let hooks = self.protocol_hooks.get(&l.id.0).ok_or_else(missing)?;
+                            let mut candidates = hooks.iter().filter(|h| h.stage == stage);
+                            let hook = candidates.next().ok_or_else(missing)?;
+                            if candidates.next().is_some() || hook.declaration.0 != lc.id.0 || hook.synthesized != lc.synthesized { return Err(missing()); }
+                            if hook.empty { empty_lifecycle.insert("accept"); }
                         }
                         LifecycleKind::Release => {
                             // Death-side bookend, same shape as accept:
@@ -1642,9 +1647,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             };
                             release_param =
                                 Some((p.name.name.clone(), child_written));
-                            if hale_types::lifecycle::body_is_empty(&lc.body) {
-                                empty_lifecycle.insert("release");
-                            }
+                            let stage = hale_types::protocol_execution::ProtocolStage::Release;
+                            let missing = || CodegenError::missing_row("alloc_summary",format!("source release hook for `{}`: declaration identity or synthesis status is absent",l.name.name),Some(lc.span));
+                            let hooks = self.protocol_hooks.get(&l.id.0).ok_or_else(missing)?;
+                            let mut candidates = hooks.iter().filter(|h| h.stage == stage);
+                            let hook = candidates.next().ok_or_else(missing)?;
+                            if candidates.next().is_some() || hook.declaration.0 != lc.id.0 || hook.synthesized != lc.synthesized { return Err(missing()); }
+                            if hook.empty { empty_lifecycle.insert("release"); }
                         }
                     }
                 }
@@ -2310,6 +2319,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .expect("locus struct declared in pass A1");
         info.methods = methods;
         info.empty_lifecycle = empty_lifecycle;
+        info.birth_declaration = birth_declaration;
         // A concrete `accept`'s one child keeps the one tracker A1 laid
         // out; an interface's trackers were laid out per admitted locus.
         if let (Some((_, child)), Some(arr), Some(cnt), Some(cap)) = (

@@ -231,11 +231,12 @@ impl Shift for ClaimForm {
                 sh!(d; class, class_name, class_span, limit, from)
             }
             ClaimForm::Require { publishers, group, topic } => sh!(d; publishers, group, topic),
-            ClaimForm::RequireSealed { group } => sh!(d; group),
+            ClaimForm::RequireSealed { group } | ClaimForm::RequireFlow { group } => sh!(d; group),
             ClaimForm::RequireAttributed { class_name } => sh!(d; class_name),
             ClaimForm::RequireNoSilentLossTopic { topic } => sh!(d; topic),
             ClaimForm::RequireNoSilentLossGroup { group } => sh!(d; group),
             ClaimForm::RequireSeparateDomains { left, right } => sh!(d; left, right),
+            ClaimForm::QueueSlots { group, .. } => sh!(d; group),
             ClaimForm::Cover { alias, group } => sh!(d; alias, group),
             ClaimForm::RouteCoverage { topic, range, group } => sh!(d; topic, range, group),
             ClaimForm::Count { publishers, topic, cmp, n } => sh!(d; publishers, topic, cmp, n),
@@ -422,7 +423,7 @@ impl Shift for SeamFailure {
     }
 }
 
-shift_struct!(BirthCheckDecl { cond, closure_name, payload, span });
+shift_struct!(BirthCheckDecl { cond, closure_name, payload, span, id });
 
 // Deployment seams: placement, bindings, capacity.
 
@@ -623,7 +624,7 @@ impl Shift for ScalarClause {
     }
 }
 
-shift_struct!(StructField { name, ty, default, tag, indexed_by, map_value, span });
+shift_struct!(StructField { id, name, ty, default, tag, indexed_by, map_value, span });
 shift_struct!(EnumVariant { name, fields, class, span, member });
 shift_struct!(ConstDecl { name, ty, value, span, id });
 

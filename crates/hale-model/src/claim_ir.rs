@@ -357,6 +357,8 @@ pub enum ClaimIr {
     },
     /// `require sealed(all G)` (GH #436).
     RequireSealed { group: GroupRef },
+    /// `require flow(all G)` — type-wide reclamation policy.
+    RequireFlow { group: GroupRef },
     /// `require no_silent_loss(topic T)` — no boundary on the route
     /// is configured to discard silently.
     RequireNoSilentLossTopic { topic: TopicIrRef },
@@ -470,6 +472,9 @@ pub enum ClaimIr {
     /// domains over both groups' known, nonempty populations.
     /// Appended so existing variants retain their semantic hash tags.
     RequireSeparateDomains { left: GroupRef, right: GroupRef },
+    /// Declared subscription queue slots summed across instances.
+    /// Appended to retain existing semantic hash discriminants.
+    QueueSlots { group: GroupRef, limit: u64 },
 }
 
 /// One lowered law row.
@@ -626,6 +631,10 @@ pub enum JudgmentFamily {
     Fleet,
     /// Execution-domain separation over realized instance populations.
     Placement,
+    /// Aggregate reservations over realized instance populations.
+    Resource,
+    /// Type-wide flow/reclamation discipline over locus declarations.
+    FlowPolicy,
 }
 
 impl JudgmentFamily {
@@ -635,6 +644,8 @@ impl JudgmentFamily {
             JudgmentFamily::Boundary => "boundary",
             JudgmentFamily::Endpoint => "endpoint",
             JudgmentFamily::Placement => "placement",
+            JudgmentFamily::Resource => "resource",
+            JudgmentFamily::FlowPolicy => "flow_policy",
             JudgmentFamily::Bound => "bound",
             JudgmentFamily::Certificate => "certificate",
             JudgmentFamily::Causes => "causes",
@@ -646,7 +657,7 @@ impl JudgmentFamily {
     }
 
     /// Every family, in declaration order.
-    pub const ALL: [JudgmentFamily; 11] = [
+    pub const ALL: [JudgmentFamily; 13] = [
         JudgmentFamily::Reachability,
         JudgmentFamily::Boundary,
         JudgmentFamily::Endpoint,
@@ -658,6 +669,8 @@ impl JudgmentFamily {
         JudgmentFamily::Unmigrated,
         JudgmentFamily::Fleet,
         JudgmentFamily::Placement,
+        JudgmentFamily::Resource,
+        JudgmentFamily::FlowPolicy,
     ];
 
     /// The family a stated word names (an artifact row's `family`);
@@ -687,6 +700,10 @@ impl JudgmentFamily {
                 .union(R::EFFECTS),
             JudgmentFamily::Placement => R::OWNS
                 .union(R::PLACED)
+                .union(R::CARDINALITY),
+            JudgmentFamily::FlowPolicy => R::FLOW_CLASSIFICATION,
+            JudgmentFamily::Resource => R::OWNS
+                .union(R::SUBSCRIBES)
                 .union(R::CARDINALITY),
             // PUBLISHES joins CALLS + EFFECTS (round 1): the
             // `@effects(publish: {…})` certificate walks publish
@@ -1025,6 +1042,9 @@ impl ClaimRow {
                 gref(group),
                 tref(topic)
             ),
+            ClaimIr::RequireFlow { group } => format!(
+                "{{\"kind\": \"require_flow\", \"group\": {}}}", gref(group)
+            ),
             ClaimIr::RequireSealed { group } => format!(
                 "{{\"kind\": \"require_sealed\", \"group\": {}}}",
                 gref(group)
@@ -1044,6 +1064,10 @@ impl ClaimRow {
                  \"left\": {}, \"right\": {}}}",
                 gref(left),
                 gref(right)
+            ),
+            ClaimIr::QueueSlots { group, limit } => format!(
+                "{{\"kind\": \"queue_slots\", \"group\": {}, \"limit\": {}}}",
+                gref(group), limit
             ),
             ClaimIr::RequireAttributed { class } => format!(
                 "{{\"kind\": \"require_attributed\", \
@@ -1256,6 +1280,8 @@ impl ClaimRow {
             }
             ClaimIr::OnlyEdges { .. } => JudgmentFamily::Boundary,
             ClaimIr::RequireSeparateDomains { .. } => JudgmentFamily::Placement,
+            ClaimIr::QueueSlots { .. } => JudgmentFamily::Resource,
+            ClaimIr::RequireFlow { .. } => JudgmentFamily::FlowPolicy,
             ClaimIr::RequireEndpoint { .. }
             | ClaimIr::RequireSealed { .. }
             | ClaimIr::RequireAttributed { .. }
@@ -1297,6 +1323,7 @@ impl ClaimRow {
             }
         };
         Some(match &self.law {
+            ClaimIr::RequireFlow { group } => form::require_flow(&group.name.display),
             ClaimIr::RequireSealed { group } => {
                 form::require_sealed(&group.name.display)
             }
@@ -1314,6 +1341,9 @@ impl ClaimRow {
                     &left.name.display,
                     &right.name.display,
                 )
+            }
+            ClaimIr::QueueSlots { group, limit } => {
+                form::queue_slots(&group.name.display, *limit)
             }
             ClaimIr::ForbidReaches {
                 src,
@@ -1844,13 +1874,14 @@ impl ClaimIrTable {
                     group_ok(group)?;
                     topic_ok(topic)?;
                 }
-                ClaimIr::RequireSealed { group } => group_ok(group)?,
+                ClaimIr::RequireSealed { group } | ClaimIr::RequireFlow { group } => group_ok(group)?,
                 ClaimIr::RequireNoSilentLossTopic { topic } => {
                     topic_ok(topic)?
                 }
                 ClaimIr::RequireNoSilentLossGroup { group } => {
                     group_ok(group)?
                 }
+                ClaimIr::QueueSlots { group, .. } => group_ok(group)?,
                 ClaimIr::RequireSeparateDomains { left, right } => {
                     group_ok(left)?;
                     group_ok(right)?;

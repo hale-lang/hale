@@ -116,6 +116,33 @@ fn a_route_with_every_boundary_non_lossy_holds() {
 }
 
 #[test]
+fn failure_dispatch_keeps_known_handler_publish_sites_and_their_loss_policy() {
+    let handler = "on_failure(c: Child, e: ClosureViolation) { Payments <- Pay { id: 1 } or raise; }";
+    let source = route("", "or raise", TOPIC)
+        .replace("main locus App", "locus Child { params { n: Int = 0; } closure broken { captures: n; epoch inline; } fn break_it() { self.n = 1; violate broken; } }\nmain locus App")
+        .replace("params { l: Ledger = Ledger { }; }", "params { l: Ledger = Ledger { }; c: Child = Child { }; }")
+        .replace("    claims {", &format!("    {handler}\n    claims {{"))
+        .replace("run() { Payments", "run() { self.c.break_it(); Payments");
+    let snap = entries::load_files(&[("app.hl", source.as_str())], hale_frontend::snapshot::Config::check(true, false));
+    let checked = snap.demand_check().unwrap();
+    assert!(!checked.diags.iter().any(|d| d.is_error()), "{:?}", checked.diags);
+    let m = snap.demand_model().unwrap(); m.validate().unwrap();
+    assert!(m.capabilities.exact_publishes);
+    assert!(!m.capabilities.exact_calls && !m.capabilities.exact_costs);
+    assert!(hale_types::model_query::unresolved_publishers(m, "pay").is_empty());
+    assert!(m.relations.publishes.iter().any(|p| m.entities.functions[p.function.index()].kind == hale_model::FunctionKind::FailureHandler));
+    let lossy = source.replace(handler, &handler.replace("or raise", "or discard"));
+    assert!(claim_diags(&lossy).iter().any(|d| d.contains("violated") && d.contains("on_failure") && d.contains("`or discard`")),
+        "the known handler's actual send disposition still participates: {:?}", diags(&lossy));
+    let unknown = source.replace(handler, "on_failure(c: Child, e: ClosureViolation) { self.subject <- Pay { id: 1 }; }")
+        .replace("l: Ledger = Ledger { }; c:", "subject: String = \"pay.event\"; l: Ledger = Ledger { }; c:")
+        .replace("subject: \"pay\";", "subject: \"pay.event\";")
+        .replace("bus { publish Payments; }", "bus { publish Payments; publish \"pay.**\" of type Pay; }");
+    assert!(claim_diags(&unknown).iter().any(|d| d.contains("uncertified") && d.contains("computed")),
+        "a real missing publish site stays unknown beside the dispatch gap: {:?}", diags(&unknown));
+}
+
+#[test]
 fn a_waiting_send_is_an_observable_refusal_and_holds() {
     assert_clean(&bounded("or wait", ""));
 }

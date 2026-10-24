@@ -629,6 +629,9 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     // `summarized` IS the V1 universe now (it always was the same
     // set; the model used to carry a second copy of it).
     let f = |name: &str, effects: Vec<&str>, summarized: bool| Function {
+        initializer: None,
+            type_owner: None,
+            argument_owner: None,
         effect_lower_bound: Vec::new(),
         effects_unknown: false,
         analyzed: summarized,
@@ -647,7 +650,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     };
     let mut m = ApplicationModel {
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V1,
+            semantics: MODEL_SEMANTICS_V12,
             entrypoint: "main".to_string(),
         },
         entities: Entities {
@@ -675,6 +678,8 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         capabilities: Capabilities::default(),
         provenance: prov,
         analyses: Analyses {
+            lifecycle_contexts: None,
+            recovery: Default::default(),
             dispatch_plan: Default::default(),
             stdlib_absorption: Vec::new(),
         },

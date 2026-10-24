@@ -182,7 +182,23 @@ use crate::symbol::Bundle;
 // the main locus holds as params (`std::observe::Scrape`), each with its
 // param and a scrape's host, port and path, or an OTLP backend's
 // endpoint. Absent when the program holds none; shapes are unchanged.
-pub const TOPOLOGY_SCHEMA: &str = "1.21";
+// 1.22 (GH #1327): aggregate queue-slot laws and resource adequacy.
+// 1.23 (GH #1327): flow-policy laws, scoped classification adequacy
+// and non-resident classifications in the hashed model projection.
+// 1.24: analyzed failure handlers and typed recovery execution residue.
+// 1.25: distinct failure-dispatch residue; authored publish sites remain
+// separate from unresolved invocation of existing handler bodies.
+// 1.26: parameter-default executable bodies and separate initialization edges.
+// 1.27: type-owned record defaults and typed constructor targets.
+// 1.28: callable-owned argument defaults and exact named-call omission accounts.
+// 1.29: source closure assertions and exact explicit-checkpoint evaluations.
+// 1.30: automatic-epoch constructors require invocation-context residue.
+// 1.31: automatic assertion epoch membership is part of the phase account.
+// 1.32: executable birth checks and scoped invocation/failure coverage.
+// 1.33: typed self lifecycle definitions and constructor birth entries.
+// 1.34: guarded may-entries for every self lifecycle stage.
+// 1.35: parent callback source contexts and guarded execution accounts.
+pub const TOPOLOGY_SCHEMA: &str = "1.35";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -203,7 +219,9 @@ pub const TOPOLOGY_SCHEMA: &str = "1.21";
 /// `holds`), and `require attributed` over a body the analysis
 /// could not walk reports `uncertified` (previously a fail-open
 /// `holds`).
-pub const MODEL_SEMANTICS: u32 = 2;
+/// 3 (GH #1327): failure-handler bodies join canonical call, effect, cost
+/// and phase rows; their blanket body holes give way to site-specific gaps.
+pub const MODEL_SEMANTICS: u32 = 3;
 
 /// The artifact of `bundle`, projected from `app_model`, the model the
 /// caller holds (F.40 phase 2.3: `hale check`'s snapshot's, the one its
@@ -315,7 +333,7 @@ pub fn dump_topology_over(
     // ANY contraction path crosses a loop-nested or unbounded edge.
     // ---- the normalized model (#392): phases, seeds, decl spans ----
     let vmodel =
-        crate::model::Model::derive(&programs, &bundle.import_renames);
+        crate::model::Model::derive(&programs, &bundle.import_renames, &summary.source_phases);
     // Phase relation, user loci only (the sort the artifact serializes).
     let mut phase_rows: BTreeMap<String, (String, bool)> =
         BTreeMap::new();
@@ -1131,6 +1149,11 @@ pub fn dump_topology_over(
                         }
                         hale_model::FunctionKind::Free => "free",
                         hale_model::FunctionKind::Mode => "mode",
+                        hale_model::FunctionKind::ParameterDefault => "parameter_default",
+                        hale_model::FunctionKind::FieldDefault => "field_default",
+                        hale_model::FunctionKind::ArgumentDefault => "argument_default",
+                        hale_model::FunctionKind::ClosureAssertion => "closure_assertion",
+                        hale_model::FunctionKind::BirthCheck => "birth_check",
                         hale_model::FunctionKind::FailureHandler => {
                             "failure"
                         }
@@ -1149,14 +1172,24 @@ pub fn dump_topology_over(
                             .unwrap_or_default(),
                         None => String::new(),
                     };
+                    let owner = match f.type_owner {
+                        Some(t) => format!(", \"owner_type\": {}", quote(&vmodel.entities.types[t.index()].display)),
+                        None => owner,
+                    };
+                    let owner = match f.argument_owner {
+                        Some(parent) => format!("{}, \"owner_function\": {}",owner,quote(&vmodel.entities.functions[parent.index()].display)),
+                        None => owner,
+                    };
+                    let initializer = f.initializer.as_ref().map(|default| format!(", \"initializer_field\": {}, \"initializer_ordinal\": {}", quote(&default.field), default.ordinal)).unwrap_or_default();
                     format!(
-                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}{}}}",
+                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}{}{}}}",
                         quote(&f.name),
                         quote(&f.display),
                         f.analyzed,
                         f.summarized,
                         quote(kind),
-                        owner
+                        owner,
+                        initializer
                     )
                 })
                 .collect();
@@ -1196,6 +1229,7 @@ pub fn dump_topology_over(
                 rows.join(", ")
             ));
         }
+        out.push_str(&pair_catalog("types", vmodel.entities.types.iter().map(|t| (t.name.clone(), t.display.clone())).collect()));
         out.push_str(&pair_catalog(
             "groups",
             vmodel
@@ -1686,6 +1720,7 @@ const CANONICAL_TOP_LEVEL: &[&str] = &[
     "shape_hash",
     "sorts",
     "sealed",
+    "flow_classes",
     "relations",
     "groups",
     "labels",

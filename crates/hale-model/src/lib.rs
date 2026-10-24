@@ -219,6 +219,7 @@ pub fn subjects_can_overlap(a: &str, b: &str) -> bool {
 
 pub mod application;
 pub mod capability;
+pub mod construction;
 pub mod claim_form;
 pub mod claim_ir;
 pub mod dispatch_plan;
@@ -229,6 +230,7 @@ pub mod keys;
 pub mod obs_ids;
 pub mod provenance;
 pub mod relation;
+pub mod recovery;
 pub mod surface;
 
 pub use application::{
@@ -237,7 +239,7 @@ pub use application::{
     Analyses, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
     certificate_row_verdict, document_verdict, DocumentVerdict,
-    Relations, WeightRow, MODEL_SEMANTICS_V1, DispatchGate,
+    Relations, WeightRow, MODEL_SEMANTICS_V1, MODEL_SEMANTICS_V2, MODEL_SEMANTICS_V3, MODEL_SEMANTICS_V4, MODEL_SEMANTICS_V5, MODEL_SEMANTICS_V6, MODEL_SEMANTICS_V7, MODEL_SEMANTICS_V8, MODEL_SEMANTICS_V9, MODEL_SEMANTICS_V10, MODEL_SEMANTICS_V11, MODEL_SEMANTICS_V12, DispatchGate,
 };
 pub use capability::Capabilities;
 pub use claim_ir::{
@@ -247,9 +249,9 @@ pub use claim_ir::{
     NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr,
     BusSelector, TopicIrRef,
 };
-pub use entity::{
-    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, FunctionKind, Group, InterfaceDecl,
-    LocusDecl, LocusInstance, LocusParam, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
+pub use entity::{LifecycleStage, LifecycleGuard,
+    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, ClosureEpoch, FunctionKind, Initializer, InitializerKind, Group, InterfaceDecl,
+    LocusStorage, StorageProjection, RecognitionMode, FlowClass, FlowOwner, FlowRelease, LocusDecl, LocusInstance, LocusParam, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
 pub use hole::{allowed_hole_families, hole_site_shaped, Hole, HoleKind, RelationSet};
@@ -264,8 +266,11 @@ pub use keys::{
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use surface::{RowType, Surface, SurfaceRow};
-pub use relation::{CostDimension, CostSite,
-    AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
+pub use relation::{LifecycleDefinition, LifecycleEvaluation, BirthCheckDefinition, CostDimension, CostSite,
+    AffinedTo, ArgumentEvaluation, ClosureDefinition, ClosureCheck, ClosureEvaluation, Call, Construction, ConstructorTarget, Initialization, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,
     Supervises, SupervisedRef, SupervisionPolicy, TopicBinding,
 };
+
+pub mod protocol;
+pub use protocol::{ProtocolStage, ProtocolRoot, ProtocolDefinition, ProtocolContext, ProtocolEvaluation};

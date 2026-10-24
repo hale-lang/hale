@@ -343,9 +343,11 @@ locus Sink { params { n: Int = 0; } fn take() { self.n = self.n + 1; } }
             "{}\nfn main() {{ App {{ }}; }}\n",
             body.replace("{PRELUDE}", PRELUDE)
         );
-        let program = hale_syntax::parse_source(&src)
+        let mut program = hale_syntax::parse_source(&src)
             .unwrap_or_else(|e| panic!("{}: parse: {:?}", label, e));
-        let bundle = bundle_of(&src, &program);
+        let identities = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+        let mut bundle = bundle_of(&src, &program);
+        bundle.snapshot = identities;
         let model = derive_application_model(&bundle);
         model
             .validate()

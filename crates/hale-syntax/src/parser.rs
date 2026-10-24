@@ -2229,10 +2229,6 @@ impl Parser {
             }
         };
         let class_name = self.finish_class_name(base)?;
-        let class = EffectClass::from_ident(&class_name)
-            .unwrap_or_else(|| {
-                EffectClass::User(self.intern_effect(&class_name))
-            });
         self.expect(TokenKind::LtEq, "<=")?;
         let n_tok = self.peek_token().clone();
         let TokenKind::IntLit(n) = n_tok.kind else {
@@ -2250,6 +2246,17 @@ impl Parser {
         }
         self.expect_word("on")?;
         let p_tok = self.peek_token().clone();
+        if matches!(&p_tok.kind, TokenKind::Ident(s) if s == "instances") {
+            if class_name != "queue_slots" {
+                return Err(Diag::parse(
+                    cls_tok.span,
+                    "only `queue_slots` supports `on instances G`",
+                ));
+            }
+            self.bump();
+            let group = self.expect_ident("group name after `instances`")?;
+            return Ok(ClaimForm::QueueSlots { group, limit: n as u64 });
+        }
         match &p_tok.kind {
             TokenKind::Ident(s) if s == "paths" => {
                 self.bump();
@@ -2274,6 +2281,8 @@ impl Parser {
             }
         }
         let from = self.expect_ident("group name after `from`")?;
+        let class = EffectClass::from_ident(&class_name)
+            .unwrap_or_else(|| EffectClass::User(self.intern_effect(&class_name)));
         Ok(ClaimForm::Bound {
             class,
             class_name,
@@ -2309,6 +2318,18 @@ impl Parser {
             let right = group(self)?;
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireSeparateDomains { left, right });
+        }
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "flow") {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let q = self.peek_token().clone();
+            if !matches!(&q.kind, TokenKind::Ident(s) if s == "all") {
+                return Err(Diag::parse(q.span, "expected `all` in `require flow(all G)`"));
+            }
+            self.bump();
+            let group = self.expect_ident("group name")?;
+            self.expect(TokenKind::RParen, ")")?;
+            return Ok(ClaimForm::RequireFlow { group });
         }
         // GH #436: `require sealed(all G);` — a universal over the
         // group's members rather than an existential over endpoints,
@@ -4608,6 +4629,7 @@ impl Parser {
         };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(BirthCheckDecl {
+            id: NodeId::NONE,
             cond,
             closure_name,
             payload,
@@ -6932,6 +6954,7 @@ impl Parser {
         };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(StructField {
+            id: NodeId::NONE,
             span: name.span.merge(semi.span),
             name,
             ty,

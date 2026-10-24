@@ -16,7 +16,7 @@
 
 use hale_graph::ids::SiteId;
 
-use crate::ids::{LocusDeclId, PayloadContractId, ProvenanceId, SubjectId};
+use crate::ids::{LocusDeclId, TypeDeclId, PayloadContractId, ProvenanceId, SubjectId};
 use crate::keys::TopicKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,11 +29,104 @@ pub enum FunctionKind {
     Free,
     /// A mode body.
     Mode,
-    /// An `on_failure` handler (round 11): executable, but the
-    /// behavior analysis never walks it — a TYPED identity, so
-    /// consumers never infer handler-ness from a display-name
-    /// prefix.
+    /// An authored `on_failure` handler, with canonical behavior coverage.
+    /// Consumers read this identity rather than a display-name prefix.
     FailureHandler,
+    /// An executable locus parameter default. It is entered by constructor
+    /// evaluation, never by callable-name lookup or an authored call edge.
+    ParameterDefault,
+    /// A data field's executable default, owned by its type declaration.
+    FieldDefault,
+    /// A callable declaration's argument default, evaluated at its caller.
+    ArgumentDefault,
+    /// The source expressions evaluated by a runtime closure checkpoint.
+    ClosureAssertion,
+    /// A birth-time predicate and its conditional violation payload.
+    BirthCheck,
+}
+
+/// An instance's own lifecycle body. Parent admission is a separate account.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum LifecycleStage {
+    /// Before initial readiness.
+    Birth,
+    /// Work admitted after birth settles.
+    Run,
+    /// Drain after work stops.
+    Drain,
+    /// Final teardown.
+    Dissolve,
+}
+/// The runtime opportunity under which source lifecycle work may be entered.
+/// This is not proof that the opportunity occurs or admission succeeds.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum LifecycleGuard { Construction, RunAdmission, Teardown }
+impl LifecycleGuard {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Construction=>"construction",Self::RunAdmission=>"run_admission",Self::Teardown=>"teardown" }
+    }
+}
+impl LifecycleStage {
+    /// Source work associated with this opportunity. No caller frame or
+    /// scheduling domain is implied by a may-entry edge.
+    pub fn entry_guard(self) -> LifecycleGuard {
+        match self { Self::Birth=>LifecycleGuard::Construction,Self::Run=>LifecycleGuard::RunAdmission,Self::Drain|Self::Dissolve=>LifecycleGuard::Teardown }
+    }
+
+    /// Stable source/artifact stage spelling.
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Birth => "birth", Self::Run => "run", Self::Drain => "drain", Self::Dissolve => "dissolve" }
+    }
+}
+
+/// The runtime boundary at which a closure assertion can be evaluated.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum ClosureEpoch {
+    /// Once after birth succeeds.
+    Birth,
+    /// During teardown.
+    Dissolve,
+    /// On each runtime tick.
+    Tick,
+    /// On ticks when the declared interval has elapsed.
+    Duration,
+    /// Only at an authored `check_closures()` checkpoint.
+    Explicit,
+}
+
+impl ClosureEpoch {
+    /// Stable artifact spelling of the declared evaluation boundary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Birth => "birth",
+            Self::Dissolve => "dissolve",
+            Self::Tick => "tick",
+            Self::Duration => "duration",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
+/// The declaration form owning an executable default.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum InitializerKind {
+    /// A locus parameter, evaluated by construction.
+    Parameter,
+    /// A data type's field, evaluated by construction.
+    Field,
+    /// A callable's omitted argument, evaluated before entering its body.
+    Argument,
+}
+
+/// A declared default's source kind and evaluation order.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Initializer {
+    /// Whether this is a locus parameter, data field or callable argument.
+    pub kind: InitializerKind,
+    /// The declared parameter or field name.
+    pub field: String,
+    /// Member declaration ordinal, including members without defaults.
+    pub ordinal: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -44,9 +137,19 @@ pub struct Function {
     /// their `std::…` path, never the mangled name).
     pub display: String,
     /// Which executable shape this is. Free fns, methods, hooks, modes
-    /// and failure handlers are one sort because they are all things a
-    /// walk can enter.
+    /// failure handlers, closure assertions and birth checks are one sort because they
+    /// are all executable bodies a walk can enter.
     pub kind: FunctionKind,
+    /// The declared default this body evaluates. Present exactly for
+    /// `ParameterDefault`, `FieldDefault` or `ArgumentDefault`, with its
+    /// typed declaration owner.
+    pub initializer: Option<Initializer>,
+    /// The real type owner of a field default. Other executable kinds have
+    /// no type owner; locus members continue to use `owner` and `member_of`.
+    pub type_owner: Option<TypeDeclId>,
+    /// The actual callable declaring an argument default. Other bodies have
+    /// no callable owner. A method default also retains that callable's locus.
+    pub argument_owner: Option<crate::FunctionId>,
     /// DERIVED effect classes in declaration order (the stdlib-merged
     /// transitive walk; order is semantic in the existing artifact
     /// and is preserved).
@@ -95,10 +198,9 @@ pub struct Function {
     /// purpose the author supplied is the composed NAME; review:
     /// composed attribution classes).
     pub carries_user_class: bool,
-    /// The legacy behavior summary WALKED this body (round 10:
-    /// function-grain analysis coverage — false for `on_failure`
-    /// handlers, which are executable but never analyzed). ONE
-    /// authority: set by the model builder;
+    /// The canonical behavior summary walked this body, including
+    /// authored failure handlers. Function-grain coverage has one
+    /// authority: the model builder;
     /// the evidence layer, the artifact emitter, and the evidence
     /// identity digest all read it here.
     pub analyzed: bool,
@@ -108,8 +210,8 @@ pub struct Function {
     /// the three coverage states are typed, never conflated.
     pub summarized: bool,
     /// The CANONICAL owning locus (round 15): `Some` for every
-    /// method / hook / mode / failure handler, `None` for free
-    /// functions. `member_of` must be a total, exclusive
+    /// method / hook / mode / failure handler / parameter default;
+    /// `None` for free functions, their argument defaults and type-owned fields. `member_of` must be a total, exclusive
     /// partition agreeing with this field exactly (validated) —
     /// coverage and group projection both hang off ownership, so
     /// it is a closed account, never inferable-by-absence.
@@ -125,8 +227,24 @@ pub struct Function {
     pub provenance: ProvenanceId,
 }
 
+impl Function {
+    /// The constructor declaration owning a parameter or field default.
+    /// Argument defaults use `argument_owner`; validation requires the body
+    /// kind and its typed owner account to agree.
+    pub fn initializer_owner(&self) -> Option<crate::ConstructorTarget> {
+        match self.initializer.as_ref()?.kind {
+            InitializerKind::Parameter => self.owner.map(crate::ConstructorTarget::Locus),
+            InitializerKind::Field => self.type_owner.map(crate::ConstructorTarget::Type),
+            InitializerKind::Argument => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocusDecl {
+    /// Original user declaration identity, independent of display/provenance.
+    /// None is unavailable; this internal join is never rendered or hashed.
+    pub decl: Option<SiteId>,
     /// The canonical name — the machine join key. Not the author's
     /// spelling; see `display`.
     pub name: String,
@@ -135,8 +253,15 @@ pub struct LocusDecl {
     pub display: String,
     /// `@sealed` confinement (GH #436).
     pub sealed: bool,
+    /// Completed, type-wide flow classification. This says which
+    /// reclamation discipline a concrete declaration selects; it is
+    /// not a bound on live instances or a termination guarantee.
+    pub flow: FlowClass,
+    /// Effective storage/admission configuration from the allocation
+    /// summary. None is missing knowledge, never an uncapped policy.
+    pub storage: Option<LocusStorage>,
     /// The legacy certificate engines walk this locus (round 9:
-    /// every executable member it owns, failure handlers aside, is
+    /// every executable member it owns, including failure handlers, is
     /// analyzed). ONE authority: the model builder
     /// sets it from its declaration walk; the evidence layer and
     /// the artifact emitter read it here, never re-walking source.
@@ -153,6 +278,94 @@ pub struct LocusDecl {
     /// default still declares what this locus may hold.
     pub params: Vec<LocusParam>,
     /// The `locus` declaration.
+    pub provenance: ProvenanceId,
+}
+
+/// Declaration-level storage policy, not a retained-resource proof.
+/// Its provenance is the containing locus declaration's.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LocusStorage {
+    /// Whether this declaration has an accept hook.
+    pub accepts_children: bool,
+    /// The effective projection, including explicit recognition mode.
+    pub projection: StorageProjection,
+}
+
+/// Effective storage selection, independent of target layout and of
+/// how many runtime owner incarnations or child instances are live.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum StorageProjection {
+    /// Fresh child arenas; no declared recognition admission cap.
+    Rich,
+    /// Recyclable subregions; no declared recognition admission cap.
+    Chunked,
+    /// A declared recognition policy. Support and actual resource
+    /// envelopes require separate judgments; pending modes remain data.
+    Recognition {
+        /// Declared cap shared by the owner's accepted child types.
+        cap: u64,
+        /// The selected allocator mode.
+        mode: RecognitionMode,
+    },
+    /// Recognition with no committed mode/cap, outside the supported
+    /// declaration surface. Preserved rather than treated as uncapped.
+    UnspecifiedRecognition,
+}
+
+/// Recognition allocator choice, including declared but unshipped modes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecognitionMode {
+    /// Inline arena cells with bitmap reservations.
+    FixedCell,
+    /// One slab with a simultaneous reservation counter; release does
+    /// not recover slab bytes.
+    SharedSlab,
+    /// Pending: overflow fallback, not a supported hard-cap allocator.
+    Spillover,
+    /// Pending: summary-only observation, not a shipped allocator.
+    SummaryOnly,
+}
+
+/// Type-wide flow classification from the compiler's shared concrete
+/// flow inventory. A template is not a concrete resident: different
+/// specializations may select different disciplines.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum FlowClass {
+    /// No release clause classifies this concrete declaration as a flow.
+    Resident,
+    /// Run-completion reclamation is selected for this concrete type.
+    /// The nonempty, sorted, unique release witnesses explain why.
+    Flow {
+        /// Release clauses, including clauses on specialized owners.
+        releases: Vec<FlowRelease>,
+    },
+    /// This declaration has type parameters; no single classification
+    /// is asserted for its possible specializations.
+    GenericTemplate,
+}
+
+/// An owner whose release clause classifies a child type. This is a
+/// classification witness, never evidence that this owner accepts any
+/// particular runtime child.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum FlowOwner {
+    /// An owner declaration in this application model.
+    Declared(crate::LocusDeclId),
+    /// An owner outside the model's declaration universe (for example
+    /// the separate stdlib analysis copy), in its canonical spelling.
+    External(String),
+}
+
+/// A source witness for type-wide flow classification.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct FlowRelease {
+    /// The declaration containing the classifying release clause.
+    pub owner: FlowOwner,
+    /// Concrete owner specialization, when the clause was specialized.
+    /// The owner above remains its template declaration.
+    pub specialization: Option<String>,
+    /// The release clause's source location. Separate stdlib-analysis
+    /// offsets remain foreign spans; they never index application text.
     pub provenance: ProvenanceId,
 }
 

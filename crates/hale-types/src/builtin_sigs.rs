@@ -3,7 +3,7 @@
 //! `starts_with` / `contains`, the value builtins lowering answers by
 //! name in `lower_expr`.
 //!
-//! One table, two readers. The checker types a call by it, so
+//! One table for typing, lowering and primitive purity. The checker types a call by it, so
 //! `first(len(s))` binds `T` to `Int` instead of leaving the generic
 //! call a hole; lowering reads each builtin's arity and result from the
 //! same row. The table is lowering's inference written down, not a new
@@ -16,6 +16,7 @@
 //! assertion) is not here: its types are the accumulator column's.
 
 use crate::ty::Ty;
+use crate::stdlib_surface::EffectSet;
 use hale_syntax::ast::PrimType;
 
 /// The operand types a builtin lowers, by class.
@@ -49,36 +50,43 @@ pub enum Returns {
 pub struct BuiltinSig {
     pub name: &'static str,
     pub arity: usize,
+    /// Primitive effects of this value builtin. In particular, converting
+    /// to a string allocates but does not mutate a shared receiver.
+    pub effects: EffectSet,
     pub operands: Operands,
     pub returns: Returns,
 }
 
 pub const BARE_BUILTIN_SIGS: &[BuiltinSig] = &[
-    BuiltinSig { name: "len", arity: 1, operands: Operands::Lengthed, returns: Returns::Prim(PrimType::Int) },
+    BuiltinSig { effects: EffectSet::PURE, name: "len", arity: 1, operands: Operands::Lengthed, returns: Returns::Prim(PrimType::Int) },
     BuiltinSig {
         name: "to_string",
+        effects: EffectSet::ALLOC,
         arity: 1,
         operands: Operands::Printable,
         returns: Returns::Prim(PrimType::String),
     },
-    BuiltinSig { name: "Int", arity: 1, operands: Operands::IntOrFloat, returns: Returns::Prim(PrimType::Int) },
+    BuiltinSig { effects: EffectSet::PURE, name: "Int", arity: 1, operands: Operands::IntOrFloat, returns: Returns::Prim(PrimType::Int) },
     BuiltinSig {
         name: "Float",
+        effects: EffectSet::PURE,
         arity: 1,
         operands: Operands::IntOrFloat,
         returns: Returns::Prim(PrimType::Float),
     },
-    BuiltinSig { name: "abs", arity: 1, operands: Operands::Numeric, returns: Returns::Operand },
-    BuiltinSig { name: "min", arity: 2, operands: Operands::Numeric, returns: Returns::Operand },
-    BuiltinSig { name: "max", arity: 2, operands: Operands::Numeric, returns: Returns::Operand },
+    BuiltinSig { effects: EffectSet::PURE, name: "abs", arity: 1, operands: Operands::Numeric, returns: Returns::Operand },
+    BuiltinSig { effects: EffectSet::PURE, name: "min", arity: 2, operands: Operands::Numeric, returns: Returns::Operand },
+    BuiltinSig { effects: EffectSet::PURE, name: "max", arity: 2, operands: Operands::Numeric, returns: Returns::Operand },
     BuiltinSig {
         name: "starts_with",
+        effects: EffectSet::PURE,
         arity: 2,
         operands: Operands::Strings,
         returns: Returns::Prim(PrimType::Bool),
     },
     BuiltinSig {
         name: "contains",
+        effects: EffectSet::PURE,
         arity: 2,
         operands: Operands::Strings,
         returns: Returns::Prim(PrimType::Bool),

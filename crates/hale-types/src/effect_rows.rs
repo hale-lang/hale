@@ -30,13 +30,12 @@ use crate::symbol::Bundle;
 
 /// The effect rows of one snapshot.
 pub struct EffectRows {
-    /// One row per fn: every fn the summary holds (the checked
-    /// programs' and the stdlib analysis copy's), and every fn the
-    /// purity walk keys that the summary does not.
+    /// One row per executable body in the shared summary, including
+    /// the checked programs and the stdlib analysis copy.
     pub rows: BTreeMap<FnKey, EffectRow>,
-    /// The summary the walk read: the snapshot's `alloc_summary` (the
-    /// checked programs and the stdlib analysis copy, cross-seed calls
-    /// resolved through the bundle's import renames), shared.
+    /// The shared contextual execution summary, extending base allocation
+    /// facts with caller-sensitive parent protocol work. Certificates and
+    /// model consumers read these same source rows.
     pub summary: Arc<AllocSummary>,
     /// The program's FFI fn names: a resolved call to one is a syscall.
     pub ffi: BTreeSet<String>,
@@ -52,8 +51,7 @@ pub struct EffectRow {
     /// The fn: its declaration's identity, the (locus, fn) pair its
     /// display name.
     pub key: FnKey,
-    /// Whether the summary holds a body for it. A row without one is
-    /// known only to the purity walk: it has no targets and no effects.
+    /// Whether the summary holds an executable body for this row.
     pub summarized: bool,
     /// The resolved call targets, in body order, each once.
     pub targets: Vec<FnKey>,
@@ -75,9 +73,8 @@ pub struct EffectRow {
     /// its allocation and publish sites, its stdlib leaves and FFI
     /// calls.
     pub direct: EffectSet,
-    /// Whether the body observably mutates or reaches what does
-    /// (F.36); `None` for a fn the purity walk does not key (a
-    /// lifecycle hook, a module-nested fn, a stdlib body).
+    /// Whether shared execution rows establish purity, known impurity,
+    /// or incomplete execution/confinement coverage (F.36).
     pub purity: Option<Purity>,
 }
 
@@ -86,7 +83,7 @@ impl EffectRows {
         self.rows.get(key)
     }
 
-    /// The fn's purity, when the purity walk keys it.
+    /// The body's purity from the shared execution account.
     pub fn purity(&self, key: &FnKey) -> Option<&Purity> {
         self.rows.get(key).and_then(|r| r.purity.as_ref())
     }
@@ -120,6 +117,8 @@ fn direct_effects(summary: &AllocSummary, key: &FnKey, ffi: &BTreeSet<String>) -
         acc = acc.union(match site.kind {
             EffectSiteKind::Publish(_) => EffectSet::PUBLISH,
             EffectSiteKind::Spawn(_) => EffectSet::ALLOC,
+            // Unknown implicit work contributes no *known* direct class.
+            EffectSiteKind::Recovery(_) | EffectSiteKind::AutomaticClosure { .. } | EffectSiteKind::BirthCheckInvocation { .. } | EffectSiteKind::LifecycleInvocation { .. } | EffectSiteKind::ProtocolInvocation { .. } => EffectSet::PURE,
         });
     }
     for edge in &fs.calls {
@@ -152,7 +151,7 @@ fn direct_effects(summary: &AllocSummary, key: &FnKey, ffi: &BTreeSet<String>) -
 /// rebuilt.
 pub fn derive_effect_rows(
     bundle: &Bundle<'_>,
-    top: &TopScope,
+    _top: &TopScope,
     summary: Arc<AllocSummary>,
 ) -> EffectRows {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
@@ -176,6 +175,9 @@ pub fn derive_effect_rows(
                 }
             }
         }
+        for edge in fs.effect_evaluations() {
+            if !targets.contains(&edge.target) { targets.push(edge.target.clone()); }
+        }
         // One walk, two results: the saturating set and the lower bound.
         let bounds = crate::frontier::infer_effect_bounds(&summary, key, &ffi);
         rows.insert(
@@ -193,20 +195,8 @@ pub fn derive_effect_rows(
             },
         );
     }
-    for (key, purity) in crate::purity::infer_purity_for_bundle(&programs, top) {
-        rows.entry(key.clone())
-            .or_insert_with(|| EffectRow {
-                key,
-                summarized: false,
-                targets: Vec::new(),
-                unresolved: Vec::new(),
-                effects: EffectSet::PURE,
-                known: EffectSet::PURE,
-                unknown: false,
-                direct: EffectSet::PURE,
-                purity: None,
-            })
-            .purity = Some(purity);
+    for (key, purity) in crate::purity::infer_from_summary(&summary, &ffi) {
+        rows.get_mut(&key).expect("purity uses the shared summary keys").purity = Some(purity);
     }
     EffectRows { rows, summary, ffi, classes }
 }

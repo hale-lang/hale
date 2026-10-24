@@ -149,7 +149,7 @@ fn per_seed_artifact_flags_are_rejected_with_workspace() {
     let r = root("artifact");
     seed(&r, "one", OK_SRC);
 
-    for flag in ["--dump-topology", "--check-topology-shape=/tmp/x.json"] {
+    for flag in ["--dump-topology", "--check-topology-shape=/tmp/x.json", "--dump-reachability-proofs=/tmp/proof.json", "--check-reachability-lean=/tmp/proof.lean"] {
         let (out, code) = hale(&[
             "check".as_ref(),
             "--workspace".as_ref(),

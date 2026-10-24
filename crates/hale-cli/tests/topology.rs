@@ -15,3 +15,6 @@ mod topology_artifact_contract;
 mod topology_graph_cli;
 #[path = "topology_v2.rs"]
 mod topology_v2;
+
+#[path = "reachability_proofs.rs"]
+mod reachability_proofs;

@@ -26,7 +26,8 @@
 //!    re-derivable the same way.
 //!
 //! The model is DERIVED, never authored: `Model::derive` reads the
-//! merged programs and the rename table, nothing else. It must stay
+//! merged programs and rename table for provenance, and the shared source
+//! phase inventory for phase membership. It performs no second phase survey. It must stay
 //! cheap — it is built once per law judgment and once per
 //! artifact dump.
 
@@ -57,17 +58,8 @@ pub struct DeclInfo {
     pub span: Span,
 }
 
-/// One row of the phase relation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhaseEntry {
-    /// The phase name — the hook/mode/method name (`birth`, `run`,
-    /// `plan`, …). `during P` matches against this.
-    pub phase: String,
-    /// True for lifecycle hooks and modes — the phases the RUNTIME
-    /// drives — false for ordinary methods (a source-slice phase,
-    /// per the shipped `during` doctrine).
-    pub hook: bool,
-}
+/// Shared source phase facts, produced by the allocation declaration inventory.
+pub use crate::alloc_summary::SourcePhase as PhaseEntry;
 
 /// The derived model: declaration provenance, the phase relation,
 /// and the seed sort. Relations (calls, publishes, subscribes) stay
@@ -90,6 +82,7 @@ impl Model {
     pub fn derive(
         programs: &[&Program],
         import_renames: &[(Vec<String>, String)],
+        phases: &BTreeMap<FnKey, PhaseEntry>,
     ) -> Model {
         let mut seeds: BTreeMap<String, BTreeSet<String>> =
             BTreeMap::new();
@@ -104,12 +97,10 @@ impl Model {
         }
 
         let mut decls: BTreeMap<String, DeclInfo> = BTreeMap::new();
-        let mut phases: BTreeMap<FnKey, PhaseEntry> = BTreeMap::new();
         fn walk(
             items: &[TopDecl],
             seed_of: &BTreeMap<&str, &str>,
             decls: &mut BTreeMap<String, DeclInfo>,
-            phases: &mut BTreeMap<FnKey, PhaseEntry>,
         ) {
             let origin = |name: &str| match seed_of.get(name) {
                 Some(alias) => DeclOrigin::Seed(alias.to_string()),
@@ -126,62 +117,7 @@ impl Model {
                                 span: l.name.span,
                             },
                         );
-                        for m in &l.members {
-                            let id = match m {
-                                LocusMember::Fn(fd) => fd.id,
-                                LocusMember::Lifecycle(lc) => lc.id,
-                                LocusMember::Mode(md) => md.id,
-                                _ => continue,
-                            };
-                            let (name, hook): (String, bool) = match m
-                            {
-                                LocusMember::Fn(fd) => {
-                                    (fd.name.name.clone(), false)
-                                }
-                                // The model lists the hooks the author
-                                // wrote, not the omitted `run`.
-                                LocusMember::Lifecycle(lc) if !lc.synthesized => (
-                                    match lc.kind {
-                                        LifecycleKind::Birth => "birth",
-                                        LifecycleKind::Accept => {
-                                            "accept"
-                                        }
-                                        LifecycleKind::Release => {
-                                            "release"
-                                        }
-                                        LifecycleKind::Run => "run",
-                                        LifecycleKind::Drain => "drain",
-                                        LifecycleKind::Dissolve => {
-                                            "dissolve"
-                                        }
-                                    }
-                                    .to_string(),
-                                    true,
-                                ),
-                                LocusMember::Mode(md) => (
-                                    match md.kind {
-                                        ModeKind::Bulk => "bulk",
-                                        ModeKind::Harmonic => {
-                                            "harmonic"
-                                        }
-                                        ModeKind::Resolution => {
-                                            "resolution"
-                                        }
-                                    }
-                                    .to_string(),
-                                    true,
-                                ),
-                                _ => continue,
-                            };
-                            phases.insert(
-                                FnKey::method(
-                                    crate::alloc_summary::DeclId::user(id),
-                                    locus.clone(),
-                                    name.clone(),
-                                ),
-                                PhaseEntry { phase: name, hook },
-                            );
-                        }
+
                     }
                     TopDecl::Fn(f) => {
                         decls.insert(
@@ -229,16 +165,16 @@ impl Model {
                         );
                     }
                     TopDecl::Module(md) => {
-                        walk(&md.items, seed_of, decls, phases)
+                        walk(&md.items, seed_of, decls)
                     }
                     _ => {}
                 }
             }
         }
         for p in programs {
-            walk(&p.items, &seed_of, &mut decls, &mut phases);
+            walk(&p.items, &seed_of, &mut decls);
         }
-        Model { decls, phases, seeds }
+        Model { decls, phases: phases.clone(), seeds }
     }
 
     /// The decl a graph node belongs to: its locus for methods,

@@ -766,8 +766,10 @@ pub(crate) fn enumerate_clauses<'a>(
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
+                | ClaimForm::RequireFlow { group }
                 | ClaimForm::RouteCoverage { group, .. }
                 | ClaimForm::RequireNoSilentLossGroup { group }
+                | ClaimForm::QueueSlots { group, .. }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
                 ClaimForm::Count { topic, .. }
                 | ClaimForm::RequireNoSilentLossTopic { topic } => {
@@ -806,6 +808,7 @@ pub(crate) fn enumerate_clauses<'a>(
 /// rendering a form is part of deciding WHICH laws are adopted.
 fn render_form(f: &ClaimForm) -> String {
     match f {
+        ClaimForm::RequireFlow { group } => hale_model::claim_form::require_flow(&group.name),
         ClaimForm::RequireSealed { group } => {
             format!("require sealed(all {})", group.name)
         }
@@ -821,6 +824,9 @@ fn render_form(f: &ClaimForm) -> String {
             hale_model::claim_form::require_no_silent_loss_group(
                 &group.name,
             )
+        }
+        ClaimForm::QueueSlots { group, limit } => {
+            hale_model::claim_form::queue_slots(&group.name, *limit)
         }
         ClaimForm::RequireSeparateDomains { left, right } => {
             hale_model::claim_form::require_separate_domains(

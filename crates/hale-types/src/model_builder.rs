@@ -28,15 +28,10 @@
 //! the cross-process hook the no-claims check test uses to prove the
 //! builder never ran ("cached" must not become "always built").
 //!
-//! ## What Change 2 deliberately leaves empty
-//!
-//! Locus instances, ownership, placement, thread domains, and
-//! bindings stay empty tables with their capabilities `false`:
-//! no current fragment exports them (the artifact carries none),
-//! the ownership facts live procedurally in codegen, and inventing
-//! loss semantics for adapter bindings would be guessing. They are
-//! Change 8's completion work — the schema seats exist so nothing
-//! must be retrofitted.
+//! The snapshot supplies the canonical analysis families. Static
+//! arrangement instances and their ownership/placement are projected;
+//! dynamic populations remain typed holes. Completed concrete flow
+//! classification is kept separately from those population facts.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,7 +46,7 @@ use hale_model::{
     PublishDisposition, Relations, Seed, SeedId, SelectorForm, Subject,
     SubjectId, Subscribe, Supervises, SupervisedRef, SupervisionPolicy,
     Topic, TopicBound, TopicId, TopicKey, TopicOnFull, TypeDecl as MTypeDecl,
-    TypeDeclId, MODEL_SEMANTICS_V1,
+    TypeDeclId, MODEL_SEMANTICS_V12,
 };
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
@@ -201,10 +196,22 @@ fn type_descriptor(ty: &TypeExpr) -> String {
 /// `demand_forms`, `demand_placement`, `demand_arrangement`) and hands
 /// them here; the model builds none of them.
 pub struct ModelInputs<'a> {
+    /// Shared original-source contexts, independent of obligation plans.
+    pub lifecycle_contexts: &'a crate::lifecycle_context::LifecycleContexts,
     pub top: &'a crate::resolve::TopScope,
     pub bus_graph: &'a crate::bus_graph::BusGraph,
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// Typed recovery statements, including symbolic operand bindings. This
+    /// table is demanded once by the snapshot, never rebuilt by the model.
+    pub typed: &'a crate::typed_bodies::TypedBodies,
+    /// The same observations from the separate stdlib typing walk; absence
+    /// remains unavailable rather than an empty closed inventory.
+    pub stdlib_recoveries: Option<&'a [crate::typed_bodies::RecoveryRow]>,
+    /// Completed concrete flow membership, shared with lifecycle and
+    /// emission. A missing inventory blocks the model; absence from a
+    /// completed inventory classifies only concrete declarations.
+    pub flows: &'a crate::flow_instances::FlowInstances,
     /// The effect rows (F.40 phase 3, E1): each fn's effect set and its
     /// lower bound, and the stdlib-merged summary their walk read, which
     /// the model's attribution and absorbed-path walks read too.
@@ -251,13 +258,15 @@ pub fn derive_application_model_over(
     // The summary the effect rows' walk read: the checked programs with
     // the stdlib's analysis copy beside them, cross-seed calls resolved.
     let merged: &alloc_summary::AllocSummary = &inputs.effects.summary;
+    let lifecycle_stages: BTreeMap<_,_> = merged.lifecycle_hooks.values().flatten().filter(|h| !h.synthesized)
+        .map(|h| (h.key.clone(),h.stage)).collect();
     // The model is a user-program model: its rows are the summary's own,
     // and a call into the stdlib's analysis copy is the unresolved call
     // (the same site, row and hole) the program alone decides, so the
     // copy never moves `shape_hash`, the build and replay identity.
     let summary = merged.program_rows();
     let vmodel =
-        crate::model::Model::derive(&programs, &bundle.import_renames);
+        crate::model::Model::derive(&programs, &bundle.import_renames, &summary.source_phases);
     let effect_classes = &inputs.effects.classes;
     let effect_names = effect_classes.names();
     let ffi = &inputs.effects.ffi;
@@ -301,7 +310,7 @@ pub fn derive_application_model_over(
         loci: Vec<&'a AstLocusDecl>,
         topics: Vec<&'a TopicDecl>,
         groups: Vec<&'a GroupDecl>,
-        types: Vec<(&'a str, hale_syntax::Span)>,
+        types: Vec<(&'a str, hale_syntax::Span, hale_syntax::ast::NodeId)>,
         interfaces: Vec<(&'a str, hale_syntax::Span)>,
         others: Vec<(DeclKind, &'a str, hale_syntax::Span)>,
         free_fns: BTreeSet<&'a str>,
@@ -309,12 +318,15 @@ pub fn derive_application_model_over(
     fn walk_decls<'a>(items: &'a [TopDecl], out: &mut Decls<'a>) {
         for item in items {
             match item {
-                TopDecl::Locus(l) => out.loci.push(l),
+                TopDecl::Locus(l) => {
+                    out.loci.push(l);
+                    for member in &l.members { if let LocusMember::Type(t) = member { out.types.push((t.name.name.as_str(), t.name.span, t.id)); } }
+                },
                 TopDecl::Topic(t) => out.topics.push(t),
                 TopDecl::Group(g) => out.groups.push(g),
                 TopDecl::Role(_) => {}
                 TopDecl::Type(t) => {
-                    out.types.push((t.name.name.as_str(), t.name.span))
+                    out.types.push((t.name.name.as_str(), t.name.span, t.id))
                 }
                 TopDecl::Interface(i) => out
                     .interfaces
@@ -362,6 +374,7 @@ pub fn derive_application_model_over(
     // The groups the clauses name without declaring (`program`, an
     // inline `std::log::*`): the same rows law selection resolved.
     ast.groups.extend(crate::claims::implicit_group_decls(&programs));
+    let raw_types: BTreeSet<&str> = ast.types.iter().map(|(n, _, _)| *n).collect();
     let raw_loci: BTreeSet<&str> =
         ast.loci.iter().map(|l| l.name.name.as_str()).collect();
     // Raw type-name -> decl, for keyed_by field-type resolution.
@@ -481,7 +494,7 @@ pub fn derive_application_model_over(
     };
     let user_key = |k: &FnKey| -> bool {
         match &k.locus {
-            Some(l) => raw_loci.contains(l.as_str()),
+            Some(l) => raw_loci.contains(l.as_str()) || (raw_types.contains(l.as_str()) && merged.initializers.get(k).is_some_and(|d| d.kind == hale_model::InitializerKind::Field)) || (ast.free_fns.contains(l.as_str()) && merged.initializers.get(k).is_some_and(|d| d.kind == hale_model::InitializerKind::Argument)),
             None => ast.free_fns.contains(k.fn_name.as_str()),
         }
     };
@@ -557,7 +570,9 @@ pub fn derive_application_model_over(
     // ---- entity tables (canonical order via BTree keys, RAW) ----
     // Loci.
     struct LocusRow {
+        decl: Option<hale_graph::ids::SiteId>,
         sealed: bool,
+        generic: bool,
         span: hale_syntax::Span,
         sync_form: bool,
         /// (param name, declared type's last segment)
@@ -600,7 +615,9 @@ pub fn derive_application_model_over(
         locus_rows.insert(
             l.name.name.clone(),
             LocusRow {
+                decl: bundle.snapshot.site_id(l.id),
                 sealed: l.sealed,
+                generic: !l.generics.is_empty(),
                 span: l.name.span,
                 sync_form,
                 params,
@@ -624,10 +641,12 @@ pub fn derive_application_model_over(
     struct FnInfo {
         kind: FunctionKind,
         locus: Option<String>,
+        type_owner: Option<u32>,
+        argument_owner: Option<u32>,
         display: String,
         span: Option<hale_syntax::Span>,
-        /// The behavior analysis did not walk this body (an
-        /// on_failure handler) — emits an UnanalyzedBody hole.
+        /// No canonical summary covers this executable declaration:
+        /// emit an UnanalyzedBody hole rather than infer empty behavior.
         unanalyzed: bool,
         /// The declaration's site (`Function::decl`).
         decl: Option<hale_graph::ids::SiteId>,
@@ -665,6 +684,9 @@ pub fn derive_application_model_over(
     // name: two handlers are two rows whatever their signatures spell.
     // A handler nothing minted keys by its name, in `fn_rows`.
     let mut handler_fn_rows: BTreeMap<u32, (String, FnInfo)> = BTreeMap::new();
+    let summarized_decls: BTreeSet<_> = summary.fns.keys().filter_map(user_site).collect();
+    let initializer_fields: BTreeMap<_, _> = summary.initializers.iter().filter_map(|(key, initializer)|
+        user_site(key).map(|site| (site, hale_model::Initializer { kind: initializer.kind, field: initializer.field.clone(), ordinal: initializer.ordinal }))).collect();
     {
         // A declaration inside a module is analyzed like one at the top
         // level: the behavior summary collects module-nested bodies
@@ -687,6 +709,8 @@ pub fn derive_application_model_over(
                 FnInfo {
                     kind: FunctionKind::Free,
                     locus: None,
+                    type_owner: None,
+                    argument_owner: None,
                     display: name(n),
                     span: Some(sp),
                     unanalyzed: false,
@@ -720,22 +744,15 @@ pub fn derive_application_model_over(
                         md.id,
                     ),
                     LocusMember::Failure(fd) => {
-                        // on_failure handlers ARE executable hooks;
-                        // the summary never walks them, so they
-                        // enter the universe with an UnanalyzedBody
-                        // hole. The row is the handler's, by its
-                        // site; its name spells the (child, err)
-                        // signature.
-                        let sig = fd
-                            .params
-                            .iter()
-                            .map(|pa| te_name_of(&pa.ty))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        let handler_name = format!("{}::on_failure({})", ld, sig);
+                        // The executable row joins the canonical summary by
+                        // declaration identity. The signature is only a name:
+                        // equal spellings never merge two minted handlers.
+                        let handler_name = FnKey::failure_handler(crate::alloc_summary::DeclId::user(fd.id), ld.clone(), &fd.params).display();
                         let row = FnInfo {
                             kind: FunctionKind::FailureHandler,
                             locus: Some(ld.clone()),
+                            type_owner: None,
+                    argument_owner: None,
                             display: format!(
                                 "{}::on_failure({})",
                                 ld_display,
@@ -746,7 +763,10 @@ pub fn derive_application_model_over(
                                     .join(",")
                             ),
                             span: Some(fd.span),
-                            unanalyzed: true,
+                            unanalyzed: match site_of(fd.id) {
+                                Some(s) => !summarized_decls.contains(&s),
+                                None => !summary.fns.contains_key(&FnKey::failure_handler(None, ld.clone(), &fd.params)),
+                            },
                             decl: site_of(fd.id),
                         };
                         if fd.id.is_none() {
@@ -763,6 +783,8 @@ pub fn derive_application_model_over(
                     FnInfo {
                         kind,
                         locus: Some(ld.clone()),
+                        type_owner: None,
+                    argument_owner: None,
                         display: format!("{}::{}", ld_display, fname),
                         span: Some(sp),
                         unanalyzed: false,
@@ -774,18 +796,20 @@ pub fn derive_application_model_over(
         // Union: summary keys the enumeration missed (analysis-
         // synthesized shapes) join with kind inferred from phases.
         for k in summary.fns.keys() {
-            if !user_key(k) {
+            if !user_key(k) || k.decl.is_some_and(|d| handler_fn_rows.contains_key(&d.index)) {
                 continue;
             }
             fn_rows.entry(fn_name(k)).or_insert_with(|| FnInfo {
-                kind: match vmodel.phases.get(k) {
+                kind: if summary.birth_checks.contains_key(k) { FunctionKind::BirthCheck } else if summary.closure_assertions.contains_key(k) { FunctionKind::ClosureAssertion } else if let Some(default) = summary.initializers.get(k) { match default.kind { hale_model::InitializerKind::Parameter => FunctionKind::ParameterDefault, hale_model::InitializerKind::Field => FunctionKind::FieldDefault, hale_model::InitializerKind::Argument => FunctionKind::ArgumentDefault } } else { match vmodel.phases.get(k) {
                     Some(p) if p.hook => FunctionKind::Hook,
                     Some(_) => FunctionKind::Method,
                     None => FunctionKind::Free,
-                },
-                locus: k.locus.clone(),
+                } },
+                locus: k.locus.clone().filter(|_| !summary.initializers.get(k).is_some_and(|d| d.kind == hale_model::InitializerKind::Field || (d.kind == hale_model::InitializerKind::Argument && !raw_loci.contains(k.locus.as_deref().unwrap_or(""))))),
+                type_owner: summary.initializers.get(k).filter(|d| d.kind == hale_model::InitializerKind::Field).map(|d| d.owner.index),
+                argument_owner: summary.initializers.get(k).filter(|d| d.kind == hale_model::InitializerKind::Argument).map(|d| d.owner.index),
                 display: fn_display(k),
-                span: None,
+                span: user_site(k).and_then(|site| bundle.snapshot.site(site)).map(|site| site.span),
                 unanalyzed: false,
                 decl: user_site(k),
             });
@@ -1119,7 +1143,7 @@ pub fn derive_application_model_over(
     // Types / interfaces / other declarations (display-spelled).
     let mut type_rows: BTreeMap<String, hale_syntax::Span> =
         BTreeMap::new();
-    for (n, sp) in &ast.types {
+    for (n, sp, _) in &ast.types {
         type_rows.insert(n.to_string(), *sp);
     }
     let type_id: BTreeMap<&String, TypeDeclId> = type_rows
@@ -1127,6 +1151,8 @@ pub fn derive_application_model_over(
         .enumerate()
         .map(|(i, k)| (k, TypeDeclId(i as u32)))
         .collect();
+    let type_by_site: BTreeMap<_, _> = ast.types.iter().filter_map(|(name, _, node)|
+        type_id.get(&name.to_string()).map(|id| (node.0, *id))).collect();
     let mut iface_rows: BTreeMap<String, hale_syntax::Span> =
         BTreeMap::new();
     for (n, sp) in &ast.interfaces {
@@ -1193,6 +1219,11 @@ pub fn derive_application_model_over(
         (FunctionId, FunctionId, DispatchKind, u32),
         (bool, bool, ProvenanceId),
     > = BTreeMap::new();
+    let mut supplied_arguments: BTreeMap<(FunctionId, FunctionId, u32), u32> = BTreeMap::new();
+    let mut authored_sites = BTreeMap::new();
+    let mut argument_sites: BTreeMap<(FunctionId, hale_graph::ids::SiteId, FunctionId), u32> = BTreeMap::new();
+    let capture_recovery_calls = inputs.typed.recovery_calls().is_some();
+    let mut recovery_call_sites: BTreeMap<(FunctionId, u32), BTreeSet<Option<hale_graph::ids::SiteId>>> = BTreeMap::new();
     let mut dead: BTreeMap<(FunctionId, u32), (String, String, ProvenanceId)> =
         BTreeMap::new();
     let mut holes: BTreeMap<
@@ -1226,13 +1257,19 @@ pub fn derive_application_model_over(
             }
         };
         for edge in &fs.calls {
+            let site = site_of(model_group(edge));
+            if let Some(source) = edge.authored { authored_sites.insert((from, source), site); }
+            if capture_recovery_calls { recovery_call_sites.entry((from, site)).or_default().insert(edge.authored); }
             match &edge.callee {
                 Callee::Resolved(next) => {
-                    let site = site_of(model_group(edge));
                     if !user_key(next) {
                         continue;
                     }
                     let to = fid(next);
+                    if edge.evaluates_argument_defaults() {
+                        supplied_arguments.insert((from,to,site), edge.arity as u32);
+                        if let Some(authored) = edge.authored { argument_sites.insert((from,authored,to),site); }
+                    }
                     let dispatch = match &edge.via_interface {
                         Some(i) => DispatchKind::Interface {
                             interface: i.clone(),
@@ -1250,7 +1287,6 @@ pub fn derive_application_model_over(
                     );
                 }
                 Callee::Unresolved(n) => {
-                    let site = site_of(model_group(edge));
                     let anchor = EntityRef::Function(from);
                     let pid = intern_span(&mut records, edge.span);
                     if edge.indirect
@@ -1405,16 +1441,9 @@ pub fn derive_application_model_over(
         let from = fid(k);
         let mut stack: Vec<(FnKey, PathFlags)> = Vec::new();
         let mut seen: BTreeMap<FnKey, PathFlags> = BTreeMap::new();
-        let edge_flags = |edge: &crate::alloc_summary::CallEdge| {
-            PathFlags {
-                in_loop: edge.loop_depth > 0,
-                unbounded: edge.in_unbounded_loop,
-            }
-        };
-        for edge in &fs.calls {
-            if let Callee::Resolved(next) = &edge.callee {
+        for (next, _, depth, unbounded) in fs.execution_edges() {
                 if !user_key(next) {
-                    let f = edge_flags(edge);
+                    let f = PathFlags { in_loop: depth > 0, unbounded };
                     let prev =
                         seen.get(next).copied().unwrap_or_default();
                     if !seen.contains_key(next) || f.strengthens(prev)
@@ -1423,7 +1452,6 @@ pub fn derive_application_model_over(
                         stack.push((next.clone(), f));
                     }
                 }
-            }
         }
         let mut steps = 0u32;
         while let Some((n, lp)) = stack.pop() {
@@ -1432,11 +1460,8 @@ pub fn derive_application_model_over(
                 break;
             }
             let Some(nfs) = merged.fns.get(&n) else { continue };
-            for edge in &nfs.calls {
-                let Callee::Resolved(next) = &edge.callee else {
-                    continue;
-                };
-                let f2 = lp.join(edge_flags(edge));
+            for (next, _, depth, unbounded) in nfs.execution_edges() {
+                let f2 = lp.join(PathFlags { in_loop: depth > 0, unbounded });
                 if user_key(next) {
                     let to = fid(next);
                     let e = via_stdlib
@@ -1957,6 +1982,26 @@ pub fn derive_application_model_over(
                     gm_prov.entry((gid, r)).or_insert(pid);
                 }
             }
+            // Data defaults are executable code owned by a type, not free
+            // functions or locus members. Include main-seed bodies explicitly.
+            for (fid, _, info) in &fn_universe {
+                if info.locus.is_none() {
+                    if let Some(owner) = info.argument_owner {
+                        if let Some((_,parent,_)) = fn_universe.iter().find(|(_,_,p)| p.decl.is_some_and(|s| s.index == owner)) {
+                            if !imported_decls.contains(parent) {
+                                let member = EntityRef::Function(*fid);
+                                group_members.insert((gid,member)); gm_prov.entry((gid,member)).or_insert(pid);
+                            }
+                        }
+                    }
+                }
+                if let Some(owner) = info.type_owner {
+                    if ast.types.iter().any(|(name, _, site)| site.0 == owner && !imported_decls.contains(&name.to_string())) {
+                        let member = EntityRef::Function(*fid);
+                        group_members.insert((gid, member)); gm_prov.entry((gid, member)).or_insert(pid);
+                    }
+                }
+            }
             continue;
         }
         for (ordinal, m) in g.members.iter().enumerate() {
@@ -2040,7 +2085,23 @@ pub fn derive_application_model_over(
                                 ))
                                 .or_insert(pid);
                         }
+                        if let Some((_, _, owner)) = ast.types.iter().find(|(name, _, _)| *name == display) {
+                            for (fid, _, info) in &fn_universe {
+                                if info.type_owner == Some(owner.0) {
+                                    let member = EntityRef::Function(*fid);
+                                    group_members.insert((gid, member)); gm_prov.entry((gid, member)).or_insert(pid);
+                                }
+                            }
+                        }
                         if let Some(id) = fn_id.get(&display) {
+                            if let Some(owner) = fn_universe.iter().find(|(f,_,_)| f == id).and_then(|(_,_,p)| p.decl) {
+                                for (default,_,info) in &fn_universe {
+                                    if info.argument_owner == Some(owner.index) {
+                                        let member = EntityRef::Function(*default);
+                                        group_members.insert((gid,member)); gm_prov.entry((gid,member)).or_insert(pid);
+                                    }
+                                }
+                            }
                             group_members.insert((
                                 gid,
                                 EntityRef::Function(*id),
@@ -2161,15 +2222,86 @@ pub fn derive_application_model_over(
     // recomputable at admission from the member coverage. Every
     // member body is walked (a module-nested locus's included since
     // the behavior summary collects module-nested bodies, E3a part
-    // C; failure handlers do not count), so every locus is
-    // analyzable.
+    // C). Failure handlers count by their own summary coverage too.
+    let unanalyzed_loci: BTreeSet<&str> = fn_universe.iter()
+        .filter(|(_, _, info)| info.unanalyzed)
+        .filter_map(|(_, _, info)| info.locus.as_deref()).collect();
+    let mut flow_sources: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+    for source in &inputs.flows.sources {
+        flow_sources.entry(&source.child).or_default().push(source);
+    }
+    let mut flow_foreign_spans = BTreeMap::new();
     for (n, row) in &locus_rows {
         let pid = intern_span(&mut records, row.span);
+        let flow = if row.generic {
+            hale_model::FlowClass::GenericTemplate
+        } else {
+            let mut releases = Vec::new();
+            for source in flow_sources.get(n.as_str()).into_iter().flatten() {
+                // The analysis copy has its own offset and declaration
+                // universe. Even numerically equal spans must not resolve
+                // into user source, nor names into user owner IDs.
+                let (owner, provenance) = match source.universe {
+                    crate::placement::SiteUniverse::User => (
+                        locus_id.get(&source.owner).map_or_else(
+                            || hale_model::FlowOwner::External(source.owner.clone()),
+                            |owner| hale_model::FlowOwner::Declared(*owner),
+                        ),
+                        intern_span(&mut records, source.release),
+                    ),
+                    crate::placement::SiteUniverse::StdlibAnalysis => {
+                        let span = (
+                            source.release.start.as_usize() as u32,
+                            source.release.end.as_usize() as u32,
+                        );
+                        let provenance = *flow_foreign_spans.entry(span).or_insert_with(|| {
+                            let id = ProvenanceId(records.len() as u32);
+                            records.push(Provenance::ForeignSpan { span });
+                            id
+                        });
+                        (hale_model::FlowOwner::External(source.owner.clone()), provenance)
+                    }
+                };
+                releases.push(hale_model::FlowRelease {
+                    owner,
+                    specialization: source.specialization.clone(),
+                    provenance,
+                });
+            }
+            releases.sort();
+            releases.dedup();
+            if inputs.flows.is_flow(n) {
+                hale_model::FlowClass::Flow { releases }
+            } else {
+                hale_model::FlowClass::Resident
+            }
+        };
         e.loci.push(LocusDecl {
+            decl: row.decl,
             name: n.clone(),
             display: name(n),
             sealed: row.sealed,
-            analyzable: true,
+            flow,
+            storage: inputs.effects.summary.locus_shapes.get(n).map(|shape| {
+                use hale_model::{LocusStorage, RecognitionMode as M, StorageProjection as P};
+                use hale_syntax::ast::{ProjectionClass as A, RecognitionSubMode as R};
+                let projection = match shape.projection.class {
+                    A::Rich => P::Rich,
+                    A::Chunked => P::Chunked,
+                    A::Recognition(None) => P::UnspecifiedRecognition,
+                    A::Recognition(Some(params)) => P::Recognition {
+                        cap: params.cap,
+                        mode: match params.sub_mode {
+                            R::FixedCell => M::FixedCell,
+                            R::SharedSlab => M::SharedSlab,
+                            R::Spillover => M::Spillover,
+                            R::SummaryOnly => M::SummaryOnly,
+                        },
+                    },
+                };
+                LocusStorage { accepts_children: shape.projection.accepts_children, projection }
+            }),
+            analyzable: !unanalyzed_loci.contains(n.as_str()),
             sync_form: row.sync_form,
             params: row
                 .params
@@ -2285,6 +2417,9 @@ pub fn derive_application_model_over(
             name: n.clone(),
             display: info.display.clone(),
             kind: info.kind,
+            initializer: info.decl.and_then(|site| initializer_fields.get(&site).cloned()),
+            type_owner: info.type_owner.and_then(|site| type_by_site.get(&site).copied()),
+            argument_owner: info.argument_owner.and_then(|site| fn_of_site.iter().find(|(s,_)| s.index == site).map(|(_,id)| *id)),
             effects: derived_effects.get(&fid).cloned().unwrap_or_default(),
             effect_lower_bound: effect_lower_bounds
                 .get(&fid)
@@ -2437,6 +2572,7 @@ pub fn derive_application_model_over(
             to: *to,
             dispatch: dispatch.clone(),
             site: *site,
+            supplied: supplied_arguments.get(&(*from,*to,*site)).copied(),
             in_loop: *in_loop,
             unbounded: *unbounded,
             provenance: *pid,
@@ -2550,9 +2686,8 @@ pub fn derive_application_model_over(
         }
     }
 
-    // Unanalyzed bodies (on_failure): declared
-    // executable entities whose calls/publishes/effects the summary
-    // never walked — typed holes keep the capabilities honest.
+    // Declared executable entities whose calls/publishes/effects lack
+    // a behavior summary — typed holes keep the capabilities honest.
     for &(fid, _, info) in &fn_universe {
         if info.unanalyzed {
             let pid = match info.span {
@@ -2862,6 +2997,7 @@ pub fn derive_application_model_over(
                             };
                             events.push(
                                 hale_model::AbsorbedEvent::Call {
+                                    initialization: None,
                                     target,
                                     dispatch: dsp,
                                     in_loop: e2.loop_depth > 0,
@@ -2888,6 +3024,31 @@ pub fn derive_application_model_over(
                             }
                         }
                     }
+                }
+                for edge in &nfs.initializations {
+                    let target = if user_key(&edge.target) {
+                        hale_model::AbsorbedTarget::User(fid(&edge.target))
+                    } else {
+                        let target = *index.entry(edge.target.clone()).or_insert_with(|| {
+                            order.push(edge.target.clone());
+                            (order.len() - 1) as u32
+                        });
+                        hale_model::AbsorbedTarget::Interior(target)
+                    };
+                    events.push(hale_model::AbsorbedEvent::Call {
+                        target,
+                        initialization: Some(hale_model::Initializer { kind: edge.initializer.kind, field: edge.initializer.field.clone(), ordinal: edge.initializer.ordinal }),
+                        dispatch: None,
+                        in_loop: edge.loop_depth > 0,
+                        group: None,
+                    });
+                }
+                for edge in &nfs.lifecycle_evaluations {
+                    let target = if user_key(&edge.target) { hale_model::AbsorbedTarget::User(fid(&edge.target)) } else {
+                        let target = *index.entry(edge.target.clone()).or_insert_with(|| { order.push(edge.target.clone()); (order.len()-1) as u32 });
+                        hale_model::AbsorbedTarget::Interior(target)
+                    };
+                    events.push(hale_model::AbsorbedEvent::Lifecycle { target, stage:edge.stage, in_loop:edge.loop_depth>0 });
                 }
                 for site2 in &nfs.effect_sites {
                     match &site2.kind {
@@ -2972,6 +3133,8 @@ pub fn derive_application_model_over(
                 }
             }
             nodes.push(hale_model::AbsorbedNode {
+                lifecycle: lifecycle_stages.get(&n).copied(),
+                initializer: merged.initializers.get(&n).map(|p| hale_model::Initializer { kind: p.kind, field: p.field.clone(), ordinal: p.ordinal }),
                 display: disp(&n),
                 decl: n.locus.clone().unwrap_or_else(|| n.fn_name.clone()),
                 direct_effects: node_direct,
@@ -2989,6 +3152,8 @@ pub fn derive_application_model_over(
             // exactly where knowledge ends — not on entry.
             for k in order.iter().skip(nodes.len()) {
                 nodes.push(hale_model::AbsorbedNode {
+                    lifecycle: lifecycle_stages.get(k).copied(),
+                    initializer: merged.initializers.get(k).map(|p| hale_model::Initializer { kind: p.kind, field: p.field.clone(), ordinal: p.ordinal }),
                     display: disp(k),
                     decl: k.locus.clone().unwrap_or_else(|| k.fn_name.clone()),
                     carries: Vec::new(),
@@ -3047,6 +3212,17 @@ pub fn derive_application_model_over(
             let Callee::Resolved(next) = &edge.callee else {
                 continue;
             };
+            if edge.evaluates_argument_defaults() {
+                for default in fs.initializations.iter().filter(|default| default.initializer.kind == hale_model::InitializerKind::Argument
+                    && default.invocation == edge.authored && !user_key(&default.target) && merged.fns.contains_key(&default.target)) {
+                    stdlib_absorption.push(hale_model::StdlibAbsorption {
+                entry_constructor_source: None,
+                        from,site,entry_lifecycle: None, entry_initialization:Some(hale_model::Initializer { kind:default.initializer.kind,field:default.initializer.field.clone(),ordinal:default.initializer.ordinal }),
+                        entry_dispatch:None,entry_in_loop:default.loop_depth > 0,entry_group:None,
+                        entry_provenance:intern_span(&mut records,default.span),entry_bus:None,nodes:absorb_interior(&default.target),
+                    });
+                }
+            }
             if user_key(next) {
                 continue;
             }
@@ -3091,6 +3267,7 @@ pub fn derive_application_model_over(
             }) {
                 stdlib_absorption.push(
                     hale_model::StdlibAbsorption {
+                entry_constructor_source: None,
                         from,
                         site,
                         entry_dispatch,
@@ -3098,10 +3275,39 @@ pub fn derive_application_model_over(
                         entry_group,
                         entry_provenance,
                         entry_bus: None,
+                        entry_lifecycle: None, entry_initialization: None,
                         nodes,
                     },
                 );
             }
+        }
+    }
+    // Constructor evaluation can enter the same stdlib body graph without
+    // allocating an authored call ordinal. Even a pure default is retained:
+    // it closes the known omission account rather than becoming a hole.
+    for (key, body) in merged.fns.iter().filter(|(key, _)| user_key(key)) {
+        for edge in &body.initializations {
+            if edge.initializer.kind == hale_model::InitializerKind::Argument { continue; }
+            if user_key(&edge.target) || !merged.fns.contains_key(&edge.target) { continue; }
+            stdlib_absorption.push(hale_model::StdlibAbsorption {
+                entry_constructor_source: None,
+                from: fid(key), site: edge.ordinal,
+                entry_lifecycle: None, entry_initialization: Some(hale_model::Initializer { kind: edge.initializer.kind, field: edge.initializer.field.clone(), ordinal: edge.initializer.ordinal }),
+                entry_dispatch: None, entry_in_loop: edge.loop_depth > 0,
+                entry_group: None, entry_provenance: intern_span(&mut records, edge.span),
+                entry_bus: None, nodes: absorb_interior(&edge.target),
+            });
+        }
+    }
+    for (key,body) in merged.fns.iter().filter(|(key,_)| user_key(key)) {
+        for edge in &body.lifecycle_evaluations {
+            if user_key(&edge.target) || !merged.fns.contains_key(&edge.target) { continue; }
+            stdlib_absorption.push(hale_model::StdlibAbsorption {
+                entry_constructor_source: edge.invocation,
+                from:fid(key),site:edge.ordinal,entry_lifecycle:Some(edge.stage),entry_initialization:None,
+                entry_dispatch:None,entry_in_loop:edge.loop_depth>0,entry_group:None,
+                entry_provenance:intern_span(&mut records,edge.span),entry_bus:None,nodes:absorb_interior(&edge.target),
+            });
         }
     }
     // The program's own publishes reaching a stdlib subscriber it
@@ -3115,6 +3321,7 @@ pub fn derive_application_model_over(
             }
             let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
             stdlib_absorption.push(hale_model::StdlibAbsorption {
+                entry_constructor_source: None,
                 from: p.function,
                 site: p.site,
                 entry_dispatch: None,
@@ -3122,11 +3329,217 @@ pub fn derive_application_model_over(
                 entry_group: None,
                 entry_provenance: p.provenance,
                 entry_bus: Some(sub.clone()),
+                entry_lifecycle: None, entry_initialization: None,
                 nodes: absorb_interior(hk),
             });
         }
     }
-    stdlib_absorption.sort_by_key(|a| (a.from, a.site));
+    // An absorbed constructor can enter lifecycle work even when the first
+    // source witness was in a re-emergent user helper. Bind the unresolved
+    // foreign invocation context at every actual source entry; numeric queries
+    // cannot rely on a user-only call projection to discover that interior.
+    for entry in &stdlib_absorption {
+        if entry.entry_lifecycle.is_some() || entry.nodes.iter().any(|n| n.events.iter().any(|ev| matches!(ev,hale_model::AbsorbedEvent::Lifecycle { .. }))) {
+            let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+            holes.entry((EntityRef::Function(entry.from),kind,"foreign self lifecycle invocation at this source entry has unresolved admission, scheduling, frame and retention context".to_string()))
+                .or_insert((hides,None,entry.entry_provenance));
+        }
+    }
+    stdlib_absorption.sort_by_key(hale_model::StdlibAbsorption::entry_key);
+
+    // Constructor evaluation is its own relation, never an authored Call.
+    for (key, fs) in summary.fns.iter().filter(|(key, _)| user_key(key)) {
+        let Some(from) = fid_of(key) else { continue };
+        for site in &fs.effect_sites {
+            if let EffectSiteKind::ProtocolInvocation { target, stage, reason } = &site.kind {
+                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from),kind,format!("parent {} protocol{}; {}",stage.map(|s| s.as_str()).unwrap_or("accept/release"),target.as_ref().map(|t| format!(" `{}`",t.display())).unwrap_or_default(),reason.as_str())))
+                    .or_insert((hides,None,intern_span(&mut records,site.span)));
+            }
+            if let EffectSiteKind::LifecycleInvocation { constructor, target, stage } = &site.kind {
+                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from),kind,format!("construction {constructor} can enter {} lifecycle body `{}`; admission, scheduling, frame and retention context are unresolved",stage.as_str(),target.display())))
+                    .or_insert((hides,None,intern_span(&mut records,site.span)));
+            }
+            if let EffectSiteKind::BirthCheckInvocation { constructor, target } = &site.kind {
+                let kind = HoleKind::UnmodeledInitialization;
+                let hides = kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from), kind, format!("construction {constructor} can enter birth check `{}`; invocation scheduling, lifetime and failure context are unresolved", target.display())))
+                    .or_insert((hides, None, intern_span(&mut records, site.span)));
+            }
+            if let EffectSiteKind::AutomaticClosure { constructor, target, epoch } = &site.kind {
+                let kind = HoleKind::UnmodeledInitialization;
+                let hides = kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from), kind, format!("construction {constructor} can enter automatic {} closure `{}`; epoch scheduling, lifetime and failure context are unresolved", epoch.as_str(), target.display())))
+                    .or_insert((hides, None, intern_span(&mut records, site.span)));
+            }
+        }
+        for (site, constructor) in fs.constructions.iter().enumerate() {
+            if let Some(owner) = constructor.target.filter(|d| d.universe == crate::placement::SiteUniverse::User)
+                .and_then(|d| locus_by_site.get(&d.index).copied().map(hale_model::ConstructorTarget::Locus)
+                    .or_else(|| type_by_site.get(&d.index).copied().map(hale_model::ConstructorTarget::Type))) {
+                r.constructions.push(hale_model::Construction {
+                    source: constructor.site,
+                    function: from, owner, site: site as u32, supplied: constructor.supplied.iter().cloned().collect(),
+                    in_loop: constructor.loop_depth > 0, unbounded: constructor.in_unbounded_loop,
+                    provenance: intern_span(&mut records, constructor.span),
+                });
+            }
+        }
+        for edge in &fs.initializations {
+            let pid = intern_span(&mut records, edge.span);
+            if let Some(to) = fid_of(&edge.target) {
+                if edge.initializer.kind == hale_model::InitializerKind::Argument {
+                    if let Some(callee) = e.functions[to.index()].argument_owner {
+                        if let Some(site) = edge.invocation.and_then(|source| argument_sites.get(&(from,source,callee))).copied() {
+                            r.argument_evaluations.push(hale_model::ArgumentEvaluation {
+                                from,to,callee,site,argument:edge.initializer.ordinal,parameter:edge.initializer.field.clone(),
+                                in_loop:edge.loop_depth > 0,unbounded:edge.in_unbounded_loop,provenance:pid,
+                            });
+                        }
+                    }
+                    continue;
+                }
+                if let Some(owner) = e.functions[to.index()].initializer_owner() {
+                    r.initializes.push(hale_model::Initialization {
+                        from, to, owner, field: edge.initializer.field.clone(), member: edge.initializer.ordinal, site: edge.ordinal,
+                        in_loop: edge.loop_depth > 0, unbounded: edge.in_unbounded_loop, provenance: pid,
+                    });
+                }
+            } else if !merged.fns.contains_key(&edge.target) {
+                let kind = HoleKind::UnmodeledInitialization;
+                let hides = kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from), kind, format!("constructor default `{}` is outside the canonical executable-body horizon", edge.target.display())))
+                    .or_insert((hides, None, pid));
+            }
+        }
+    }
+    for (owner,hooks) in &summary.lifecycle_hooks {
+        if owner.universe != crate::placement::SiteUniverse::User { continue; }
+        for hook in hooks.iter().filter(|h| !h.synthesized) {
+            let Some(function)=fid_of(&hook.key) else { continue };
+            let Some(owner)=e.functions[function.index()].owner else { continue };
+            r.lifecycle_definitions.push(hale_model::LifecycleDefinition { function,owner,stage:hook.stage,empty:hook.empty });
+        }
+    }
+    r.lifecycle_definitions.sort_by_key(|d| d.function);
+    for (key,body) in summary.fns.iter().filter(|(key,_)| user_key(key)) {
+        let Some(from)=fid_of(key) else { continue };
+        for edge in &body.lifecycle_evaluations {
+            if let Some(to)=fid_of(&edge.target) {
+                r.lifecycle_evaluations.push(hale_model::LifecycleEvaluation { source:edge.invocation,guard:edge.stage.entry_guard(),from,to,stage:edge.stage,site:edge.ordinal,in_loop:edge.loop_depth>0,unbounded:edge.in_unbounded_loop,provenance:intern_span(&mut records,edge.span) });
+            }
+        }
+    }
+    r.lifecycle_evaluations.sort_by_key(|v| (v.from,v.site,v.stage,v.to));
+    // Project the existing source account. No plan or artifact feeds the model.
+    for (owner, hooks) in &summary.protocol_hooks {
+        if owner.universe != crate::placement::SiteUniverse::User { continue; }
+        for hook in hooks.iter().filter(|h| !h.synthesized) {
+            let Some(function) = fid_of(&hook.key) else { continue };
+            let Some(owner) = e.functions[function.index()].owner else { continue };
+            r.protocol_definitions.push(hale_model::ProtocolDefinition {
+                function, owner, stage: hook.stage, child: hook.child.clone(), interface: hook.interface, empty: hook.empty,
+            });
+        }
+    }
+    r.protocol_definitions.sort_by_key(|d| d.function);
+    let mut protocol_contexts = BTreeMap::new();
+    let mut protocol_targets = BTreeMap::<_, BTreeSet<_>>::new();
+    for (key, body) in summary.fns.iter().filter(|(key, _)| user_key(key)) {
+        let Some(from) = fid_of(key) else { continue };
+        for edge in &body.protocol_evaluations {
+            let Some(to) = fid_of(&edge.target) else { continue };
+            let Some(constructor_function) = fid_of(&edge.constructor_function) else { continue };
+            let Some(owner) = edge.owner.declaration.and_then(|d| locus_by_site.get(&d)).copied() else { continue };
+            // Interface membership is not yet a portable model relation. Keep
+            // its existing scoped coverage; do not fabricate a nominal match.
+            if r.protocol_definitions.iter().any(|d| d.owner == owner && d.interface && !d.empty) { continue; }
+            if !r.constructions.iter().any(|c| c.function == constructor_function && c.site == edge.constructor) { continue; }
+            let root = match edge.root {
+                crate::protocol_execution::ProtocolRoot::Construction(site) => hale_model::ProtocolRoot::Construction(site),
+                crate::protocol_execution::ProtocolRoot::Call(_) => {
+                    let Some(site) = authored_sites.get(&(from, edge.root_source)) else { continue };
+                    if !r.calls.iter().any(|c| c.from == from && c.site == *site) { continue; }
+                    hale_model::ProtocolRoot::Call(*site)
+                }
+            };
+            let context = hale_model::ProtocolContext {
+                child: edge.child.clone(),
+                from, root, root_source: edge.root_source, constructor_function, constructor: edge.constructor,
+                constructor_source: edge.constructor_source, owner, in_loop: edge.loop_depth > 0,
+                unbounded: edge.in_unbounded_loop, provenance: intern_span(&mut records, edge.span),
+                constructor_provenance: intern_span(&mut records, edge.constructor_span),
+            };
+            protocol_targets.entry(context.key()).or_default().insert((edge.stage, to));
+            protocol_contexts.entry(context.key()).or_insert(context);
+        }
+    }
+    r.protocol_contexts = protocol_contexts.into_values().collect();
+    for (index, context) in r.protocol_contexts.iter().enumerate() {
+        for &(stage, to) in &protocol_targets[&context.key()] {
+            r.protocol_evaluations.push(hale_model::ProtocolEvaluation { context: index as u32, to, stage });
+        }
+    }
+    r.protocol_evaluations.sort_by_key(|v| (v.context, v.stage, v.to));
+    for (key,clause) in &summary.birth_checks {
+        let Some(function) = fid_of(key) else { continue };
+        let Some(owner) = e.functions[function.index()].owner else { continue };
+        r.birth_checks.push(hale_model::BirthCheckDefinition { function, owner, closure: clause.closure.clone(), ordinal: clause.ordinal });
+        let kind = HoleKind::UnmodeledFailureDispatch;
+        let hides = kind.implicit_execution_families().unwrap();
+        holes.entry((EntityRef::Function(function), kind, format!("birth check may reject via `{}`: conditional runtime failure reporting and handler execution are unresolved", clause.closure)))
+            .or_insert((hides, None, e.functions[function.index()].provenance));
+    }
+    r.birth_checks.sort_by_key(|c| c.function);
+    for (key,definition) in &summary.closure_assertions {
+        let Some(function)=fid_of(key) else { continue };
+        let Some(owner)=e.functions[function.index()].owner else { continue };
+        r.closure_definitions.push(hale_model::ClosureDefinition { function,owner,name:definition.name.clone(),epoch:definition.epoch,ordinal:definition.ordinal });
+        let kind=HoleKind::UnmodeledFailureDispatch;
+        let hides=kind.implicit_execution_families().unwrap();
+        holes.entry((EntityRef::Function(function),kind,"closure assertion may fail: conditional runtime failure reporting and handler execution are unresolved".to_string()))
+            .or_insert((hides,None,e.functions[function.index()].provenance));
+    }
+    for (key,fs) in summary.fns.iter().filter(|(key,_)| user_key(key)) {
+        let Some(from)=fid_of(key) else { continue };
+        let owner=fs.closure_owner.filter(|d| d.universe==crate::placement::SiteUniverse::User).and_then(|d| locus_by_site.get(&d.index).copied());
+        let Some(owner)=owner else {
+            for call in fs.calls.iter().filter(|c| !c.receiver_present && !c.indirect && matches!(&c.callee,Callee::Unresolved(n) if n=="check_closures")) {
+                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from),kind,"closure checkpoint evaluates in an unresolved caller implicit-self context".to_string()))
+                    .or_insert((hides,None,intern_span(&mut records,call.span)));
+            }
+            continue;
+        };
+        for (ordinal,call) in fs.calls.iter().enumerate() {
+            if call.receiver_present || call.indirect || !matches!(&call.callee,Callee::Unresolved(n) if n=="check_closures") { continue; }
+            if let Some(source)=call.authored {
+                r.closure_checks.push(hale_model::ClosureCheck { function:from,owner,site:ordinal as u32,source,in_loop:call.loop_depth>0,unbounded:call.in_unbounded_loop,provenance:intern_span(&mut records,call.span) });
+            }
+        }
+        for edge in &fs.closure_evaluations {
+            let Some(to)=fid_of(&edge.target) else {
+                let kind=HoleKind::UnmodeledInitialization;let hides=kind.implicit_execution_families().unwrap();
+                holes.entry((EntityRef::Function(from),kind,"closure assertion body is outside the canonical executable horizon".to_string()))
+                    .or_insert((hides,None,intern_span(&mut records,edge.span)));
+                continue;
+            };
+            let Some(definition)=summary.closure_assertions.get(&edge.target) else { continue };
+            r.closure_evaluations.push(hale_model::ClosureEvaluation { from,to,site:edge.ordinal,closure:definition.ordinal,in_loop:edge.loop_depth>0,unbounded:edge.in_unbounded_loop,provenance:intern_span(&mut records,edge.span) });
+        }
+    }
+    r.closure_definitions.sort_by_key(|d| d.function);
+    r.closure_checks.sort_by_key(|c| (c.function,c.site));
+    r.closure_evaluations.sort_by_key(|v| (v.from,v.site,v.closure,v.to));
+
+    r.argument_evaluations.sort_by_key(|row| (row.from,row.site,row.callee,row.argument,row.to));
+    r.argument_evaluations.dedup_by_key(|row| (row.from,row.site,row.callee,row.argument,row.to));
+    r.initializes.sort_by_key(|row| (row.from, row.site, row.member, row.to));
+    r.initializes.dedup_by_key(|row| (row.from, row.site, row.member, row.to));
+
+    r.constructions.sort_by_key(|row| (row.function, row.site));
+    r.constructions.dedup_by_key(|row| (row.function, row.site));
 
     // holes, canonically ordered.
     // ==== GH #476 Change 8: the ARRANGEMENT — instances,
@@ -3136,6 +3549,7 @@ pub fn derive_application_model_over(
     // (#464's DispatchPlan, iris instance IDs). None of this
     // participates in the artifact's model half, so shape
     // identity is untouched.
+    let mut recovery_constructions = BTreeMap::new();
     {
         use hale_model::{
             Binding, BindingId, BindingRole, LocusInstance,
@@ -3291,6 +3705,11 @@ pub fn derive_application_model_over(
                     (&a.path, LocusInstanceId(i as u32))
                 })
                 .collect();
+        for a in &projected.instances {
+            if let Some(id) = inst_id.get(&a.path) {
+                for source in &a.constructions { recovery_constructions.insert(source.clone(), *id); }
+            }
+        }
         for a in &arranged {
             let pid = intern_span(&mut records, a.span);
             e.locus_instances.push(LocusInstance {
@@ -3476,6 +3895,152 @@ pub fn derive_application_model_over(
         }
     }
 
+    let foreign_automatic_epochs = merged.fns.iter().any(|(key, fs)| !user_key(key)
+        && fs.effect_sites.iter().any(|site| matches!(site.kind, EffectSiteKind::AutomaticClosure { .. } | EffectSiteKind::BirthCheckInvocation { .. } | EffectSiteKind::LifecycleInvocation { .. } | EffectSiteKind::ProtocolInvocation { .. })));
+    // An explicit failure can invoke a handler outside the source call
+    // graph. The summary's one reverse witness forest records this gap
+    // even when no handler contains recovery syntax. Keep one scoped row
+    // per affected user function, including contracted foreign callees;
+    // the caller witness does not pretend to be an implicit call edge.
+    for key in summary.fns.keys().filter(|key| user_key(key)) {
+        let Some(function) = fid_of(key) else { continue };
+        if let Some((chain, span, source)) = foreign_automatic_epochs.then(|| crate::effects::automatic_closure_gap(&merged, key)).flatten() {
+            if !user_key(&source) {
+                let kind = HoleKind::UnmodeledInitialization;
+                let hides = kind.implicit_execution_families().unwrap();
+                let pid = ProvenanceId(records.len() as u32);
+                records.push(Provenance::ForeignSpan { span: (span.start.0 as u32, span.end.0 as u32) });
+                holes.entry((EntityRef::Function(function), kind, format!("contracted stdlib execution reaches {chain}; automatic epoch scheduling, lifetime and failure context are unresolved")))
+                    .or_insert((hides, None, pid));
+            }
+        }
+        // User assertion gaps live at the assertion vertex, so a real graph
+        // barrier can exclude them. Foreign assertion execution is not yet
+        // projected into its absorbed interior and remains an entry gap.
+        if summary.structural_failure_path(key).ok().flatten().is_some_and(|t| (t.assertion || t.birth_check) && !t.foreign) { continue; }
+        let (reason, pid) = match &summary.structural_failures {
+            None => (
+                "structural failure coverage is unavailable".to_string(),
+                e.functions[function.index()].provenance,
+            ),
+            Some(forest) => match forest.get(key) {
+                None => continue,
+                Some(crate::alloc_summary::StructuralFailureStep::BirthCheck { closure,span,foreign }) => {
+                    let pid = if *foreign { let id=ProvenanceId(records.len() as u32); records.push(Provenance::ForeignSpan { span:(span.start.0 as u32,span.end.0 as u32) }); id } else { intern_span(&mut records,*span) };
+                    (format!("birth check for `{closure}` may reject: implicit failure reporting and dispatch are unresolved"),pid)
+                }
+                Some(crate::alloc_summary::StructuralFailureStep::Assertion { closure,span,foreign }) => {
+                    let pid=if *foreign { let id=ProvenanceId(records.len() as u32);records.push(Provenance::ForeignSpan { span:(span.start.0 as u32,span.end.0 as u32) });id } else { intern_span(&mut records,*span) };
+                    (format!("closure assertion `{closure}` may fail: implicit failure reporting and dispatch are unresolved"),pid)
+                }
+                Some(crate::alloc_summary::StructuralFailureStep::Direct { closure, span, foreign }) => {
+                    let pid = if *foreign {
+                        let id = ProvenanceId(records.len() as u32);
+                        records.push(Provenance::ForeignSpan { span: (span.start.0 as u32, span.end.0 as u32) });
+                        id
+                    } else { intern_span(&mut records, *span) };
+                    (format!("explicit structural failure `violate {closure}`: implicit failure-handler dispatch and recovery execution are unresolved"), pid)
+                }
+                Some(crate::alloc_summary::StructuralFailureStep::Through { callee, span }) => (
+                    format!("call to `{}` may raise an explicit structural failure: implicit failure-handler dispatch and recovery execution are unresolved", callee.display()),
+                    intern_span(&mut records, *span),
+                ),
+                Some(crate::alloc_summary::StructuralFailureStep::Initializer { initializer, span, .. }) => (
+                    format!("evaluation of omitted default `{}` may raise an explicit structural failure: implicit failure-handler dispatch and recovery execution are unresolved", initializer.field),
+                    intern_span(&mut records, *span),
+                ),
+            },
+        };
+        let kind = HoleKind::UnmodeledFailureDispatch;
+        let hides = kind.implicit_execution_families().expect("implicit failure dispatch is an execution gap");
+        holes.entry((EntityRef::Function(function), kind, reason)).or_insert((hides, None, pid));
+    }
+
+    let mut recovery_bodies: BTreeMap<u32, EntityRef> = fn_of_site.iter()
+        .map(|(site, function)| (site.index, EntityRef::Function(*function))).collect();
+    recovery_bodies.extend(locus_by_site.iter().map(|(site, locus)| (*site, EntityRef::LocusDecl(*locus))));
+    let mut recovery = crate::recovery_facts::project_recovery_facts(
+        inputs.typed, inputs.stdlib_recoveries, inputs.handlers, &recovery_bodies, &locus_by_site,
+        |span, universe| match universe {
+            crate::placement::SiteUniverse::User => intern_span(&mut records, span),
+            crate::placement::SiteUniverse::StdlibAnalysis => {
+                let id = ProvenanceId(records.len() as u32);
+                records.push(Provenance::ForeignSpan { span: (span.start.0 as u32, span.end.0 as u32) });
+                id
+            }
+        },
+        |site| bundle.snapshot.site_id(hale_syntax::ast::NodeId(site))
+            .and_then(|id| bundle.snapshot.site(id)).map(|site| site.span),
+    );
+    recovery.failure_entries = Some(crate::recovery_facts::project_recovery_failure_entries(
+        inputs.placement, &recovery_constructions, &e, &r.supervises, inputs.handlers, &fn_of_site,
+        |literal| {
+            (literal.universe == crate::placement::SiteUniverse::User)
+                .then(|| bundle.snapshot.site(literal.id)).flatten().map(|site| intern_span(&mut records, site.span))
+        },
+    ));
+    recovery.calls = crate::recovery_facts::project_recovery_call_bindings(
+        inputs.typed, &recovery_bodies, &locus_by_site, &r.calls, &recovery_call_sites,
+    );
+    recovery.evaluated_calls = crate::recovery_facts::project_evaluated_recovery_calls(
+        inputs.typed, &recovery_bodies,
+        |site| bundle.snapshot.site_id(hale_syntax::ast::NodeId(site))
+            .and_then(|id| bundle.snapshot.site(id)).map(|site| site.span),
+        |span| match span {
+            Some(span) => intern_span(&mut records, span),
+            None => intern_synth(&mut records, "unqualified evaluated recovery call"),
+        },
+    );
+    // Typed observations do not establish the lifecycle work performed
+    // by recovery. Preserve that behavioral gap while exposing explicit
+    // helper calls and effects. Unanchored defaults/foreign operations
+    // cannot yet be localized to a caller: retain them at every function,
+    // rather than selecting an invented execution context.
+    for (foreign, inventory) in [(false, &recovery.user), (true, &recovery.stdlib)] {
+        for action in inventory.iter().flatten() {
+            let anchored = if foreign { None } else { action.execution_caller };
+            let targets: Vec<_> = match anchored {
+                Some(f) => vec![f],
+                None => (0..e.functions.len()).map(|i| FunctionId(i as u32)).collect(),
+            };
+            let reason = format!("recovery {:?}: implicit lifecycle calls, publishes, allocations and execution order are unresolved{}",
+                action.operation, if anchored.is_none() { " (unanchored execution context)" } else { "" });
+            for function in targets {
+                holes.entry((EntityRef::Function(function), HoleKind::UnmodeledRecovery, reason.clone()))
+                    .or_insert((hale_model::RelationSet::CALLS.union(hale_model::RelationSet::PUBLISHES)
+                        .union(hale_model::RelationSet::EFFECTS).union(hale_model::RelationSet::COSTS), None, action.provenance));
+            }
+        }
+    }
+
+    if let Some(evaluated) = &recovery.evaluated_calls {
+        let opaque = HoleKind::UnmodeledRecovery.implicit_execution_families().expect("recovery gap");
+        let roots = holes.iter().filter_map(|((at, kind, _), (hides, _, _))| match at {
+            EntityRef::Function(f) if hides.intersects(hale_model::RelationSet::CALLS) => Some((*f,
+                if *kind == HoleKind::UnmodeledFailureDispatch { *hides } else { opaque })),
+            _ => None,
+        });
+        let reached = crate::recovery_facts::evaluated_calls_reaching_recovery(&r.calls, evaluated, roots);
+        for call in evaluated {
+            let Some(hides) = (match call.callee { Some(callee) => reached.get(&callee).copied(), None => Some(opaque) }) else { continue };
+            let kind = if hides.intersects(hale_model::RelationSet::PUBLISHES) {
+                HoleKind::UnmodeledRecovery
+            } else { HoleKind::UnmodeledFailureDispatch };
+            let targets: Vec<_> = match call.caller {
+                Some(from) => vec![from],
+                None => (0..e.functions.len()).map(|i| FunctionId(i as u32)).collect(),
+            };
+            let reason = format!("evaluated default call{} may reach {}; invocation operands, repetition and execution are unresolved{}",
+                call.callee.map(|callee| format!(" to `{}`", e.functions[callee.index()].display)).unwrap_or_default(),
+                if kind == HoleKind::UnmodeledFailureDispatch { "failure dispatch" } else { "recovery" },
+                if call.caller.is_none() { " (unanchored execution context)" } else { "" });
+            for from in targets {
+                holes.entry((EntityRef::Function(from), kind.clone(), reason.clone()))
+                    .or_insert((hides, None, call.provenance));
+            }
+        }
+    }
+
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
         .map(|((at, kind, reason), (hides, site, pid))| Hole {
@@ -3487,6 +4052,18 @@ pub fn derive_application_model_over(
             provenance: pid,
         })
         .collect();
+    for (i, locus) in e.loci.iter().enumerate() {
+        if matches!(locus.flow, hale_model::FlowClass::GenericTemplate) {
+            hole_rows.push(Hole {
+                at: EntityRef::LocusDecl(LocusDeclId(i as u32)),
+                kind: HoleKind::GenericFlowTemplate,
+                hides: hale_model::RelationSet::FLOW_CLASSIFICATION,
+                authored_site: None,
+                reason: format!("generic template `{}` requires a concrete specialization for flow classification", locus.display),
+                provenance: locus.provenance,
+            });
+        }
+    }
     hole_rows.sort_by(|a, b| {
         (a.at, a.kind.clone(), &a.reason)
             .cmp(&(b.at, b.kind.clone(), &b.reason))
@@ -3547,6 +4124,7 @@ pub fn derive_application_model_over(
             || absorption_hides.intersects(fam)
     };
     let capabilities = Capabilities {
+        exact_flow_classification: !hides_any(hale_model::RelationSet::FLOW_CLASSIFICATION),
         exact_calls: !hides_any(hale_model::RelationSet::CALLS),
         exact_publishes: !hides_any(
             hale_model::RelationSet::PUBLISHES,
@@ -3589,7 +4167,7 @@ pub fn derive_application_model_over(
     // join already answer those, and a second copy would be a
     // second authority.
     {
-        let frames = crate::quantitative::frame_map(&programs);
+        let frames = crate::quantitative::frame_map(&programs, &summary);
         for (k, fs) in &summary.fns {
             if !user_key(k) {
                 continue;
@@ -3718,14 +4296,54 @@ pub fn derive_application_model_over(
         s.digest = hale_model::surface::surface_digest(&lines);
     }
 
+    // Keep source contexts separate from arranged instances and runtime admission.
+    let source_locus_ids = e.loci.iter().enumerate()
+        .filter_map(|(i,l)| l.decl.map(|decl| (decl,LocusDeclId(i as u32)))).collect();
+    let lifecycle_domain_provenance = intern_synth(&mut records,"lifecycle source execution domain (placement)");
+    let lifecycle_contexts = crate::lifecycle_context::model::project_contexts(
+        inputs.lifecycle_contexts, inputs.placement, &source_locus_ids, lifecycle_domain_provenance, &mut |site| {
+            let store = match site.universe {
+                crate::placement::SiteUniverse::User => Some(&bundle.snapshot),
+                crate::placement::SiteUniverse::StdlibAnalysis => crate::stdlib_bodies::identities(),
+            };
+            if let Some(origin) = store.and_then(|ids| ids.origin(site.id)) {
+                use crate::snapshot::Origin;
+                let rule = match origin {
+                    Origin::JsonParsers => "lifecycle source: generated JSON parser",
+                    Origin::ApiSurface => "lifecycle source: generated API surface",
+                    Origin::TopicDesugar => "lifecycle source: topic desugar",
+                    Origin::IntraLocusRewrite => "lifecycle source: intra-locus rewrite",
+                    Origin::ReprAccessors => "lifecycle source: generated representation accessor",
+                    Origin::OmittedRun => "lifecycle source: synthesized run",
+                    Origin::ChainDesugar => "lifecycle source: chain desugar",
+                };
+                return intern_synth(&mut records,rule);
+            }
+            let span = match site.universe {
+                crate::placement::SiteUniverse::User => bundle.snapshot.site(site.id).map(|s| s.span),
+                crate::placement::SiteUniverse::StdlibAnalysis => crate::stdlib_bodies::identities().and_then(|ids| ids.site(site.id)).map(|s| s.span),
+            };
+            match (site.universe,span) {
+                (crate::placement::SiteUniverse::User,Some(span)) => intern_span(&mut records,span),
+                (crate::placement::SiteUniverse::StdlibAnalysis,Some(span)) => {
+                    let pid=ProvenanceId(records.len() as u32);
+                    records.push(Provenance::ForeignSpan { span:(span.start.as_usize() as u32,span.end.as_usize() as u32) });
+                    pid
+                }
+                _ => intern_synth(&mut records,"unavailable lifecycle source identity"),
+            }
+        },
+    );
     prov.records = records;
     let model = ApplicationModel {
         analyses: hale_model::Analyses {
+            lifecycle_contexts: Some(lifecycle_contexts),
+            recovery,
             dispatch_plan,
             stdlib_absorption,
         },
         header: ModelHeader {
-            semantics: MODEL_SEMANTICS_V1,
+            semantics: MODEL_SEMANTICS_V12,
             entrypoint,
         },
         entities: e,
@@ -3752,6 +4370,9 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         "semantics {}\nentrypoint {}\n",
         m.header.semantics, m.header.entrypoint
     ));
+    if let Some(contexts) = &m.analyses.lifecycle_contexts {
+        s.push_str(&format!("lifecycle source contexts: {contexts:?}\n"));
+    }
     let e = &m.entities;
     let fn_name =
         |id: FunctionId| e.functions[id.index()].display.clone();
@@ -3778,6 +4399,11 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 FunctionKind::Free => "free",
                 FunctionKind::Mode => "mode",
                 FunctionKind::FailureHandler => "failure",
+                FunctionKind::ParameterDefault => "parameter_default",
+                FunctionKind::FieldDefault => "field_default",
+                FunctionKind::ArgumentDefault => "argument_default",
+                FunctionKind::ClosureAssertion => "closure_assertion",
+                FunctionKind::BirthCheck => "birth_check",
             },
             if f.effects.is_empty() {
                 String::new()
@@ -4038,5 +4664,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
             }
         }
     }
+    s.push_str(&crate::recovery_facts::render_recovery_facts(m));
+    s.push_str(&crate::recovery_facts::render_recovery_failure_entries(m));
     s
 }

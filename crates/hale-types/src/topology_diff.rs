@@ -227,6 +227,10 @@ fn locus_facets(a: &Admitted, locus: &str, map: &RenameMap) -> BTreeMap<&'static
     let mut out: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
     let Some(c) = contract_of(a, locus) else { return out };
     out.insert("sealed", [c["sealed"].as_bool().unwrap_or(false).to_string()].into());
+    let flow = a.v["flow_classes"].as_array()
+        .and_then(|rows| rows.iter().find(|row| row["locus"] == locus))
+        .and_then(|row| row["class"].as_str()).unwrap_or("resident");
+    out.insert("flow", [flow.to_string()].into());
     out.insert(
         "params",
         c["params"]
@@ -574,7 +578,7 @@ fn contracts(a: &Admitted, b: &Admitted, loci: &Pairing, topics: &Pairing, map: 
     for (na, nb) in &loci.pairs {
         let fa = locus_facets(a, na, map);
         let fb = locus_facets(b, nb, &none);
-        for facet in ["sealed", "params", "methods", "publishes", "subscribes", "supervises", "ownership", "placement"] {
+        for facet in ["sealed", "flow", "params", "methods", "publishes", "subscribes", "supervises", "ownership", "placement"] {
             let empty = BTreeSet::new();
             let (removed, added) = set_delta(fa.get(facet).unwrap_or(&empty), fb.get(facet).unwrap_or(&empty));
             if removed.is_empty() && added.is_empty() {

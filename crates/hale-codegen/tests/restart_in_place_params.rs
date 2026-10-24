@@ -140,3 +140,28 @@ fn restart_in_place_restores_an_inline_fixed_array_param() {
         "stderr: {stderr}"
     );
 }
+
+
+#[test]
+fn restart_in_place_through_a_helper_restores_the_typed_target() {
+    // The handler has no restart op in its declaration survey. The
+    // helper's typed receiver must still cause a built-params snapshot.
+    let source = SRC.replacen("restart_in_place(c) for 3;", "recover_worker(c);", 1)
+        + "\nfn recover_worker(c: Worker) { restart_in_place(c) for 3; }\n";
+    let bin = harness::unique_bin("hale_restart_helper_params");
+    harness::build_source_asan(&source, &bin);
+    let mut command = Command::new(&bin);
+    command.env("LOTUS_NO_CHUNK_POOL", "1");
+    #[cfg(target_os = "macos")]
+    command.env("ASAN_OPTIONS", "detect_leaks=0");
+    let out = command.output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), [
+        "w tag=FROM-LITERAL hits=1 note=R tries=2 seen=FROM-LITERAL:1:R;",
+        "born tag=BORN-LITERAL tries=2 fired=1",
+    ], "stderr: {stderr}");
+    assert!(!stderr.contains("AddressSanitizer"), "{stderr}");
+}

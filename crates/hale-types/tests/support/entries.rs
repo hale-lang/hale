@@ -133,7 +133,11 @@ pub const SEED_DIR: &str = "/hale-test-seed";
 
 /// `hale_types::check_program`, through the snapshot.
 pub fn check_program(program: &Program) -> Vec<Diag> {
-    checked(&from_program(program.clone(), Vec::new(), Config::check(true, false)))
+    checked(&from_program(
+        program.clone(),
+        Vec::new(),
+        Config::check(true, false),
+    ))
 }
 
 /// `hale_types::check_bundle`, through the snapshot.
@@ -143,12 +147,21 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 
 /// `hale_types::check_bundle_opts`, through the snapshot.
 pub fn check_bundle_opts(bundle: &Bundle<'_>, allow_unowned_subscriber: bool) -> Vec<Diag> {
-    checked(&bundle_snapshot(bundle, Config::check(false, allow_unowned_subscriber)))
+    checked(&bundle_snapshot(
+        bundle,
+        Config::check(false, allow_unowned_subscriber),
+    ))
 }
 
 /// `hale_types::check_bundle_opts_whole_program`, through the snapshot.
-pub fn check_bundle_opts_whole_program(bundle: &Bundle<'_>, allow_unowned_subscriber: bool) -> Vec<Diag> {
-    checked(&bundle_snapshot(bundle, Config::check(true, allow_unowned_subscriber)))
+pub fn check_bundle_opts_whole_program(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
+    checked(&bundle_snapshot(
+        bundle,
+        Config::check(true, allow_unowned_subscriber),
+    ))
 }
 
 /// `hale_types::check_bundle_opts_scoped`, through the snapshot: one
@@ -163,7 +176,10 @@ pub fn check_bundle_opts_scoped(
         strict_callees, strict_idents,
         "the snapshot's `Config::whole_program` holds the callee rule and the identifier rule together"
     );
-    checked(&bundle_snapshot(bundle, Config::check(strict_callees, allow_unowned_subscriber)))
+    checked(&bundle_snapshot(
+        bundle,
+        Config::check(strict_callees, allow_unowned_subscriber),
+    ))
 }
 
 /// `hale_types::check_bundle_for_build`, through the snapshot: the
@@ -175,7 +191,10 @@ pub fn check_bundle_for_build(bundle: &Bundle<'_>, allow_unowned_subscriber: boo
     let mut diags = checked(&snap);
     let ownership = match snap.demand_ownership_graph() {
         Ok(graph) => &graph.rows,
-        Err(blocked) => panic!("the ownership graph is blocked: {}", render_blocked(blocked)),
+        Err(blocked) => panic!(
+            "the ownership graph is blocked: {}",
+            render_blocked(blocked)
+        ),
     };
     diags.extend(hale_types::build_rule_diags(&snap.bundle(), ownership));
     diags
@@ -183,7 +202,10 @@ pub fn check_bundle_for_build(bundle: &Bundle<'_>, allow_unowned_subscriber: boo
 
 /// `hale_types::derive_application_model`, through the snapshot.
 pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
-    model_of(&bundle_snapshot(bundle, Config::check(true, false)), &bundle.sources)
+    model_of(
+        &bundle_snapshot(bundle, Config::check(true, false)),
+        &bundle.sources,
+    )
 }
 
 /// `hale_types::effects::effect_certificates`, through the snapshot.
@@ -199,7 +221,13 @@ pub fn claim_law_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         return Vec::new();
     }
     let model = model_of(&snap, &bundle.sources);
-    hale_types::judgment::claim_law_diags_over(&view, &model, certificates(&snap), summary(&snap), laws(&snap))
+    hale_types::judgment::claim_law_diags_over(
+        &view,
+        &model,
+        certificates(&snap),
+        summary(&snap),
+        laws(&snap),
+    )
 }
 
 /// `hale_types::topology::model_shape_hash`, through the snapshot.
@@ -212,7 +240,13 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     let snap = bundle_snapshot(bundle, Config::check(true, false));
     let model = model_of(&snap, &bundle.sources);
     let view = view_of(&snap, &bundle.sources);
-    hale_types::topology::dump_topology_over(&view, &model, certificates(&snap), summary(&snap), laws(&snap))
+    hale_types::topology::dump_topology_over(
+        &view,
+        &model,
+        certificates(&snap),
+        summary(&snap),
+        laws(&snap),
+    )
 }
 
 /// `hale_types::topology::dump_topology_parts`, through the snapshot.
@@ -267,7 +301,12 @@ pub fn resolve_files(files: &[(&str, &str)]) -> Result<LoweringView, String> {
 pub fn check_files(files: &[(&str, &str)]) -> Vec<Diag> {
     let dir = PathBuf::from(SEED_DIR);
     let buffers = buffers(files);
-    match Snapshot::load(&dir, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::check(true, false)) {
+    match Snapshot::load(
+        &dir,
+        LoadMode::WholeSeed,
+        &Overlay::new(&buffers),
+        Config::check(true, false),
+    ) {
         Ok(snap) => checked(&snap),
         Err(hale_frontend::snapshot::LoadError::Load(failure)) => failure.diags,
         Err(hale_frontend::snapshot::LoadError::Refused(msg)) => {
@@ -296,7 +335,10 @@ pub fn load_files(files: &[(&str, &str)], config: Config) -> Snapshot {
 /// Each of `files` an overlay buffer under [`SEED_DIR`].
 fn buffers(files: &[(&str, &str)]) -> BTreeMap<PathBuf, String> {
     let dir = PathBuf::from(SEED_DIR);
-    files.iter().map(|(name, text)| (dir.join(name), text.to_string())).collect()
+    files
+        .iter()
+        .map(|(name, text)| (dir.join(name), text.to_string()))
+        .collect()
 }
 
 /// A seed directory on disk, loaded whole as `hale check <dir>` loads it.
@@ -321,13 +363,21 @@ pub fn checked(snap: &Snapshot) -> Vec<Diag> {
 /// over the snapshot's view with `sources` on it when the snapshot has
 /// no source map of its own.
 pub fn model_of(snap: &Snapshot, sources: &[SourceFile]) -> ApplicationModel {
-    let blocked = |b: &hale_frontend::snapshot::Blocked| -> ! { panic!("the model's inputs are blocked: {}", render_blocked(b)) };
+    let blocked = |b: &hale_frontend::snapshot::Blocked| -> ! {
+        panic!("the model's inputs are blocked: {}", render_blocked(b))
+    };
     let view = view_of(snap, sources);
     let inputs = hale_types::model_builder::ModelInputs {
+        lifecycle_contexts: snap
+            .demand_lifecycle_contexts()
+            .unwrap_or_else(|_| panic!("source contexts")),
         top: snap.demand_scope().unwrap_or_else(|b| blocked(b)),
         bus_graph: snap.demand_bus_graph().unwrap_or_else(|b| blocked(b)),
         ownership: snap.demand_ownership_graph().unwrap_or_else(|b| blocked(b)),
         handlers: snap.demand_handlers().unwrap_or_else(|b| blocked(b)),
+        typed: snap.demand_typed_bodies().unwrap_or_else(|b| blocked(b)),
+        stdlib_recoveries: hale_types::stdlib_bodies::recovery_rows(),
+        flows: snap.demand_flow_instances().unwrap_or_else(|b| blocked(b)),
         effects: snap.demand_effects().unwrap_or_else(|b| blocked(b)),
         forms: snap.demand_forms().unwrap_or_else(|b| blocked(b)),
         bindings: snap.demand_bindings().unwrap_or_else(|b| blocked(b)),
@@ -339,7 +389,11 @@ pub fn model_of(snap: &Snapshot, sources: &[SourceFile]) -> ApplicationModel {
     hale_types::model_builder::derive_application_model_over(&view, &inputs)
 }
 
-fn from_program(program: Program, import_renames: Vec<(Vec<String>, String)>, config: Config) -> Snapshot {
+fn from_program(
+    program: Program,
+    import_renames: Vec<(Vec<String>, String)>,
+    config: Config,
+) -> Snapshot {
     match Snapshot::from_program(program, import_renames, config) {
         Ok(s) => s,
         Err(_) => panic!("a bare program's snapshot is refused only for an `--api` or `--env` it does not ask for"),
@@ -371,7 +425,10 @@ fn view_of<'s>(snap: &'s Snapshot, sources: &[SourceFile]) -> Bundle<'s> {
 fn certificates(snap: &Snapshot) -> &EffectCertificates {
     match snap.demand_effect_certificates() {
         Ok(c) => c,
-        Err(blocked) => panic!("the certificate report is blocked: {}", render_blocked(blocked)),
+        Err(blocked) => panic!(
+            "the certificate report is blocked: {}",
+            render_blocked(blocked)
+        ),
     }
 }
 
@@ -387,7 +444,10 @@ fn laws(snap: &Snapshot) -> &hale_types::claims::LawSelection {
 fn summary(snap: &Snapshot) -> &hale_types::alloc_summary::AllocSummary {
     match snap.demand_alloc_summary() {
         Ok(s) => s,
-        Err(blocked) => panic!("the allocation summary is blocked: {}", render_blocked(blocked)),
+        Err(blocked) => panic!(
+            "the allocation summary is blocked: {}",
+            render_blocked(blocked)
+        ),
     }
 }
 

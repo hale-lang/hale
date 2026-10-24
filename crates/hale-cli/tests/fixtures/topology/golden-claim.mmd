@@ -1,19 +1,30 @@
 flowchart LR
-  %% topology · claim view — schema 1.21 · shape 8ae65dc1d9345936 · verdict clean
+  %% topology · claim view — schema 1.35 · shape 4ff25b6b26bff6e9 · verdict clean
   subgraph g_App["App"]
+    n_App_3a_3aparams_3a_3as["params::s  {alloc}"]
+    n_App_3a_3aparams_3a_3aw["params::w  {alloc}"]
     n_App_3a_3arun["run  [hook]  {publish,alloc}"]
   end
   subgraph g_Store["Store"]
     n_Store_3a_3aon_5fc["on_c"]
+    n_Store_3a_3aparams_3a_3atotal["params::total"]
   end
   subgraph g_Worker["Worker"]
     n_Worker_3a_3aon_5fr["on_r  {publish,alloc}"]
+    n_Worker_3a_3aparams_3a_3aseen["params::seen"]
+  end
+  subgraph g_Cmd_20_5btype_5d["Cmd [type]"]
+    n_Cmd_3a_3afields_3a_3aop["fields::op"]
+  end
+  subgraph g_Reading_20_5btype_5d["Reading [type]"]
+    n_Reading_3a_3afields_3a_3asensor["fields::sensor"]
+    n_Reading_3a_3afields_3a_3av["fields::v"]
   end
   subgraph g__28free_20functions_29["(free functions)"]
     n_call_5fany["call_any  {unclassified}"]
     n_call_5fit["call_it"]
     n_double["double"]
-    n_main["main  {alloc}"]
+    n_main["main  {unclassified}"]
   end
   t_Cmds(["Cmds<br/>ctl.cmd · payload 828a7a8d"])
   t_Readings(["Readings<br/>sense.reading · payload fb9fb455"])
@@ -24,7 +35,12 @@ flowchart LR
   n_Store_3a_3aon_5fc -->|calls| n_double
   n_Worker_3a_3aon_5fr -->|calls| n_call_5fit
   n_call_5fit -->|calls| n_double
+  n_App_3a_3aparams_3a_3as -->|initializes total| n_Store_3a_3aparams_3a_3atotal
+  n_App_3a_3aparams_3a_3aw -->|initializes seen| n_Worker_3a_3aparams_3a_3aseen
+  n_main -->|initializes w| n_App_3a_3aparams_3a_3aw
+  n_main -->|initializes s| n_App_3a_3aparams_3a_3as
+  n_main -->|may enter run (run_admission)| n_App_3a_3arun
   classDef hl stroke:#d69e2e,stroke-width:3px
-  class n_Store_3a_3aon_5fc,n_Worker_3a_3aon_5fr hl
+  class n_Store_3a_3aon_5fc,n_Store_3a_3aparams_3a_3atotal,n_Worker_3a_3aon_5fr,n_Worker_3a_3aparams_3a_3aseen hl
   %% card: claim apart — holds | forbid reaches(stores, workers) via { calls }
-  %% card: 1 unresolved | call_any: indirect_call
+  %% card: 2 unresolved | call_any: indirect_call | main: unmodeled_initialization

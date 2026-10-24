@@ -524,6 +524,8 @@ pub struct CheckInputs<'a> {
     /// The ownership graph over the programs checked: the
     /// unowned-subscriber rule's births, declarations and owners.
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
+    /// The cached source default contexts and explicit unresolved boundaries.
+    pub default_evaluations: &'a crate::ownership_graph::DefaultEvaluations,
     /// The effect rows, demanded only when a rule reads them: a codec
     /// binding's purity assertion reads the purity column, and the
     /// blocking check reads which helpers hold a cooperative worker once
@@ -538,8 +540,8 @@ pub struct CheckInputs<'a> {
     /// entry, with the role, the ends and the bound-topic set the
     /// binding rules read.
     pub bindings: &'a crate::binding_rows::BindingRows,
-    /// The allocation summary the effects certificate engine walks: the
-    /// `alloc_summary` family's, the one the effect rows read.
+    /// The shared contextual execution summary the effect certificates and
+    /// effect rows read, extending the base allocation facts with parent work.
     pub alloc_summary: &'a crate::alloc_summary::AllocSummary,
     /// The form rows (F.40 phase 3, C1): each `@form` declaration's
     /// `sync` configuration and the discipline it gets, inference's
@@ -639,13 +641,16 @@ fn check_numbered_bundle(
         &intra_locus,
         top,
     ));
+    let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement, &entry);
+    let default_evaluations = ownership.default_evaluations(&ownership.bubble_plans(),
+        crate::typed_bodies::OmittedView { by_call:&walk.record.omitted_args,by_path:&walk.record.calls_by_path });
+    let alloc_summary = std::sync::Arc::new(crate::protocol_execution::derive(&alloc_summary, &ownership, &default_evaluations));
     let rows = std::cell::OnceCell::new();
     let effects = || {
         Some(rows.get_or_init(|| {
             crate::effect_rows::derive_effect_rows(bundle, top, alloc_summary.clone())
         }))
     };
-    let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     // The bus graph reads the table without the walk, as the snapshot's does.
     let bus_placement = crate::placement::derive_placement(bundle, top, &entry, None);
@@ -659,6 +664,7 @@ fn check_numbered_bundle(
         handlers: &handlers,
         flows: &flows,
         ownership: &ownership,
+        default_evaluations: &default_evaluations,
         effects: &effects,
         entry: &entry,
         bindings: &bindings,
@@ -1132,6 +1138,7 @@ fn walk_bundle(
     let mut by_decl: ByDeclaration = BTreeMap::new();
     let known = &top.names;
     let mut typed = crate::typed_bodies::TypingRecord::default();
+    typed.recovery_calls_available = crate::typed_bodies::needs_recovery_call_operands(&bundle.snapshot);
     let templates = GenericTemplates::of(bundle);
     monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
     // GH #255: bundle-wide set of transport-bound topic names,
@@ -1348,6 +1355,7 @@ fn walk_bundle(
         unit_findings: std::collections::BTreeSet::new(),
         default_findings: std::collections::BTreeSet::new(),
         defaults_judged_at_literals: false,
+        probing_locus_defaults: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
         default_scan: None,
@@ -1475,7 +1483,7 @@ pub fn check_bundle_rules(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: crate::typed_bodies::OmittedView { by_call: &walk.record.omitted_args, by_path: &walk.record.calls_by_path },
+            default_evaluations: inputs.default_evaluations,
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -8507,6 +8515,10 @@ fn check_binding_codec<'e>(
         });
         match purity {
             Some(crate::purity::Purity::Pure) => {}
+            Some(crate::purity::Purity::Uncertified { reason, .. }) => {
+                diags.push(Violation::error(CODEC_PURITY, codec.locus.span,
+                    format!("codec `{}.{}` cannot be certified safe to dispatch from arbitrary threads: {}",codec.locus.name,method_name,reason)).into_diag());
+            }
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
                 // The codec-purity rule's finding (F.40 phase 4, W5),
@@ -8590,6 +8602,10 @@ fn render_impurity(
             "codecs must be deterministic, side-effect-free \
              transformations. Remove the offending call from the \
              codec body.",
+        ),
+        ParentAdmission { owner, child, .. } => (
+            format!("constructing `{child}` may mutate `{owner}`'s child tracking during admission or release"),
+            "move child construction out of the codec and keep the codec a transformation of input data.",
         ),
         ImpureCalleeCall { callee_name, .. } => (
             format!(
@@ -11107,6 +11123,9 @@ struct Checker<'a> {
     /// scope says, so the quantity rules' errors are found at the literal
     /// (`type_omitted_defaults`), not kept here.
     defaults_judged_at_literals: bool,
+    /// A name-only probe in a literal's caller is not a semantic typing
+    /// context for the newborn locus's self or its defaults' callees.
+    probing_locus_defaults: bool,
     /// Where the declaration being walked starts in `diags`: a kept
     /// error is once per declaration, which owns its result.
     decl_diags_start: usize,
@@ -11196,6 +11215,10 @@ struct ScopeStack {
 #[derive(Debug, Clone)]
 struct LocalSym {
     ty: Ty,
+    /// Symbolic recovery binding for an immutable body parameter.
+    /// Ordinary locals deliberately do not inherit an initializer's path:
+    /// a later field replacement can leave an alias naming an old instance.
+    recovery_root: Option<crate::typed_bodies::RecoveryRoot>,
     /// m50: tracks whether the binding was declared with `mut`.
     /// `let x = ...` is immutable; `let mut x = ...` permits
     /// reassignment. Per spec/types.md "Mutability" + design-
@@ -11390,10 +11413,10 @@ impl<'a> Checker<'a> {
                         // GH #1076: a default's casts and quantity
                         // literals are typed there too, in the literal's
                         // scope (`type_omitted_defaults`).
-                        let mut calls: Vec<(NodeId, &'a Expr, usize)> = Vec::new();
+                        let mut calls: Vec<(NodeId, &'a Expr, &'a [Expr])> = Vec::new();
                         let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| {
                             if let Expr::Call { callee, args, id, .. } = e {
-                                calls.push((*id, callee.as_ref(), args.len()));
+                                calls.push((*id, callee.as_ref(), args));
                             }
                         });
                         for f in fields {
@@ -11402,8 +11425,8 @@ impl<'a> Checker<'a> {
                             }
                         }
                         let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
-                        for (id, callee, supplied) in calls {
-                            self.record_omitted_defaults(id, callee, supplied);
+                        for (id, callee, args) in calls {
+                            self.record_omitted_defaults(id, callee, args);
                         }
                         self.defaults_judged_at_literals = judged;
                     }
@@ -14690,6 +14713,7 @@ impl<'a> Checker<'a> {
             LocusMember::Mode(md) => self.body = md.id,
             LocusMember::Failure(fd) => self.body = fd.id,
             LocusMember::Closure(cd) => self.body = cd.id,
+            LocusMember::BirthCheck(bc) => self.body = bc.id,
             LocusMember::Fn(f) => self.body = f.id,
             _ => {}
         }
@@ -14835,13 +14859,11 @@ impl<'a> Checker<'a> {
                     // monomorph's (`admit_monomorph_literal`); an array or
                     // tuple default element by element.
                     //
-                    // GH #911 B5: generic TYPES only. `c: Cache<Int, String>
-                    // = Cache { }` on a generic LOCUS is refused at build
-                    // ("generic instantiation `Cache_Int_String` not
-                    // synthesized — discovery missed the use site"), so
-                    // accepting it here would trade one divergence for
-                    // another.
-                    let conforms = conforms || self.admit_monomorph_literal(&want, &got, init, false);
+                    // The completed generic inventory discovers locus
+                    // specializations in typed defaults as well. Lowering
+                    // rewrites the literal from that same declared type;
+                    // check its fields against the actual monomorph here.
+                    let conforms = conforms || self.admit_monomorph_literal(&want, &got, init, true);
                     if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
                             init.span(),
@@ -14971,7 +14993,7 @@ impl<'a> Checker<'a> {
                 self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
-                for p in &lc.params {
+                for (ordinal, p) in lc.params.iter().enumerate() {
                     // GH #877: `accept(c: Chld)` names the child
                     // locus; an undeclared name is the same typo in
                     // the same position. (What else it may name is
@@ -14995,7 +15017,7 @@ impl<'a> Checker<'a> {
                         }
                     };
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { recovery_root: Some(crate::typed_bodies::RecoveryRoot::Parameter { body: self.body.0, ordinal: ordinal as u32, arity: lc.params.len() as u32 }), ty, is_mut: false, cell: None, param_place: true });
                 }
                 self.check_block(&lc.body);
                 self.locals.pop();
@@ -15006,10 +15028,10 @@ impl<'a> Checker<'a> {
                 self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
-                for p in &md.params {
+                for (ordinal, p) in md.params.iter().enumerate() {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { recovery_root: Some(crate::typed_bodies::RecoveryRoot::Parameter { body: self.body.0, ordinal: ordinal as u32, arity: md.params.len() as u32 }), ty, is_mut: false, cell: None, param_place: true });
                 }
                 // A mode that declares `-> T` returns a value; one that
                 // does not returns nothing, like a hook. The value's
@@ -15071,11 +15093,11 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 self.in_on_failure = true;
                 self.locals.push();
-                for p in &fd.params {
+                for (ordinal, p) in fd.params.iter().enumerate() {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+                    self.locals.insert(&p.name.name, LocalSym { recovery_root: Some(crate::typed_bodies::RecoveryRoot::Parameter { body: self.body.0, ordinal: ordinal as u32, arity: fd.params.len() as u32 }), ty, is_mut: false, cell: None, param_place: true });
                 }
                 self.check_block(&fd.body);
                 self.locals.pop();
@@ -15731,10 +15753,10 @@ impl<'a> Checker<'a> {
             self.fallible_ctx = Some((success_ret, payload));
         }
         self.locals.push();
-        for p in &decl.params {
+        for (ordinal, p) in decl.params.iter().enumerate() {
             let ty = self.resolve_param_te(&p.ty);
             self.note_view_binding(&p.name, &ty, Some(&p.ty));
-            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
+            self.locals.insert(&p.name.name, LocalSym { recovery_root: Some(crate::typed_bodies::RecoveryRoot::Parameter { body: self.body.0, ordinal: ordinal as u32, arity: decl.params.len() as u32 }), ty, is_mut: false, cell: None, param_place: true });
         }
         self.check_fn_body(&decl.body);
         self.locals.pop();
@@ -16404,9 +16426,19 @@ impl<'a> Checker<'a> {
                 self.note_view_binding(name, &bound, ty.as_ref());
                 let cell = self.cell_of(value);
                 let param_place = matches!(bound, Ty::Bounded(_, _)) && self.under_param_place(value);
+                // An immutable locus alias copies a handle, preserving its
+                // instance identity. A saved field value is not a live path,
+                // and a record/value copy is not a handle identity proof.
+                let recovery_root = if self.typed.recovery_calls_available && !*is_mut && self.scope_name_of(&bound)
+                    .is_some_and(|n| matches!(self.top.symbols.get(&n), Some(TopSymbol::Locus(_)))) {
+                    let operand = self.recovery_operand(value);
+                    if operand.fields.is_empty() && !matches!(operand.root, crate::typed_bodies::RecoveryRoot::Unknown) {
+                        Some(operand.root)
+                    } else { None }
+                } else { None };
                 self.locals.insert(
                     &name.name,
-                    LocalSym { ty: bound, is_mut: *is_mut, cell, param_place },
+                    LocalSym { recovery_root, ty: bound, is_mut: *is_mut, cell, param_place },
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
@@ -16452,7 +16484,7 @@ impl<'a> Checker<'a> {
                     self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
-                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None, param_place: false },
+                        LocalSym { recovery_root: None, ty: t.clone(), is_mut: *is_mut, cell: None, param_place: false },
                     );
                 }
             }
@@ -16635,7 +16667,7 @@ impl<'a> Checker<'a> {
                 };
                 self.locals.push();
                 self.note_view_binding(name, &elem, None);
-                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None, param_place: false });
+                self.locals.insert(&name.name, LocalSym { recovery_root: None, ty: elem, is_mut: false, cell: None, param_place: false });
                 self.check_block(body);
                 self.locals.pop();
             }
@@ -16807,12 +16839,11 @@ impl<'a> Checker<'a> {
                     let _ = self.check_expr(e);
                 }
                 self.refuse_unlowered_recovery(*op, modifier.as_ref(), *span);
-                // A handler's statements are its handler row's ops, on the
-                // handler's child.
-                if !self.in_on_failure {
-                    let bounded = matches!(modifier, Some(RecoveryModifier::For(_)));
-                    self.record_recovery(*op, bounded, *span, tys.into_iter().next().unwrap_or(Ty::Unknown));
-                }
+                let bounded = matches!(modifier, Some(RecoveryModifier::For(_)));
+                self.record_recovery(
+                    *op, bounded, *span, args.first(),
+                    tys.into_iter().next().unwrap_or(Ty::Unknown),
+                );
             }
             // v1.x-VIOLATE (F.27): rejection-context enforcement
             // + closure-name resolution against the enclosing
@@ -16956,7 +16987,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 self.locals.insert(
                     &binding.name,
-                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
+                    LocalSym { recovery_root: None, ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
                 );
                 for s in &body.stmts {
                     self.check_stmt(s);
@@ -17124,7 +17155,7 @@ impl<'a> Checker<'a> {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
                 &id.name,
-                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
+                LocalSym { recovery_root: None, ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
             ),
             Pattern::Constructor { args, .. } => {
                 for a in args {
@@ -17371,6 +17402,8 @@ impl<'a> Checker<'a> {
                         self.locals.insert(
                             "err",
                             LocalSym {
+                                recovery_root: None,
+
                                 ty: err_ty,
                                 is_mut: false,
                                 cell: None,
@@ -17387,6 +17420,8 @@ impl<'a> Checker<'a> {
                         self.locals.insert(
                             "err",
                             LocalSym {
+                                recovery_root: None,
+
                                 ty: err_ty,
                                 is_mut: false,
                                 cell: None,
@@ -18501,12 +18536,38 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The `recoveries` row of a recovery statement outside every
-    /// `on_failure` body: its operation, its bound, and the locus the
+    /// The checker resolves the root while its lexical bindings are live.
+    /// In particular a local shadowing a handler parameter is not that
+    /// parameter, and an alias does not become a live field lookup.
+    fn recovery_operand(&self, argument: &Expr) -> crate::typed_bodies::RecoveryOperand {
+        use crate::typed_bodies::{RecoveryOperand, RecoveryRoot};
+        match argument {
+            Expr::KwSelf(_) => RecoveryOperand {
+                root: self.current_locus.and_then(|l| self.locus_ref(&l.name))
+                    .map(RecoveryRoot::CurrentLocus).unwrap_or(RecoveryRoot::Unknown),
+                fields: Vec::new(),
+            },
+            Expr::Ident(name) => RecoveryOperand {
+                root: self.locals.lookup(&name.name).and_then(|local| local.recovery_root.clone())
+                    .unwrap_or(RecoveryRoot::Unknown),
+                fields: Vec::new(),
+            },
+            Expr::Field { receiver, name, .. } => {
+                let mut operand = self.recovery_operand(receiver);
+                operand.fields.push(name.name.clone());
+                operand
+            }
+            _ => RecoveryOperand { root: RecoveryRoot::Unknown, fields: Vec::new() },
+        }
+    }
+
+    /// The `recoveries` row of every recovery statement, including in
+    /// `on_failure`: its operation, its bound, and the locus the
     /// checker typed its receiver as (a monomorph's template), in the
     /// body being walked, on the walk's specialization. A statement a
     /// walk reaches twice is one row.
-    fn record_recovery(&mut self, op: RecoveryOp, bounded: bool, statement: Span, receiver: Ty) {
+    fn record_recovery(&mut self, op: RecoveryOp, bounded: bool, statement: Span, argument: Option<&Expr>, receiver: Ty) {
+        if self.defaults_judged_at_literals || self.probing_locus_defaults { return; }
         let child = match self.scope_name_of(&receiver) {
             Some(name) if matches!(self.top.symbols.get(&name), Some(TopSymbol::Locus(_))) => self.locus_ref(&name),
             _ => None,
@@ -18516,6 +18577,12 @@ impl<'a> Checker<'a> {
             parent: parent_name.as_deref().and_then(|n| self.locus_ref(n)),
             parent_name,
             statement,
+            receiver_span: argument.map(Expr::span),
+            operand: argument.map(|arg| self.recovery_operand(arg)).unwrap_or(crate::typed_bodies::RecoveryOperand {
+                root: crate::typed_bodies::RecoveryRoot::Unknown, fields: Vec::new(),
+            }),
+            evaluation: self.default_evaluation.clone(),
+            in_handler: self.in_on_failure,
             op,
             bounded,
             receiver,
@@ -19080,7 +19147,7 @@ impl<'a> Checker<'a> {
         // a set as any value of the member does
         if let Some(v) = vs.iter().find(|v| v.name == member.name) {
             if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
-                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None, param_place: false });
+                self.locals.insert(&id.name, LocalSym { recovery_root: None, ty: ty.clone(), is_mut: false, cell: None, param_place: false });
             }
             return;
         }
@@ -20744,6 +20811,7 @@ impl<'a> Checker<'a> {
         if opened {
             self.typed.open_walk();
         }
+        let probing = std::mem::replace(&mut self.probing_locus_defaults, true);
         let mark = self.walk_mark();
         let judged = std::mem::replace(&mut self.defaults_judged_at_literals, false);
         // a locus's params read their own `self`, judged where written
@@ -20757,6 +20825,7 @@ impl<'a> Checker<'a> {
         self.default_uses.pop();
         self.default_scan = scan;
         self.defaults_judged_at_literals = judged;
+        self.probing_locus_defaults = probing;
         self.discard_keeping_unit_errors(mark);
         if opened {
             let _ = self.typed.close_walk();
@@ -20825,7 +20894,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
+    fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, args: &[Expr]) {
+        let supplied = args.len();
         if self.default_invocations.contains(&invocation.0) {
             return;
         }
@@ -20869,6 +20939,26 @@ impl<'a> Checker<'a> {
                 from: user.filter(|d| d.params.len() > supplied).map(|_| supplied),
             };
             self.typed.call_typed(invocation, &self.default_evaluation, row);
+            if self.typed.recovery_calls_available && !self.probing_locus_defaults {
+                // These roots are immutable parameters or self. Field paths
+                // require state and remain unresolved by target binding; a
+                // saved field alias or computed argument has no invented root.
+                let receiver = match callee {
+                    Expr::Field { receiver, .. } => Some(self.recovery_operand(receiver)),
+                    _ => None,
+                };
+                let row = crate::typed_bodies::RecoveryCallRow {
+                    call: invocation,
+                    callee: user.map(|d| d.id),
+                    callee_arity: user.map(|d| d.params.len() as u32),
+                    receiver,
+                    arguments: args.iter().map(|a| self.recovery_operand(a)).collect(),
+                    evaluation: self.default_evaluation.clone(),
+                    specialization: self.specializing.clone().unwrap_or_default(),
+                };
+                let rows = &mut self.typed.body(self.body).recovery_calls;
+                if !rows.contains(&row) { rows.push(row); }
+            }
         }
         let Some(decl) = decl else { return };
         // The `omitted_args` column: which defaults this call expands, in
@@ -21936,7 +22026,7 @@ impl<'a> Checker<'a> {
                 if crate::client_expand::client_call(expr).is_some() {
                     return Ty::Unknown;
                 }
-                self.record_omitted_defaults(*call_id, callee, args.len());
+                self.record_omitted_defaults(*call_id, callee, args);
                 // A bare callee the shadowing desugar left as written names
                 // the program's fn or the builtin (`crate::shadowed_callees`).
                 // A binding of the name that is, or may be, a fn value the
@@ -23932,6 +24022,8 @@ impl<'a> Checker<'a> {
                         self.locals.insert(
                             "err",
                             LocalSym {
+                                recovery_root: None,
+
                                 ty: payload.clone(),
                                 is_mut: false,
                                 cell: None,
@@ -23972,6 +24064,8 @@ impl<'a> Checker<'a> {
                         self.locals.insert(
                             "err",
                             LocalSym {
+                                recovery_root: None,
+
                                 ty: payload.clone(),
                                 is_mut: false,
                                 cell: None,

@@ -1,0 +1,7 @@
+import "./lib" as lib;
+locus Shadow { }
+fn target(n: Int) -> Int { return n; }
+group operations = { Shadow };
+group targets = { target };
+main locus App { claims { adopt Boundary; } }
+fn main() { App { }; println(lib::operation(1)); }

@@ -475,13 +475,30 @@ order: a field is its value once its turn comes, whatever an
 **Accept bubbling.** The owner in step 2 need not be the direct
 parent. An `I{}` instantiated anywhere in a subtree bubbles to
 the nearest enclosing ancestor that declares `accept(I)`
-(innermost-wins); resolution is entirely static (the closed-world
-instantiation graph fixes every owner edge at compile time). The
+(innermost-wins). The closed-world instantiation graph enumerates the
+owner candidates. A same-tower intermediary shared by different owners
+carries its actual nearest owner instance and concrete specialization.
+Its children use that owner's layout, admission policy, accept/release
+functions and tracker. A separately created intermediary outside every
+accepting subtree takes the ordinary transient path. Generic acceptance
+substitutes the shared specialization inventory, so `accept(c: T)` on
+`Owner<Child>` accepts `Child` and identifies `Owner_Child` as the owner.
+Per-instance alternatives require closed routes. A same-tower choice
+constructs directly using its actual owner; a cross-pool choice may post
+to a program-lifetime singleton owner through the existing marshaling and
+birth dispatcher. A site that can post is fire-and-forget and cannot be
+used as a value even if another owner choice is local. Other unresolved
+or dynamic cross-pool alternatives are refused during lowering. The
 owner may live in a different tower or on a different pool: a
 cross-pool owner is served by an async handoff over the bus, so a
 cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
-compile time. The rule holds at every expansion of a default, since
+compile time. A supported cross-pool flow with an empty or omitted
+`run()` still completes its run wrapper after birth on the owner's
+thread. Its drain, the accepting owner's release bookend, dissolve
+and reclaim occur there; it leaves the owner's children tracker and
+returns its recognition reservation and child struct for reuse.
+The rule holds at every expansion of a default, since
 a default is lowered where it is expanded, not where it is written.
 The typechecker rejects it at the literal: in a member body (a
 closure's assertion included), under the locus whose body it is; in
@@ -1064,6 +1081,18 @@ never mistaken for `std::io::tcp::Stream`. It is an
 opt-in report, never a diagnostic, since a release declaration is
 legitimate. It lists the program's own clauses: a stdlib child type is
 internal to the stdlib locus that owns it, and is not listed.
+
+Concrete flow membership is resolved before lifecycle planning and
+emission. A generic owner's `release(c: T)` names the type substituted
+for `T` in each concrete specialization; an uninstantiated template
+does not classify arbitrary child types. The shared `flow_instances`
+family includes the loaded seed's clauses and bundled stdlib clauses,
+with their source universes, and closes the generic type/locus inventory
+from authored type uses and typed monomorph requests. Emission consumes
+that inventory and adds no flow types later. If the inventory cannot
+be completed, including exceeding 16,384 specialization instances,
+planning and lowering refuse the incomplete account. This is an
+analysis limit, not a runtime population bound.
 
 **Three ends, kept apart.** A *flow* ends by completing: its `run()`
 returns (or it `terminate`s), and it is reclaimed on the spot, its
@@ -4603,6 +4632,12 @@ keeps the substrate honest about which window the counter
 belongs to without forcing the user to maintain a `last_reset_at`
 field or a parallel pre-fire hook.
 
+Built-parameter snapshot eligibility follows the typed receivers of all
+`restart_in_place` statements, including helper functions and handlers
+for other child types. Unresolved receivers conservatively retain
+snapshots; this storage precaution does not certify a recovery target.
+The stdlib's recovery rows stay in their own analysis universe.
+
 ### Recovery events (`persists_through`, `resets_on`)
 
 A closure's accumulators (`sum`, `count`, `mean`) are zeroed when its
@@ -4642,18 +4677,18 @@ Two warnings say when a clause cannot take effect:
 
 - In a closed world (the program has an entry), an event a closure of
   the program's own seed names that no recovery applies to its locus:
-  no parent's `on_failure` for the locus's type performs it, and no
-  recovery statement outside a handler performs it on a child of that
-  type. A statement's child is the type the checker gives its
-  receiver, whatever the receiver is (a param, a local, a field of
+  no recovery statement in any body performs it on a child of that
+  type. Inside `on_failure`, each recovery operation's first argument
+  selects its receiver, which need not be the failing child. A
+  statement's child is the type the checker gives its receiver,
+  whatever the receiver is (a param, a local, a field of
   another value, a call's result); in a generic body, the type each
   specialization gives it. The witness lists each handler and
   statement that names the locus, with the events it applies. A
   library checked alone has no parents, so it is not judged; nor is an
   imported locus, nor an event some recovery applies to a child the
-  check cannot name (a generic supervisor's handler's type parameter,
-  a receiver of a type parameter in a generic body no specialization
-  binds) (*Unreached recovery event*).
+  check cannot name (a receiver of a type parameter in a generic body
+  no specialization binds) (*Unreached recovery event*).
 - `persists_through(...)` on a closure whose assertion accumulates
   nothing keeps nothing (*Persistence with no accumulator*).
 

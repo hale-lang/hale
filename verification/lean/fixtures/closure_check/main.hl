@@ -1,0 +1,11 @@
+fn observe() -> Int { println("closure operand observed"); return 0; }
+locus Child {
+    params { n: Int = 0; }
+    closure audit { observe() + self.n ~~ self.n within 0; epoch explicit; }
+    fn trigger() { check_closures(); }
+}
+fn invoke() { let child = Child { }; child.trigger(); }
+group callers = { invoke };
+group assertions = { Child };
+main locus App { claims { quiet: forbid reaches(callers, effects(stdio)); } }
+fn main() { App { }; }

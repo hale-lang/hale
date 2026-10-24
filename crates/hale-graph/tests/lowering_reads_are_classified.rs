@@ -31,7 +31,7 @@ const LOWERING_READS: &[&str] = &[
     "bindings",
     "dispatch",
     "handler_routing",
-    "flows",
+    "flow_instances",
     "restart",
     "closures",
     "blocking",

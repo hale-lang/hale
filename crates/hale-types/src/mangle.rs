@@ -1248,9 +1248,11 @@ fn rewrite_claim_topic_refs(
             ClaimForm::ForbidReaches { .. }
             | ClaimForm::Bound { .. }
             | ClaimForm::RequireSealed { .. }
+            | ClaimForm::RequireFlow { .. }
             | ClaimForm::RequireAttributed { .. }
             | ClaimForm::RequireNoSilentLossGroup { .. }
             | ClaimForm::RequireSeparateDomains { .. }
+            | ClaimForm::QueueSlots { .. }
             | ClaimForm::Cover { .. } => {}
         }
     }
@@ -1861,7 +1863,9 @@ impl<'a> Mangler<'a> {
                         }
                     }
                     ClaimForm::RequireSealed { group }
+                    | ClaimForm::RequireFlow { group }
                     | ClaimForm::RequireNoSilentLossGroup { group }
+                    | ClaimForm::QueueSlots { group, .. }
                     | ClaimForm::Cover { group, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);
                     }

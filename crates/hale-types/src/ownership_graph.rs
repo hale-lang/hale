@@ -133,6 +133,8 @@ pub enum EdgeClass {
 /// resolved which ancestor owns it.
 #[derive(Debug, Clone)]
 pub struct OwnedSite {
+    /// Original literal identity. None is unavailable, never a span-derived ID.
+    pub literal: Option<SiteId>,
     /// The locus type being instantiated (`I`).
     pub child_ty: String,
     /// The locus whose member or params initializer writes `I { ... }` (`B`).
@@ -216,6 +218,8 @@ pub struct ArgDefault {
 /// [`OwnershipGraph::sites`], without an enclosing owning locus.
 #[derive(Debug, Clone)]
 pub struct FreeFnSite {
+    /// Original literal identity in this graph's source universe.
+    pub literal: Option<SiteId>,
     pub child_ty: String,
     pub span: Span,
     /// The declaration the literal names, in the graph's declaration
@@ -238,6 +242,8 @@ pub struct FreeFnSite {
 /// lowered under no locus and are not kept.
 #[derive(Debug, Clone)]
 pub struct CallSite {
+    /// Original call identity, separate from its source witness span.
+    pub source: Option<SiteId>,
     /// The call's id (`Expr::Call`'s), the typed-body table's key.
     pub id: u32,
     pub span: Span,
@@ -280,6 +286,9 @@ pub struct OtherSite {
 /// ([`OwnershipGraph::expansions`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Expansion {
+    /// Original literal or call starting this chain of default evaluations.
+    /// None means the source root cannot be identified.
+    pub root_site: Option<SiteId>,
     pub literal: ExpandedLiteral,
     /// The locus lowering expands it under: an index into
     /// [`OwnershipGraph::declarations`].
@@ -293,6 +302,66 @@ pub struct Expansion {
     pub per_use: Option<PerUsePosition>,
 }
 
+/// A source default evaluation under its caller construction locus, or no locus.
+/// This is source context, not proof of admission or runtime ancestry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultEvaluation {
+    /// The default's literal in this source graph's site tables.
+    pub literal: ExpandedLiteral,
+    /// Caller construction locus declaration index, or a no-locus root. A per-use row
+    /// is only a candidate; its unknown use remains in the gap account.
+    pub context: Option<usize>,
+    /// Source witness of the root, separate from its identity.
+    pub root: Span,
+    /// Original call/literal root identity, None when unavailable.
+    pub root_site: Option<SiteId>,
+    /// A per-use position has no exact use relation. Its candidate contexts
+    /// must not be interpreted as proof that a particular use occurs.
+    pub per_use: Option<PerUsePosition>,
+}
+
+/// Why this source-context computation cannot establish a closed account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DefaultContextGapKind {
+    MissingCallClassification,
+    MissingSourceIdentity,
+    UnrepresentedDefaults,
+    CyclicDefaultCall,
+    /// A repeated source context was coalesced; this is no occurrence count.
+    RepeatedDefaultContext,
+    PostedParameterDefaults,
+    PerUseContext,
+}
+/// One scoped gap; source witnesses are not substituted for identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultContextGap {
+    /// The unresolved boundary in this source traversal.
+    pub kind: DefaultContextGapKind,
+    /// Original call or constructor at the boundary, when identified.
+    pub at: Option<SiteId>,
+    /// The caller construction context, in the same graph as the rows.
+    pub context: Option<usize>,
+    /// Witness only; coincident spans never manufacture a shared identity.
+    pub root: Span,
+    /// The original root, when identified.
+    pub root_site: Option<SiteId>,
+}
+/// Default source contexts and their explicit unresolved boundaries. An empty
+/// row set is not a completeness or no-execution certificate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultEvaluations {
+    /// The source graph's cross-pool posts used by this computation, shared
+    /// with the lowering backstop rather than re-derived by that consumer.
+    pub posted: BTreeMap<(String,String),String>,
+    /// A value is unusable if any actual owner route can post it. These
+    /// possibilities do not suppress local default execution.
+    pub possible_posts: BTreeMap<(String,String),String>,
+    /// Retained evaluations; absence from this list proves no negative fact.
+    pub rows: Vec<DefaultEvaluation>,
+    /// Scoped unresolved boundaries in the source computation.
+    pub gaps: Vec<DefaultContextGap>,
+}
+
 /// A literal default expansion visits, in [`OwnershipGraph::sites`],
 /// [`OwnershipGraph::free_fn_sites`] or [`OwnershipGraph::other_sites`]
 /// (the last only as a root, never in a default).
@@ -301,6 +370,8 @@ pub enum ExpandedLiteral {
     Owned(usize),
     Free(usize),
     Other(usize),
+    /// An adapter binding evaluated under no locus.
+    Binding(usize),
 }
 
 /// One locus declaration, in the bundle's declaration order (programs
@@ -326,6 +397,8 @@ pub struct OwnershipGraph {
     pub sites: Vec<OwnedSite>,
     /// Free-function births from the graph's one walk, in source order.
     pub free_fn_sites: Vec<FreeFnSite>,
+    /// Adapter bindings are evaluated under no locus, separately from free fns.
+    pub binding_sites: Vec<FreeFnSite>,
     /// The calls default expansion reads, in walk order.
     pub calls: Vec<CallSite>,
     /// The locus literals at the other positions default expansion reads
@@ -351,6 +424,8 @@ pub struct OwnershipGraph {
     pub accept_rows: AcceptRows,
     /// The rows the graph is assembled from ([`OwnershipRows`]).
     pub rows: OwnershipRows,
+    alternatives: BTreeMap<(String, String), Vec<OwnerAlternative>>,
+    alternative_forwarding: BTreeMap<String, BTreeSet<(String, String)>>,
 }
 
 /// A resolved construction and the defaults it overrides. The model
@@ -432,6 +507,147 @@ impl AcceptRows {
 }
 
 impl OwnershipGraph {
+    /// Concrete ownership over the existing source rows and closed generic
+    /// inventory. This projection precedes emission: no synthesized AST, LLVM
+    /// layout, artifact or lifecycle plan supplies an ownership fact.
+    pub fn concrete_ownership(
+        &self,
+        instances: &[crate::generic_instances::Instantiation],
+        ids: &crate::snapshot::Snapshot,
+        placement: &PlacementTable,
+    ) -> Result<ConcreteOwnership, String> {
+        let mut rows = self.rows.clone();
+        let templates = rows.facts.clone();
+        rows.facts.retain(|_, fact| fact.parameters.is_empty());
+        let mut declared = rows.accept_rows.declared.clone();
+        for instance in instances.iter().filter(|i| i.locus) {
+            declared.loci.insert(instance.name.clone());
+            if let Some(at) = declared.decls.get(&instance.template).copied() {
+                declared.decls.insert(instance.name.clone(), at);
+            }
+        }
+        let mut domains = placement.domains_by_type();
+        for instance in instances.iter().filter(|i| i.locus) {
+            let source = templates.get(&instance.template).ok_or_else(|| format!(
+                "ownership has no source rows for generic locus `{}`", instance.template))?;
+            if source.parameters.len() != instance.args.len() {
+                return Err(format!("ownership arguments for `{}` disagree with its template", instance.name));
+            }
+            let subst = source.parameters.iter().cloned().zip(instance.args.iter().cloned()).collect();
+            let mut fact = source.clone();
+            fact.parameters.clear();
+            // Preserve structural-interface admissions, then replace the
+            // nominal template accepts with their actual substituted types.
+            for clause in rows.accept_rows.rows.iter().filter(|r| r.owner == instance.template) {
+                if let ChildRef::Locus(child) = child_locus_name(&clause.ty, &rows.accept_rows.declared, &rows.accept_rows.renames) {
+                    fact.accepts.remove(&child);
+                }
+            }
+            for clause in rows.accept_rows.rows.iter().filter(|r| r.owner == instance.template) {
+                let ty = crate::generic_instances::substitute_type_expr(&clause.ty, &subst);
+                if let ChildRef::Locus(child) = child_locus_name(&ty, &declared, &rows.accept_rows.renames) {
+                    fact.accepts.insert(child);
+                }
+            }
+            fact.instantiates = source.literals.iter().filter_map(|literal| {
+                let mut site = literal.clone();
+                site.declared = site.declared.as_ref().map(|ty| crate::generic_instances::substitute_type_expr(ty, &subst));
+                if let [name] = site.path.as_slice() {
+                    if let Some(TypeExpr::Named { path, .. }) = subst.get(name) {
+                        site.path = path.segments.iter().map(|p| p.name.clone()).collect();
+                    }
+                }
+                identify_child(&mut site, &rows.declarations, &declared, &rows.accept_rows.renames, ids).then_some(site)
+            }).collect();
+            // A placement lacking separate specialization rows may only
+            // establish the template's aggregate domains, never a guessed
+            // per-specialization domain. `relate` retains that uncertainty.
+            if !domains.contains_key(&instance.name) {
+                if let Some(domain) = domains.get(&instance.template).cloned() {
+                    domains.insert(instance.name.clone(), domain);
+                }
+            }
+            rows.facts.insert(instance.name.clone(), fact);
+        }
+        let graph = assemble_in_domains(rows, ids, placement, &domains);
+        let accepts = graph.accepts.clone();
+        let bubble = graph.bubble_plans();
+        Ok(ConcreteOwnership { accepts, bubble })
+    }
+
+    /// Nearest-owner alternatives, classified only over instances belonging
+    /// to that acceptor. These source rows are shared by the checked graph
+    /// and its concrete native projection; emission makes no ancestry choice.
+    fn derive_alternatives(&mut self, placement: &PlacementTable,
+        domains: &BTreeMap<String, crate::placement::TypeDomains>) {
+        if !self.rows.has_entry_point { return; }
+        let roots: BTreeSet<_> = self.free_fn_sites.iter().filter(|s| s.arg_default.is_none())
+            .chain(self.binding_sites.iter()).map(|s| s.child_ty.clone()).collect();
+        for site in &self.sites {
+            if matches!(site.resolution, OwnerResolution::SelfOwned(_)) { continue; }
+            let child = &site.child_ty;
+            let mut candidates = BTreeSet::new();
+            let mut pending = vec![site.enclosing_locus.clone()];
+            let mut visited = BTreeSet::new();
+            let mut free_path = false;
+            while let Some(node) = pending.pop() {
+                if !visited.insert(node.clone()) { continue; }
+                if self.accepts.get(&node).is_some_and(|a| a.contains(child)) {
+                    candidates.insert(node);
+                    continue;
+                }
+                free_path |= roots.contains(&node);
+                pending.extend(self.instantiated_by.get(&node).into_iter().flatten().cloned());
+            }
+            if candidates.is_empty() || candidates.len() == 1 && !free_path
+                && matches!(site.resolution, OwnerResolution::Ancestor(_)) { continue; }
+            let key = (site.enclosing_locus.clone(), child.clone());
+            let alternatives = candidates.into_iter().map(|owner| {
+                let class = relate(&site.enclosing_locus, &owner, placement, domains, Some((&self.accepts, child)));
+                let singleton = self.rows.facts.get(&owner).is_some_and(|f| f.singleton);
+                collect_alternative_forwarding(&site.enclosing_locus, child, &owner, &self.accepts,
+                    &self.instantiated_by, &mut BTreeSet::new(), &mut self.alternative_forwarding);
+                OwnerAlternative { owner, class, singleton }
+            }).collect();
+            self.alternatives.insert(key, alternatives);
+        }
+    }
+
+    /// Nearest acceptor candidates, including those hidden by the legacy
+    /// Orphan classification when another path has no accepting ancestor.
+    /// These are declaration candidates, never occurrence identities.
+    pub(crate) fn protocol_owners(&self, context: usize, child: &str) -> (Vec<usize>, bool) {
+        let Some(decl) = self.declarations.get(context) else { return (Vec::new(), true) };
+        let mut names = BTreeSet::new();
+        let mut unknown = false;
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![decl.name.clone()];
+        while let Some(name) = pending.pop() {
+            if !visited.insert(name.clone()) { continue; }
+            // A generic ancestor can accept through a type parameter even
+            // when the unspecialized accepts table contains no nominal match.
+            // Stop at a known nearest acceptor, just as ownership does; an
+            // unrelated generic declaration must not poison this context.
+            let candidates: Vec<_> = self.declarations.iter().filter(|d| d.name == name).collect();
+            unknown |= candidates.len() != 1 || candidates.iter().any(|d| d.generic || d.id.is_none());
+            if self.accepts.get(&name).is_some_and(|a| a.contains(child)) {
+                names.insert(name);
+            } else {
+                pending.extend(self.instantiated_by.get(&name).into_iter().flatten().cloned());
+            }
+        }
+        let mut out = Vec::new();
+        for name in names {
+            let candidates: Vec<_> = self.declarations.iter().enumerate().filter(|(_, d)| d.name == name).collect();
+            if let [(index, d)] = candidates.as_slice() {
+                out.push(*index);
+                unknown |= d.generic || d.id.is_none();
+            } else { unknown = true; }
+        }
+        // A path without an acceptor is allowed; it does not erase known
+        // candidates on other paths. Runtime admission remains separate.
+        (out, unknown)
+    }
     /// Births not represented by the model's arrangement. A default
     /// executes only when a particular construction leaves its field
     /// unsupplied. The same default literal may therefore be arranged
@@ -778,13 +994,25 @@ impl OwnershipGraph {
                 }
             }
         }
-        let forwarding = self.compute_forwarding_sets();
+        let mut forwarding = self.compute_forwarding_sets();
+        for key in self.alternatives.keys() {
+            plan.remove(key); nonsingleton.remove(key); crosspool.remove(key); mixed.remove(key);
+        }
+        if !self.alternatives.is_empty() {
+            forwarding.clear();
+            for ((enclosing, child), owner) in &nonsingleton {
+                collect_forwarding(enclosing, owner, child, &self.instantiated_by,
+                    &mut BTreeSet::new(), &mut forwarding);
+            }
+        }
         BubblePlans {
             singleton: plan,
             nonsingleton,
             crosspool,
             mixed,
             forwarding,
+            alternatives: self.alternatives.clone(),
+            alternative_forwarding: self.alternative_forwarding.clone(),
         }
     }
 
@@ -819,6 +1047,21 @@ impl OwnershipGraph {
         posted: &BTreeMap<(String, String), String>,
         omitted: crate::typed_bodies::OmittedView<'_>,
     ) -> Vec<Expansion> {
+        self.default_evaluations(&BubblePlans { crosspool: posted.clone(), ..BubblePlans::default() }, omitted).rows.into_iter().filter_map(|e| Some(Expansion {
+            literal:e.literal, context:e.context?, root:e.root, root_site:e.root_site, per_use:e.per_use,
+        })).collect()
+    }
+
+    /// The shared default-expansion computation, retaining roots lowered under
+    /// no locus as well as those under a member's construction context. This follows
+    /// the walk's literals/calls and the checker's omission rows; it surveys
+    /// no syntax. `expansions` is the locus-only compatibility projection.
+    pub fn default_evaluations(
+        &self,
+        plans: &BubblePlans,
+        omitted: crate::typed_bodies::OmittedView<'_>,
+    ) -> DefaultEvaluations {
+        let posted = &plans.crosspool;
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         enum Node {
             Literal(ExpandedLiteral),
@@ -863,57 +1106,75 @@ impl OwnershipGraph {
         // is one call further. A position lowered at every use (`None`)
         // has no one path, so it asks every evaluation's answer.
         type Path = Option<Vec<u32>>;
-        let mut pending: Vec<(Node, usize, Span, Option<PerUsePosition>, Path)> = Vec::new();
+        let mut pending: Vec<(Node, Option<usize>, Span, Option<PerUsePosition>, Path, Option<SiteId>)> = Vec::new();
         for (i, site) in self.sites.iter().enumerate() {
             if !site.params_default && site.arg_default.is_none() {
-                pending.push((Node::Literal(ExpandedLiteral::Owned(i)), site.enclosing_decl, site.span, None, Some(Vec::new())));
+                pending.push((Node::Literal(ExpandedLiteral::Owned(i)), Some(site.enclosing_decl), site.span, None, Some(Vec::new()), site.literal));
             }
         }
-        let every = 0..self.declarations.len();
+        for (i, site) in self.free_fn_sites.iter().enumerate().filter(|(_,s)| s.arg_default.is_none()) {
+            pending.push((Node::Literal(ExpandedLiteral::Free(i)), None, site.span, None, Some(Vec::new()), site.literal));
+        }
+        for (i, site) in self.binding_sites.iter().enumerate() {
+            pending.push((Node::Literal(ExpandedLiteral::Binding(i)), None, site.span, None, Some(Vec::new()), site.literal));
+        }
+        let every: Vec<_> = (0..self.declarations.len()).map(Some).chain([None]).collect();
         for (i, other) in self.other_sites.iter().enumerate() {
             let node = Node::Literal(ExpandedLiteral::Other(i));
             match (other.position, other.enclosing_decl) {
-                (OtherPosition::Closure, Some(decl)) => pending.push((node, decl, other.site.span, None, Some(Vec::new()))),
+                (OtherPosition::Closure, Some(decl)) => pending.push((node, Some(decl), other.site.span, None, Some(Vec::new()), other.site.literal)),
                 (OtherPosition::Closure, None) => {}
                 (OtherPosition::PerUse(p), _) => {
-                    pending.extend(every.clone().map(|d| (node, d, other.site.span, Some(p), None)))
+                    pending.extend(every.iter().copied().map(|d| (node, d, other.site.span, Some(p), None, other.site.literal)))
                 }
             }
         }
         for (c, call) in self.calls.iter().enumerate() {
             match (call.enclosing_decl, &call.params_field, &call.arg_default, call.per_use) {
-                (Some(decl), None, None, None) => pending.push((Node::Call(c), decl, call.span, None, Some(Vec::new()))),
+                (Some(decl), None, None, None) => pending.push((Node::Call(c), Some(decl), call.span, None, Some(Vec::new()), call.source)),
+                (None, None, None, None) => pending.push((Node::Call(c), None, call.span, None, Some(Vec::new()), call.source)),
                 (None, None, None, Some(p)) => {
-                    pending.extend(every.clone().map(|d| (Node::Call(c), d, call.span, Some(p), None)))
+                    pending.extend(every.iter().copied().map(|d| (Node::Call(c), d, call.span, Some(p), None, call.source)))
                 }
                 _ => {}
             }
         }
         // Every node reached from a root is in a default: a root's own
         // literal is never reported, only what it expands.
-        let mut seen: BTreeSet<(Node, usize, u32, u32, Path)> = BTreeSet::new();
+        let mut seen: BTreeSet<(Node, Option<usize>, u32, u32, Path, Option<SiteId>)> = BTreeSet::new();
         let mut out = Vec::new();
-        while let Some((node, context, root, per_use, path)) = pending.pop() {
-            if !seen.insert((node, context, root.start.0, root.end.0, path.clone())) {
+        let mut gaps = Vec::new();
+        while let Some((node, context, root, per_use, path, root_site)) = pending.pop() {
+            if !seen.insert((node, context, root.start.0, root.end.0, path.clone(), root_site)) {
+                let at=match node { Node::Literal(literal)=>self.literal(literal).literal,Node::Call(c)=>self.calls[c].source };
+                gaps.push(DefaultContextGap { kind:DefaultContextGapKind::RepeatedDefaultContext,at,context,root,root_site });
                 continue;
+            }
+            let at=match node { Node::Literal(literal)=>self.literal(literal).literal,Node::Call(c)=>self.calls[c].source };
+            if at.is_none() || root_site.is_none() {
+                gaps.push(DefaultContextGap { kind:DefaultContextGapKind::MissingSourceIdentity,at,context,root,root_site });
+            }
+            if per_use.is_some() {
+                gaps.push(DefaultContextGap { kind:DefaultContextGapKind::PerUseContext,at:root_site,context,root,root_site });
             }
             // what `node` reaches, and the path it is reached on
             let (reached, next_path): (Vec<Node>, Path) = match node {
                 Node::Literal(literal) => {
                     let s = self.literal(literal);
                     let (child_ty, child_decl, supplied) = (&s.child_ty, s.child_decl, &s.supplied);
-                    let nodes = if posted.contains_key(&(self.declarations[context].name.clone(), child_ty.clone())) {
-                        Vec::new()
-                    } else if let Some(child) = child_decl {
-                        params
-                            .range((child, "")..)
+                    let mut nodes: Vec<Node> = if let Some(child) = child_decl {
+                        params.range((child, "")..)
                             .take_while(|((d, _), _)| *d == child)
                             .filter(|((_, field), _)| !supplied.contains(*field))
-                            .flat_map(|(_, nodes)| nodes.iter().copied())
-                            .collect()
+                            .flat_map(|(_, nodes)| nodes.iter().copied()).collect()
                     } else {
+                        gaps.push(DefaultContextGap { kind:DefaultContextGapKind::UnrepresentedDefaults,at:s.literal,context,root,root_site });
                         Vec::new()
                     };
+                    if !nodes.is_empty() && context.is_some_and(|context| posted.contains_key(&(self.declarations[context].name.clone(), child_ty.clone()))) {
+                        gaps.push(DefaultContextGap { kind:DefaultContextGapKind::PostedParameterDefaults,at:s.literal,context,root,root_site });
+                        nodes.clear();
+                    }
                     (nodes, Some(Vec::new()))
                 }
                 Node::Call(c) => {
@@ -921,7 +1182,19 @@ impl OwnershipGraph {
                     // a call already on the path: the checker stops its
                     // walk of a default that reaches itself there too
                     if path.as_ref().is_some_and(|p| p.contains(&id)) {
+                        if self.calls[c].source.is_some() {
+                            gaps.push(DefaultContextGap { kind:DefaultContextGapKind::CyclicDefaultCall,at:self.calls[c].source,context,root,root_site });
+                        }
                         continue;
+                    }
+                    if path.as_ref().is_none_or(|p| omitted.calls_at(id,p).is_none()) {
+                        gaps.push(DefaultContextGap { kind:DefaultContextGapKind::MissingCallClassification,at:self.calls[c].source,context,root,root_site });
+                    }
+                    if path.as_ref().and_then(|p| omitted.calls_at(id,p)).is_some_and(|rows| rows.iter().any(|r| r.callee.is_none())) {
+                        // This column identifies user defaults only. A foreign
+                        // or primitive callee has no fabricated user-default
+                        // declaration; its effects are classified elsewhere.
+                        gaps.push(DefaultContextGap { kind:DefaultContextGapKind::UnrepresentedDefaults,at:self.calls[c].source,context,root,root_site });
                     }
                     let nodes = omitted
                         .at(id, path.as_deref())
@@ -938,14 +1211,16 @@ impl OwnershipGraph {
             };
             for next in reached {
                 if let Node::Literal(literal) = next {
-                    out.push(Expansion { literal, context, root, per_use });
+                    out.push(DefaultEvaluation { literal, context, root, per_use, root_site });
                 }
-                pending.push((next, context, root, per_use, next_path.clone()));
+                pending.push((next, context, root, per_use, next_path.clone(), root_site));
             }
         }
-        out.sort_by_key(|e| (e.literal, e.context, e.root.start.0, e.root.end.0));
+        out.sort_by_key(|e| (e.literal, e.context, e.root.start.0, e.root.end.0, e.root_site));
         out.dedup();
-        out
+        gaps.sort_by_key(|g| (g.kind,g.at,g.context,g.root_site,g.root.start.0,g.root.end.0));
+        gaps.dedup();
+        DefaultEvaluations { posted:posted.clone(),possible_posts:plans.possible_posts(),rows:out,gaps }
     }
 
     /// The literal an [`ExpandedLiteral`] names, as a free-standing site
@@ -956,6 +1231,7 @@ impl OwnershipGraph {
             ExpandedLiteral::Owned(i) => {
                 let s = &self.sites[i];
                 FreeFnSite {
+                    literal: s.literal,
                     child_ty: s.child_ty.clone(),
                     span: s.span,
                     child_decl: s.child_decl,
@@ -967,6 +1243,7 @@ impl OwnershipGraph {
             }
             ExpandedLiteral::Free(i) => self.free_fn_sites[i].clone(),
             ExpandedLiteral::Other(i) => self.other_sites[i].site.clone(),
+            ExpandedLiteral::Binding(i) => self.binding_sites[i].clone(),
         }
     }
 }
@@ -982,6 +1259,11 @@ impl OwnershipGraph {
 /// arm codegen's `LOTUS_NO_OWNERSHIP_BUBBLE=1` selects.
 #[derive(Debug, Clone, Default)]
 pub struct BubblePlans {
+    /// A shared constructor can reach different nearest owners, or no owner.
+    /// These alternatives carry actual owner symbols; each instance forwards
+    /// the pointer for its own path, with null representing an unowned path.
+    pub alternatives: BTreeMap<(String, String), Vec<OwnerAlternative>>,
+    pub alternative_forwarding: BTreeMap<String, BTreeSet<(String, String)>>,
     /// Interest-based ownership #2, the SameTower + SingletonConst plan:
     /// an `I{}` born deep inside locus `B` that resolves to a UNIQUE
     /// accepting ancestor `A` where `A` is a `main locus` / `@export`
@@ -1009,6 +1291,50 @@ pub struct BubblePlans {
     /// locus type → the interest types `I` it carries an
     /// `__owner_for_I` field for.
     pub forwarding: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl BubblePlans {
+    /// Possible cross-domain owners for the value-use law. The first
+    /// candidate is a sufficient witness; it is never an always-post fact.
+    fn possible_posts(&self) -> BTreeMap<(String, String), String> {
+        let mut out = self.crosspool.clone();
+        for (key, mixed) in &self.mixed { out.entry(key.clone()).or_insert_with(|| mixed.owner.clone()); }
+        for (key, choices) in &self.alternatives {
+            if let Some(choice) = choices.iter().find(|c| matches!(c.class, EdgeClass::CrossPool | EdgeClass::Mixed)) {
+                out.entry(key.clone()).or_insert_with(|| choice.owner.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Native ownership rows after source specialization. Direct accepts survive
+/// the no-bubbling control; its switch applies only to `bubble`.
+#[derive(Debug, Clone, Default)]
+pub struct ConcreteOwnership {
+    pub accepts: BTreeMap<String, BTreeSet<String>>,
+    pub bubble: BubblePlans,
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnerAlternative {
+    pub owner: String,
+    pub class: EdgeClass,
+    pub singleton: bool,
+}
+
+fn collect_alternative_forwarding(
+    node: &str, child: &str, owner: &str,
+    accepts: &BTreeMap<String, BTreeSet<String>>,
+    parents: &BTreeMap<String, BTreeSet<String>>,
+    seen: &mut BTreeSet<String>,
+    out: &mut BTreeMap<String, BTreeSet<(String, String)>>,
+) {
+    if !seen.insert(node.to_string()) || accepts.get(node).is_some_and(|a| a.contains(child)) { return; }
+    out.entry(node.to_string()).or_default().insert((child.to_string(), owner.to_string()));
+    for parent in parents.get(node).into_iter().flatten() {
+        collect_alternative_forwarding(parent, child, owner, accepts, parents, seen, out);
+    }
 }
 
 // === Construction paths (type-check rule 20) ======================
@@ -1194,6 +1520,11 @@ fn collect_forwarding(
 /// One locus's ownership-relevant facts, collected in a single walk.
 #[derive(Debug, Clone, Default)]
 struct LocusFacts {
+    /// Template parameters and original literal rows from this same walk.
+    /// Concrete ownership substitutes these rows; it never surveys synthesized
+    /// declarations or infers a specialization from a symbol suffix.
+    parameters: Vec<String>,
+    literals: Vec<RawSite>,
     /// Child types this locus declares `accept(_: T)` for, resolved by
     /// `child_locus_name` (a type that names no locus is accepted by
     /// no one).
@@ -1335,6 +1666,8 @@ impl OwnershipRows {
         }
         for (name, f) in next.facts {
             let entry = self.facts.entry(name).or_default();
+            if entry.parameters.is_empty() { entry.parameters = f.parameters; }
+            entry.literals.extend(f.literals.into_iter().map(moved));
             entry.accepts.extend(f.accepts);
             entry.instantiates.extend(f.instantiates.into_iter().map(moved));
             entry.projection = entry.projection.or(f.projection);
@@ -1437,6 +1770,7 @@ fn collect_ownership_walk(
                             .collect(),
                     });
                     let entry = facts.entry(l.name.name.clone()).or_default();
+                    entry.parameters = l.generics.iter().map(|p| p.name.name.clone()).collect();
                     let first_site = entry.instantiates.len();
                     entry.singleton |= l.is_main || l.export;
                     if entry.projection.is_none() {
@@ -1614,14 +1948,17 @@ fn collect_ownership_walk(
         let (c, literals): (Vec<RawSite>, Vec<RawSite>) =
             std::mem::take(&mut facts.instantiates).into_iter().partition(|s| s.call);
         calls.extend(c);
+        facts.literals = literals.clone();
         facts.instantiates = literals;
     }
     let (c, literals): (Vec<RawSite>, Vec<RawSite>) = free_fn_sites.into_iter().partition(|s| s.call);
-    calls.extend(c.into_iter().filter(|s| s.arg_default.is_some()).map(|s| RawSite { enclosing_decl: usize::MAX, ..s }));
+    calls.extend(c.into_iter().map(|s| RawSite { enclosing_decl: usize::MAX, ..s }));
     let mut free_fn_sites = literals;
     let (c, mut other): (Vec<RawSite>, Vec<RawSite>) = other.into_iter().partition(|s| s.call);
     calls.extend(c);
-    binding_sites.retain(|s| !s.call);
+    let (c, binding_literals): (Vec<RawSite>, Vec<RawSite>) = binding_sites.into_iter().partition(|s| s.call);
+    calls.extend(c.into_iter().map(|s| RawSite { enclosing_decl: usize::MAX, ..s }));
+    let mut binding_sites = binding_literals;
     for facts in facts.values_mut() {
         facts.instantiates.retain_mut(|s| identify_child(s, &declarations, &declared, renames, &bundle.snapshot));
     }
@@ -1716,7 +2053,7 @@ fn identify_child(
         Some(DeclAt::Program(_)) => declarations.iter().position(|d| d.name == resolved.declaration),
         Some(DeclAt::Stdlib(_)) | None => None,
     };
-    let generic = child_decl.is_some_and(|d| declarations[d].generic);
+    let generic = child_decl.is_some_and(|d| declarations[d].generic && declarations[d].name == resolved.declaration);
     let key = if generic && resolved.name == resolved.declaration {
         // A bare template needs its whole binding's declared type. An
         // alias that already resolves to a specialization keeps that
@@ -1789,7 +2126,7 @@ pub fn lowering_ownership_graph(
 ) -> Result<OwnershipGraph, String> {
     use crate::correspondence::Image;
     let rows = &snapshot.rows;
-    let sites = rows.facts.values().flat_map(|f| &f.instantiates).chain(&rows.free_fn_sites).chain(&rows.binding_sites);
+    let sites = rows.facts.values().flat_map(|f| f.instantiates.iter().chain(f.literals.iter())).chain(&rows.free_fn_sites).chain(&rows.binding_sites);
     let ids_named = sites.map(|s| s.id).chain(rows.accept_rows.rows.iter().map(|r| r.owner_id));
     for id in ids_named.filter(|id| !id.is_none()) {
         if !matches!(correspondence.image(id), Some(Image::Checked(_))) {
@@ -1803,6 +2140,10 @@ pub fn lowering_ownership_graph(
 /// classification, with the placement table.
 fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &crate::placement::PlacementTable) -> OwnershipGraph {
     let domains = placement.domains_by_type();
+    assemble_in_domains(walk, ids, placement, &domains)
+}
+
+fn assemble_in_domains(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &crate::placement::PlacementTable, domains: &BTreeMap<String, crate::placement::TypeDomains>) -> OwnershipGraph {
     let births = walk.facts.values().flat_map(|f| &f.instantiates)
         .chain(&walk.free_fn_sites).chain(&walk.binding_sites).map(|site| BirthRow {
             child_decl: site.child_decl,
@@ -1856,6 +2197,7 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
             // consumer — resolve everything conservatively.
             if !walk.has_entry_point {
                 sites.push(OwnedSite {
+                    literal: ids.site_id(site.id),
                     child_ty: child.clone(),
                     enclosing_locus: enclosing.clone(),
                     resolution: OwnerResolution::Unanalyzable(
@@ -1884,7 +2226,7 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
             let resolution =
                 resolve_owner(enclosing, child, &accepts, &instantiated_by);
             let owner_kind = classify_owner_kind(&resolution, &singletons);
-            let edge_class = classify_edge(enclosing, &resolution, placement, &domains);
+            let edge_class = classify_edge(enclosing, &resolution, placement, domains);
             let instances = match (&edge_class, resolution.owner()) {
                 (EdgeClass::Mixed, Some(owner)) => {
                     let mut v = placement.instances_of(enclosing);
@@ -1898,6 +2240,7 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
                 .and_then(|o| walk.facts.get(o).and_then(|of| of.projection));
 
             sites.push(OwnedSite {
+                    literal: ids.site_id(site.id),
                 child_ty: child.clone(),
                 enclosing_locus: enclosing.clone(),
                 resolution,
@@ -1920,12 +2263,14 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
     }
 
     let free_site = |site: &RawSite| FreeFnSite {
+        literal: ids.site_id(site.id),
         child_ty: site.child_ty.clone(), span: site.span,
         child_decl: site.child_decl, child_key: site.child_key.clone(),
         supplied: site.supplied.clone(), bare_statement: site.bare_statement,
         arg_default: site.arg_default.clone(),
     };
     let free_fn_sites = walk.free_fn_sites.iter().map(free_site).collect();
+    let binding_sites = walk.binding_sites.iter().map(free_site).collect();
     // A position no locus declaration holds (a free fn's argument
     // default, a top-level const or type) is marked `usize::MAX` by the
     // walk, and a position lowered at every use has no locus either.
@@ -1936,6 +2281,7 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
             _ => None,
         };
         CallSite {
+            source: ids.site_id(site.id),
             id: site.id.0,
             span: site.span,
             enclosing_decl: decl_of(site).filter(|_| per_use.is_none()),
@@ -1949,18 +2295,13 @@ fn assemble(walk: OwnershipRows, ids: &crate::snapshot::Snapshot, placement: &cr
         enclosing_decl: decl_of(site),
         position: site.other?,
     })).collect();
-    OwnershipGraph {
-        sites,
-        births,
-        free_fn_sites,
-        calls,
-        other_sites,
-        declarations: walk.declarations.clone(),
-        accepts,
-        instantiated_by,
-        accept_rows: walk.accept_rows.clone(),
-        rows: walk,
-    }
+    let mut graph = OwnershipGraph {
+        sites, free_fn_sites, binding_sites, calls, other_sites, births, declarations: walk.declarations.clone(),
+        accepts, instantiated_by, accept_rows: walk.accept_rows.clone(), rows: walk,
+        alternatives: BTreeMap::new(), alternative_forwarding: BTreeMap::new(),
+    };
+    graph.derive_alternatives(placement, domains);
+    graph
 }
 
 /// Resolve the owner of `child` instantiated inside `enclosing`.
@@ -2099,9 +2440,9 @@ fn classify_edge(
     match resolution {
         // Owner == enclosing: always the same thread.
         OwnerResolution::SelfOwned(_) => EdgeClass::SameTower,
-        OwnerResolution::Ancestor(o) => relate(enclosing, o, placement, domains),
+        OwnerResolution::Ancestor(o) => relate(enclosing, o, placement, domains, None),
         OwnerResolution::PerPath(os) => {
-            let classes: Vec<EdgeClass> = os.iter().map(|o| relate(enclosing, o, placement, domains)).collect();
+            let classes: Vec<EdgeClass> = os.iter().map(|o| relate(enclosing, o, placement, domains, None)).collect();
             if classes.iter().all(|c| *c == EdgeClass::SameTower) {
                 EdgeClass::SameTower
             } else if classes.iter().all(|c| *c == EdgeClass::CrossPool) {
@@ -2130,6 +2471,7 @@ fn relate(
     owner: &str,
     placement: &crate::placement::PlacementTable,
     domains: &BTreeMap<String, crate::placement::TypeDomains>,
+    nearest: Option<(&BTreeMap<String, BTreeSet<String>>, &str)>,
 ) -> EdgeClass {
     use crate::placement::{DomainId, InstanceKey};
     let of = |t: &str| domains.get(t).cloned().unwrap_or_default();
@@ -2148,13 +2490,28 @@ fn relate(
         }
         let mut up = r.owner.clone();
         let mut found = None;
+        let mut seen = BTreeSet::new();
+        let mut complete = true;
+        let mut other_owner = false;
         while let Some(key) = up {
-            if realizes(&key, owner) {
-                found = placement.instances.get(&key).map(|a| a.domain);
+            if !seen.insert(key.clone()) { complete = false; break; }
+            let Some(row) = placement.instances.get(&key) else { complete = false; break; };
+            let Some(decl) = &row.realizes else { complete = false; break; };
+            if let Some((accepts, child)) = nearest {
+                if accepts.get(&decl.lowered).is_some_and(|a| a.contains(child)) {
+                    if decl.lowered == owner { found = Some(row.domain); }
+                    else { other_owner = true; }
+                    break;
+                }
+            } else if realizes(&key, owner) {
+                found = Some(row.domain);
                 break;
             }
-            up = placement.instances.get(&key).and_then(|a| a.owner.clone());
+            up = row.owner.clone();
         }
+        // A different nearer acceptor or a complete orphan path cannot
+        // exercise this candidate. Incomplete ancestry stays conservative.
+        if nearest.is_some() && (other_owner || complete && found.is_none()) { continue; }
         match found {
             Some(a) => pairs.push((r.domain, a)),
             None => pairs.extend(o.known.iter().map(|a| (r.domain, *a))),

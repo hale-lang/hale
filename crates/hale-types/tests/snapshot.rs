@@ -538,3 +538,27 @@ fn main() { f(2); }
     let max = all.iter().max().copied().unwrap();
     assert!(ids(&p).iter().any(|i| *i == max + 1), "the new use is numbered past the rest");
 }
+
+#[test]
+fn recovery_presence_is_minted_once_including_defaults_and_module_bodies() {
+    assert_eq!(hale_types::snapshot::Snapshot::default().recovery_syntax, None);
+    for (source, expected) in [
+        ("fn main() { }", Some(false)),
+        ("fn main() { println(\"restart(c);\"); }", Some(false)),
+        ("fleet locus Deployment { params { } }", None),
+        ("fleet locus Deployment { params { } } locus Kid { } fn again(c: Kid) { restart(c); } fn main() { }", Some(true)),
+        ("locus Kid { } fn again(c: Kid) { restart(c); } fn main() { }", Some(true)),
+        ("locus Kid { } type Data { n: Int = if true { let c = Kid { }; quarantine(c); 0 } else { 0 }; } fn main() { }", Some(true)),
+        ("locus Kid { } interface I { fn f(n: Int = if true { let c = Kid { }; restart(c); 0 } else { 0 }); } fn main() { }", Some(true)),
+        ("module inner { locus Kid { } fn again(c: Kid) { restart(c); } } fn main() { }", Some(true)),
+    ] {
+        let mut p = parse(source);
+        let before = hale_types::snapshot::resolutions_on_this_thread();
+        let first = mint([("presence", &mut p)], &[]);
+        assert_eq!(first.recovery_syntax, expected, "{source}");
+        assert_eq!(hale_types::snapshot::resolutions_on_this_thread(), before + 1, "no second expression walk");
+        let second = mint([("presence", &mut p)], &[]);
+        assert_eq!(first.sites, second.sites);
+        assert_eq!(first.recovery_syntax, second.recovery_syntax);
+    }
+}

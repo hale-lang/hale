@@ -90,8 +90,22 @@ the model: runtime is automatic; stdlib is explicit.
 
   | Family | Surface | Backing |
   |---|---|---|
-  | `lotus_recpool_fixed_*` | `create(cap, cell_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One contiguous block of `cap × cell_stride` bytes. Each cell carries an INLINE `lotus_arena_t` + `lotus_arena_chunk_t` header at its front followed by `cell_bytes` of payload — the cell IS the child's arena. Bitmap (`uint64_t[ceil(cap/64)]`) tracks occupancy; acquire scans the lowest unset bit via `__builtin_ctzll`. Release clears the bit so the slot is reusable. The returned arena has `fixed_size=1`, so `lotus_arena_alloc` returns NULL on overflow (caller routes to the closure-violation channel). |
-  | `lotus_recpool_slab_*` | `create(cap, slab_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One `lotus_arena_t` with an initial chunk of `slab_bytes` and `fixed_size=1` so it never grows. Every `acquire` returns the SAME arena pointer — children share the bump space and per-child release is a no-op. The whole slab frees at parent dissolve via `lotus_arena_destroy(slab_arena)`. `cap` is recorded but not enforced at the C layer (codegen's birth-cap check bounds concurrent children; the slab is a memory budget). |
+  | `lotus_recpool_fixed_*` | `create(cap, cell_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One contiguous block of `cap × cell_stride` bytes. Each cell carries an INLINE `lotus_arena_t` + `lotus_arena_chunk_t` header at its front followed by `cell_bytes` of payload — the cell IS the child's arena. An atomic bitmap (`uint64_t[ceil(cap/64)]`) tracks occupancy; acquire claims a free bit with compare-and-exchange before initializing the cell. Release clears the bit with release ordering so the next acquiring domain can safely reinitialize it. Exhausted acquire returns NULL. The returned arena has `fixed_size=1`, so `lotus_arena_alloc` returns NULL on overflow (caller routes to the closure-violation channel). |
+  | `lotus_recpool_slab_*` | `create(cap, slab_bytes) -> recpool*`, `acquire(recpool) -> arena*`, `release(recpool, arena)`, `destroy(recpool)` | One `lotus_arena_t` with an initial chunk of `slab_bytes` and `fixed_size=1` so it never grows. Each successful `acquire` reserves one of `cap` concurrent slots with an atomic counter and returns the SAME arena pointer — children share the bump space. Exhaustion returns NULL. `release` returns one reservation; it does not reset the bump position or free bytes. The whole slab frees at parent dissolve via `lotus_arena_destroy(slab_arena)`. |
+
+  Both reservation mechanisms apply across all child types accepted by one
+  owner instance. Lowering checks acquisition before the child header,
+  owner-side params construction, registration, `accept` or `birth` can expose a child.
+  Cross-domain create requests may already have evaluated and serialized
+  params at the caller; pending requests are outside this reservation cap.
+  Exhaustion or pool allocation failure exits through
+  `RecognitionPoolUnavailable`; it does not create an arena-less child or
+  invoke an `on_failure` recovery policy. Creation rejects zero capacities
+  and overflowing storage sizes. The runtime reservation operations support
+  acquisition/release across domains; this does not make arbitrary shared
+  slab payload accesses concurrent-safe. Reclaim owes exactly one release
+  for every successful acquire, and owner destruction must follow child
+  reclamation. These are separate lifecycle obligations.
 
   Both families return `lotus_arena_t*` from `acquire` so child
   body code stays projection-class-agnostic per the F.22
@@ -140,7 +154,12 @@ the model: runtime is automatic; stdlib is explicit.
   cross-pool owner (e.g. a `main locus` registry collecting
   entities spawned on a worker pool) is served by an async handoff
   over the bus queue: the child is born on the owner's thread and
-  reclaimed by the owner's same-thread cascade, so a cross-pool
+  reclaimed there, by its empty flow run's completion or by the
+  owner's cascade for a resident. Even an omitted or empty flow
+  `run()` invokes the ordinary run wrapper after birth; it performs
+  drain, the actual accepting owner's release bookend when present,
+  dissolve and reclaim. Completed children leave that owner's
+  tracker and return their structs to its recycler. A cross-pool
   `I{}` is **fire-and-forget** — it may only be a bare statement;
   using the instance as a value is rejected at compile time. Which
   of the two an `I{}` is follows the placement table per instance

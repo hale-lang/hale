@@ -206,7 +206,7 @@ fn restart_in_place_inside_a_match_arm_or_an_if_value_is_seen() {
         }).collect::<Vec<_>>();
         let routing = handler_rows(&[&program], &renames, &Default::default());
         assert!(
-            routing.restarts_in_place(p.child.name()),
+            routing.signature_restarts_in_place(p.child.name()),
             "{}: the rows do not see the restart in place",
             p.what
         );
@@ -363,7 +363,7 @@ locus Second {
         assert_eq!(rows[0].child_decl, snapshot.site_id(loci[child].id).map(SiteRef::user));
         assert_eq!(rows[1].child_decl, snapshot.site_id(loci["ImportedCell"].id).map(SiteRef::user));
         assert_eq!(routing.route_instance(parent.id, name, cell).unwrap().id, original[1].id);
-        assert!(routing.restarts_in_place(cell));
+        assert!(routing.signature_restarts_in_place(cell));
         assert!(routing.handlers_of_instance(loci["Other"].id, name)
             .all(|r| r.ops == [RecoveryOp::Quarantine]));
     }
@@ -515,10 +515,8 @@ main locus App {
 fn main() { App { }; }
 ";
 
-// The recovery statements outside every handler are the typed bodies'
-// `recoveries` column (F.40 phase 4's leftovers; W3 read them from the
-// syntax), each with its operation and the locus the checker typed its
-// receiver as; a handler's statements stay its row's ops.
+// The typed bodies' `recoveries` column records every recovery receiver.
+// This helper selects ordinary bodies; handler-specific probes follow.
 
 /// Each recovery row of the checked program: its parent, op, bound, the
 /// locus its receiver names and the statement's text.
@@ -540,6 +538,7 @@ fn recoveries(src: &str) -> Vec<(Option<String>, RecoveryOp, bool, Option<String
     };
     table
         .recoveries()
+        .filter(|(_, r)| !r.in_handler)
         .map(|(_, r)| {
             let text = src[r.statement.start.0 as usize..r.statement.end.0 as usize].to_string();
             (r.parent_name.clone(), r.op, r.bounded, r.child.as_ref().and_then(name_of), text)
@@ -552,7 +551,7 @@ fn a_recovery_statement_outside_a_handler_is_a_row_with_its_child() {
     assert_eq!(
         recoveries(SUPERVISED),
         [(Some("App".to_string()), RecoveryOp::Restart, true, Some("Worker".to_string()), "restart(self.w) for 4;".to_string())],
-        "the handlers' statements are their rows' ops, not this column's"
+        "this probe selects the statements outside handlers"
     );
 }
 
@@ -669,7 +668,7 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
             out.push(format!("decl {name}: {:?}", h.handlers_of_decl(l.id).map(row).collect::<Vec<_>>()));
             out.push(format!("by name {name}: {:?}", h.handlers_of(name).map(row).collect::<Vec<_>>()));
             out.push(format!("can_fail {name}: {}", h.can_fail(name)));
-            out.push(format!("in place {name}: {}", h.restarts_in_place(name)));
+            out.push(format!("in place {name}: {}", h.signature_restarts_in_place(name)));
             out.push(format!("key {name}: {:?}", h.instance_key(l.id, name)));
         }
         out.extend(h.bounds().map(|b| format!("bound {b:?}")));
@@ -689,10 +688,11 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
     assert_eq!(universe(&lowered), Some(SiteUniverse::StdlibAnalysis));
     assert_eq!(universe(&lowered), universe(s.demand_handlers().expect("the snapshot's rows")));
     assert_eq!(universe(&merged), Some(SiteUniverse::User));
-    // The recovery statements outside the handlers are no column of these
-    // rows: the typed bodies hold them, the method's one statement.
+    // The typed bodies hold every recovery receiver; the handler routing
+    // summary remains a separate pretyping declaration survey.
     let typed = s.demand_typed_bodies().unwrap_or_else(|_| panic!("the typed bodies"));
-    assert_eq!(typed.recoveries().count(), 1);
+    assert_eq!(typed.recoveries().filter(|(_, r)| !r.in_handler).count(), 1);
+    assert_eq!(typed.recoveries().filter(|(_, r)| r.in_handler).count(), 4);
 
     // A specialization: the template's rows under lowering's substitution.
     let sup = *loci.iter().find(|l| l.name.name == "Sup").expect("the generic supervisor");
@@ -712,9 +712,88 @@ fn the_views_rows_answer_as_the_merged_programs_did() {
         (
             h.handlers_of_instance(sup.id, "Sup_Worker").map(row).collect::<Vec<_>>(),
             h.instance_key(sup.id, "Sup_Worker"),
-            h.restarts_in_place("Worker"),
+            h.signature_restarts_in_place("Worker"),
         )
     };
     assert_eq!(special(&lowered), special(&merged));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+
+#[test]
+fn handler_recoveries_keep_typed_targets_sites_and_repeated_operations() {
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_types::ty::Ty;
+    let src = r#"
+locus Worker { params { n: Int = 0; } }
+locus Other { params { n: Int = 0; } }
+type Peer = Other;
+locus Supervisor<T> {
+    params { peer: T; }
+    on_failure(c: Worker, err: ClosureViolation) { restart(self.peer) for 2; }
+}
+main locus App {
+    params {
+        peer: Peer = Other { };
+    }
+    fn mk() { let sup: Supervisor<Other> = Supervisor { peer: Other { } }; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        restart(c);
+        restart(self.peer) for 3;
+        let alias = self.peer;
+        quarantine(alias);
+        bubble(err);
+    }
+}
+fn main() { App { }; }
+"#;
+    let s = Snapshot::from_program(hale_syntax::parse_source(src).expect("parses"), Vec::new(), Config::check(true, false))
+        .unwrap_or_else(|_| panic!("snapshot"));
+    let check = s.demand_check().unwrap_or_else(|_| panic!("check"));
+    assert!(!check.diags.iter().any(|d| d.is_error()), "{:?}", check.diags);
+    let typed = s.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    let rows: Vec<_> = typed.recoveries().filter(|(_, r)| r.parent_name.as_deref() == Some("App")).collect();
+    let texts: Vec<_> = rows.iter().map(|(_, r)| {
+        assert!(r.in_handler);
+        let at = r.receiver_span.expect("first argument witness");
+        (r.op, r.receiver.clone(), r.bounded, &src[at.start.0 as usize..at.end.0 as usize])
+    }).collect();
+    assert_eq!(texts, [
+        (RecoveryOp::Restart, Ty::Named("Worker".into()), false, "c"),
+        (RecoveryOp::Restart, Ty::Named("Other".into()), true, "self.peer"),
+        (RecoveryOp::Quarantine, Ty::Named("Other".into()), false, "alias"),
+        (RecoveryOp::Bubble, Ty::Named("ClosureViolation".into()), false, "err"),
+    ]);
+    assert!(rows[0].1.child.is_some());
+    assert_ne!(rows[0].1.child, rows[1].1.child);
+    assert_eq!(rows[1].1.child, rows[2].1.child);
+    assert!(rows[3].1.child.is_none(), "bubble's error is not a child receiver");
+    let routing = s.demand_handlers().expect("routing");
+    let handler = routing.handlers_of("App").next().expect("handler");
+    assert!(rows.iter().all(|(body, _)| body.0 == handler.id.expect("minted handler").index));
+    let generic: Vec<_> = typed.recoveries().filter(|(_, r)| r.parent_name.as_deref() == Some("Supervisor")).collect();
+    assert_eq!(generic.len(), 2, "one template walk and one concrete specialization");
+    let (_, concrete) = generic.iter().find(|(_, r)| !r.specialization.is_empty()).expect("concrete row");
+    assert!(concrete.in_handler);
+    assert_eq!(concrete.receiver, Ty::Named("Other".into()));
+    assert_eq!(concrete.child, rows[1].1.child);
+    assert_eq!(concrete.specialization, [Ty::Named("Other".into())]);
+    assert!(!typed.may_restart_in_place("Worker"));
+    assert!(!typed.may_restart_in_place("Other"));
+
+    let different_child = src.replace("restart(self.peer) for 3;", "restart_in_place(self.peer) for 3;");
+    let concrete_only = Snapshot::from_program(hale_syntax::parse_source(&different_child).expect("parses"), Vec::new(), Config::check(true, false))
+        .unwrap_or_else(|_| panic!("snapshot"));
+    let rows = concrete_only.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    assert!(rows.may_restart_in_place("Other"), "the actual typed target needs its built parameters");
+    assert!(!rows.may_restart_in_place("Worker"), "the handler signature alone is not a restart target");
+
+    let changed = src.replace("restart(self.peer) for", "restart_in_place(self.peer) for");
+    let specialized = Snapshot::from_program(hale_syntax::parse_source(&changed).expect("parses"), Vec::new(), Config::check(true, false))
+        .unwrap_or_else(|_| panic!("snapshot"));
+    let rows = specialized.demand_typed_bodies().unwrap_or_else(|_| panic!("typed bodies"));
+    assert!(rows.may_restart_in_place("Other"));
+    // The unused generic template's receiver is unknown: extra captures
+    // are conservative runtime storage, never a claim of a known target.
+    assert!(rows.may_restart_in_place("Worker"));
 }

@@ -72,6 +72,8 @@ For the development workflow of writing architectural claims before implementati
 | **State Encapsulation** | `require sealed(all G);` | Every locus in group `G` is annotated with `@sealed`. |
 | **Effect Attribution** | `require attributed(all C);` | Every function that directly performs built-in effect class `C` also declares a user-defined purpose class via `@effects(is: {...})`. |
 | **Execution Domain Separation** | `require separate_domains(all G1, all G2);` | Every arranged locus instance in `G1` runs on a distinct execution domain (pool or pinned thread) from every arranged instance in `G2`. |
+| **Flow Reclamation Policy** | `require flow(all G);` | Every selected concrete locus type is classified as a flow. Templates are uncertified; this does not prove termination or a live-child bound. |
+| **Queue Reservation Budget** | `bound queue_slots <= N on instances G;` | The total declared subscription queue capacity across all arranged instances selected by `G` is at most `N`. |
 | **Lossless Bus Routing** | `require no_silent_loss(topic T);`<br>`require no_silent_loss(all G);` | No boundary on topic `T` (or on any route touched by group `G`) is configured to silently drop messages (`swallow`, `drop_old`, `drop_new`, `or discard`, transport `drop`). |
 | **Seed Topic Coverage** | `cover topic in seed(alias): subscribed_by(some G);` | Every topic declared in the seed imported as `alias` has at least one subscriber in group `G`. |
 | **Keyed Routing Partition** | `cover keys(topic T [in LO..=HI]): delivered_to(exactly_one G);` | Every permitted key on keyed topic `T` is delivered to **exactly one** arranged subscriber instance in group `G`. |
@@ -104,7 +106,7 @@ claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
                   | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | route_form
-                  | count_form ;
+                  | count_form | queue_slots_form ;
 
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,
                     claim_set , ")" ,
@@ -121,10 +123,13 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
+queue_slots_form  = "bound" , "queue_slots" , "<=" , INT_LIT ,
+                    "on" , "instances" , IDENTIFIER ;
 
-require_form      = require_endpoint | require_sealed
+require_form      = require_endpoint | require_sealed | require_flow
                   | require_attributed | require_no_silent_loss
                   | require_separate_domains ;
+require_flow      = "require" , "flow" , "(" , "all" , IDENTIFIER , ")" ;
 require_separate_domains
                   = "require" , "separate_domains" , "(" ,
                     "all" , IDENTIFIER , "," , "all" , IDENTIFIER , ")" ;
@@ -511,6 +516,29 @@ Counts the number of **distinct declared loci** that publish or subscribe to the
 
 ---
 
+### 10. Queue Reservation Budgets
+
+```hale,fragment
+queues: bound queue_slots <= 256 on instances workers;
+```
+
+This sums each selected instance's declared subscription capacities. Four
+worker instances with one `bounded(64, drop_new)` subscription each reserve
+256 slots. Two subscriptions in each worker reserve 512. The existing v1
+checker permits authored subscription bounds on main-queue subscribers;
+off-main mailbox/pool ring limits have a separate runtime contract. Repeated
+constructions count separately even when they run on the same pool.
+
+Include child declarations explicitly in `workers` to count their queues.
+Keys do not discount a registration's reservation. An unbounded subscription
+violates any finite limit; unknown populations or subscriptions prevent
+certification. Empty selections and undeployed declarations are invalid.
+An instantiated locus with no subscriptions contributes zero slots.
+
+The claim budgets declared subscription capacity. Payload bytes, actual
+occupancy, topic-wide limits and work in flight have separate meanings.
+Diagnostics name the contributing instance paths and subscription sites.
+
 ## Library-Tier Claims
 
 A library seed (a directory with no `main locus`) can declare a top-level `claims { }` block over its own loci, functions, and topics:
@@ -728,9 +756,68 @@ hale verify --workspace .
 
 ---
 
+## Reachability certificates and Lean
+
+A selected `forbid reaches` law can export a finite graph certificate and a
+Lean statement over that graph:
+
+```sh
+hale check app --dump-reachability-proofs=Claims.json --dump-reachability-lean=Claims.lean
+hale check app --check-reachability-proofs=Claims.json --check-reachability-lean=Claims.lean
+```
+
+Each flag requires a path, with either `=<path>` or a separate operand. These
+are single-seed flags and cannot be used with `--workspace` or `--matrix`.
+Export preserves the ordinary check's exit status: a forbidden graph path
+still fails the check while exporting its path certificate.
+
+The JSON report accounts for every selected `forbid reaches` law. A holding
+law carries a closed set containing its sources, excluding its targets, and
+containing every selected outgoing successor. A violation carries an explicit
+path from a selected source to a selected target, including zero-length paths.
+The empty-target shortcut carries a separate theorem valid for every edge
+relation. Phase filters, `via` choices, gates, imported groups, adopted
+constitutions, and stdlib interiors keep the judgment's existing meaning.
+
+Invalid or uncertified laws have no mathematical certificate. A traversal
+cutoff also has none, even where a legacy diagnostic labels it `violated`.
+JSON export records these refusals; Lean export refuses to produce a theorem
+bundle. Selection errors and a seed with no selected forbid laws also prevent
+Lean export. Other claim families are listed as excluded and receive no proof
+from this interface.
+
+The replay commands regenerate the canonical report and Lean document from
+current source. They compare the complete documents, including source identity,
+propositions, graph facts, law binding, analysis inputs, coverage and provenance;
+even whitespace changes are refused. These commands do **not** run Lean.
+
+To check the generated statement with the pinned Lean toolchain, use the
+compiler repository's `verification/lean` project:
+
+```sh
+cd verification/lean
+lake build
+lake env lean /absolute/path/to/Claims.lean
+```
+
+The kernel checks the closed-set or path calculation using `by decide`, and
+applies a proved soundness theorem. Generated declarations contain numeric
+identities; source names cannot inject Lean commands. The project also tests
+compiler-generated examples and negative controls with
+`python3 verification/lean/check_generated.py` from the repository root.
+
+The theorem concerns the **supplied graph**. Compiler extraction, group and
+effect selection, completeness of outgoing rows, and correspondence with
+lowering and runtime behavior remain trusted. The JSON report preserves that
+boundary. Its FNV identities detect stale evidence; they are not cryptographic
+signatures. Successful export alone is not evidence that Lean has checked the
+file, or that other claims hold.
+
+---
+
 ## The Topology Artifact (`.hale.topology`)
 
-`hale check` can export the verified program model, inferred effects, and claim verdicts as a deterministic, cryptographically digested JSON artifact (`.hale.topology`):
+`hale check` can export the verified program model, inferred effects, and claim verdicts as a deterministic JSON artifact with integrity and identity digests (`.hale.topology`):
 
 ```sh
 # Export topology to stdout or a file (note: file path requires `=`)
@@ -792,11 +879,11 @@ law:
   + claim quiet: count publishers(topic Out) == 0  [violated]
 ```
 
-### Topology Artifact Schema (`1.21`)
+### Topology Artifact Schema (`1.23`)
 
 ```json
 {
-  "schema": "1.21",
+  "schema": "1.23",
   "semantics": 1,
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": ["..."], "fns": ["..."], "topics": ["..."] },
@@ -827,7 +914,7 @@ law:
   "lowered":   [ {"subject": "...", "form": "...", "result": "holds", "ordinal": 0} ],
   "law":       { "law_digest": "...", "inputs_digest": "...", "fn_universe": [], "loci": [], "groups": [], "topics": [], "subjects": [], "effect_classes": [], "legacy": [], "issues": [], "rows": [] },
   "capabilities": { "exact_calls": true },
-  "adequacy":  { "reachability": "exact", "boundary": "exact", "endpoint": "exact", "bound": "exact", "certificate": "exact", "causes": "exact", "depends": "exact", "budget": "exact", "placement": "exact" },
+  "adequacy":  { "reachability": "exact", "boundary": "exact", "endpoint": "exact", "bound": "exact", "certificate": "exact", "causes": "exact", "depends": "exact", "budget": "exact", "placement": "exact", "resource": "exact" },
   "evaluation": { "environment": "prod", "roots": [], "closure": [] },
   "verdict":   "clean | law_failed",
   "artifact_digest": "<digest over entire document>"
@@ -848,3 +935,30 @@ Key artifact sections:
 - **Reusable Claimsets**: [Constitutions](./constitutions.md).
 - **Program Model**: [The Model](./the-model.md).
 - **Multi-Binary Fleet Claims**: [Multi-Binary Services](./services/multi-binary.md#multi-binary-verification-fleet-locus).
+
+
+## Require flow reclamation for selected child types
+
+```hale
+group requests = { Request };
+main locus App {
+    claims { reclaimable: require flow(all requests); }
+}
+```
+
+This policy checks the compiler's type-wide flow classification. A
+`release(child: Request)` clause makes `Request` a flow; a specialized
+`Owner<Request>` clause can do the same. Removing the classifying clause
+or the specialization can turn the claim into a resident-type violation,
+with a related source location at the child declaration. The selected
+locus set must be nonempty. Generic templates are uncertified rather
+than treated as concrete resident types. Constitutions and traveling
+library claims keep their own group bindings.
+
+The claim does not require a deployed instance. Even an unused owner can
+classify a type, and the policy does not identify the accepting owner of
+a particular birth. It does not prove that `run` returns, that every
+flow-field cancellation path is safe, or that live children and retained
+bytes are bounded. Use it to enforce the declared reclamation discipline
+while those separate lifetime and resource obligations are checked on
+their own facts.

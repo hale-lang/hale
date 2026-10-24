@@ -128,6 +128,17 @@ on_failure(c: Book, err: ClosureViolation) {
 > [!TIP]
 > Always use `restart(c) for N;` rather than maintaining a manual retry counter in a parameter field. Both enforce the limit at runtime, but `for N` exports the bound as `retry_bound` in the topology artifact so deployment verification and runtime telemetry can audit retry budgets.
 
+Recovery operations apply to their argument, which may be another child
+held by the supervisor. `hale check` uses each argument's resolved type,
+including in generic handlers, when checking whether a closure's
+`persists_through` or `resets_on` event can occur. The handled child's
+type alone does not establish that an operation applies to it. This is
+a type-level check; it does not prove which instance an alias names or
+whether a conditional recovery executes. The compiler also uses typed
+recovery receivers to retain original parameters for `restart_in_place`,
+including when it is called through a helper. An unresolved receiver
+conservatively retains those snapshots.
+
 ### Handler Threading & Initialization Timing
 
 - **Deferred delivery during parent `params` initialization**: If an earlier sibling parameter fails while the parent is still initializing later parameters in its `params` block, the runtime holds the `ClosureViolation` until all parent `params` are initialized and delivers it immediately before the parent's `birth()`. This guarantees that `on_failure` never reads uninitialized sibling parameters or has its writes clobbered by later defaults.

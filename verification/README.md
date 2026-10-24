@@ -202,9 +202,13 @@ There the condvar governs only *sleep-vs-spin* — the **safety**
 properties (no lost/duplicated cell, no use-after-free) are independent
 of it. So those models replace the `cond_wait`/`signal` wake with a
 lock-guarded spin that preserves the exact parked/wake predicate, and
-check safety under all interleavings. Missed-wakeup *liveness* is out
-of scope for GenMC and would need a different tool (e.g. a TLA+ spec of
-the wake handshake).
+check safety under all interleavings. Missed-wakeup *liveness* remains
+outside GenMC's scope. The [TLA+ wake-handshake pilot](tla/README.md)
+checks finite condvar executions, eventual delivery and quiescent shutdown,
+with three required liveness counterexamples when protocol steps are
+removed. Its finite bounds, fairness, C11 visibility assumption, exclusions
+and source-alignment guards are explicit; it does not establish every
+execution of the production runtime.
 
 ## The failure cascade's boundary
 

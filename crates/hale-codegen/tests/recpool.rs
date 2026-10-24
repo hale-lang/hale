@@ -44,18 +44,14 @@ fn build_driver(tag: &str) -> PathBuf {
         std::process::id(),
         nanos
     ));
-    let status = Command::new("clang")
-        .arg(driver_c_path())
-        .arg(runtime_c_path())
-        .arg("-O2")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-lpthread")
-        .arg("-o")
-        .arg(&bin)
-        .status()
-        .expect("clang invocation");
-    assert!(status.success(), "clang failed building recpool driver");
+    // Link only the production pool/arena functions this driver reaches.
+    // Other runtime subsystems live in separate TUs (observation and SHM).
+    let mut cc = Command::new("clang");
+    cc.arg(driver_c_path()).arg(runtime_c_path())
+        .args(["-O2", "-Wall", "-Wextra", "-ffunction-sections", "-fdata-sections", "-lpthread", "-lm"]);
+    cc.arg(if cfg!(target_os = "macos") { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" });
+    let built = cc.arg("-o").arg(&bin).output().expect("clang invocation");
+    assert!(built.status.success(), "clang failed building recpool driver: {}", String::from_utf8_lossy(&built.stderr));
     bin
 }
 
@@ -106,7 +102,27 @@ fn recpool_slab_alloc_overflow_returns_null() {
 }
 
 #[test]
-fn recpool_slab_release_is_noop() {
+fn recpool_slab_release_preserves_storage() {
     let bin = build_driver("slab_noop");
     run_mode(&bin, "slab_noop");
+}
+
+#[test]
+fn recpool_slab_admission_cap_and_storage_survive_release() {
+    run_mode(&build_driver("slab_admission"), "slab_admission");
+}
+
+#[test]
+fn recpool_reservations_reject_wrapping_sizes_and_zero_caps() {
+    run_mode(&build_driver("creation_limits"), "creation_limits");
+}
+
+#[test]
+fn recpool_fixed_concurrent_reservations_and_release_are_exact() {
+    run_mode(&build_driver("fixed_concurrent"), "fixed_concurrent");
+}
+
+#[test]
+fn recpool_slab_concurrent_reservations_and_release_are_exact() {
+    run_mode(&build_driver("slab_concurrent"), "slab_concurrent");
 }

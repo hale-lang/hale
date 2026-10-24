@@ -318,10 +318,11 @@ fn claim<'a>(c: &'a ClaimDecl, f: &mut Visit<'_, 'a>) {
             name(group, f);
             topic_ref(topic, f);
         }
-        ClaimForm::RequireSealed { group } => name(group, f),
+        ClaimForm::RequireSealed { group } | ClaimForm::RequireFlow { group } => name(group, f),
         ClaimForm::RequireAttributed { class_name } => name(class_name, f),
         ClaimForm::RequireNoSilentLossTopic { topic } => topic_ref(topic, f),
         ClaimForm::RequireNoSilentLossGroup { group } => name(group, f),
+        ClaimForm::QueueSlots { group, .. } => name(group, f),
         ClaimForm::RequireSeparateDomains { left, right } => {
             name(left, f);
             name(right, f);
@@ -510,7 +511,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
         }
         LocusMember::Claims(cb) => claims_block(cb, f),
         LocusMember::BirthCheck(bc) => {
-            let BirthCheckDecl { cond, closure_name, payload, span: _ } = bc;
+            let BirthCheckDecl { cond, closure_name, payload, span: _, id: _ } = bc;
             expr(cond, f);
             name(closure_name, f);
             opt_expr(payload, f);
@@ -650,7 +651,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         TypeDeclBody::Alias(a) => ty(a, f),
         TypeDeclBody::Struct(fields) => {
             for sf in fields {
-                let StructField { name: n, ty: t, default, tag, indexed_by, map_value, span: _ } = sf;
+                let StructField { id: _, name: n, ty: t, default, tag, indexed_by, map_value, span: _ } = sf;
                 name(n, f);
                 opt_name(indexed_by, f);
                 opt_name(map_value, f);

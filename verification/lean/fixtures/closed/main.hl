@@ -1,0 +1,14 @@
+fn sink(n: Int) -> Int { return n; }
+fn gate(n: Int) -> Int { return sink(n); }
+fn first(n: Int) -> Int {
+    if n == 0 { return gate(n); }
+    return second(n - 1);
+}
+fn second(n: Int) -> Int { return first(n); }
+group sources = { first, second };
+group targets = { sink };
+group gates = { gate };
+main locus App {
+    claims { isolated: forbid reaches(sources, targets) avoiding gates; }
+}
+fn main() { App { }; println(first(0)); }
